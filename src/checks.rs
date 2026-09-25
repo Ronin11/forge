@@ -9,6 +9,18 @@
 //! group is killed after it exits, and the output is drained with a short
 //! grace. Learned the hard way in Forge 1.
 
+/// A check command with its execution environment and retained-output limit.
+pub struct RunOneCapped<'a> {
+    pub level: &'a str,
+    pub name: &'a str,
+    pub argv: &'a [String],
+    pub cwd: &'a Path,
+    pub sandbox: Option<&'a Sandbox>,
+    pub timeout: Duration,
+    pub env: &'a [(String, String)],
+    pub cap_bytes: usize,
+}
+
 use crate::sandbox::Sandbox;
 use serde::{Deserialize, Serialize};
 use std::os::unix::process::CommandExt;
@@ -111,23 +123,33 @@ pub async fn run_one(
     timeout: Duration,
     env: &[(String, String)],
 ) -> CheckResult {
-    run_one_capped(level, name, argv, cwd, sandbox, timeout, env, TAIL_BYTES).await
+    run_one_capped(RunOneCapped {
+        level,
+        name,
+        argv,
+        cwd,
+        sandbox,
+        timeout,
+        env,
+        cap_bytes: TAIL_BYTES,
+    })
+    .await
 }
 
 /// As `run_one`, keeping `cap_bytes` of merged and of stdout-alone output
 /// instead of the default tail. An operation with `output = "full"` asks
 /// for `FULL_OUTPUT_BYTES` here.
-#[allow(clippy::too_many_arguments)]
-pub async fn run_one_capped(
-    level: &str,
-    name: &str,
-    argv: &[String],
-    cwd: &Path,
-    sandbox: Option<&Sandbox>,
-    timeout: Duration,
-    env: &[(String, String)],
-    cap_bytes: usize,
-) -> CheckResult {
+pub async fn run_one_capped(args: RunOneCapped<'_>) -> CheckResult {
+    let RunOneCapped {
+        level,
+        name,
+        argv,
+        cwd,
+        sandbox,
+        timeout,
+        env,
+        cap_bytes,
+    } = args;
     let start = Instant::now();
     let mut r = CheckResult {
         level: level.to_string(),

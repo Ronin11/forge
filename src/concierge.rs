@@ -149,15 +149,15 @@ pub async fn ask(
             if d.answer.trim().is_empty() {
                 bail!("the concierge called this a question but gave no answer");
             }
-            let decision = f.store.insert_decision_by(
-                t.id,
-                &repo,
-                message,
-                &d.answer,
-                "concierge",
-                "",
-                from,
-            )?;
+            let decision = f.store.insert_decision_by(crate::store::InsertDecisionBy {
+                task_id: t.id,
+                repo: &repo,
+                question: message,
+                answer: &d.answer,
+                answered_by: "concierge",
+                citations: "",
+                answered_for: from,
+            })?;
             Asked::Answered {
                 answer: d.answer.clone(),
                 decision,
@@ -300,15 +300,15 @@ pub async fn answer_proposal(f: &Forge, id: i64, text: &str, by: &str) -> Result
     let p: crate::view::ProposalRecord = serde_json::from_str(&raw)
         .with_context(|| format!("task {id}'s proposal does not fit its own schema: {raw}"))?;
     let (_, question) = crate::view::request_kind(&t.reason);
-    f.store.insert_decision_by(
-        id,
-        &t.repo,
-        &question,
-        text,
-        by,
-        "",
-        t.question_to.as_deref(),
-    )?;
+    f.store.insert_decision_by(crate::store::InsertDecisionBy {
+        task_id: id,
+        repo: &t.repo,
+        question: &question,
+        answer: text,
+        answered_by: by,
+        citations: "",
+        answered_for: t.question_to.as_deref(),
+    })?;
 
     let yes = is_yes(text);
     let result = if yes {

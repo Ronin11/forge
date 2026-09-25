@@ -1,3 +1,17 @@
+/// Completion results and assessment outputs recorded for a deployment.
+pub struct FinishDeploy<'a> {
+    pub id: i64,
+    pub at: i64,
+    pub check_ok: bool,
+    pub check_output: &'a str,
+    pub rolled_back_to: Option<&'a str>,
+    pub reason: &'a str,
+    pub smoke_ok: Option<bool>,
+    pub smoke_json: Option<&'a str>,
+    pub look_ok: Option<bool>,
+    pub look_json: Option<&'a str>,
+}
+
 use super::*;
 use serde::Serialize;
 
@@ -280,20 +294,19 @@ impl Store {
     /// the target declared a smoke url and the check passed for it to run
     /// (`None`, `None` otherwise), and `deploy-look`'s verdict on the same
     /// terms (`None`, `None` when it never ran).
-    #[allow(clippy::too_many_arguments)]
-    pub fn finish_deploy(
-        &self,
-        id: i64,
-        at: i64,
-        check_ok: bool,
-        check_output: &str,
-        rolled_back_to: Option<&str>,
-        reason: &str,
-        smoke_ok: Option<bool>,
-        smoke_json: Option<&str>,
-        look_ok: Option<bool>,
-        look_json: Option<&str>,
-    ) -> Result<()> {
+    pub fn finish_deploy(&self, args: FinishDeploy<'_>) -> Result<()> {
+        let FinishDeploy {
+            id,
+            at,
+            check_ok,
+            check_output,
+            rolled_back_to,
+            reason,
+            smoke_ok,
+            smoke_json,
+            look_ok,
+            look_json,
+        } = args;
         self.lock().execute(
             "UPDATE deploys SET finished_at=?2, check_ok=?3, check_output=?4, rolled_back_to=?5, reason=?6, smoke_ok=?7, smoke_json=?8, look_ok=?9, look_json=?10
              WHERE id=?1",
@@ -534,31 +547,31 @@ mod tests {
         let b = s
             .start_deploy("equitizr", "staging", "bbbbbbb", 200, None)
             .unwrap();
-        s.finish_deploy(
-            a,
-            150,
-            true,
-            "active",
-            None,
-            "",
-            Some(true),
-            Some(r#"{"ok":true}"#),
-            Some(true),
-            Some("[]"),
-        )
+        s.finish_deploy(FinishDeploy {
+            id: a,
+            at: 150,
+            check_ok: true,
+            check_output: "active",
+            rolled_back_to: None,
+            reason: "",
+            smoke_ok: Some(true),
+            smoke_json: Some(r#"{"ok":true}"#),
+            look_ok: Some(true),
+            look_json: Some("[]"),
+        })
         .unwrap();
-        s.finish_deploy(
-            b,
-            250,
-            false,
-            "connection refused",
-            Some("aaaaaaa"),
-            "the deploy of bbbbbbb failed its check and was rolled back to aaaaaaa",
-            None,
-            None,
-            None,
-            None,
-        )
+        s.finish_deploy(FinishDeploy {
+            id: b,
+            at: 250,
+            check_ok: false,
+            check_output: "connection refused",
+            rolled_back_to: Some("aaaaaaa"),
+            reason: "the deploy of bbbbbbb failed its check and was rolled back to aaaaaaa",
+            smoke_ok: None,
+            smoke_json: None,
+            look_ok: None,
+            look_json: None,
+        })
         .unwrap();
 
         let all = s.deploys("equitizr", None).unwrap();

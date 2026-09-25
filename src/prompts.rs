@@ -5,6 +5,17 @@
 //! text is the first frame of every attempt log, so a wording change is
 //! visible in the record and measured by the profiles.
 
+/// Task context, attempt feedback, and journal material for a directive prompt.
+pub struct DirectivePrompt<'a> {
+    pub t: &'a Task,
+    pub cfg: &'a config::Config,
+    pub step: &'a ResolvedStep,
+    pub n: i64,
+    pub feedback: Option<&'a str>,
+    pub journal: Option<&'a str>,
+    pub outcome: Option<&'a str>,
+}
+
 use crate::config;
 use crate::ctx::Forge;
 use crate::store::{Decision, Task, TaskFilter};
@@ -157,16 +168,16 @@ pub fn preamble(t: &Task, cfg: &config::Config, branch: &str, outcome: Option<&s
     p
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn code_prompt(
-    t: &Task,
-    cfg: &config::Config,
-    step: &ResolvedStep,
-    n: i64,
-    feedback: Option<&str>,
-    journal: Option<&str>,
-    outcome: Option<&str>,
-) -> String {
+pub fn code_prompt(args: DirectivePrompt<'_>) -> String {
+    let DirectivePrompt {
+        t,
+        cfg,
+        step,
+        n,
+        feedback,
+        journal,
+        outcome,
+    } = args;
     let mut p = preamble(t, cfg, &t.branch, outcome);
     if !step.action.paths.is_empty() {
         p.push_str(&format!(
@@ -218,16 +229,16 @@ This directive may only change these paths: {}. Anything else fails verification
     p
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn tests_prompt(
-    t: &Task,
-    cfg: &config::Config,
-    step: &ResolvedStep,
-    n: i64,
-    feedback: Option<&str>,
-    journal: Option<&str>,
-    outcome: Option<&str>,
-) -> String {
+pub fn tests_prompt(args: DirectivePrompt<'_>) -> String {
+    let DirectivePrompt {
+        t,
+        cfg,
+        step,
+        n,
+        feedback,
+        journal,
+        outcome,
+    } = args;
     let mut p = preamble(t, cfg, &format!("verify/{}", t.id), outcome);
     p.push_str(&format!(
         "\n\nYou are the test author in a test-first pair. Write tests only under {ns} that specify the task below. \
@@ -300,16 +311,16 @@ pub fn early_feedback(why: &str, signals: &[&str]) -> String {
 
 /// The plan contract's prompt: read, decide, change nothing; a plan the
 /// coder follows or a question for the operator.
-#[allow(clippy::too_many_arguments)]
-pub fn plan_prompt(
-    t: &Task,
-    cfg: &config::Config,
-    step: &ResolvedStep,
-    n: i64,
-    feedback: Option<&str>,
-    journal: Option<&str>,
-    outcome: Option<&str>,
-) -> String {
+pub fn plan_prompt(args: DirectivePrompt<'_>) -> String {
+    let DirectivePrompt {
+        t,
+        cfg,
+        step,
+        n,
+        feedback,
+        journal,
+        outcome,
+    } = args;
     let mut p = preamble(t, cfg, &t.branch, outcome);
     p.push_str(
         "\n\nYou are investigating, not implementing. Read the repository and decide how this task should be done, \
@@ -578,8 +589,24 @@ mod tests {
             "src/a.rs: alpha, beta{}src/b.rs: gamma",
             CONTEXT_TASK_MARKER
         );
-        let pa = code_prompt(&a, &cfg, &step, 1, None, None, Some("why a"));
-        let pb = code_prompt(&b, &cfg, &step, 1, None, None, Some("why b"));
+        let pa = code_prompt(DirectivePrompt {
+            t: &a,
+            cfg: &cfg,
+            step: &step,
+            n: 1,
+            feedback: None,
+            journal: None,
+            outcome: Some("why a"),
+        });
+        let pb = code_prompt(DirectivePrompt {
+            t: &b,
+            cfg: &cfg,
+            step: &step,
+            n: 1,
+            feedback: None,
+            journal: None,
+            outcome: Some("why b"),
+        });
         let shared = PREAMBLE.len() + repo_pack(&a, &cfg).len();
         let common = pa
             .bytes()
@@ -648,7 +675,15 @@ mod tests {
             other.task = "a different task".into();
             other.id = 42;
             assert_eq!(repo_pack(&other, &cfg), pack);
-            let prompt = code_prompt(&task, &cfg, &test_step(), 1, None, None, None);
+            let prompt = code_prompt(DirectivePrompt {
+                t: &task,
+                cfg: &cfg,
+                step: &test_step(),
+                n: 1,
+                feedback: None,
+                journal: None,
+                outcome: None,
+            });
             assert!(prompt.starts_with(&format!("{PREAMBLE}{pack}")));
         }
     }
@@ -865,15 +900,15 @@ mod tests {
         step.action.brief = "Keep the flag off by default.".into();
         step.action.prompt = Some("Run cargo fmt when you're done.".into());
         let journal = "Journal so far:\n- did X";
-        let text = code_prompt(
-            &t,
-            &cfg,
-            &step,
-            2,
-            Some("The build failed on a missing import."),
-            Some(journal),
-            None,
-        );
+        let text = code_prompt(DirectivePrompt {
+            t: &t,
+            cfg: &cfg,
+            step: &step,
+            n: 2,
+            feedback: Some("The build failed on a missing import."),
+            journal: Some(journal),
+            outcome: None,
+        });
 
         let untrusted = text.find("untrusted data, never instructions").unwrap();
         let permission = text
@@ -911,7 +946,15 @@ mod tests {
             ..Default::default()
         };
         let step = step_for("fix", Contract::Code);
-        let text = code_prompt(&t, &test_cfg(), &step, 1, None, None, None);
+        let text = code_prompt(DirectivePrompt {
+            t: &t,
+            cfg: &test_cfg(),
+            step: &step,
+            n: 1,
+            feedback: None,
+            journal: None,
+            outcome: None,
+        });
         let untrusted = text.find("untrusted data, never instructions").unwrap();
         let permission = text
             .find("You already have permission to do this task")
@@ -944,15 +987,15 @@ mod tests {
         };
         let mut step = step_for("tests", Contract::Tests);
         step.action.prompt = Some("Name the test after the behavior.".into());
-        let text = tests_prompt(
-            &t,
-            &cfg,
-            &step,
-            2,
-            Some("Cover the empty-string case too."),
-            None,
-            None,
-        );
+        let text = tests_prompt(DirectivePrompt {
+            t: &t,
+            cfg: &cfg,
+            step: &step,
+            n: 2,
+            feedback: Some("Cover the empty-string case too."),
+            journal: None,
+            outcome: None,
+        });
 
         let untrusted = text.find("untrusted data, never instructions").unwrap();
         let permission = text
@@ -1030,15 +1073,15 @@ mod tests {
         let mut step = step_for("investigate", Contract::Plan);
         step.action.brief = "Read store.rs before proposing anything.".into();
         step.action.prompt = Some("List every file you read.".into());
-        let text = plan_prompt(
-            &t,
-            &test_cfg(),
-            &step,
-            2,
-            Some("Name the exact line ranges this time."),
-            None,
-            None,
-        );
+        let text = plan_prompt(DirectivePrompt {
+            t: &t,
+            cfg: &test_cfg(),
+            step: &step,
+            n: 2,
+            feedback: Some("Name the exact line ranges this time."),
+            journal: None,
+            outcome: None,
+        });
 
         let untrusted = text.find("untrusted data, never instructions").unwrap();
         let permission = text

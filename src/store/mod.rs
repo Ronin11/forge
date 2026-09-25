@@ -27,10 +27,10 @@ mod webhooks;
 
 pub use attempts::{Attempt, AttemptState, FinishAttempt, Op, RateLimitSample};
 pub use daily::DailyStat;
-pub use deploys::{Assessment, Deploy, DeployTarget};
+pub use deploys::{Assessment, Deploy, DeployTarget, FinishDeploy};
 pub use factors::{FactorLevelStat, ROLES};
 pub use jobs::{Job, JobEffect, JobStat, JobState, JobStep};
-pub use messages::{Direction, Message, MessageFilter};
+pub use messages::{Direction, InsertMessage, Message, MessageFilter};
 pub use projects::{
     BacklogItem, Initiative, InitiativeUpdate, Project, ProjectDefaults, ProjectRepo, ProjectStat,
     ProjectTaskStats, is_placeholder_purpose,
@@ -38,7 +38,7 @@ pub use projects::{
 #[cfg(test)]
 pub use questions::RetryFacts;
 pub use questions::{QuestionRecord, Resolution};
-pub use record::{Decision, TaskRef};
+pub use record::{Decision, InsertDecisionBy, TaskRef};
 pub use stats::{
     HumanAttentionProjectStat, HumanAttentionStat, JournalStat, RoleStat, StatsFilter, StepStat,
     TaskTtl, WorkflowStat,

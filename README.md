@@ -253,6 +253,8 @@ See docs/ACTIONS.md.
 
 ```
 src/agent.rs        spawn the CLI, parse stream-json, timeout
+src/agent/inputs.rs documented invocation and streaming-phase argument structs
+src/argument_policy_tests.rs  require reasons above argument-count allowances
 src/assess.rs       the assess directive: a read-only score of a landed diff's maintainability
 src/attempt.rs      one attempt of a directive: prompt, launch, verdict, the row
 src/audit.rs        diagnosis for a terminal failure; cost anti-patterns

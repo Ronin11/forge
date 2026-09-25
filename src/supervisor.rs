@@ -406,15 +406,15 @@ pub async fn demotion_as_task(f: &Forge, id: i64) -> Result<Option<i64>> {
     if f.store.supervisor_answers_in_lineage(id)? >= cfg.per_lineage {
         return Ok(None);
     }
-    let decision = f.store.insert_decision_by(
-        id,
-        &t.repo,
-        &q.question,
-        "filed the demotion as a follow-up task: it names a reproducible defect and asks nothing",
-        "supervisor",
-        "",
-        t.question_to.as_deref(),
-    )?;
+    let decision = f.store.insert_decision_by(crate::store::InsertDecisionBy {
+task_id: id,
+repo: &t.repo,
+question: &q.question,
+answer: "filed the demotion as a follow-up task: it names a reproducible defect and asks nothing",
+answered_by: "supervisor",
+citations: "",
+answered_for: t.question_to.as_deref()
+})?;
     f.store.set_decision_kind(decision, "demotion-as-task")?;
     let after = t
         .after
@@ -538,17 +538,17 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         let wait = (until - crate::unix_now()).clamp(1, 3600) as u64;
         tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
     }
-    let (mut a, log_path) = crate::attempt::new_attempt(
+    let (mut a, log_path) = crate::attempt::new_attempt(crate::attempt::NewAttempt {
         f,
-        &t,
-        "supervisor",
+        t: &t,
+        step: "supervisor",
         seq,
-        wt,
+        dir: wt,
         attempt_no,
         inputs,
-        None,
+        resume: None,
         provider,
-    )
+    })
     .await?;
     let outcome = crate::directive::launch(
         f,
@@ -766,15 +766,15 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
                 Some(p.task.clone()),
             );
             let pre = crate::queue::enqueue(f, &pre_args, None).await?;
-            let decision = f.store.insert_decision_by(
-                id,
-                &t.repo,
-                &q.question,
-                &format!("prerequisite task {}: {}", pre.id, r.answer),
-                "supervisor",
-                &cited,
-                t.question_to.as_deref(),
-            )?;
+            let decision = f.store.insert_decision_by(crate::store::InsertDecisionBy {
+                task_id: id,
+                repo: &t.repo,
+                question: &q.question,
+                answer: &format!("prerequisite task {}: {}", pre.id, r.answer),
+                answered_by: "supervisor",
+                citations: &cited,
+                answered_for: t.question_to.as_deref(),
+            })?;
             let text = format!(
                 "{}\n\nSupervisor's note (citing {cited}): this task was re-queued behind prerequisite task {}, which {}",
                 t.task, pre.id, r.answer
@@ -830,15 +830,15 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
                     r.answer
                 )
             };
-            let decision = f.store.insert_decision_by(
-                id,
-                &t.repo,
-                &q.question,
-                &note,
-                "supervisor",
-                &cited,
-                t.question_to.as_deref(),
-            )?;
+            let decision = f.store.insert_decision_by(crate::store::InsertDecisionBy {
+                task_id: id,
+                repo: &t.repo,
+                question: &q.question,
+                answer: &note,
+                answered_by: "supervisor",
+                citations: &cited,
+                answered_for: t.question_to.as_deref(),
+            })?;
             match crate::landing::land_task(f, id, false).await {
                 Ok(line) => {
                     f.report.emit(
@@ -858,15 +858,15 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         }
         "superseded" => {
             let by = superseding_task(f, &t, &r.citations).context("no superseding task")?;
-            f.store.insert_decision_by(
-                id,
-                &t.repo,
-                &q.question,
-                &format!("superseded by task {by}: {}", r.reason),
-                "supervisor",
-                &cited,
-                t.question_to.as_deref(),
-            )?;
+            f.store.insert_decision_by(crate::store::InsertDecisionBy {
+                task_id: id,
+                repo: &t.repo,
+                question: &q.question,
+                answer: &format!("superseded by task {by}: {}", r.reason),
+                answered_by: "supervisor",
+                citations: &cited,
+                answered_for: t.question_to.as_deref(),
+            })?;
             let mut t = t.clone();
             t.state = TaskState::Failed;
             t.reason = format!("superseded by task {by} (supervisor): {}", r.reason);
@@ -975,15 +975,15 @@ mod tests {
             fixture_task("beta", "/repo", "an unrelated beta task that landed"),
         );
         f.store
-            .insert_decision_by(
-                beta_task.id,
-                "/repo",
-                "a beta-only question",
-                "a beta-only answer",
-                "operator",
-                "",
-                None,
-            )
+            .insert_decision_by(crate::store::InsertDecisionBy {
+                task_id: beta_task.id,
+                repo: "/repo",
+                question: "a beta-only question",
+                answer: "a beta-only answer",
+                answered_by: "operator",
+                citations: "",
+                answered_for: None,
+            })
             .unwrap();
 
         let alpha_sibling = insert(
@@ -991,15 +991,15 @@ mod tests {
             fixture_task("alpha", "/repo", "an earlier alpha task that landed"),
         );
         f.store
-            .insert_decision_by(
-                alpha_sibling.id,
-                "/repo",
-                "an alpha-only question",
-                "an alpha-only answer",
-                "operator",
-                "",
-                None,
-            )
+            .insert_decision_by(crate::store::InsertDecisionBy {
+                task_id: alpha_sibling.id,
+                repo: "/repo",
+                question: "an alpha-only question",
+                answer: "an alpha-only answer",
+                answered_by: "operator",
+                citations: "",
+                answered_for: None,
+            })
             .unwrap();
 
         let mut blocked = fixture_task("alpha", "/repo", "the blocked alpha task");
@@ -1038,15 +1038,15 @@ mod tests {
         other_repo.project = None;
         let other_repo = insert(&f, other_repo);
         f.store
-            .insert_decision_by(
-                other_repo.id,
-                "/other-repo",
-                "another repo's question",
-                "another repo's answer",
-                "operator",
-                "",
-                None,
-            )
+            .insert_decision_by(crate::store::InsertDecisionBy {
+                task_id: other_repo.id,
+                repo: "/other-repo",
+                question: "another repo's question",
+                answer: "another repo's answer",
+                answered_by: "operator",
+                citations: "",
+                answered_for: None,
+            })
             .unwrap();
 
         let mut blocked = fixture_task("irrelevant", "/repo", "the blocked task");

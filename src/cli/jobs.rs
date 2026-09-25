@@ -213,9 +213,14 @@ async fn message_record(
     {
         bail!("no task {id}")
     }
-    let id = f
-        .store
-        .insert_message(&project, &channel, &contact, direction, &text, task)?;
+    let id = f.store.insert_message(crate::store::InsertMessage {
+        project: &project,
+        channel: &channel,
+        contact: &contact,
+        direction,
+        text: &text,
+        task_id: task,
+    })?;
     out!("{id} {} {contact}", direction.as_str());
     // The trigger point (docs/JOBS.md, "Triggers"): an inbound message
     // queues a job for every run workflow whose `[trigger]` matches it. The
@@ -318,15 +323,15 @@ async fn job_start(
         }
         (None, None) => None,
     };
-    let id = crate::job::start(
-        &f,
-        &project,
-        &workflow,
-        input.as_deref(),
+    let id = crate::job::start(crate::job::Start {
+        f: &f,
+        project: &project,
+        workflow: &workflow,
+        input: input.as_deref(),
         dry_run,
         now,
         due_at,
-    )
+    })
     .await?;
     out!("{id}");
     Ok(())
@@ -371,16 +376,16 @@ async fn job_fire(
     let input_text = String::from_utf8(bytes).context("the input file must be UTF-8")?;
     let (workflow, wf, source, landed_sha) =
         worker::webhook_workflow(&f, &project, &webhook).await?;
-    let (id, started) = crate::job::start_webhook(
-        &f,
-        &project,
-        &workflow,
-        &landed_sha,
-        &wf,
+    let (id, started) = crate::job::start_webhook(crate::job::StartWebhook {
+        f: &f,
+        project: &project,
+        workflow: &workflow,
+        landed_sha: &landed_sha,
+        wf: &wf,
         source,
-        &trigger_ref,
-        &input_text,
-    )?;
+        trigger_ref: &trigger_ref,
+        input_text: &input_text,
+    })?;
     if started {
         f.store.set_job_trust(id, level)?;
     } else {

@@ -732,6 +732,7 @@ mod tests {
         (dir, s, task_id)
     }
 
+    // Reason: test fixture helper keeps independently varied inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn reprice_attempt(
         s: &Store,

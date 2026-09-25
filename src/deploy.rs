@@ -214,18 +214,18 @@ pub async fn run(
     };
 
     if r.ok {
-        f.store.finish_deploy(
-            deploy_id,
-            unix_now(),
-            true,
-            &r.tail,
-            None,
-            "",
+        f.store.finish_deploy(crate::store::FinishDeploy {
+            id: deploy_id,
+            at: unix_now(),
+            check_ok: true,
+            check_output: &r.tail,
+            rolled_back_to: None,
+            reason: "",
             smoke_ok,
-            smoke_json.as_deref(),
+            smoke_json: smoke_json.as_deref(),
             look_ok,
-            look_json.as_deref(),
-        )?;
+            look_json: look_json.as_deref(),
+        })?;
         f.report.emit(
             event_task,
             Event::DeployFinished {
@@ -253,18 +253,18 @@ pub async fn run(
             "the deploy of {} failed its check; there is no previous deploy to roll back to",
             short(&sha)
         );
-        f.store.finish_deploy(
-            deploy_id,
-            unix_now(),
-            false,
-            &r.tail,
-            None,
-            &reason,
+        f.store.finish_deploy(crate::store::FinishDeploy {
+            id: deploy_id,
+            at: unix_now(),
+            check_ok: false,
+            check_output: &r.tail,
+            rolled_back_to: None,
+            reason: &reason,
             smoke_ok,
-            smoke_json.as_deref(),
+            smoke_json: smoke_json.as_deref(),
             look_ok,
-            look_json.as_deref(),
-        )?;
+            look_json: look_json.as_deref(),
+        })?;
         f.report.emit(
             event_task,
             Event::DeployFinished {
@@ -300,18 +300,18 @@ pub async fn run(
         short(&sha),
         short(&previous.sha)
     );
-    f.store.finish_deploy(
-        deploy_id,
-        unix_now(),
-        false,
-        &r.tail,
-        Some(&previous.sha),
-        &reason,
+    f.store.finish_deploy(crate::store::FinishDeploy {
+        id: deploy_id,
+        at: unix_now(),
+        check_ok: false,
+        check_output: &r.tail,
+        rolled_back_to: Some(&previous.sha),
+        reason: &reason,
         smoke_ok,
-        smoke_json.as_deref(),
+        smoke_json: smoke_json.as_deref(),
         look_ok,
-        look_json.as_deref(),
-    )?;
+        look_json: look_json.as_deref(),
+    })?;
     f.report.emit(
         event_task,
         Event::DeployFinished {

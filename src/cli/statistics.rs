@@ -1,3 +1,23 @@
+/// Filters, output modes, and repricing controls for the statistics command.
+pub struct StatsOptions {
+    pub tools: bool,
+    pub step: Option<String>,
+    pub quality: bool,
+    pub journal: bool,
+    pub tests: bool,
+    pub last: i64,
+    pub by_role: bool,
+    pub factors: bool,
+    pub questions: bool,
+    pub days: Option<i64>,
+    pub project: Option<String>,
+    pub initiative: Option<i64>,
+    pub reprice: bool,
+    pub provider: Option<String>,
+    pub force: bool,
+    pub json: bool,
+}
+
 use super::*;
 use crate::agent::Runner;
 use crate::pricing::Prices;
@@ -158,25 +178,25 @@ fn tools_json(f: &Forge, step: Option<&str>) -> Result<serde_json::Value> {
     Ok(serde_json::Value::Object(steps))
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn stats(
-    tools: bool,
-    step: Option<String>,
-    quality: bool,
-    journal: bool,
-    tests: bool,
-    last: i64,
-    by_role: bool,
-    factors: bool,
-    questions: bool,
-    days: Option<i64>,
-    project: Option<String>,
-    initiative: Option<i64>,
-    reprice: bool,
-    provider: Option<String>,
-    force: bool,
-    json: bool,
-) -> Result<()> {
+pub(super) async fn stats(args: StatsOptions) -> Result<()> {
+    let StatsOptions {
+        tools,
+        step,
+        quality,
+        journal,
+        tests,
+        last,
+        by_role,
+        factors,
+        questions,
+        days,
+        project,
+        initiative,
+        reprice,
+        provider,
+        force,
+        json,
+    } = args;
     let f = Forge::open(false, false)?;
     if reprice {
         return reprice_stats(&f, provider.as_deref(), force, json);

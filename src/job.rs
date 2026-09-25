@@ -17,6 +17,108 @@
 //! row (`tail`), and all it printed in a file under the input directory
 //! that `output_ref` names.
 
+/// Operator-supplied workflow, input path, and scheduling options for a new job.
+pub struct Start<'a> {
+    pub f: &'a Forge,
+    pub project: &'a str,
+    pub workflow: &'a str,
+    pub input: Option<&'a Path>,
+    pub dry_run: bool,
+    pub now: bool,
+    pub due_at: Option<i64>,
+}
+
+/// Job inputs, prior outputs, and configuration exposed to a workflow step.
+struct StepEnv<'a> {
+    job_id: i64,
+    step_name: &'a str,
+    effect_log: &'a Path,
+    input_dir: &'a Path,
+    input_fields: &'a [(String, String)],
+    output_paths: &'a [(String, String)],
+    project: &'a str,
+    repo: &'a Path,
+    home: &'a Path,
+    workflow_env: &'a BTreeMap<String, String>,
+    secrets: &'a std::collections::BTreeMap<String, String>,
+    dry_run: bool,
+}
+
+/// Job step inputs and role configuration for a model-backed directive.
+struct RunDirective<'a> {
+    f: &'a Forge,
+    job_id: i64,
+    seq: i64,
+    project_roles: &'a BTreeMap<String, String>,
+    step: &'a workflows::RunStep,
+    scratch: &'a Path,
+    idir: &'a Path,
+    input_text: &'a str,
+    step_outputs: &'a [(String, String)],
+    input_bytes: usize,
+}
+
+/// A landed event and workflow used to enqueue a deduplicated job.
+pub struct StartEvent<'a> {
+    pub f: &'a Forge,
+    pub project: &'a str,
+    pub workflow: &'a str,
+    pub landed_sha: &'a str,
+    pub wf: &'a workflows::Workflow,
+    pub source: workflows::JobSource,
+    pub offset: u64,
+    pub at: i64,
+    pub input: &'a str,
+}
+
+/// A webhook delivery and workflow used to enqueue a deduplicated job.
+pub struct StartWebhook<'a> {
+    pub f: &'a Forge,
+    pub project: &'a str,
+    pub workflow: &'a str,
+    pub landed_sha: &'a str,
+    pub wf: &'a workflows::Workflow,
+    pub source: workflows::JobSource,
+    pub trigger_ref: &'a str,
+    pub input_text: &'a str,
+}
+
+/// Trigger identity, delivery time, and input payload for a queued job.
+struct QueueTriggered<'a> {
+    f: &'a Forge,
+    project: &'a str,
+    workflow: &'a str,
+    landed_sha: &'a str,
+    wf: &'a workflows::Workflow,
+    source: workflows::JobSource,
+    kind: workflows::TriggerOn,
+    trigger_ref: &'a str,
+    event_at: i64,
+    input_text: &'a str,
+}
+
+/// Resolved workflow, inputs, and recorded outputs for an inline job run.
+struct RunNow<'a> {
+    f: &'a Forge,
+    job_id: i64,
+    project: &'a str,
+    workflow: &'a str,
+    repo: &'a Path,
+    landed_sha: &'a str,
+    steps: &'a [workflows::RunStep],
+    assert: &'a BTreeMap<String, Vec<String>>,
+    skip_if: &'a BTreeMap<String, Vec<String>>,
+    limits: Option<&'a workflows::Limits>,
+    trigger: Option<&'a workflows::Trigger>,
+    workflow_env: &'a BTreeMap<String, String>,
+    dry_run: bool,
+    input_text: &'a str,
+    input_fields: &'a [(String, String)],
+    check_timeout_secs: u64,
+    project_roles: &'a BTreeMap<String, String>,
+    recorded: &'a BTreeMap<String, serde_json::Value>,
+}
+
 use crate::ctx::Forge;
 use crate::report::Event;
 use crate::store::{Job, JobEffect, JobState, JobStep, Message, Task, TaskState};
@@ -87,21 +189,21 @@ fn record_output(idir: &Path, label: &str, r: &checks::CheckResult) -> (String, 
 /// of the operator's own. `workflow_env` is the workflow's own `[env]`
 /// table: thresholds and the like, declared in the file instead of
 /// hard-coded in the script.
-#[allow(clippy::too_many_arguments)]
-fn step_env(
-    job_id: i64,
-    step_name: &str,
-    effect_log: &Path,
-    input_dir: &Path,
-    input_fields: &[(String, String)],
-    output_paths: &[(String, String)],
-    project: &str,
-    repo: &Path,
-    home: &Path,
-    workflow_env: &BTreeMap<String, String>,
-    secrets: &std::collections::BTreeMap<String, String>,
-    dry_run: bool,
-) -> Vec<(String, String)> {
+fn step_env(args: StepEnv<'_>) -> Vec<(String, String)> {
+    let StepEnv {
+        job_id,
+        step_name,
+        effect_log,
+        input_dir,
+        input_fields,
+        output_paths,
+        project,
+        repo,
+        home,
+        workflow_env,
+        secrets,
+        dry_run,
+    } = args;
     let mut env = vec![
         ("FORGE_JOB_ID".to_string(), job_id.to_string()),
         ("FORGE_STEP".to_string(), step_name.to_string()),
@@ -231,19 +333,19 @@ struct DirectiveOutcome {
 /// tools at all, its provider resolved from the step's `role` through the
 /// existing `[roles]` layering, its structured output required against the
 /// action's own `schema` before the next step can see it.
-#[allow(clippy::too_many_arguments)]
-async fn run_directive(
-    f: &Forge,
-    job_id: i64,
-    seq: i64,
-    project_roles: &BTreeMap<String, String>,
-    step: &workflows::RunStep,
-    scratch: &Path,
-    idir: &Path,
-    input_text: &str,
-    step_outputs: &[(String, String)],
-    input_bytes: usize,
-) -> Result<DirectiveOutcome> {
+async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOutcome> {
+    let RunDirective {
+        f,
+        job_id,
+        seq,
+        project_roles,
+        step,
+        scratch,
+        idir,
+        input_text,
+        step_outputs,
+        input_bytes,
+    } = args;
     let action = &step.action;
     // A directive job step's `role` is guaranteed non-empty by
     // `workflows::job_steps`, which resolved this step.
@@ -425,16 +527,16 @@ fn scheduled_state(due_at: Option<i64>, at: i64) -> JobState {
 /// `Scheduled` until then instead of `Queued` (docs/JOBS.md, "Delayed
 /// jobs"); refused together with `now`, which runs inline immediately.
 /// Returns the job's id.
-#[allow(clippy::too_many_arguments)]
-pub async fn start(
-    f: &Forge,
-    project: &str,
-    workflow: &str,
-    input: Option<&Path>,
-    dry_run: bool,
-    now: bool,
-    due_at: Option<i64>,
-) -> Result<i64> {
+pub async fn start(args: Start<'_>) -> Result<i64> {
+    let Start {
+        f,
+        project,
+        workflow,
+        input,
+        dry_run,
+        now,
+        due_at,
+    } = args;
     if now && due_at.is_some() {
         anyhow::bail!("--now runs inline immediately; it cannot be combined with --at or --delay");
     }
@@ -512,26 +614,26 @@ pub async fn start(
         return Ok(job_id);
     }
 
-    run_now(
+    run_now(RunNow {
         f,
         job_id,
         project,
         workflow,
-        &repo_path,
-        &landed_sha,
-        &steps,
-        &wf.assert,
-        &wf.skip_if,
-        wf.limits.as_ref(),
-        wf.trigger.as_ref(),
-        &wf.env,
+        repo: &repo_path,
+        landed_sha: &landed_sha,
+        steps: &steps,
+        assert: &wf.assert,
+        skip_if: &wf.skip_if,
+        limits: wf.limits.as_ref(),
+        trigger: wf.trigger.as_ref(),
+        workflow_env: &wf.env,
         dry_run,
-        &input_text,
-        &input_fields,
-        cfg.check_timeout_secs,
-        &project_row.role_providers,
-        &BTreeMap::new(),
-    )
+        input_text: &input_text,
+        input_fields: &input_fields,
+        check_timeout_secs: cfg.check_timeout_secs,
+        project_roles: &project_row.role_providers,
+        recorded: &BTreeMap::new(),
+    })
     .await?;
     Ok(job_id)
 }
@@ -555,18 +657,18 @@ pub async fn start_scheduled(
     source: workflows::JobSource,
     slot: i64,
 ) -> Result<i64> {
-    queue_triggered(
+    queue_triggered(QueueTriggered {
         f,
         project,
         workflow,
         landed_sha,
         wf,
         source,
-        workflows::TriggerOn::Schedule,
-        &slot.to_string(),
-        slot,
-        "{}",
-    )
+        kind: workflows::TriggerOn::Schedule,
+        trigger_ref: &slot.to_string(),
+        event_at: slot,
+        input_text: "{}",
+    })
 }
 
 /// The input a message trigger gives its job (docs/JOBS.md, "Triggers"):
@@ -606,7 +708,7 @@ pub fn start_message(
     {
         return Ok(None);
     }
-    queue_triggered(
+    queue_triggered(QueueTriggered {
         f,
         project,
         workflow,
@@ -614,10 +716,10 @@ pub fn start_message(
         wf,
         source,
         kind,
-        &trigger_ref,
-        m.at,
-        &message_input(m).to_string(),
-    )
+        trigger_ref: &trigger_ref,
+        event_at: m.at,
+        input_text: &message_input(m).to_string(),
+    })
     .map(Some)
 }
 
@@ -628,18 +730,18 @@ pub fn start_message(
 /// workflow already started a job for that offset, so an event the tick
 /// examines twice starts one job; `[trigger] delay` is added to the event's
 /// own time (`at`).
-#[allow(clippy::too_many_arguments)]
-pub fn start_event(
-    f: &Forge,
-    project: &str,
-    workflow: &str,
-    landed_sha: &str,
-    wf: &workflows::Workflow,
-    source: workflows::JobSource,
-    offset: u64,
-    at: i64,
-    input: &str,
-) -> Result<Option<i64>> {
+pub fn start_event(args: StartEvent<'_>) -> Result<Option<i64>> {
+    let StartEvent {
+        f,
+        project,
+        workflow,
+        landed_sha,
+        wf,
+        source,
+        offset,
+        at,
+        input,
+    } = args;
     let kind = workflows::TriggerOn::Event;
     let trigger_ref = offset.to_string();
     if f.store
@@ -648,7 +750,7 @@ pub fn start_event(
     {
         return Ok(None);
     }
-    queue_triggered(
+    queue_triggered(QueueTriggered {
         f,
         project,
         workflow,
@@ -656,10 +758,10 @@ pub fn start_event(
         wf,
         source,
         kind,
-        &trigger_ref,
-        at,
-        input,
-    )
+        trigger_ref: &trigger_ref,
+        event_at: at,
+        input_text: input,
+    })
     .map(Some)
 }
 
@@ -683,17 +785,17 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 /// job. The input file's whole text is the job's `input.json`, as `forge
 /// job start --input` would leave it, and must be a JSON object (an empty
 /// file is `{}`); `[trigger] delay` is added to the moment of delivery.
-#[allow(clippy::too_many_arguments)]
-pub fn start_webhook(
-    f: &Forge,
-    project: &str,
-    workflow: &str,
-    landed_sha: &str,
-    wf: &workflows::Workflow,
-    source: workflows::JobSource,
-    trigger_ref: &str,
-    input_text: &str,
-) -> Result<(i64, bool)> {
+pub fn start_webhook(args: StartWebhook<'_>) -> Result<(i64, bool)> {
+    let StartWebhook {
+        f,
+        project,
+        workflow,
+        landed_sha,
+        wf,
+        source,
+        trigger_ref,
+        input_text,
+    } = args;
     let kind = workflows::TriggerOn::Webhook;
     let input_text = if input_text.trim().is_empty() {
         "{}"
@@ -710,7 +812,7 @@ pub fn start_webhook(
     if let Some(id) = earlier()? {
         return Ok((id, false));
     }
-    match queue_triggered(
+    match queue_triggered(QueueTriggered {
         f,
         project,
         workflow,
@@ -719,9 +821,9 @@ pub fn start_webhook(
         source,
         kind,
         trigger_ref,
-        unix_now(),
+        event_at: unix_now(),
         input_text,
-    ) {
+    }) {
         Ok(id) => Ok((id, true)),
         // Two deliveries of one key racing: the unique index refused the
         // second, and the first's job is the one to report.
@@ -736,19 +838,19 @@ pub fn start_webhook(
 /// worker: `per_day` checked like a manual start, `due_at` the firing's own
 /// `event_at` plus the trigger's `delay`, `input_text` written where the
 /// worker's claim reads it.
-#[allow(clippy::too_many_arguments)]
-fn queue_triggered(
-    f: &Forge,
-    project: &str,
-    workflow: &str,
-    landed_sha: &str,
-    wf: &workflows::Workflow,
-    source: workflows::JobSource,
-    kind: workflows::TriggerOn,
-    trigger_ref: &str,
-    event_at: i64,
-    input_text: &str,
-) -> Result<i64> {
+fn queue_triggered(args: QueueTriggered<'_>) -> Result<i64> {
+    let QueueTriggered {
+        f,
+        project,
+        workflow,
+        landed_sha,
+        wf,
+        source,
+        kind,
+        trigger_ref,
+        event_at,
+        input_text,
+    } = args;
     let started_at = unix_now();
     if let Some(l) = wf.limits.as_ref()
         && l.per_day > 0
@@ -801,27 +903,27 @@ fn queue_triggered(
 /// (`run_claimed`, called by `drive`) and a fixture replay (`test`) funnel
 /// through. `recorded` maps a directive step's action to the output that
 /// stands in for its model call; only a replay passes any.
-#[allow(clippy::too_many_arguments)]
-async fn run_now(
-    f: &Forge,
-    job_id: i64,
-    project: &str,
-    workflow: &str,
-    repo: &Path,
-    landed_sha: &str,
-    steps: &[workflows::RunStep],
-    assert: &BTreeMap<String, Vec<String>>,
-    skip_if: &BTreeMap<String, Vec<String>>,
-    limits: Option<&workflows::Limits>,
-    trigger: Option<&workflows::Trigger>,
-    workflow_env: &BTreeMap<String, String>,
-    dry_run: bool,
-    input_text: &str,
-    input_fields: &[(String, String)],
-    check_timeout_secs: u64,
-    project_roles: &BTreeMap<String, String>,
-    recorded: &BTreeMap<String, serde_json::Value>,
-) -> Result<()> {
+async fn run_now(args: RunNow<'_>) -> Result<()> {
+    let RunNow {
+        f,
+        job_id,
+        project,
+        workflow,
+        repo,
+        landed_sha,
+        steps,
+        assert,
+        skip_if,
+        limits,
+        trigger,
+        workflow_env,
+        dry_run,
+        input_text,
+        input_fields,
+        check_timeout_secs,
+        project_roles,
+        recorded,
+    } = args;
     f.report.emit(
         0,
         Event::JobStarted {
@@ -864,20 +966,20 @@ async fn run_now(
     // with a `setup` verdict row carrying its tail, before anything else.
     let wants_setup = steps.iter().any(|s| s.action.kind == Kind::Operation);
     if wants_setup && let Some(argv) = repo_checks.get("setup") {
-        let env = step_env(
+        let env = step_env(StepEnv {
             job_id,
-            "setup",
-            &effect_log,
-            &idir,
+            step_name: "setup",
+            effect_log: &effect_log,
+            input_dir: &idir,
             input_fields,
-            &[],
+            output_paths: &[],
             project,
             repo,
-            &f.paths.home,
+            home: &f.paths.home,
             workflow_env,
-            &secrets,
+            secrets: &secrets,
             dry_run,
-        );
+        });
         let started_at = unix_now();
         let r = checks::run_one("OP", "setup", argv, &scratch, None, timeout, &env).await;
         let (tail, output_ref) = record_output(&idir, "setup", &r);
@@ -909,20 +1011,20 @@ async fn run_now(
     // `per_day`, not `on_failure`, not the failed rollup (docs/JOBS.md,
     // "Skipping a run"). A non-zero exit means "not skipped, proceed".
     for (name, argv) in skip_if.iter().filter(|_| setup_ok) {
-        let env = step_env(
+        let env = step_env(StepEnv {
             job_id,
-            name,
-            &effect_log,
-            &idir,
+            step_name: name,
+            effect_log: &effect_log,
+            input_dir: &idir,
             input_fields,
-            &[],
+            output_paths: &[],
             project,
             repo,
-            &f.paths.home,
+            home: &f.paths.home,
             workflow_env,
-            &secrets,
+            secrets: &secrets,
             dry_run,
-        );
+        });
         let r = checks::run_one("L0", name, argv, &scratch, None, timeout, &env).await;
         if r.ok {
             let reason = r.stdout.lines().next().unwrap_or_default().to_string();
@@ -960,20 +1062,20 @@ async fn run_now(
         match action.kind {
             Kind::Operation => {
                 let before = log_lines(&effect_log).len();
-                let env = step_env(
+                let env = step_env(StepEnv {
                     job_id,
-                    &action.name,
-                    &effect_log,
-                    &idir,
+                    step_name: &action.name,
+                    effect_log: &effect_log,
+                    input_dir: &idir,
                     input_fields,
-                    &output_paths,
+                    output_paths: &output_paths,
                     project,
                     repo,
-                    &f.paths.home,
+                    home: &f.paths.home,
                     workflow_env,
-                    &secrets,
+                    secrets: &secrets,
                     dry_run,
-                );
+                });
                 let started_at = unix_now();
                 let r = match operation::run_job_operation(
                     action,
@@ -1052,18 +1154,18 @@ async fn run_now(
                 let ran = match recorded.get(&action.name) {
                     Some(output) => recorded_directive(action, output, &idir),
                     None => {
-                        run_directive(
+                        run_directive(RunDirective {
                             f,
                             job_id,
                             seq,
                             project_roles,
                             step,
-                            &scratch,
-                            &idir,
+                            scratch: &scratch,
+                            idir: &idir,
                             input_text,
-                            &step_outputs,
+                            step_outputs: &step_outputs,
                             input_bytes,
-                        )
+                        })
                         .await
                     }
                 };
@@ -1436,26 +1538,26 @@ async fn run_claimed(f: &Forge, job_id: i64) -> Result<()> {
         .map(|p| p.role_providers)
         .unwrap_or_default();
 
-    run_now(
+    run_now(RunNow {
         f,
         job_id,
-        &job.project,
-        &job.workflow,
-        &repo_path,
-        &job.landed_sha,
-        &steps,
-        &wf.assert,
-        &wf.skip_if,
-        wf.limits.as_ref(),
-        wf.trigger.as_ref(),
-        &wf.env,
-        job.dry_run,
-        &input_text,
-        &input_fields,
-        cfg.check_timeout_secs,
-        &project_roles,
-        &BTreeMap::new(),
-    )
+        project: &job.project,
+        workflow: &job.workflow,
+        repo: &repo_path,
+        landed_sha: &job.landed_sha,
+        steps: &steps,
+        assert: &wf.assert,
+        skip_if: &wf.skip_if,
+        limits: wf.limits.as_ref(),
+        trigger: wf.trigger.as_ref(),
+        workflow_env: &wf.env,
+        dry_run: job.dry_run,
+        input_text: &input_text,
+        input_fields: &input_fields,
+        check_timeout_secs: cfg.check_timeout_secs,
+        project_roles: &project_roles,
+        recorded: &BTreeMap::new(),
+    })
     .await
 }
 
@@ -1847,26 +1949,26 @@ pub async fn bench(
             };
             let job_id = f.store.create_job(&job)?;
             let t0 = Instant::now();
-            run_now(
+            run_now(RunNow {
                 f,
                 job_id,
                 project,
                 workflow,
-                &repo_path,
-                &landed_sha,
-                &steps,
-                &wf.assert,
-                &wf.skip_if,
-                wf.limits.as_ref(),
-                wf.trigger.as_ref(),
-                &wf.env,
-                true,
-                &input_text,
-                &input_fields,
-                cfg.check_timeout_secs,
-                &forced_roles,
-                &BTreeMap::new(),
-            )
+                repo: &repo_path,
+                landed_sha: &landed_sha,
+                steps: &steps,
+                assert: &wf.assert,
+                skip_if: &wf.skip_if,
+                limits: wf.limits.as_ref(),
+                trigger: wf.trigger.as_ref(),
+                workflow_env: &wf.env,
+                dry_run: true,
+                input_text: &input_text,
+                input_fields: &input_fields,
+                check_timeout_secs: cfg.check_timeout_secs,
+                project_roles: &forced_roles,
+                recorded: &BTreeMap::new(),
+            })
             .await
             .with_context(|| format!("fixture {name:?} under provider {provider:?}"))?;
             let elapsed = t0.elapsed().as_secs_f64();
@@ -2130,26 +2232,26 @@ async fn replay(
         retry_count: 0,
     };
     let job_id = f.store.create_job(&job)?;
-    run_now(
+    run_now(RunNow {
         f,
         job_id,
-        TEST_PROJECT,
-        &wf.name,
-        snapshot,
-        sha,
+        project: TEST_PROJECT,
+        workflow: &wf.name,
+        repo: snapshot,
+        landed_sha: sha,
         steps,
-        &wf.assert,
-        &wf.skip_if,
-        wf.limits.as_ref(),
-        wf.trigger.as_ref(),
-        &wf.env,
-        true,
-        &input_text,
-        &input_fields,
+        assert: &wf.assert,
+        skip_if: &wf.skip_if,
+        limits: wf.limits.as_ref(),
+        trigger: wf.trigger.as_ref(),
+        workflow_env: &wf.env,
+        dry_run: true,
+        input_text: &input_text,
+        input_fields: &input_fields,
         check_timeout_secs,
-        &BTreeMap::new(),
-        &fx.outputs,
-    )
+        project_roles: &BTreeMap::new(),
+        recorded: &fx.outputs,
+    })
     .await?;
     let done = f
         .store
@@ -2275,23 +2377,23 @@ mod tests {
         secrets.insert("A_SECRET".to_string(), "aaa".to_string());
         let mut workflow_env = BTreeMap::new();
         workflow_env.insert("MAX_LINES".to_string(), "400".to_string());
-        let env = step_env(
-            7,
-            "mystep",
-            Path::new("/scratch/effects.log"),
-            Path::new("/scratch/input"),
-            &[("Name".to_string(), "bob".to_string())],
-            &[(
+        let env = step_env(StepEnv {
+            job_id: 7,
+            step_name: "mystep",
+            effect_log: Path::new("/scratch/effects.log"),
+            input_dir: Path::new("/scratch/input"),
+            input_fields: &[("Name".to_string(), "bob".to_string())],
+            output_paths: &[(
                 "my-action".to_string(),
                 "/scratch/output-my-action.json".to_string(),
             )],
-            "acme",
-            Path::new("/repo/acme"),
-            Path::new("/home/forge"),
-            &workflow_env,
-            &secrets,
-            false,
-        );
+            project: "acme",
+            repo: Path::new("/repo/acme"),
+            home: Path::new("/home/forge"),
+            workflow_env: &workflow_env,
+            secrets: &secrets,
+            dry_run: false,
+        });
         assert_eq!(
             env,
             vec![
@@ -2322,20 +2424,20 @@ mod tests {
     fn step_env_for_a_dry_run_adds_the_flag_before_inputs_and_never_a_real_run() {
         let secrets = std::collections::BTreeMap::new();
         let workflow_env = BTreeMap::new();
-        let dry = step_env(
-            1,
-            "s",
-            Path::new("/log"),
-            Path::new("/in"),
-            &[],
-            &[],
-            "acme",
-            Path::new("/repo/acme"),
-            Path::new("/home/forge"),
-            &workflow_env,
-            &secrets,
-            true,
-        );
+        let dry = step_env(StepEnv {
+            job_id: 1,
+            step_name: "s",
+            effect_log: Path::new("/log"),
+            input_dir: Path::new("/in"),
+            input_fields: &[],
+            output_paths: &[],
+            project: "acme",
+            repo: Path::new("/repo/acme"),
+            home: Path::new("/home/forge"),
+            workflow_env: &workflow_env,
+            secrets: &secrets,
+            dry_run: true,
+        });
         assert_eq!(
             dry,
             vec![
@@ -2351,20 +2453,20 @@ mod tests {
             ]
         );
 
-        let real = step_env(
-            1,
-            "s",
-            Path::new("/log"),
-            Path::new("/in"),
-            &[],
-            &[],
-            "acme",
-            Path::new("/repo/acme"),
-            Path::new("/home/forge"),
-            &workflow_env,
-            &secrets,
-            false,
-        );
+        let real = step_env(StepEnv {
+            job_id: 1,
+            step_name: "s",
+            effect_log: Path::new("/log"),
+            input_dir: Path::new("/in"),
+            input_fields: &[],
+            output_paths: &[],
+            project: "acme",
+            repo: Path::new("/repo/acme"),
+            home: Path::new("/home/forge"),
+            workflow_env: &workflow_env,
+            secrets: &secrets,
+            dry_run: false,
+        });
         assert!(!real.iter().any(|(k, _)| k == "FORGE_DRY_RUN"));
     }
 

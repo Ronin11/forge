@@ -1,3 +1,30 @@
+/// Operator-supplied settings for a new project deployment target.
+struct ProjectDeployAdd {
+    project: String,
+    name: String,
+    repo: PathBuf,
+    scope: Option<String>,
+    method: String,
+    args: Vec<String>,
+    check: Option<String>,
+    smoke: Option<String>,
+    on_landing: bool,
+}
+
+/// Operator-supplied changes to an existing project deployment target.
+struct ProjectDeploySet {
+    project: String,
+    name: String,
+    repo: Option<PathBuf>,
+    scope: Option<String>,
+    method: Option<String>,
+    args: Vec<String>,
+    check: Option<String>,
+    smoke: Option<String>,
+    on_landing: bool,
+    no_on_landing: bool,
+}
+
 use super::projects::random_portal_token;
 use super::*;
 
@@ -118,18 +145,18 @@ pub(super) fn parse_args(pairs: &[String]) -> Result<BTreeMap<String, String>> {
     Ok(map)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn project_deploy_add(
-    project: String,
-    name: String,
-    repo: PathBuf,
-    scope: Option<String>,
-    method: String,
-    args: Vec<String>,
-    check: Option<String>,
-    smoke: Option<String>,
-    on_landing: bool,
-) -> Result<()> {
+fn project_deploy_add(args: ProjectDeployAdd) -> Result<()> {
+    let ProjectDeployAdd {
+        project,
+        name,
+        repo,
+        scope,
+        method,
+        args,
+        check,
+        smoke,
+        on_landing,
+    } = args;
     let f = Forge::open(false, false)?;
     let t = crate::deploy::add_target(
         &f,
@@ -149,19 +176,19 @@ fn project_deploy_add(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn project_deploy_set(
-    project: String,
-    name: String,
-    repo: Option<PathBuf>,
-    scope: Option<String>,
-    method: Option<String>,
-    args: Vec<String>,
-    check: Option<String>,
-    smoke: Option<String>,
-    on_landing: bool,
-    no_on_landing: bool,
-) -> Result<()> {
+fn project_deploy_set(args: ProjectDeploySet) -> Result<()> {
+    let ProjectDeploySet {
+        project,
+        name,
+        repo,
+        scope,
+        method,
+        args,
+        check,
+        smoke,
+        on_landing,
+        no_on_landing,
+    } = args;
     let f = Forge::open(false, false)?;
     let t = crate::deploy::set_target(
         &f,
@@ -330,9 +357,17 @@ pub(super) fn dispatch_project_deploy(cmd: ProjectDeployCmd) -> Result<()> {
             check,
             smoke,
             on_landing,
-        } => project_deploy_add(
-            project, name, repo, scope, method, args, check, smoke, on_landing,
-        ),
+        } => project_deploy_add(ProjectDeployAdd {
+            project,
+            name,
+            repo,
+            scope,
+            method,
+            args,
+            check,
+            smoke,
+            on_landing,
+        }),
         ProjectDeployCmd::List { project, json } => project_deploy_list(project, json),
         ProjectDeployCmd::Set {
             project,
@@ -345,7 +380,7 @@ pub(super) fn dispatch_project_deploy(cmd: ProjectDeployCmd) -> Result<()> {
             smoke,
             on_landing,
             no_on_landing,
-        } => project_deploy_set(
+        } => project_deploy_set(ProjectDeploySet {
             project,
             name,
             repo,
@@ -356,7 +391,7 @@ pub(super) fn dispatch_project_deploy(cmd: ProjectDeployCmd) -> Result<()> {
             smoke,
             on_landing,
             no_on_landing,
-        ),
+        }),
         ProjectDeployCmd::Remove { project, name } => project_deploy_remove(project, name),
     }
 }

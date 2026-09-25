@@ -1,3 +1,14 @@
+/// An answered question with its author, citations, and retry attribution.
+pub struct InsertDecisionBy<'a> {
+    pub task_id: i64,
+    pub repo: &'a str,
+    pub question: &'a str,
+    pub answer: &'a str,
+    pub answered_by: &'a str,
+    pub citations: &'a str,
+    pub answered_for: Option<&'a str>,
+}
+
 use super::*;
 
 /// An operator's answer to a blocked task's question, or an operator-run
@@ -88,17 +99,16 @@ impl Store {
     /// who the question was addressed to (the task's `question_to` at
     /// answer time), copied here since the task it retries into carries
     /// no such field forward.
-    #[allow(clippy::too_many_arguments)]
-    pub fn insert_decision_by(
-        &self,
-        task_id: i64,
-        repo: &str,
-        question: &str,
-        answer: &str,
-        answered_by: &str,
-        citations: &str,
-        answered_for: Option<&str>,
-    ) -> Result<i64> {
+    pub fn insert_decision_by(&self, args: InsertDecisionBy<'_>) -> Result<i64> {
+        let InsertDecisionBy {
+            task_id,
+            repo,
+            question,
+            answer,
+            answered_by,
+            citations,
+            answered_for,
+        } = args;
         let c = self.lock();
         c.execute(
             "INSERT INTO decisions (task_id, repo, question, answer, created_at, answered_by, citations, answered_for) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -286,8 +296,16 @@ mod tests {
         retry.retry_of = Some(root);
         let a = s.insert_task(&retry).unwrap();
         let b = s.insert_task(&retry).unwrap();
-        s.insert_decision_by(a, "r", "q", "a", "supervisor", "", None)
-            .unwrap();
+        s.insert_decision_by(InsertDecisionBy {
+            task_id: a,
+            repo: "r",
+            question: "q",
+            answer: "a",
+            answered_by: "supervisor",
+            citations: "",
+            answered_for: None,
+        })
+        .unwrap();
         assert_eq!(s.supervisor_answers_in_lineage(b).unwrap(), 1);
     }
 

@@ -12,6 +12,51 @@
 //! taking the repository lock are `Env` faults, since a dead remote or a
 //! full disk stops the worker rather than failing the task.
 
+/// Workflow state and completed operations needed to execute an operation step.
+struct RunOperationStep<'a> {
+    f: &'a Forge,
+    t: &'a mut Task,
+    cfg: &'a config::Config,
+    resolved: &'a workflows::Resolved,
+    run: &'a mut Run,
+    step: &'a workflows::ResolvedStep,
+    seq: i64,
+    prior_ops: &'a [Op],
+    done_ops: &'a HashSet<i64>,
+    merged_base_retry: bool,
+}
+
+/// Workflow and retry state needed to execute a directive step.
+struct RunDirectiveStep<'a> {
+    f: &'a Forge,
+    t: &'a mut Task,
+    cfg: &'a config::Config,
+    resolved: &'a workflows::Resolved,
+    run: &'a mut Run,
+    step: &'a workflows::ResolvedStep,
+    seq: i64,
+    attempt_no: &'a mut i64,
+    task_cap: f64,
+    repo: &'a Path,
+    wt: &'a Path,
+    remote_url: &'a Option<String>,
+}
+
+/// Candidate, base configuration, and retry state for a landing attempt.
+struct TryLand<'a> {
+    f: &'a Forge,
+    t: &'a mut Task,
+    cfg: &'a mut config::Config,
+    resolved: &'a workflows::Resolved,
+    run: &'a mut Run,
+    repo: &'a Path,
+    wt: &'a Path,
+    remote_url: &'a Option<String>,
+    base_cfg: &'a config::Config,
+    attempt_no: &'a mut i64,
+    task_cap: f64,
+}
+
 use crate::attempt::{Resume, tests_clone_dir};
 use crate::checks::CheckResult;
 use crate::ctx::Forge;
@@ -229,35 +274,35 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
             run.seq = seq;
             let flow = match step.action.kind {
                 Kind::Operation => {
-                    run_operation_step(
-                        &f,
-                        &mut t,
-                        &cfg,
-                        &resolved,
-                        &mut run,
+                    run_operation_step(RunOperationStep {
+                        f: &f,
+                        t: &mut t,
+                        cfg: &cfg,
+                        resolved: &resolved,
+                        run: &mut run,
                         step,
                         seq,
-                        &prior_ops,
-                        &done_ops,
+                        prior_ops: &prior_ops,
+                        done_ops: &done_ops,
                         merged_base_retry,
-                    )
+                    })
                     .await?
                 }
                 Kind::Directive => {
-                    run_directive_step(
-                        &f,
-                        &mut t,
-                        &cfg,
-                        &resolved,
-                        &mut run,
+                    run_directive_step(RunDirectiveStep {
+                        f: &f,
+                        t: &mut t,
+                        cfg: &cfg,
+                        resolved: &resolved,
+                        run: &mut run,
                         step,
                         seq,
-                        &mut attempt_no,
+                        attempt_no: &mut attempt_no,
                         task_cap,
-                        &repo,
-                        &wt,
-                        &remote_url,
-                    )
+                        repo: &repo,
+                        wt: &wt,
+                        remote_url: &remote_url,
+                    })
                     .await?
                 }
             };
@@ -273,19 +318,19 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         if end.is_some() {
             break 'run;
         }
-        match try_land(
-            &f,
-            &mut t,
-            &mut cfg,
-            &resolved,
-            &mut run,
-            &repo,
-            &wt,
-            &remote_url,
-            &base_cfg,
-            &mut attempt_no,
+        match try_land(TryLand {
+            f: &f,
+            t: &mut t,
+            cfg: &mut cfg,
+            resolved: &resolved,
+            run: &mut run,
+            repo: &repo,
+            wt: &wt,
+            remote_url: &remote_url,
+            base_cfg: &base_cfg,
+            attempt_no: &mut attempt_no,
             task_cap,
-        )
+        })
         .await?
         {
             Some(e) => {
@@ -584,20 +629,19 @@ async fn prepare_worktree(
 /// sends the run back to the directive it judges, within its attempts;
 /// `setup` failing after a merged-base retry hands the coder the error
 /// instead of failing the task; any other failure ends the run.
-#[allow(clippy::too_many_arguments)]
-async fn run_operation_step(
-    f: &Forge,
-    t: &mut Task,
-    cfg: &config::Config,
-    resolved: &workflows::Resolved,
-    run: &mut Run,
-    step: &workflows::ResolvedStep,
-    seq: i64,
-    prior_ops: &[Op],
-    done_ops: &HashSet<i64>,
-    merged_base_retry: bool,
-) -> Result<StepFlow, Fault> {
-    let id = t.id;
+async fn run_operation_step(args: RunOperationStep<'_>) -> Result<StepFlow, Fault> {
+    let RunOperationStep {
+        f,
+        t,
+        cfg,
+        resolved,
+        run,
+        step,
+        seq,
+        prior_ops,
+        done_ops,
+        merged_base_retry,
+    } = args;
     // A mutating operation counts as done only once the kernel
     // verified what it committed; a worker that died in between
     // runs it again, which is harmless: it is deterministic and
@@ -637,7 +681,7 @@ async fn run_operation_step(
     {
         let c_name = resolved.steps[c_idx].action.name.clone();
         f.report.emit(
-            id,
+            t.id,
             Event::Note {
                 text: &format!(
                     "setup    the merged base does not build; {c_name} will see the error"
@@ -662,7 +706,7 @@ async fn run_operation_step(
         if run.used_at(d_seq) < t.max_attempts {
             let d_name = resolved.steps[d_idx].action.name.clone();
             f.report.emit(
-                id,
+                t.id,
                 Event::Note {
                     text: &format!(
                         "verify   {} failed; back to {} for another attempt",
@@ -713,21 +757,21 @@ async fn run_operation_step(
 /// the directive stops short, what that means for the task: a capped
 /// coder's clean commit goes to a human if the checks pass, a reviewer
 /// that never ruled leaves the branch unverified, a question blocks.
-#[allow(clippy::too_many_arguments)]
-async fn run_directive_step(
-    f: &Forge,
-    t: &mut Task,
-    cfg: &config::Config,
-    resolved: &workflows::Resolved,
-    run: &mut Run,
-    step: &workflows::ResolvedStep,
-    seq: i64,
-    attempt_no: &mut i64,
-    task_cap: f64,
-    repo: &Path,
-    wt: &Path,
-    remote_url: &Option<String>,
-) -> Result<StepFlow, Fault> {
+async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Fault> {
+    let RunDirectiveStep {
+        f,
+        t,
+        cfg,
+        resolved,
+        run,
+        step,
+        seq,
+        attempt_no,
+        task_cap,
+        repo,
+        wt,
+        remote_url,
+    } = args;
     let id = t.id;
     if run.done.contains(&seq) && !run.owed.contains_key(&seq) {
         f.report.emit(
@@ -854,16 +898,16 @@ async fn run_directive_step(
             },
         );
         let timer = Timer::now();
-        let (a, verdict, outcome) = crate::attempt::run_attempt(
+        let (a, verdict, outcome) = crate::attempt::run_attempt(crate::attempt::RunAttempt {
             f,
-            &ts,
+            t: &ts,
             cfg,
             step,
             seq,
-            *attempt_no,
-            feedback.as_deref(),
-            resume.as_ref(),
-        )
+            attempt_no: *attempt_no,
+            feedback: feedback.as_deref(),
+            resume: resume.as_ref(),
+        })
         .await?;
         // A deterministic fix ran before this verdict was
         // decided (see `verify::try_known_fix`): its own
@@ -1258,20 +1302,20 @@ async fn run_directive_step(
 /// `None` means the landing failed and the run was rewound to the code
 /// step with the integrator's feedback, the base moved under it and the
 /// config reloaded, and the caller goes round again.
-#[allow(clippy::too_many_arguments)]
-async fn try_land(
-    f: &Forge,
-    t: &mut Task,
-    cfg: &mut config::Config,
-    resolved: &workflows::Resolved,
-    run: &mut Run,
-    repo: &Path,
-    wt: &Path,
-    remote_url: &Option<String>,
-    base_cfg: &config::Config,
-    attempt_no: &mut i64,
-    task_cap: f64,
-) -> Result<Option<End>, Fault> {
+async fn try_land(args: TryLand<'_>) -> Result<Option<End>, Fault> {
+    let TryLand {
+        f,
+        t,
+        cfg,
+        resolved,
+        run,
+        repo,
+        wt,
+        remote_url,
+        base_cfg,
+        attempt_no,
+        task_cap,
+    } = args;
     let id = t.id;
     // Landing: a kernel operation, after the last step and before anything
     // is pushed. The branch verified against the base it started from; it
