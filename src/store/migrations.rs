@@ -649,4 +649,7 @@ CREATE TABLE job_trust (
     // The outcome a directive step returned, when its action declares
     // outcomes (docs/EXECUTION.md, "Outcomes, then edges").
     "ALTER TABLE job_steps ADD COLUMN outcome TEXT NOT NULL DEFAULT '';",
+    // The node id of the step (`<index>-<action>`), stable across a run
+    // that loops; `seq` counts executions (docs/EXECUTION.md).
+    "ALTER TABLE job_steps ADD COLUMN node TEXT NOT NULL DEFAULT '';",
 ];

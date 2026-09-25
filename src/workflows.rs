@@ -18,6 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+pub mod edges;
 mod library;
 pub use library::{FRAGMENTS_DIR, Include, UNTRUSTED_DATA, text_hash};
 use library::{fragment_problems, load_prompt_file};
@@ -634,6 +635,12 @@ struct StepRaw {
     /// A run workflow's directive step: one sentence saying what a script
     /// cannot do here (docs/EXECUTION.md, rule 4).
     judgment: Option<String>,
+    /// A run workflow's failure edges (docs/EXECUTION.md, "Outcomes, then
+    /// edges"): an outcome, or `failure`, to a step name, node id or `end`.
+    #[serde(default)]
+    on: BTreeMap<String, String>,
+    /// A run workflow's step: how many times a loop may enter it.
+    max_attempts: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -707,6 +714,10 @@ pub struct StepRef {
     pub effect: Option<EffectKind>,
     #[serde(default)]
     pub judgment: Option<String>,
+    #[serde(default)]
+    pub on: BTreeMap<String, String>,
+    #[serde(default)]
+    pub max_attempts: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -744,6 +755,9 @@ pub struct ResolvedStep {
     pub max_turns: Option<u32>,
     pub timeout_secs: Option<u32>,
     pub via: Vec<String>,
+    /// Stable across the run: `<index>-<action>` (see `edges::node_id`).
+    #[serde(default)]
+    pub node: String,
 }
 
 /// One version that a task ran under.
@@ -1271,7 +1285,23 @@ pub(crate) fn parse_workflow(path: &Path, text: &str, hash: String) -> Result<Wo
             role: s.role,
             effect: s.effect,
             judgment: s.judgment,
+            on: s.on,
+            max_attempts: s.max_attempts,
         });
+    }
+    if raw.kind == WorkflowKind::Build
+        && let Some(s) = steps
+            .iter()
+            .find(|s| !s.on.is_empty() || s.max_attempts.is_some())
+    {
+        bail!(
+            "{}: step {:?} carries `on` or `max_attempts`; edges are a run workflow's (set kind = \"run\"); build workflows keep the list (docs/EXECUTION.md, \"Outcomes, then edges\")",
+            path.display(),
+            s.action
+                .as_deref()
+                .or(s.workflow.as_deref())
+                .unwrap_or_default()
+        );
     }
     Ok(Workflow {
         name: raw.name,
@@ -1566,6 +1596,7 @@ fn splice(
                 max_turns: s.max_turns.or(a.max_turns),
                 timeout_secs: s.timeout_secs.or(a.timeout_secs),
                 via: path.clone(),
+                node: edges::node_id(out.steps.len(), &a.name),
             });
         }
     }
@@ -1652,6 +1683,12 @@ pub struct RunStep {
     pub timeout_secs: Option<u32>,
     /// The effect an operation step declares (docs/JOBS.md, "Effects").
     pub effect: Option<EffectKind>,
+    /// `<index>-<action>`, stable across the run.
+    pub node: String,
+    /// Edges, resolved to node ids or `end`.
+    pub on: BTreeMap<String, String>,
+    /// How many times a loop may enter this step.
+    pub max_attempts: u32,
 }
 
 /// A job step, resolved to the action it names (docs/JOBS.md, "Steps"). A
@@ -1672,6 +1709,7 @@ fn job_steps(
 ) -> Result<Vec<RunStep>> {
     let mut out = Vec::new();
     job_steps_into(wf, workflows, actions, &mut Vec::new(), &mut out)?;
+    edges::resolve(&wf.name, &mut out)?;
     Ok(out)
 }
 
@@ -1761,6 +1799,9 @@ fn job_steps_into(
             timeout_secs: s.timeout_secs.or(action.timeout_secs),
             role: s.role.clone(),
             effect: s.effect,
+            node: String::new(),
+            on: s.on.clone(),
+            max_attempts: s.max_attempts.unwrap_or(edges::DEFAULT_MAX_ATTEMPTS),
             action,
         });
     }

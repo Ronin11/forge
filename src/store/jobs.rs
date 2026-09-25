@@ -152,6 +152,10 @@ pub struct JobStep {
     /// empty when its action declares none.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub outcome: String,
+    /// The step's node id, `<index>-<action>`; `seq` counts executions, so
+    /// a loop shows one node at several seqs. Empty for the setup row.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub node: String,
 }
 
 /// One effect a job's step performed on the world (see docs/JOBS.md,
@@ -227,6 +231,7 @@ pub(super) const JOB_STEP_COLUMNS: &[&str] = &[
     "output_ref",
     "tail",
     "outcome",
+    "node",
 ];
 
 pub(super) const JOB_EFFECT_COLUMNS: &[&str] = &[
@@ -274,6 +279,7 @@ fn job_step_from_row(r: &Row) -> rusqlite::Result<JobStep> {
         output_ref: r.get("output_ref")?,
         tail: r.get("tail")?,
         outcome: r.get("outcome")?,
+        node: r.get("node")?,
     })
 }
 
@@ -368,8 +374,8 @@ impl Store {
     pub fn append_job_step(&self, s: &JobStep) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO job_steps (job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref, tail, outcome)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT INTO job_steps (job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref, tail, outcome, node)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 s.job_id,
                 s.seq,
@@ -384,6 +390,7 @@ impl Store {
                 s.output_ref,
                 s.tail,
                 s.outcome,
+                s.node,
             ],
         )?;
         Ok(c.last_insert_rowid())

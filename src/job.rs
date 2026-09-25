@@ -119,6 +119,8 @@ struct RunNow<'a> {
     recorded: &'a BTreeMap<String, serde_json::Value>,
 }
 
+mod flow;
+
 use crate::ctx::Forge;
 use crate::report::Event;
 use crate::store::{Job, JobEffect, JobState, JobStep, Message, Task, TaskState};
@@ -1060,6 +1062,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
             output_ref,
             tail: tail.clone(),
             outcome: String::new(),
+            node: String::new(),
         })?;
         if !r.ok {
             ok = false;
@@ -1119,183 +1122,214 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
         }
     }
 
-    for (seq, step) in steps.iter().enumerate().filter(|_| setup_ok) {
-        let seq = seq as i64;
+    let mut at = 0;
+    let mut seq = -1i64;
+    let mut runs = vec![0u32; steps.len()];
+    'steps: while setup_ok && at < steps.len() {
+        seq += 1;
+        runs[at] += 1;
+        let step = &steps[at];
         let action = &step.action;
-        match action.kind {
-            Kind::Operation => {
-                let before = log_lines(&effect_log).len();
-                let env = step_env(StepEnv {
-                    job_id,
-                    step_name: &action.name,
-                    effect_log: &effect_log,
-                    input_dir: &idir,
-                    input_fields,
-                    output_paths: &output_paths,
-                    project,
-                    repo,
-                    home: &f.paths.home,
-                    workflow_env,
-                    secrets: &secrets,
-                    dry_run,
-                });
-                let started_at = unix_now();
-                let r = match operation::run_job_operation(
-                    action,
-                    &repo_checks,
-                    &scratch,
-                    &env,
-                    timeout,
-                )
-                .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        ok = false;
-                        verdict.push(checks::CheckResult {
-                            level: "OP".to_string(),
-                            name: action.name.clone(),
-                            ok: false,
-                            tail: format!("{e:#}"),
-                            ..Default::default()
-                        });
-                        break;
-                    }
-                };
-                let (tail, output_ref) = record_output(&idir, &seq.to_string(), &r);
-                f.store.append_job_step(&JobStep {
-                    id: 0,
-                    job_id,
-                    seq,
-                    action: action.name.clone(),
-                    kind: "operation".to_string(),
-                    provider: String::new(),
-                    model: String::new(),
-                    cost_usd: Some(0.0),
-                    started_at,
-                    finished_at: Some(unix_now()),
-                    exit_code: r.exit,
-                    output_ref,
-                    tail: tail.clone(),
-                    outcome: String::new(),
-                })?;
-                for line in log_lines(&effect_log).into_iter().skip(before) {
-                    let mut parts = line.splitn(3, '\t');
-                    let (Some(kind), Some(target), Some(summary)) =
-                        (parts.next(), parts.next(), parts.next())
-                    else {
-                        continue;
+        let mut failed = false;
+        let mut outcome = String::new();
+        'step: {
+            match action.kind {
+                Kind::Operation => {
+                    let before = log_lines(&effect_log).len();
+                    let env = step_env(StepEnv {
+                        job_id,
+                        step_name: &action.name,
+                        effect_log: &effect_log,
+                        input_dir: &idir,
+                        input_fields,
+                        output_paths: &output_paths,
+                        project,
+                        repo,
+                        home: &f.paths.home,
+                        workflow_env,
+                        secrets: &secrets,
+                        dry_run,
+                    });
+                    let started_at = unix_now();
+                    let r = match operation::run_job_operation(
+                        action,
+                        &repo_checks,
+                        &scratch,
+                        &env,
+                        timeout,
+                    )
+                    .await
+                    {
+                        Ok(r) => r,
+                        Err(e) => {
+                            failed = true;
+                            verdict.push(checks::CheckResult {
+                                level: "OP".to_string(),
+                                name: action.name.clone(),
+                                ok: false,
+                                tail: format!("{e:#}"),
+                                ..Default::default()
+                            });
+                            break 'step;
+                        }
                     };
-                    f.store.append_job_effect(&JobEffect {
+                    let (tail, output_ref) = record_output(&idir, &seq.to_string(), &r);
+                    f.store.append_job_step(&JobStep {
                         id: 0,
                         job_id,
                         seq,
-                        kind: kind.to_string(),
-                        target: target.to_string(),
-                        summary: summary.to_string(),
-                        dry_run,
+                        action: action.name.clone(),
+                        kind: "operation".to_string(),
+                        provider: String::new(),
+                        model: String::new(),
+                        cost_usd: Some(0.0),
+                        started_at,
+                        finished_at: Some(unix_now()),
+                        exit_code: r.exit,
+                        output_ref,
+                        tail: tail.clone(),
+                        outcome: String::new(),
+                        node: step.node.clone(),
                     })?;
-                }
-                if !r.ok {
-                    ok = false;
-                    verdict.push(checks::CheckResult { tail, ..r });
-                    break;
-                }
-                // `produces = ["interface"]` (`ActionDef::yields_interface`)
-                // is the same vocabulary a build workflow's operation uses
-                // to hand its stdout to the next code step
-                // (`operation::run_operation`, `t.interface`); a job step
-                // reads it the same way, via `step_outputs`, so a directive
-                // step after this one sees what an earlier operation
-                // printed — a catalog dump, say — as "the output of step
-                // ...".
-                if action.yields_interface() {
-                    step_outputs.push((action.name.clone(), r.stdout.trim().to_string()));
-                }
-            }
-            Kind::Directive => {
-                let started_at = unix_now();
-                let ran = match recorded.get(&action.name) {
-                    Some(output) => recorded_directive(action, output, &idir),
-                    None => {
-                        run_directive(RunDirective {
-                            f,
+                    for line in log_lines(&effect_log).into_iter().skip(before) {
+                        let mut parts = line.splitn(3, '\t');
+                        let (Some(kind), Some(target), Some(summary)) =
+                            (parts.next(), parts.next(), parts.next())
+                        else {
+                            continue;
+                        };
+                        f.store.append_job_effect(&JobEffect {
+                            id: 0,
                             job_id,
                             seq,
-                            project_roles,
-                            step,
-                            scratch: &scratch,
-                            idir: &idir,
-                            input_text,
-                            step_outputs: &step_outputs,
-                            input_bytes,
-                        })
-                        .await
+                            kind: kind.to_string(),
+                            target: target.to_string(),
+                            summary: summary.to_string(),
+                            dry_run,
+                        })?;
                     }
-                };
-                let d = match ran {
-                    Ok(d) => d,
-                    Err(e) => {
+                    if !r.ok {
+                        failed = true;
+                        verdict.push(checks::CheckResult { tail, ..r });
+                        break 'step;
+                    }
+                    // `produces = ["interface"]` (`ActionDef::yields_interface`)
+                    // is the same vocabulary a build workflow's operation uses
+                    // to hand its stdout to the next code step
+                    // (`operation::run_operation`, `t.interface`); a job step
+                    // reads it the same way, via `step_outputs`, so a directive
+                    // step after this one sees what an earlier operation
+                    // printed — a catalog dump, say — as "the output of step
+                    // ...".
+                    if action.yields_interface() {
+                        step_outputs.push((action.name.clone(), r.stdout.trim().to_string()));
+                    }
+                }
+                Kind::Directive => {
+                    let started_at = unix_now();
+                    let ran = match recorded.get(&action.name) {
+                        Some(output) => recorded_directive(action, output, &idir),
+                        None => {
+                            run_directive(RunDirective {
+                                f,
+                                job_id,
+                                seq,
+                                project_roles,
+                                step,
+                                scratch: &scratch,
+                                idir: &idir,
+                                input_text,
+                                step_outputs: &step_outputs,
+                                input_bytes,
+                            })
+                            .await
+                        }
+                    };
+                    let d = match ran {
+                        Ok(d) => d,
+                        Err(e) => {
+                            failed = true;
+                            verdict.push(checks::CheckResult {
+                                level: "OP".to_string(),
+                                name: action.name.clone(),
+                                ok: false,
+                                tail: format!("{e:#}"),
+                                ..Default::default()
+                            });
+                            break 'step;
+                        }
+                    };
+                    f.store.append_job_step(&JobStep {
+                        id: 0,
+                        job_id,
+                        seq,
+                        action: action.name.clone(),
+                        kind: "directive".to_string(),
+                        provider: d.provider,
+                        model: d.model,
+                        cost_usd: Some(d.cost_usd),
+                        started_at,
+                        finished_at: Some(unix_now()),
+                        exit_code: None,
+                        tail: String::new(),
+                        outcome: d.outcome.clone(),
+                        node: step.node.clone(),
+                        output_ref: d
+                            .output_ref
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default(),
+                    })?;
+                    outcome = d.outcome;
+                    total_cost += d.cost_usd;
+                    let step_ok = d.check.ok;
+                    verdict.push(d.check);
+                    if !step_ok {
+                        failed = true;
+                        break 'step;
+                    }
+                    if let Some(l) = limits
+                        && total_cost > l.budget_usd
+                    {
+                        needs_human = true;
                         ok = false;
                         verdict.push(checks::CheckResult {
-                            level: "OP".to_string(),
-                            name: action.name.clone(),
+                            level: "L0".to_string(),
+                            name: "budget".to_string(),
                             ok: false,
-                            tail: format!("{e:#}"),
+                            tail: format!(
+                                "step {} brought the run to ${total_cost:.4}, over the ${:.2} \
+                             per-run budget; asking the operator",
+                                action.name, l.budget_usd
+                            ),
                             ..Default::default()
                         });
-                        break;
+                        break 'steps;
                     }
-                };
-                f.store.append_job_step(&JobStep {
-                    id: 0,
-                    job_id,
-                    seq,
-                    action: action.name.clone(),
-                    kind: "directive".to_string(),
-                    provider: d.provider,
-                    model: d.model,
-                    cost_usd: Some(d.cost_usd),
-                    started_at,
-                    finished_at: Some(unix_now()),
-                    exit_code: None,
-                    tail: String::new(),
-                    outcome: d.outcome,
-                    output_ref: d
-                        .output_ref
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default(),
-                })?;
-                total_cost += d.cost_usd;
-                let step_ok = d.check.ok;
-                verdict.push(d.check);
-                if !step_ok {
-                    ok = false;
-                    break;
+                    if let Some(p) = &d.output_ref {
+                        output_paths.push((action.name.clone(), p.display().to_string()));
+                    }
+                    step_outputs.push((action.name.clone(), d.output_text));
                 }
-                if let Some(l) = limits
-                    && total_cost > l.budget_usd
-                {
-                    needs_human = true;
-                    ok = false;
-                    verdict.push(checks::CheckResult {
-                        level: "L0".to_string(),
-                        name: "budget".to_string(),
-                        ok: false,
-                        tail: format!(
-                            "step {} brought the run to ${total_cost:.4}, over the ${:.2} \
-                             per-run budget; asking the operator",
-                            action.name, l.budget_usd
-                        ),
-                        ..Default::default()
-                    });
-                    break;
-                }
-                if let Some(p) = &d.output_ref {
-                    output_paths.push((action.name.clone(), p.display().to_string()));
-                }
-                step_outputs.push((action.name.clone(), d.output_text));
+            }
+        }
+        match flow::next_step(steps, at, failed, &outcome, &runs) {
+            flow::Route::Go(n) => at = n,
+            flow::Route::End => break,
+            flow::Route::Failed => {
+                ok = false;
+                break;
+            }
+            flow::Route::Capped(why) => {
+                ok = false;
+                verdict.push(checks::CheckResult {
+                    level: "L0".to_string(),
+                    name: "loop".to_string(),
+                    ok: false,
+                    tail: why,
+                    ..Default::default()
+                });
+                break;
             }
         }
     }

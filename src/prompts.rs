@@ -740,6 +740,7 @@ mod tests {
             max_turns: None,
             timeout_secs: None,
             via: vec![],
+            node: String::new(),
         }
     }
 
