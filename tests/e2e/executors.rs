@@ -160,12 +160,12 @@ fn review_host_repo_operation_on_verify_ref_runs_on_host() {
 
 #[test]
 fn ssh_executor_syncs_runs_and_retains_an_unverified_branch() {
-    assert_ssh_attempt(0);
+    assert_ssh_attempt(0, false);
 }
 
 #[test]
 fn ssh_executor_syncs_back_after_a_failed_remote_command() {
-    assert_ssh_attempt(7);
+    assert_ssh_attempt(7, true);
 }
 
 fn ssh_fixture() -> (Env, std::path::PathBuf, std::path::PathBuf) {
@@ -217,6 +217,9 @@ read -r first_line
 test -n "$first_line" || exit 95
 case "$PWD" in /tmp/forge-executor.*) ;; *) exit 92;; esac
 test "$(cat outbound.txt)" = "synced to remote" || exit 93
+if [ "$ANTHROPIC_EXIT" = "7" ]; then
+    test "$ANTHROPIC_API_KEY" = "portable-test-key" || exit 96
+fi
 test "$ANTHROPIC_SSH_TEST" = "spaces and 'quotes' \$dollars" || exit 94
 rm outbound.txt
 printf '%s' "$PWD" > remote-location.txt
@@ -230,7 +233,7 @@ exit "$ANTHROPIC_EXIT"
     let config = std::fs::read_to_string(&config_path).unwrap();
     std::fs::write(
         &config_path,
-        format!("{config}[execution]\nbackend = \"ssh\"\nhost = \"remote\"\nuser = \"forge\"\n"),
+        format!("{config}must_not_run = [\"bash\", \"-c\", \"touch checks-ran; exit 1\"]\n[execution]\nbackend = \"ssh\"\nhost = \"remote\"\nuser = \"forge\"\n"),
     )
     .unwrap();
     std::fs::write(e.repo.join("outbound.txt"), "synced to remote").unwrap();
@@ -239,8 +242,16 @@ exit "$ANTHROPIC_EXIT"
     (e, bin, remote_agent)
 }
 
-fn assert_ssh_attempt(exit: i32) {
+fn assert_ssh_attempt(exit: i32, api_key: bool) {
     let (e, bin, remote_agent) = ssh_fixture();
+    if api_key {
+        std::fs::create_dir_all(&e.home).unwrap();
+        std::fs::write(
+            e.home.join("config.toml"),
+            "[providers.anthropic]\nrunner = \"claude-cli\"\napi_key_env = \"SSH_TEST_KEY\"\n",
+        )
+        .unwrap();
+    }
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let result = e
         .cmd("ok.sh")
@@ -249,6 +260,7 @@ fn assert_ssh_attempt(exit: i32) {
         .env("FORGE_CLAUDE_BIN", &remote_agent)
         .env("ANTHROPIC_SSH_TEST", "spaces and 'quotes' $dollars")
         .env("ANTHROPIC_EXIT", exit.to_string())
+        .env("SSH_TEST_KEY", "portable-test-key")
         .args([
             "run",
             e.repo.to_str().unwrap(),
@@ -277,12 +289,20 @@ fn assert_ssh_attempt(exit: i32) {
         "SELECT a.state, t.worktree FROM attempts a JOIN tasks t ON a.task_id=t.id WHERE t.id=1",
         [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
     assert_eq!(state, "unverified");
+    let agent_exit: i32 = e
+        .db()
+        .query_row("SELECT agent_exit FROM attempts WHERE task_id=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(agent_exit, exit);
     let worktree = std::path::Path::new(&worktree);
     assert_eq!(
         std::fs::read_to_string(worktree.join("answer.txt")).unwrap(),
         "42\n"
     );
     assert!(!worktree.join("outbound.txt").exists());
+    assert!(!worktree.join("checks-ran").exists());
     assert!(
         std::fs::read_to_string(worktree.join("remote-location.txt"))
             .unwrap()
@@ -319,8 +339,9 @@ fn assert_ssh_attempt(exit: i32) {
             .unwrap()
             .contains("ssh forge@remote claude --version: answers")
     }));
-    assert!(
+    assert_eq!(
         rows.iter().any(|r| r["status"] == "warn"
-            && r["detail"].as_str().unwrap().contains("subscription login"))
+            && r["detail"].as_str().unwrap().contains("subscription login")),
+        !api_key
     );
 }

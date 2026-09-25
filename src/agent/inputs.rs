@@ -53,3 +53,20 @@ pub(super) struct RunCopilotPhase<'a> {
     pub(super) watch: &'a mut Watch,
     pub(super) tally: &'a mut CopilotTally,
 }
+
+// Resolve portable API credentials at launch, never into attempt inputs.
+pub(super) fn provider_env(provider: &Provider) -> Vec<(String, String)> {
+    let mut env = provider.env.clone();
+    if let Some(var) = &provider.api_key_env
+        && let Ok(key) = std::env::var(var)
+    {
+        let target = match provider.runner {
+            Runner::ClaudeCli => "ANTHROPIC_API_KEY",
+            Runner::CodexCli => "OPENAI_API_KEY",
+            Runner::CopilotCli => "COPILOT_GITHUB_TOKEN",
+            Runner::Chat => return env,
+        };
+        env.push((target.into(), key));
+    }
+    env
+}

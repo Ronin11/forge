@@ -885,7 +885,7 @@ async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
     let bin = crate::executor::agent_bin(l.sandbox, l.worktree, agent_bin_for(l.step));
     let argv = claude_argv(&bin, &l);
     let mut identity = crate::git::identity(&l.worktree.join(".git")).await;
-    identity.extend(l.provider.env.iter().cloned());
+    identity.extend(inputs::provider_env(l.provider));
     let mut log =
         File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
     writeln!(
@@ -1640,7 +1640,7 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
         .with_context(|| format!("writing {}", schema_path.display()))?;
 
     let mut extra_env = crate::git::identity(&l.worktree.join(".git")).await;
-    extra_env.extend(l.provider.env.iter().cloned());
+    extra_env.extend(inputs::provider_env(l.provider));
 
     let mut log =
         File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
@@ -2039,16 +2039,7 @@ async fn run_copilot_phase(args: RunCopilotPhase<'_>) -> Result<(Option<i32>, bo
 async fn run_copilot(l: Launch<'_>) -> Result<Outcome> {
     let bin = crate::executor::agent_bin(l.sandbox, l.worktree, copilot_bin_for(l.step));
     let mut extra_env = crate::git::identity(&l.worktree.join(".git")).await;
-    extra_env.extend(l.provider.env.iter().cloned());
-    // The CLI reads COPILOT_GITHUB_TOKEN ahead of its stored login: when the
-    // operator's `api_key_env` names a variable holding a GitHub token, it
-    // is read from this process's environment at launch, never from the
-    // config file or the record (see `Provider::api_key_env`).
-    if let Some(var) = &l.provider.api_key_env
-        && let Ok(token) = std::env::var(var)
-    {
-        extra_env.push(("COPILOT_GITHUB_TOKEN".to_string(), token));
-    }
+    extra_env.extend(inputs::provider_env(l.provider));
     extra_env.push(("COPILOT_AUTO_UPDATE".to_string(), "false".to_string()));
 
     let mut log =
