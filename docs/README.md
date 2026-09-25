@@ -29,6 +29,9 @@ file is added or removed here without a matching change on disk.
   operator's factory view.
 - **PLUGINS.md** — integrations that live outside the kernel and talk to
   Forge the way any client does.
+- **EXECUTION.md** — where a step runs (executors), what happens when it
+  fails (outcomes and edges for run workflows), where the model is allowed
+  to be, and the operation-unless-judgment rule.
 - **ECONOMIST.md** — how Forge rebalances spend across providers and
   workflows from its own measured record.
 - **SUPERVISOR.md** — the read-only agent that answers a blocked task's

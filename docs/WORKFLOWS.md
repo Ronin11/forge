@@ -462,6 +462,10 @@ outcomes by workflow hash and by step.
 
 ## Not built
 
-Workflow conditionals or variables. Per-step prompts as configuration. A
-step that runs outside the sandbox. A step the kernel cannot verify
-afterward. A workflow editor.
+Workflow conditionals or variables (for build workflows; run workflows
+get outcomes and failure edges, docs/EXECUTION.md, decided 2026-09-25).
+Per-step prompts as configuration. A step that runs outside an executor
+the kernel controls (docs/EXECUTION.md, "Executors"). A step the kernel
+cannot verify afterward. A visual workflow editor (the TOML editor with
+live lint on `/workflows/<name>` is the editor until the model it edits
+stops moving).
