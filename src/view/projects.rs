@@ -83,7 +83,7 @@ pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
         .project_job_stats(&p.name, crate::unix_now() - 86_400)?;
     let tasks = f.store.project_tasks(&p.name)?;
     let mut proposals: Vec<ProposalRow> = tasks.iter().filter_map(proposal_row).collect();
-    proposals.sort_by(|a, b| b.task_id.cmp(&a.task_id));
+    proposals.sort_by_key(|p| std::cmp::Reverse(p.task_id));
     let mut stats = crate::store::ProjectTaskStats::default();
     for (t, _) in latest_per_lineage(f, &tasks)? {
         match t.state {
@@ -1003,7 +1003,7 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
         .iter()
         .filter(|r| r.settled_at.is_none())
         .collect();
-    open.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    open.sort_by_key(|i| std::cmp::Reverse(i.created_at));
     let initiatives_total = open.len();
     let initiatives: Vec<PortalInitiative> = open
         .into_iter()
@@ -1084,7 +1084,7 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
             screenshot: dep.and_then(|d| d.1.map(|s| s.1)),
         });
     }
-    landed.sort_by(|a, b| b.landed_at.cmp(&a.landed_at));
+    landed.sort_by_key(|l| std::cmp::Reverse(l.landed_at));
     let landed_total = landed.len();
     landed.truncate(10);
     let landed_more = (landed_total - landed.len()) as i64;
@@ -1107,7 +1107,7 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
             }
         })
         .collect();
-    requests.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    requests.sort_by_key(|r| std::cmp::Reverse(r.created_at));
     requests.truncate(10);
 
     // The confirmed brief lives only on the intake task that produced it

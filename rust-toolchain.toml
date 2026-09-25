@@ -1,0 +1,7 @@
+# One compiler for this box, CI, and a fresh clone: clippy's lint set moves
+# between releases (1.98 added six errors 1.93 never raised, 2026-09-25),
+# and a check that passes here must pass there. Bump deliberately, in one
+# commit that also fixes what the new clippy says.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]

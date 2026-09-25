@@ -90,7 +90,7 @@ fn tool_stats(f: &Forge, step: Option<&str>) -> Result<()> {
             );
         }
         let mut shell: Vec<_> = t.shell.iter().collect();
-        shell.sort_by(|a, b| b.1.ms.cmp(&a.1.ms));
+        shell.sort_by_key(|(_, u)| std::cmp::Reverse(u.ms));
         if !shell.is_empty() {
             out!(
                 "  {:<14} {:>6} {:>9} {:>9}",

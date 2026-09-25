@@ -200,13 +200,10 @@ fn resolve_rust(importer: &str, imp: &RawImport, nodes: &HashSet<String>) -> Opt
 
 fn first_quoted(s: &str) -> Option<&str> {
     let s = s.trim_start();
-    let (quote, rest) = if let Some(r) = s.strip_prefix('\'') {
-        ('\'', r)
-    } else if let Some(r) = s.strip_prefix('"') {
-        ('"', r)
-    } else {
-        return None;
-    };
+    let (quote, rest) = s
+        .strip_prefix('\'')
+        .map(|r| ('\'', r))
+        .or_else(|| s.strip_prefix('"').map(|r| ('"', r)))?;
     let end = rest.find(quote)?;
     Some(&rest[..end])
 }

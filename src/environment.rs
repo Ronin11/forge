@@ -198,10 +198,9 @@ fn missing_binary(line: &str) -> Option<Need> {
         && before.len() < line.len()
     {
         clean(before.rsplit(':').next().unwrap_or(before))
-    } else if let Some(before) = line.strip_suffix(" not found in PATH") {
-        clean(before.rsplit(' ').next().unwrap_or(before))
     } else {
-        return None;
+        let before = line.strip_suffix(" not found in PATH")?;
+        clean(before.rsplit(' ').next().unwrap_or(before))
     };
     (!name.is_empty() && !name.contains(char::is_whitespace))
         .then(|| need(NeedKind::Binary, &name, line))
