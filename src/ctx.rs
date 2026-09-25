@@ -240,7 +240,7 @@ impl Forge {
     /// `worktree` reach besides the model endpoint. No-op unsandboxed.
     pub fn allow_egress(&self, worktree: &Path, cfg: &config::Config, trust: crate::store::Trust) {
         if let Some(sandbox) = &self.sandbox {
-            sandbox.set_backend(worktree, cfg.execution.backend);
+            sandbox.configure(worktree, &cfg.execution);
             // A level whose egress is `model` reaches the model endpoints
             // alone, whatever the repository declares.
             match self.trust_policy(trust).egress {

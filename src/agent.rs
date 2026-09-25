@@ -882,7 +882,15 @@ async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
     // sandbox reaches for state the sandbox does not have (a global tool
     // config, a registry cache, a writable shims directory) and dies
     // before the agent starts. Forge 1 learned this the same way.
-    let bin = real_bin(&agent_bin_for(l.step));
+    let name = agent_bin_for(l.step);
+    let bin = if l
+        .sandbox
+        .is_some_and(|e| e.backend(l.worktree) == crate::executor::Backend::Ssh)
+    {
+        name
+    } else {
+        real_bin(&name)
+    };
     let argv = claude_argv(&bin, &l);
     let mut identity = crate::git::identity(&l.worktree.join(".git")).await;
     identity.extend(l.provider.env.iter().cloned());
@@ -1624,7 +1632,15 @@ async fn run_codex_phase(args: RunCodexPhase<'_>) -> Result<(Option<i32>, bool, 
 /// always closed in both phases: codex blocks forever reading it otherwise,
 /// unlike the claude CLI, which takes the prompt on stdin.
 async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
-    let bin = real_bin(&codex_bin_for(l.step));
+    let name = codex_bin_for(l.step);
+    let bin = if l
+        .sandbox
+        .is_some_and(|e| e.backend(l.worktree) == crate::executor::Backend::Ssh)
+    {
+        name
+    } else {
+        real_bin(&name)
+    };
     // The schema is text (`envelope::SCHEMA`), but codex takes a file, and
     // codex reads it inside the sandbox, where Forge's home is an empty
     // tmpfs. The worktree is the one directory bound read-write for the
@@ -2037,7 +2053,15 @@ async fn run_copilot_phase(args: RunCopilotPhase<'_>) -> Result<(Option<i32>, bo
 /// `price_usd_per_premium_request` — 0 within a plan's allowance — plus
 /// whatever tokens it does report at the per-million prices.
 async fn run_copilot(l: Launch<'_>) -> Result<Outcome> {
-    let bin = real_bin(&copilot_bin_for(l.step));
+    let name = copilot_bin_for(l.step);
+    let bin = if l
+        .sandbox
+        .is_some_and(|e| e.backend(l.worktree) == crate::executor::Backend::Ssh)
+    {
+        name
+    } else {
+        real_bin(&name)
+    };
     let mut extra_env = crate::git::identity(&l.worktree.join(".git")).await;
     extra_env.extend(l.provider.env.iter().cloned());
     // The CLI reads COPILOT_GITHUB_TOKEN ahead of its stored login: when the

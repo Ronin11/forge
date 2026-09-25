@@ -1014,15 +1014,54 @@ pub fn run() -> Result<Vec<Check>> {
     }
 }
 
-fn check_executors(store: &Store) -> Vec<Check> {
+fn check_executors(store: &Store, paths: &Paths) -> Vec<Check> {
     use crate::executor::Backend;
     let mut backends = std::collections::BTreeSet::new();
     let mut out = Vec::new();
     for project in store.list_projects().unwrap_or_default() {
         for repo in store.project_repos(&project.name).unwrap_or_default() {
-            match config::load_working_backend(std::path::Path::new(&repo.repo)) {
-                Ok(backend) => {
-                    backends.insert(backend);
+            match config::load_working_execution(std::path::Path::new(&repo.repo)) {
+                Ok(execution) => {
+                    backends.insert(execution.backend);
+                    if execution.backend == Backend::Ssh {
+                        let destination = execution.ssh_destination().unwrap();
+                        if let Ok(home) = config::load_home(&paths.home) {
+                            for (name, provider) in home.providers {
+                                let binary = match provider.runner {
+                                    agent::Runner::ClaudeCli => "claude",
+                                    agent::Runner::CodexCli => "codex",
+                                    agent::Runner::CopilotCli => "copilot",
+                                    agent::Runner::Chat => continue,
+                                };
+                                let result = std::process::Command::new("ssh")
+                                    .args([
+                                        "-o",
+                                        "BatchMode=yes",
+                                        "-o",
+                                        "ConnectTimeout=5",
+                                        &destination,
+                                        binary,
+                                        "--version",
+                                    ])
+                                    .output();
+                                let ok = result.as_ref().is_ok_and(|o| o.status.success());
+                                out.push(check(
+                                    &format!("executors.ssh.{name}"),
+                                    if ok { Status::Ok } else { Status::Warn },
+                                    format!(
+                                        "ssh {destination} {binary} --version: {}",
+                                        if ok { "answers" } else { "did not answer" }
+                                    ),
+                                    "install and configure the CLI on the remote host",
+                                ));
+                                if provider.api_key_env.is_none() {
+                                    out.push(check(&format!("executors.ssh.{name}.credentials"), Status::Warn,
+                                        format!("{name}: subscription login credentials do not travel to {destination}"),
+                                        "use a provider with api_key_env or configure a login on the remote host"));
+                                }
+                            }
+                        }
+                    }
                 }
                 Err(e) => out.push(check(
                     "executors",
@@ -1040,7 +1079,7 @@ fn check_executors(store: &Store) -> Vec<Check> {
         backends.insert(Backend::Host);
     }
     for backend in backends {
-        let available = backend == Backend::Host
+        let available = backend != Backend::Bwrap
             || std::process::Command::new("bwrap")
                 .args([
                     "--unshare-net",
@@ -1095,7 +1134,7 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
         }
     };
     out.extend(check_schema(&store));
-    out.extend(check_executors(&store));
+    out.extend(check_executors(&store, &paths));
     out.extend(check_project_purposes(&store));
     out.extend(check_egress(&paths, &store));
     out.extend(check_environment_grants(&store));

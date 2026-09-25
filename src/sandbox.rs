@@ -167,7 +167,7 @@ pub fn version_has_overlay(v: Option<BwrapVersion>) -> bool {
 }
 
 /// Quote `s` as a single POSIX shell argument.
-fn shell_quote(s: &str) -> String {
+pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 

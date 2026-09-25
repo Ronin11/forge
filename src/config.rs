@@ -83,10 +83,38 @@ struct Defaults {
     check_timeout_secs: Option<u64>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Clone, Deserialize, Default)]
 pub struct Execution {
     #[serde(default)]
     pub backend: crate::executor::Backend,
+    pub host: Option<String>,
+    pub user: Option<String>,
+}
+impl Execution {
+    pub fn ssh_destination(&self) -> Result<String> {
+        let valid = |s: &str| {
+            !s.is_empty()
+                && !s.starts_with('-')
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || ".-_".contains(c))
+        };
+        let host = self
+            .host
+            .as_deref()
+            .filter(|s| valid(s))
+            .context("execution.host must be a hostname for the ssh backend")?;
+        match self.user.as_deref() {
+            Some(user) if valid(user) => Ok(format!("{user}@{host}")),
+            Some(_) => bail!("execution.user must be an SSH username"),
+            None => Ok(host.to_owned()),
+        }
+    }
+    fn validate(&self) -> Result<()> {
+        if self.backend == crate::executor::Backend::Ssh {
+            self.ssh_destination()?;
+        }
+        Ok(())
+    }
 }
 
 pub struct Config {
@@ -171,6 +199,7 @@ pub fn is_protected(protected: &[String], path: &str) -> bool {
 
 async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result<Config> {
     let raw: Raw = toml::from_str(text).with_context(|| format!("parsing {what}"))?;
+    raw.execution.validate()?;
     for (name, argv) in &raw.checks.checks {
         if argv.is_empty() {
             bail!("check `{name}` has an empty command");
@@ -274,10 +303,11 @@ pub fn load_working_egress(dir: &Path) -> Result<Vec<crate::egress::Rule>> {
         .with_context(|| format!("{}: sandbox.egress", path.display()))
 }
 
-pub fn load_working_backend(dir: &Path) -> Result<crate::executor::Backend> {
+pub fn load_working_execution(dir: &Path) -> Result<Execution> {
     let (_, _, text) = read_working(dir)?;
     let raw: Raw = toml::from_str(&text)?;
-    Ok(raw.execution.backend)
+    raw.execution.validate()?;
+    Ok(raw.execution)
 }
 
 fn read_working(repo: &Path) -> Result<(PathBuf, &'static str, String)> {

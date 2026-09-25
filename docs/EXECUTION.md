@@ -39,7 +39,7 @@ And one rule of composition, enforced, not preferred:
 
 ## Executors
 
-The executor contract (`src/executor.rs`) supports bwrap and host.
+The executor contract (`src/executor.rs`) supports bwrap, host, and SSH.
 Bwrap (`src/sandbox.rs`) is the default security boundary: tmpfs home, the worktree bound, an egress
 proxy, private copies of the CLIs' credentials, package caches overlaid.
 Some work cannot run there: a step that has to touch the dev server, a
@@ -61,7 +61,14 @@ runs directly with the agent environment: it provides kernel-controlled
 checks, but no private worktree, bounded egress, or private credential
 seeding. `forge doctor` reports an `executors.<backend>` row and warns
 that host egress is unbounded. `FORGE_SANDBOX=0` remains an operator
-override selecting host. Container and SSH backends are not implemented.
+override selecting host. The SSH backend accepts `host` and an optional `user`, copies the tree
+with rsync to a temporary directory, executes argv with the executor environment,
+and copies edits and commits back even after a nonzero exit. Remote CLIs must be
+installed by the operator; doctor probes them over SSH and warns about
+subscription credentials without `api_key_env`. SSH provides no isolation or
+kernel-controlled checks: attempts end unverified with
+"remote executor: the kernel could not run the checks itself".
+The container backend is not implemented.
 
 The contract reports these guarantees as data, and `forge doctor` reports
 which each backend provides on this machine:

@@ -18,12 +18,14 @@ pub enum Backend {
     #[default]
     Bwrap,
     Host,
+    Ssh,
 }
 impl Backend {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Bwrap => "bwrap",
             Self::Host => "host",
+            Self::Ssh => "ssh",
         }
     }
     pub fn guarantees(self) -> Guarantees {
@@ -32,7 +34,7 @@ impl Backend {
             worktree_private: isolated,
             egress_bounded: isolated,
             credentials_seeded: isolated,
-            checks_under_kernel_control: true,
+            checks_under_kernel_control: self != Self::Ssh,
         }
     }
 }
@@ -88,12 +90,60 @@ impl Executor for Sandbox {
     }
 }
 
+/// Synchronize a private scratch clone, preserve argv and stdin, and retrieve
+/// edits (including commits) even when the remote process fails.
+fn ssh_command(
+    destination: &str,
+    worktree: &Path,
+    argv: &[String],
+    env: &[(String, String)],
+) -> Command {
+    use crate::sandbox::shell_quote;
+    let local = worktree.to_string_lossy();
+    let args = argv
+        .iter()
+        .map(|a| shell_quote(&a.replace(local.as_ref(), ".")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let vars = env
+        .iter()
+        .map(|(k, v)| shell_quote(&format!("{k}={}", v.replace(local.as_ref(), "."))))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let remote = format!("env -i {vars} {args}");
+    let mut command = Command::new("/bin/sh");
+    command.args([
+        "-c",
+        r#"
+set -eu
+dest=$1
+tree=$2
+run=$3
+scratch=$(ssh "$dest" 'mktemp -d /tmp/forge-executor.XXXXXXXXXX')
+case "$scratch" in /tmp/forge-executor.*) ;; *) exit 125 ;; esac
+case "$scratch" in *[!a-zA-Z0-9/._-]*) exit 125 ;; esac
+trap 'ssh "$dest" "rm -rf -- $scratch" </dev/null >/dev/null 2>&1 || true' EXIT
+rsync -a --delete "$tree/" "$dest:$scratch/" </dev/null
+status=0
+ssh "$dest" "cd '$scratch' && $run" || status=$?
+rsync -a --delete "$dest:$scratch/" "$tree/" </dev/null
+exit "$status"
+"#,
+        "forge-ssh",
+        destination,
+        &local,
+        &remote,
+    ]);
+    command
+}
+
 /// Selection is installed only by the kernel when it reads trusted config.
 /// Detection failures are retained so host repositories work without bwrap;
 /// choosing bwrap still fails closed, never falling back to the host.
 pub struct Execution {
     bwrap: Result<Sandbox, String>,
     backends: Mutex<BTreeMap<PathBuf, Backend>>,
+    remotes: Mutex<BTreeMap<PathBuf, String>>,
 }
 impl Execution {
     pub fn detect(
@@ -106,13 +156,10 @@ impl Execution {
         if config::env("SANDBOX").as_deref() == Ok("0") {
             return Ok(None);
         }
-        // A missing agent is a worker setup error, not a backend limitation.
-        // Report it before claiming any work; only sandbox availability may
-        // be deferred until the repository's backend is known.
-        crate::sandbox::resolve_binary(agent)?;
         Ok(Some(Self {
             bwrap: Sandbox::detect(agent, paths, ro, rw, hosts).map_err(|e| format!("{e:#}")),
             backends: Mutex::new(BTreeMap::new()),
+            remotes: Mutex::new(BTreeMap::new()),
         }))
     }
     pub fn set_backend(&self, path: &Path, backend: Backend) {
@@ -120,6 +167,15 @@ impl Execution {
             .lock()
             .unwrap()
             .insert(path.to_owned(), backend);
+    }
+    pub fn configure(&self, path: &Path, cfg: &config::Execution) {
+        self.set_backend(path, cfg.backend);
+        if cfg.backend == Backend::Ssh {
+            self.remotes.lock().unwrap().insert(
+                path.to_owned(),
+                cfg.ssh_destination().expect("validated execution config"),
+            );
+        }
     }
     pub fn backend(&self, path: &Path) -> Backend {
         let backends = self.backends.lock().unwrap();
@@ -130,6 +186,7 @@ impl Execution {
     pub fn guarantees(&self, path: &Path) -> Guarantees {
         match self.backend(path) {
             Backend::Host => Host.guarantees(),
+            Backend::Ssh => Backend::Ssh.guarantees(),
             Backend::Bwrap => self
                 .bwrap
                 .as_ref()
@@ -143,6 +200,14 @@ impl Execution {
             .as_ref()
             .map(|s| s.policy_for(path))
             .unwrap_or_else(|_| Policy::new([]));
+        if self.backend(path) == Backend::Ssh {
+            let remotes = self.remotes.lock().unwrap();
+            let destination = path
+                .ancestors()
+                .find_map(|p| remotes.get(p))
+                .expect("SSH executor configured");
+            return ssh_command(destination, path, argv, env);
+        }
         if self.backend(path) == Backend::Host {
             return Host.command(path, argv, env, &policy);
         }
@@ -242,6 +307,7 @@ mod tests {
         let execution = Execution {
             bwrap: Err("bwrap unavailable".into()),
             backends: Mutex::new(BTreeMap::new()),
+            remotes: Mutex::new(BTreeMap::new()),
         };
         let dir = tempfile::tempdir().unwrap();
         let argv = vec!["/bin/true".into()];

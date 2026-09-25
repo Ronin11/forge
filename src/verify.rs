@@ -946,6 +946,14 @@ pub async fn verify_directive(
     s: &Subject<'_>,
     agent: &Outcome,
 ) -> Result<Verdict> {
+    if s.sandbox
+        .is_some_and(|e| !e.guarantees(s.worktree).checks_under_kernel_control)
+    {
+        let mut verdict = Verdict::open(&GitFacts::default());
+        verdict.state = AttemptState::Unverified;
+        verdict.reason = "remote executor: the kernel could not run the checks itself".into();
+        return Ok(verdict);
+    }
     let agent_reason = crate::directive::agent_failure(agent);
     let common = common_l0(s, agent).await?;
     let mut v = Verdict::open(&common.facts);
