@@ -42,8 +42,11 @@ jobs:
 
       - name: The tag names the version the binary reports
         run: |
-          version="$(target/${{ matrix.target }}/release/forge version | cut -d' ' -f1)"
-          test "v$version" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} but the binary is $version" >&2; exit 1; }
+          # The archive is named from the built binary's own `forge version`
+          # (scripts/release.sh), whichever target directory the build used.
+          archive="$(ls dist/forge-*-${{ matrix.target }}.tar.gz)"
+          version="$(basename "$archive" | sed -E 's/^forge-(.*)-${{ matrix.target }}\.tar\.gz$/\1/')"
+          test "v$version" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} but the archive is $archive" >&2; exit 1; }
           ls -la dist/
 
       - name: Attach to the release
