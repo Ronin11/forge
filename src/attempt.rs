@@ -4,7 +4,7 @@
 //! the `Spec` the contract fills in: where the agent works, what it is
 //! told, which refs are overlaid, and what the verdict needs.
 
-/// Arguments for `run_attempt`, kept together for one run attempt operation.
+/// Task and workflow context for one numbered directive attempt.
 pub struct RunAttempt<'a> {
     pub f: &'a Forge,
     pub t: &'a Task,
@@ -16,7 +16,7 @@ pub struct RunAttempt<'a> {
     pub resume: Option<&'a Resume>,
 }
 
-/// Arguments for `new_attempt`, kept together for one new attempt operation.
+/// Inputs and provider identity recorded when opening an attempt row.
 pub struct NewAttempt<'a> {
     pub f: &'a Forge,
     pub t: &'a Task,
@@ -29,7 +29,7 @@ pub struct NewAttempt<'a> {
     pub provider: &'a agent::Provider,
 }
 
-/// Arguments for `launch`, kept together for one launch operation.
+/// Worktree, prompt, and continuation state for launching a task directive.
 struct AttemptLaunch<'a> {
     f: &'a Forge,
     t: &'a Task,
@@ -144,15 +144,15 @@ pub async fn run_attempt(
             let refs = overlay_refs(repo, t.id, Some(&t.verify_base)).await;
             Spec {
                 dir: PathBuf::from(&t.worktree),
-                prompt: code_prompt(
+                prompt: code_prompt(crate::prompts::DirectivePrompt {
                     t,
                     cfg,
                     step,
-                    attempt_no,
+                    n: attempt_no,
                     feedback,
-                    journal.as_deref(),
-                    outcome.as_deref(),
-                ),
+                    journal: journal.as_deref(),
+                    outcome: outcome.as_deref(),
+                }),
                 inputs: Inputs {
                     interface: (!t.interface.is_empty()).then(|| t.interface.clone()),
                     plan: (!t.plan.is_empty()).then(|| t.plan.clone()),
@@ -186,15 +186,15 @@ pub async fn run_attempt(
             }
             Spec {
                 dir,
-                prompt: tests_prompt(
+                prompt: tests_prompt(crate::prompts::DirectivePrompt {
                     t,
                     cfg,
                     step,
-                    attempt_no,
+                    n: attempt_no,
                     feedback,
-                    journal.as_deref(),
-                    outcome.as_deref(),
-                ),
+                    journal: journal.as_deref(),
+                    outcome: outcome.as_deref(),
+                }),
                 inputs: common,
                 overlay_refs: Vec::new(),
                 verify_ref: Some(format!("verify/{}", t.id)),
@@ -225,15 +225,15 @@ pub async fn run_attempt(
         },
         Contract::Plan => Spec {
             dir: PathBuf::from(&t.worktree),
-            prompt: plan_prompt(
+            prompt: plan_prompt(crate::prompts::DirectivePrompt {
                 t,
                 cfg,
                 step,
-                attempt_no,
+                n: attempt_no,
                 feedback,
-                journal.as_deref(),
-                outcome.as_deref(),
-            ),
+                journal: journal.as_deref(),
+                outcome: outcome.as_deref(),
+            }),
             inputs: common,
             overlay_refs: Vec::new(),
             verify_ref: None,

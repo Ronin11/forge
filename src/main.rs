@@ -5,6 +5,8 @@
 //! queues the same thing and `forge work` drains the queue.
 
 mod agent;
+#[cfg(test)]
+mod argument_policy_tests;
 mod assess;
 mod attempt;
 mod audit;

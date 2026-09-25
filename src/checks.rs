@@ -9,7 +9,7 @@
 //! group is killed after it exits, and the output is drained with a short
 //! grace. Learned the hard way in Forge 1.
 
-/// Arguments for `run_one_capped`, kept together for one run one capped operation.
+/// A check command with its execution environment and retained-output limit.
 pub struct RunOneCapped<'a> {
     pub level: &'a str,
     pub name: &'a str,

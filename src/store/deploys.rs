@@ -1,4 +1,4 @@
-/// Arguments for `finish_deploy`, kept together for one finish deploy operation.
+/// Completion results and assessment outputs recorded for a deployment.
 pub struct FinishDeploy<'a> {
     pub id: i64,
     pub at: i64,

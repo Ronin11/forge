@@ -3,8 +3,19 @@
 //! first. Numbers Forge records come from the CLI's accounting or Forge's
 //! own clock, never from the model's prose.
 
-/// Arguments for `run_once`, kept together for one run once operation.
-struct RunOnce<'a> {
+/// A Codex phase with its command, environment, and streaming output sinks.
+struct RunCodexPhase<'a> {
+    l: &'a Launch<'a>,
+    argv: &'a [String],
+    extra_env: &'a [(String, String)],
+    start: &'a Instant,
+    log: &'a mut File,
+    out: &'a mut Outcome,
+    watch: &'a mut Watch,
+}
+
+/// One agent invocation, including its sandbox, limits, identity, and output sinks.
+struct AgentRun<'a> {
     sandbox: Option<&'a Sandbox>,
     worktree: &'a Path,
     argv: &'a [String],
@@ -19,23 +30,7 @@ struct RunOnce<'a> {
     log: &'a mut File,
 }
 
-/// Arguments for `run_with_relaunch`, kept together for one run with relaunch operation.
-struct RunWithRelaunch<'a> {
-    sandbox: Option<&'a Sandbox>,
-    worktree: &'a Path,
-    argv: &'a [String],
-    identity: &'a [(String, String)],
-    prompt: &'a str,
-    bin: &'a str,
-    timeout: Duration,
-    writes: bool,
-    early_ending: crate::config::EarlyEnding,
-    task_id: i64,
-    report: &'a Reporter,
-    log: &'a mut File,
-}
-
-/// Arguments for `run_json_phase`, kept together for one run json phase operation.
+/// A JSON-streaming agent phase and the parser that folds frames into its outcome.
 struct RunJsonPhase<'a> {
     l: &'a Launch<'a>,
     argv: &'a [String],
@@ -47,7 +42,7 @@ struct RunJsonPhase<'a> {
     apply: &'a mut (dyn FnMut(&Value, &mut Outcome, &mut Watch) -> Option<String> + Send + 'a),
 }
 
-/// Arguments for `run_copilot_phase`, kept together for one run copilot phase operation.
+/// A Copilot phase with its output sinks and cumulative token accounting.
 struct RunCopilotPhase<'a> {
     l: &'a Launch<'a>,
     argv: &'a [String],
@@ -568,8 +563,8 @@ fn is_transient_bwrap_failure(stderr: &str) -> bool {
 /// per-line `forge_ms` timestamps, which must measure from this attempt's
 /// own spawn, not from whenever a caller-side retry loop happens to notice
 /// it finished.
-async fn run_once(args: RunOnce<'_>) -> Result<(Outcome, String)> {
-    let RunOnce {
+async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
+    let AgentRun {
         sandbox,
         worktree,
         argv,
@@ -773,8 +768,8 @@ async fn run_once(args: RunOnce<'_>) -> Result<(Outcome, String)> {
 /// failure, not an attempt, so it gets a few silent relaunches rather than
 /// burning one of the attempt's own retries. Any other quick exit (a real
 /// crash, a fast fake in tests) is returned as is.
-async fn run_with_relaunch(args: RunWithRelaunch<'_>) -> Result<(Outcome, String)> {
-    let RunWithRelaunch {
+async fn run_with_relaunch(args: AgentRun<'_>) -> Result<(Outcome, String)> {
+    let AgentRun {
         sandbox,
         worktree,
         argv,
@@ -791,7 +786,7 @@ async fn run_with_relaunch(args: RunWithRelaunch<'_>) -> Result<(Outcome, String
     const MAX_RELAUNCHES: u32 = 3;
     let mut relaunches = 0u32;
     loop {
-        let (out, stderr_text) = run_once(RunOnce {
+        let (out, stderr_text) = run_once(AgentRun {
             sandbox,
             worktree,
             argv,
@@ -941,7 +936,7 @@ async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
         serde_json::to_string(l.prompt)?
     )?;
 
-    let (mut out, stderr_text) = run_with_relaunch(RunWithRelaunch {
+    let (mut out, stderr_text) = run_with_relaunch(AgentRun {
         sandbox: l.sandbox,
         worktree: l.worktree,
         argv: &argv,
@@ -1623,15 +1618,16 @@ async fn run_json_phase(args: RunJsonPhase<'_>) -> Result<(Option<i32>, bool, St
 
 /// A codex `exec` phase: `run_json_phase` with the codex frame parser, each
 /// command execution reported as a tool call as it starts.
-async fn run_codex_phase(
-    l: &Launch<'_>,
-    argv: &[String],
-    extra_env: &[(String, String)],
-    start: &Instant,
-    log: &mut File,
-    out: &mut Outcome,
-    watch: &mut Watch,
-) -> Result<(Option<i32>, bool, String)> {
+async fn run_codex_phase(args: RunCodexPhase<'_>) -> Result<(Option<i32>, bool, String)> {
+    let RunCodexPhase {
+        l,
+        argv,
+        extra_env,
+        start,
+        log,
+        out,
+        watch,
+    } = args;
     let (report, task_id, writes) = (l.report, l.task_id, l.writes);
     let mut apply = |v: &Value, out: &mut Outcome, watch: &mut Watch| {
         if v["type"] == "item.started" && v["item"]["type"] == "command_execution" {
@@ -1711,9 +1707,15 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
     }
     argv1.push(l.prompt.to_string());
 
-    let (exit1, timed_out1, mut stderr_text) = run_codex_phase(
-        &l, &argv1, &extra_env, &start, &mut log, &mut out, &mut watch,
-    )
+    let (exit1, timed_out1, mut stderr_text) = run_codex_phase(RunCodexPhase {
+        l: &l,
+        argv: &argv1,
+        extra_env: &extra_env,
+        start: &start,
+        log: &mut log,
+        out: &mut out,
+        watch: &mut watch,
+    })
     .await?;
     out.exit_code = exit1;
     out.timed_out = timed_out1;
@@ -1771,9 +1773,15 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
             argv_n.push(thread_id);
             argv_n.push(prompt.to_string());
 
-            let (exit_n, timed_out_n, stderr_n) = run_codex_phase(
-                &l, &argv_n, &extra_env, &start, &mut log, &mut out, &mut watch,
-            )
+            let (exit_n, timed_out_n, stderr_n) = run_codex_phase(RunCodexPhase {
+                l: &l,
+                argv: &argv_n,
+                extra_env: &extra_env,
+                start: &start,
+                log: &mut log,
+                out: &mut out,
+                watch: &mut watch,
+            })
             .await?;
             out.exit_code = exit_n;
             out.timed_out = out.timed_out || timed_out_n;
@@ -1812,9 +1820,15 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
         argv2.push(schema_path.display().to_string());
         argv2.push(CODEX_REPORT_PROMPT.to_string());
 
-        let (exit2, timed_out2, stderr2) = run_codex_phase(
-            &l, &argv2, &extra_env, &start, &mut log, &mut out, &mut watch,
-        )
+        let (exit2, timed_out2, stderr2) = run_codex_phase(RunCodexPhase {
+            l: &l,
+            argv: &argv2,
+            extra_env: &extra_env,
+            start: &start,
+            log: &mut log,
+            out: &mut out,
+            watch: &mut watch,
+        })
         .await?;
         out.exit_code = exit2;
         out.timed_out = out.timed_out || timed_out2;
@@ -2475,7 +2489,7 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut log = tempfile::NamedTempFile::new().unwrap();
         let report = crate::report::Reporter::new(false, None);
-        run_with_relaunch(RunWithRelaunch {
+        run_with_relaunch(AgentRun {
             sandbox: None,
             worktree: dir,
             argv: &[script.to_string_lossy().to_string()],

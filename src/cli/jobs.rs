@@ -213,9 +213,14 @@ async fn message_record(
     {
         bail!("no task {id}")
     }
-    let id = f
-        .store
-        .insert_message(&project, &channel, &contact, direction, &text, task)?;
+    let id = f.store.insert_message(crate::store::InsertMessage {
+        project: &project,
+        channel: &channel,
+        contact: &contact,
+        direction,
+        text: &text,
+        task_id: task,
+    })?;
     out!("{id} {} {contact}", direction.as_str());
     // The trigger point (docs/JOBS.md, "Triggers"): an inbound message
     // queues a job for every run workflow whose `[trigger]` matches it. The
@@ -318,15 +323,15 @@ async fn job_start(
         }
         (None, None) => None,
     };
-    let id = crate::job::start(
-        &f,
-        &project,
-        &workflow,
-        input.as_deref(),
+    let id = crate::job::start(crate::job::Start {
+        f: &f,
+        project: &project,
+        workflow: &workflow,
+        input: input.as_deref(),
         dry_run,
         now,
         due_at,
-    )
+    })
     .await?;
     out!("{id}");
     Ok(())

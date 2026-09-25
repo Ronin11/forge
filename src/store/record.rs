@@ -1,4 +1,4 @@
-/// Arguments for `insert_decision_by`, kept together for one insert decision by operation.
+/// An answered question with its author, citations, and retry attribution.
 pub struct InsertDecisionBy<'a> {
     pub task_id: i64,
     pub repo: &'a str,

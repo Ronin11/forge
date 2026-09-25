@@ -1,4 +1,4 @@
-/// Arguments for `stats`, kept together for one stats operation.
+/// Filters, output modes, and repricing controls for the statistics command.
 pub struct StatsOptions {
     pub tools: bool,
     pub step: Option<String>,

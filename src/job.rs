@@ -17,7 +17,18 @@
 //! row (`tail`), and all it printed in a file under the input directory
 //! that `output_ref` names.
 
-/// Arguments for `step_env`, kept together for one step env operation.
+/// Operator-supplied workflow, input path, and scheduling options for a new job.
+pub struct Start<'a> {
+    pub f: &'a Forge,
+    pub project: &'a str,
+    pub workflow: &'a str,
+    pub input: Option<&'a Path>,
+    pub dry_run: bool,
+    pub now: bool,
+    pub due_at: Option<i64>,
+}
+
+/// Job inputs, prior outputs, and configuration exposed to a workflow step.
 struct StepEnv<'a> {
     job_id: i64,
     step_name: &'a str,
@@ -33,7 +44,7 @@ struct StepEnv<'a> {
     dry_run: bool,
 }
 
-/// Arguments for `run_directive`, kept together for one run directive operation.
+/// Job step inputs and role configuration for a model-backed directive.
 struct RunDirective<'a> {
     f: &'a Forge,
     job_id: i64,
@@ -47,7 +58,7 @@ struct RunDirective<'a> {
     input_bytes: usize,
 }
 
-/// Arguments for `start_event`, kept together for one start event operation.
+/// A landed event and workflow used to enqueue a deduplicated job.
 pub struct StartEvent<'a> {
     pub f: &'a Forge,
     pub project: &'a str,
@@ -60,7 +71,7 @@ pub struct StartEvent<'a> {
     pub input: &'a str,
 }
 
-/// Arguments for `start_webhook`, kept together for one start webhook operation.
+/// A webhook delivery and workflow used to enqueue a deduplicated job.
 pub struct StartWebhook<'a> {
     pub f: &'a Forge,
     pub project: &'a str,
@@ -72,7 +83,7 @@ pub struct StartWebhook<'a> {
     pub input_text: &'a str,
 }
 
-/// Arguments for `queue_triggered`, kept together for one queue triggered operation.
+/// Trigger identity, delivery time, and input payload for a queued job.
 struct QueueTriggered<'a> {
     f: &'a Forge,
     project: &'a str,
@@ -86,7 +97,7 @@ struct QueueTriggered<'a> {
     input_text: &'a str,
 }
 
-/// Arguments for `run_now`, kept together for one run now operation.
+/// Resolved workflow, inputs, and recorded outputs for an inline job run.
 struct RunNow<'a> {
     f: &'a Forge,
     job_id: i64,
@@ -516,15 +527,16 @@ fn scheduled_state(due_at: Option<i64>, at: i64) -> JobState {
 /// `Scheduled` until then instead of `Queued` (docs/JOBS.md, "Delayed
 /// jobs"); refused together with `now`, which runs inline immediately.
 /// Returns the job's id.
-pub async fn start(
-    f: &Forge,
-    project: &str,
-    workflow: &str,
-    input: Option<&Path>,
-    dry_run: bool,
-    now: bool,
-    due_at: Option<i64>,
-) -> Result<i64> {
+pub async fn start(args: Start<'_>) -> Result<i64> {
+    let Start {
+        f,
+        project,
+        workflow,
+        input,
+        dry_run,
+        now,
+        due_at,
+    } = args;
     if now && due_at.is_some() {
         anyhow::bail!("--now runs inline immediately; it cannot be combined with --at or --delay");
     }

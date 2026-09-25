@@ -1,4 +1,4 @@
-/// Arguments for `project_deploy_add`, kept together for one project deploy add operation.
+/// Operator-supplied settings for a new project deployment target.
 struct ProjectDeployAdd {
     project: String,
     name: String,
@@ -11,7 +11,7 @@ struct ProjectDeployAdd {
     on_landing: bool,
 }
 
-/// Arguments for `project_deploy_set`, kept together for one project deploy set operation.
+/// Operator-supplied changes to an existing project deployment target.
 struct ProjectDeploySet {
     project: String,
     name: String,

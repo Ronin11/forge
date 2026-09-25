@@ -1,4 +1,4 @@
-/// Arguments for `project_set`, kept together for one project set operation.
+/// Optional project defaults and role settings supplied by the operator.
 struct ProjectSet {
     name: String,
     purpose: Option<String>,

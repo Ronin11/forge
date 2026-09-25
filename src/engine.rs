@@ -12,7 +12,7 @@
 //! taking the repository lock are `Env` faults, since a dead remote or a
 //! full disk stops the worker rather than failing the task.
 
-/// Arguments for `run_operation_step`, kept together for one run operation step operation.
+/// Workflow state and completed operations needed to execute an operation step.
 struct RunOperationStep<'a> {
     f: &'a Forge,
     t: &'a mut Task,
@@ -26,7 +26,7 @@ struct RunOperationStep<'a> {
     merged_base_retry: bool,
 }
 
-/// Arguments for `run_directive_step`, kept together for one run directive step operation.
+/// Workflow and retry state needed to execute a directive step.
 struct RunDirectiveStep<'a> {
     f: &'a Forge,
     t: &'a mut Task,
@@ -42,7 +42,7 @@ struct RunDirectiveStep<'a> {
     remote_url: &'a Option<String>,
 }
 
-/// Arguments for `try_land`, kept together for one try land operation.
+/// Candidate, base configuration, and retry state for a landing attempt.
 struct TryLand<'a> {
     f: &'a Forge,
     t: &'a mut Task,
@@ -642,7 +642,6 @@ async fn run_operation_step(args: RunOperationStep<'_>) -> Result<StepFlow, Faul
         done_ops,
         merged_base_retry,
     } = args;
-    let id = t.id;
     // A mutating operation counts as done only once the kernel
     // verified what it committed; a worker that died in between
     // runs it again, which is harmless: it is deterministic and
@@ -682,7 +681,7 @@ async fn run_operation_step(args: RunOperationStep<'_>) -> Result<StepFlow, Faul
     {
         let c_name = resolved.steps[c_idx].action.name.clone();
         f.report.emit(
-            id,
+            t.id,
             Event::Note {
                 text: &format!(
                     "setup    the merged base does not build; {c_name} will see the error"
@@ -707,7 +706,7 @@ async fn run_operation_step(args: RunOperationStep<'_>) -> Result<StepFlow, Faul
         if run.used_at(d_seq) < t.max_attempts {
             let d_name = resolved.steps[d_idx].action.name.clone();
             f.report.emit(
-                id,
+                t.id,
                 Event::Note {
                     text: &format!(
                         "verify   {} failed; back to {} for another attempt",

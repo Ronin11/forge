@@ -1260,7 +1260,14 @@ mod tests {
     fn record(f: &Forge, direction: Direction, contact: &str, text: &str) -> Message {
         let id = f
             .store
-            .insert_message("demo", "signal", contact, direction, text, None)
+            .insert_message(crate::store::InsertMessage {
+                project: "demo",
+                channel: "signal",
+                contact,
+                direction,
+                text,
+                task_id: None,
+            })
             .unwrap();
         f.store.message(id).unwrap().unwrap()
     }

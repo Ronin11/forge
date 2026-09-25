@@ -4,6 +4,16 @@
 //! list --json`, docs/JOBS.md) without a channel plugin keeping its own
 //! log.
 
+/// Message content and channel identity, optionally associated with a task.
+pub struct InsertMessage<'a> {
+    pub project: &'a str,
+    pub channel: &'a str,
+    pub contact: &'a str,
+    pub direction: Direction,
+    pub text: &'a str,
+    pub task_id: Option<i64>,
+}
+
 use super::*;
 
 /// Which way a message travelled.
@@ -89,15 +99,15 @@ pub struct MessageFilter {
 impl Store {
     /// Record a message on a channel: `direction` is `In` for one that
     /// came from `contact`, `Out` for one sent to them.
-    pub fn insert_message(
-        &self,
-        project: &str,
-        channel: &str,
-        contact: &str,
-        direction: Direction,
-        text: &str,
-        task_id: Option<i64>,
-    ) -> Result<i64> {
+    pub fn insert_message(&self, args: InsertMessage<'_>) -> Result<i64> {
+        let InsertMessage {
+            project,
+            channel,
+            contact,
+            direction,
+            text,
+            task_id,
+        } = args;
         let c = self.lock();
         c.execute(
             "INSERT INTO messages (project, channel, contact, direction, text, at, task_id)
@@ -176,10 +186,24 @@ mod tests {
     #[test]
     fn records_and_lists_newest_first() {
         let (_d, s) = open_with_project();
-        s.insert_message("acme", "signal", "alice", Direction::In, "hi", None)
-            .unwrap();
-        s.insert_message("acme", "signal", "alice", Direction::Out, "hello", None)
-            .unwrap();
+        s.insert_message(InsertMessage {
+            project: "acme",
+            channel: "signal",
+            contact: "alice",
+            direction: Direction::In,
+            text: "hi",
+            task_id: None,
+        })
+        .unwrap();
+        s.insert_message(InsertMessage {
+            project: "acme",
+            channel: "signal",
+            contact: "alice",
+            direction: Direction::Out,
+            text: "hello",
+            task_id: None,
+        })
+        .unwrap();
         let rows = s.messages("acme", &MessageFilter::default()).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].text, "hello");
@@ -191,10 +215,24 @@ mod tests {
     #[test]
     fn filters_by_contact_since_and_direction() {
         let (_d, s) = open_with_project();
-        s.insert_message("acme", "signal", "alice", Direction::In, "a1", None)
-            .unwrap();
-        s.insert_message("acme", "signal", "bob", Direction::In, "b1", None)
-            .unwrap();
+        s.insert_message(InsertMessage {
+            project: "acme",
+            channel: "signal",
+            contact: "alice",
+            direction: Direction::In,
+            text: "a1",
+            task_id: None,
+        })
+        .unwrap();
+        s.insert_message(InsertMessage {
+            project: "acme",
+            channel: "signal",
+            contact: "bob",
+            direction: Direction::In,
+            text: "b1",
+            task_id: None,
+        })
+        .unwrap();
 
         let only_alice = s
             .messages(
