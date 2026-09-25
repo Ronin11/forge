@@ -786,6 +786,7 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
     let mut ts = t.clone();
     if let Some(m) = &step.model {
         ts.model = m.clone();
+        ts.model_source = "step".to_string();
     }
     if let Some(n) = step.max_turns {
         ts.max_turns = n as i64;
@@ -818,6 +819,7 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
                     &ts.model,
                     &ts.model,
                     provider,
+                    crate::attempt::model_pinned(&ts.model_source),
                 ),
                 source: crate::attempt::attempt_model_source(
                     step.model.as_deref(),
@@ -1542,6 +1544,9 @@ async fn finish(
     f.store.update_task(t).env()?;
     if let Some(iid) = t.initiative {
         crate::view::maybe_settle_initiative(f, id, iid).env()?;
+    }
+    if t.state == TaskState::Succeeded && (!t.land || !t.landed_sha.is_empty()) {
+        crate::queue::settle_superseded(f, id).env()?;
     }
     // A dependent waiting on this task, blocked with a stale reason
     // because its after list has since been re-pointed here, is released

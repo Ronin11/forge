@@ -1190,6 +1190,33 @@ pub fn withdraw(f: &Forge, id: i64, reason: &str, by: &str) -> Result<i64> {
     Ok(decision)
 }
 
+/// A task that landed settles the earlier tasks of its lineage that its
+/// own retry chain answered: one still blocked, whose decision (the
+/// kernel's demotion-as-task, or a supervisor answer) re-queued the next
+/// task on the path down to this one, is withdrawn as `superseded by
+/// <id>`, by `forge`, as a decision row. A blocked task whose follow-up
+/// has not landed is left alone. Returns the ids withdrawn.
+pub fn settle_superseded(f: &Forge, landed: i64) -> Result<Vec<i64>> {
+    let mut settled = Vec::new();
+    let mut child = landed;
+    while let Some(parent) = f.store.task(child)?.and_then(|t| t.retry_of) {
+        let Some(old) = f.store.task(parent)? else {
+            break;
+        };
+        if old.state == TaskState::Blocked
+            && f.store
+                .decisions_in_lineage(parent)?
+                .iter()
+                .any(|d| d.task_id == Some(parent) && d.retry_id == Some(child))
+        {
+            withdraw(f, parent, &format!("superseded by {landed}"), "forge")?;
+            settled.push(parent);
+        }
+        child = parent;
+    }
+    Ok(settled)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

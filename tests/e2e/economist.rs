@@ -113,3 +113,59 @@ fn a_role_the_project_pins_never_draws_from_the_experiment() {
         "{doc}"
     );
 }
+
+/// The argv the fake claude logged for a task's first attempt.
+fn launched_model(e: &Env, task: i64) -> String {
+    let log = e.log_text(task, 1);
+    let argv: Vec<String> = log
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["type"] == "forge_test_argv")
+        .map(|v| {
+            v["argv"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s.as_str().unwrap().to_string())
+                .collect()
+        })
+        .expect("the fake logged its argv");
+    let at = argv.iter().position(|a| a == "--model").expect("--model");
+    argv[at + 1].clone()
+}
+
+/// A claude provider that names a model runs it (the opus arm); a task that
+/// pinned `--model` on the same provider still runs its own.
+#[test]
+fn a_claude_providers_own_model_wins_unless_the_task_pinned_one() {
+    let e = Env::new();
+    std::fs::create_dir_all(&e.home).unwrap();
+    std::fs::write(
+        e.home.join("config.toml"),
+        "[providers.anthropic-opus]\nrunner = \"claude-cli\"\nmodel = \"opus\"\n",
+    )
+    .unwrap();
+    write_experiment(&e, "[factors.code]\nanthropic-opus = 1.0\n");
+
+    let o = e.run("argv-ok.sh", &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(launched_model(&e, 1), "opus");
+    let doc = e.trace_json(1);
+    assert_eq!(
+        doc["task"]["routing"]["code"]["model"]["value"], "opus",
+        "{doc}"
+    );
+    assert_eq!(
+        doc["task"]["routing"]["code"]["model"]["source"], "operator",
+        "{doc}"
+    );
+
+    let o = e.run("argv-ok.sh", &["--model", "sonnet"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(launched_model(&e, 2), "sonnet");
+    let doc = e.trace_json(2);
+    assert_eq!(
+        doc["task"]["routing"]["code"]["model"]["source"], "flag",
+        "{doc}"
+    );
+}
