@@ -2,8 +2,10 @@
 //! `forge work` or `forge-web` can run — the data directory, the
 //! operator's config template, the workflow catalog as a committed git
 //! repository, `web.token`, and (when systemd is available) the worker
-//! and web user units, enabled with linger. Idempotent: run again and
-//! every step reports nothing changed.
+//! and web user units, enabled with linger. On a platform without systemd
+//! (macOS) it writes no units and prints the two commands that run the
+//! worker and web client by hand. Idempotent: run again and every step
+//! reports nothing changed.
 
 use crate::{config, ctx::Paths, git, workflows};
 use anyhow::Result;
@@ -131,6 +133,24 @@ fn write_if_changed(path: &Path, content: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// The two commands that run the worker and the web client by hand, for a
+/// machine with no systemd at all (macOS): nothing is written under
+/// `~/.config/systemd`, which need not exist there.
+fn by_hand(home: &Path, forge_bin: &Path, web_bin: &Path) -> StepResult {
+    step(
+        "systemd",
+        false,
+        format!(
+            "no systemd on this platform; run the worker and web client by hand:\n  \
+             FORGE_HOME={home} {forge_bin} work --jobs 4\n  \
+             FORGE_HOME={home} FORGE_BIN={forge_bin} {web_bin} --bind 127.0.0.1:7788",
+            home = crate::sandbox::shell_quote(&home.display().to_string()),
+            forge_bin = crate::sandbox::shell_quote(&forge_bin.display().to_string()),
+            web_bin = crate::sandbox::shell_quote(&web_bin.display().to_string()),
+        ),
+    )
+}
+
 /// The two unit files, written under the OS user's systemd config
 /// directory with the currently running binary's own path, enabled and
 /// started with linger when a systemd user session is reachable; when it
@@ -138,6 +158,15 @@ fn write_if_changed(path: &Path, content: &str) -> Result<bool> {
 /// is), and the commands the operator would run by hand are printed in
 /// the returned detail instead of being run.
 fn install_units(home: &Path) -> Result<StepResult> {
+    let forge_bin = crate::binary::without_deleted_suffix(&std::env::current_exe()?);
+    let bin_dir = forge_bin
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let web_bin = bin_dir.join("forge-web");
+    if !cfg!(target_os = "linux") {
+        return Ok(by_hand(home, &forge_bin, &web_bin));
+    }
     let Some(dir) = systemd_user_dir() else {
         return Ok(step(
             "systemd",
@@ -145,13 +174,6 @@ fn install_units(home: &Path) -> Result<StepResult> {
             "HOME is not set; cannot locate ~/.config/systemd/user",
         ));
     };
-    let forge_bin = crate::binary::without_deleted_suffix(&std::env::current_exe()?);
-    let bin_dir = forge_bin
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let web_bin = bin_dir.join("forge-web");
-
     let worker_path = dir.join("forge-worker.service");
     let web_path = dir.join("forge-web.service");
     let worker_changed = write_if_changed(&worker_path, &worker_unit(home, &forge_bin, &bin_dir))?;
@@ -275,4 +297,34 @@ pub async fn run(home_override: Option<PathBuf>) -> Result<Report> {
     steps.push(install_units(&home)?);
 
     Ok(Report { home, steps })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn by_hand_names_the_worker_and_web_commands_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("forge home");
+        let s = by_hand(
+            &home,
+            Path::new("/opt/forge/forge"),
+            Path::new("/opt/forge/forge-web"),
+        );
+        assert!(!s.changed);
+        let lines: Vec<&str> = s.detail.lines().map(str::trim).collect();
+        let quoted = format!("'{}'", home.display());
+        assert_eq!(
+            lines[1],
+            format!("FORGE_HOME={quoted} '/opt/forge/forge' work --jobs 4")
+        );
+        assert_eq!(
+            lines[2],
+            format!(
+                "FORGE_HOME={quoted} FORGE_BIN='/opt/forge/forge' '/opt/forge/forge-web' --bind 127.0.0.1:7788"
+            )
+        );
+        assert!(!home.exists());
+    }
 }
