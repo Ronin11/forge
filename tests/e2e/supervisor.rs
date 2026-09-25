@@ -51,8 +51,13 @@ fn the_supervisor_answers_a_question_with_citations_and_the_answer_lands() {
     assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
     assert_eq!(e.task(2).0, "succeeded");
     let ds: serde_json::Value = e.decisions_json();
-    let d = &ds.as_array().unwrap()[0];
-    assert_eq!(d["answered_by"], "supervisor");
+    assert_eq!(e.task(1).0, "withdrawn");
+    let d = ds
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["answered_by"] == "supervisor")
+        .unwrap();
     assert_eq!(d["citations"], "hello.sh, forge.toml");
     assert_eq!(d["retry_id"], 2);
     assert_eq!(d["outcome"], "succeeded");

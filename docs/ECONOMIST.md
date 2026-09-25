@@ -116,6 +116,13 @@ Four pieces, in the order they landed:
    trace`/`forge show`. `Task::explore` (`queue::assign_explore`) is the
    per-role draw itself, from the operator's `[measure] explore` config;
    piece 4 (below) adds a second source of draws onto the same field.
+   The model's source follows `attempt::attempt_model` (claude runner): a
+   workflow step's own `model` (`"default"`) or a `--model` flag
+   (`"flag"`) still wins; otherwise a claude provider that names a model
+   (`[providers.anthropic-opus]`, `model = "opus"`) wins over the task's
+   default, source `"operator"` — so an experiment level can be an opus
+   arm. The built-in `anthropic` provider keeps the task's model, and the
+   supervisor its own.
 3. **`forge stats --factors [--days N]`** (`Store::factor_stats`,
    `src/store/stats.rs`): over landed and failed tasks in the window, per
    level of every factor (`"provider:<role>"` for each role in

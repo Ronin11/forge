@@ -831,7 +831,9 @@ journal_control = 0.0
 # task picks one with `forge add --provider <name>`; `forge providers`
 # lists what is configured. `env` and `extra_args` are the runner's own
 # process env and argv; `price_usd_per_million_input/output` price a
-# runner that reports no cost itself (codex), 0 for a local model. On a
+# runner that reports no cost itself (codex), 0 for a local model. A
+# claude-cli provider may name a `model` too (an opus arm for the
+# economist): it wins over the task's default, but not over `--model`. On a
 # claude-cli provider they price every attempt at the API list from the
 # CLI's tokens (cache reads at `price_usd_per_million_cache_read`, default a
 # tenth of the input price; cache creation at the input price) and keep the

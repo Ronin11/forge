@@ -136,6 +136,40 @@ fn a_demotion_with_a_reproduction_files_a_follow_up_that_lands() {
         .unwrap();
     assert!(o.status.success());
     assert_eq!(e.task(2).0, "succeeded");
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "withdrawn");
+    assert_eq!(reason, "superseded by 2");
+    let by: String = e
+        .db()
+        .query_row(
+            "SELECT answered_by FROM decisions WHERE task_id=1 AND answer='superseded by 2'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(by, "forge");
+    let o = e.forge("ok.sh", &["requests", "--json"]);
+    assert!(!String::from_utf8_lossy(&o.stdout).contains("\"id\":1"));
+}
+
+#[test]
+fn a_demotion_whose_follow_up_fails_stays_blocked() {
+    let e = Env::new();
+    let o = run_wf(
+        &e,
+        "ok.sh",
+        &[("FORGE_CLAUDE_BIN_REVIEW", "reviewer-repro.sh")],
+        "reviewed",
+        "write 42",
+    );
+    assert!(!o.status.success());
+    let _ = e
+        .with_role("crash.sh", "REVIEW", "reviewer-ok.sh")
+        .args(["work", "--once"])
+        .output()
+        .unwrap();
+    assert_ne!(e.task(2).0, "succeeded");
+    assert_eq!(e.task(1).0, "blocked");
 }
 
 #[test]

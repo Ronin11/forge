@@ -1046,6 +1046,7 @@ pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<Strin
                 t.finished_at = Some(crate::unix_now());
             }
             f.store.update_task(&t)?;
+            crate::queue::settle_superseded(f, id)?;
             if let Some(iid) = t.initiative {
                 crate::view::maybe_settle_initiative(f, id, iid)?;
             }
