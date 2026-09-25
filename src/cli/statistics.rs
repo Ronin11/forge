@@ -1,4 +1,6 @@
 use super::*;
+use crate::agent::Runner;
+use crate::pricing::Prices;
 
 /// Tool usage per step, read from attempts only (`forge stats --tools`
 /// and `--json --tools`): a job's directive step runs with `no_tools`
@@ -392,15 +394,17 @@ fn reprice_stats(f: &Forge, provider: Option<&str>, force: bool, json: bool) -> 
     {
         bail!("unknown provider {p:?}");
     }
-    let prices: BTreeMap<String, (f64, f64)> = f
+    let prices: BTreeMap<String, (Prices, bool)> = f
         .providers
         .iter()
         .filter(|(_, p)| p.price_input_per_million > 0.0 || p.price_output_per_million > 0.0)
         .map(|(name, p)| {
-            (
-                name.clone(),
-                (p.price_input_per_million, p.price_output_per_million),
-            )
+            let prices = Prices {
+                input: p.price_input_per_million,
+                output: p.price_output_per_million,
+                cache_read: p.price_cache_read_per_million,
+            };
+            (name.clone(), (prices, p.runner == Runner::ClaudeCli))
         })
         .collect();
     let result = f.store.reprice_attempts(provider, force, &prices)?;

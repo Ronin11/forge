@@ -44,6 +44,7 @@ fn finish_attempt(
         cache_creation_input_tokens: None,
         early_signals: "[]".into(),
         early_near: "[]".into(),
+        cli_cost_usd: None,
     })
     .unwrap();
 }
@@ -121,6 +122,7 @@ fn defect_escape_counts_broke_base_and_repaired_once_each() {
         cache_creation_input_tokens: None,
         early_signals: "[]".into(),
         early_near: "[]".into(),
+        cli_cost_usd: None,
     })
     .unwrap();
 
@@ -351,6 +353,7 @@ fn journal_control_stats_splits_code_retries_by_whether_the_journal_was_shown() 
             cache_creation_input_tokens: None,
             early_signals: "[]".into(),
             early_near: "[]".into(),
+            cli_cost_usd: None,
         })
         .unwrap();
     };
@@ -899,6 +902,7 @@ fn finish_overlay_attempt(
         cache_creation_input_tokens: None,
         early_signals: "[]".into(),
         early_near: "[]".into(),
+        cli_cost_usd: None,
     })
     .unwrap();
 }

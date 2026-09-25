@@ -283,6 +283,7 @@ src/landing.rs      the integrator: merge base in, re-verify, push, fast-forward
 src/main.rs         entry, unix_now
 src/operation.rs    a workflow step that is a command, not an agent
 src/plugins.rs      plugins: directories named for their plugin.toml, one broken manifest never stops the rest
+src/pricing.rs      pricing: a claude attempt priced at list from the CLI's tokens, its own figure kept beside
 src/profile.rs      a workflow's measured cost and success, from its runs
 src/prompts.rs      what each contract's agent is told, assembled from pieces
 src/queue.rs        how a task comes to exist; enqueue validates a TaskRequest

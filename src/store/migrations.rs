@@ -641,4 +641,9 @@ CREATE TABLE job_trust (
     // than a person or the supervisor made it: `demotion-as-task` (see
     // docs/WORKFLOWS.md, "Review"). Empty for every other decision.
     "ALTER TABLE decisions ADD COLUMN kind TEXT NOT NULL DEFAULT '';",
+    // The claude CLI's own `total_cost_usd`, kept beside a `cost_usd` Forge
+    // computed from tokens at the provider's list prices (docs/ECONOMIST.md,
+    // "Price every provider at its API list"). NULL when the CLI's figure
+    // is the cost.
+    "ALTER TABLE attempts ADD COLUMN cli_cost_usd REAL;",
 ];

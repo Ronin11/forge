@@ -149,6 +149,7 @@ mod tests {
             cache_creation_input_tokens: None,
             early_signals: "[]".into(),
             early_near: "[]".into(),
+            cli_cost_usd: None,
         })
         .unwrap();
 

@@ -381,6 +381,8 @@ struct ProviderRaw {
     notes: Option<String>,
     price_usd_per_million_input: Option<f64>,
     price_usd_per_million_output: Option<f64>,
+    /// See `agent::Provider::price_cache_read_per_million`.
+    price_usd_per_million_cache_read: Option<f64>,
     /// USD per premium request, for the copilot runner (see
     /// `agent::Provider::price_per_request`); default 0.
     price_usd_per_premium_request: Option<f64>,
@@ -829,7 +831,17 @@ journal_control = 0.0
 # task picks one with `forge add --provider <name>`; `forge providers`
 # lists what is configured. `env` and `extra_args` are the runner's own
 # process env and argv; `price_usd_per_million_input/output` price a
-# runner that reports no cost itself (codex), 0 for a local model.
+# runner that reports no cost itself (codex), 0 for a local model. On a
+# claude-cli provider they price every attempt at the API list from the
+# CLI's tokens (cache reads at `price_usd_per_million_cache_read`, default a
+# tenth of the input price; cache creation at the input price) and keep the
+# CLI's own figure in `cli_cost_usd`. List prices as of 2026-09-25, USD per
+# million tokens: Opus 5.5 $4 in / $20 out, Sonnet 5 $2 in / $10 out.
+#
+# [providers.anthropic]
+# price_usd_per_million_input = 2.00
+# price_usd_per_million_output = 10.00
+# price_usd_per_million_cache_read = 0.20
 #
 # [providers.devhome]
 # runner = \"codex-cli\"
@@ -1088,6 +1100,7 @@ fn build_providers(
                 notes: p.notes,
                 price_input_per_million: p.price_usd_per_million_input.unwrap_or(0.0),
                 price_output_per_million: p.price_usd_per_million_output.unwrap_or(0.0),
+                price_cache_read_per_million: p.price_usd_per_million_cache_read,
                 price_per_request: p.price_usd_per_premium_request.unwrap_or(0.0),
                 five_hour_max: p.five_hour_max.unwrap_or(budget.five_hour_max),
                 seven_day_max: p.seven_day_max.unwrap_or(budget.seven_day_max),

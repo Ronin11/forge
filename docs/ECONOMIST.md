@@ -282,6 +282,24 @@ except with no `task_id`: repricing touches attempts across many tasks,
 or none, so it names no single one; `decisions.task_id` is nullable for
 exactly this case.
 
+### Pricing claude attempts at list
+
+A claude-cli provider that sets `price_usd_per_million_input` and
+`_output` (and optionally `price_usd_per_million_cache_read`, default a
+tenth of the input price) is priced by Forge like every other runner:
+`cost_usd` is the CLI's input, output, cache-read and cache-creation
+tokens times those prices (cache creation at the input price; `src/
+pricing.rs`), and the CLI's own `total_cost_usd` is kept in
+`attempts.cli_cost_usd` (shown as `cli_cost_usd` by `forge trace --json`)
+for comparison. With no prices set, `cost_usd` is the CLI's figure as
+before. List prices as of 2026-09-25, USD per million tokens: Opus 5.5
+$4 in / $20 out, Sonnet 5 $2 in / $10 out.
+
+`forge stats --reprice` reaches claude rows recorded before the prices
+were set: a never-repriced claude row with no `cli_cost_usd` gets its old
+figure moved there and `cost_usd` recomputed from all four token counts,
+marked with `repriced_at` like any other.
+
 ## What it is not
 
 Not a learning system, not a scheduler, not a spend cap (those exist).

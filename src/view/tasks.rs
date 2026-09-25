@@ -389,6 +389,8 @@ pub struct TraceAttempt {
     pub num_turns: i64,
     pub tool_calls: i64,
     pub cost_usd: Option<f64>,
+    /// The claude CLI's own figure when `cost_usd` was priced at list.
+    pub cli_cost_usd: Option<f64>,
     pub agent_ms: i64,
     pub commits: i64,
     pub files_changed: i64,
@@ -578,6 +580,7 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
             num_turns: a.num_turns,
             tool_calls: a.tool_calls,
             cost_usd: a.cost_usd,
+            cli_cost_usd: a.cli_cost_usd,
             agent_ms: a.agent_ms,
             commits: a.commits,
             files_changed: a.files_changed,

@@ -546,6 +546,7 @@ pub async fn record(
     a.num_turns = outcome.num_turns;
     a.tool_calls = outcome.tool_calls;
     a.cost_usd = outcome.cost_usd;
+    a.cli_cost_usd = outcome.cli_cost_usd;
     a.input_tokens = outcome.input_tokens;
     a.output_tokens = outcome.output_tokens;
     a.cache_read_input_tokens = outcome.cache_read_input_tokens;
@@ -578,6 +579,7 @@ pub async fn record(
             num_turns: a.num_turns,
             tool_calls: a.tool_calls,
             cost_usd: a.cost_usd,
+            cli_cost_usd: a.cli_cost_usd,
             agent_ms: a.agent_ms,
             commits: a.commits,
             files_changed: a.files_changed,
@@ -628,6 +630,7 @@ mod tests {
             notes: None,
             price_input_per_million: 0.0,
             price_output_per_million: 0.0,
+            price_cache_read_per_million: None,
             price_per_request: 0.0,
             five_hour_max: 0.0,
             seven_day_max: 0.0,
@@ -644,6 +647,7 @@ mod tests {
             notes: None,
             price_input_per_million: 0.0,
             price_output_per_million: 0.0,
+            price_cache_read_per_million: None,
             price_per_request: 0.0,
             five_hour_max: 0.0,
             seven_day_max: 0.0,
@@ -693,6 +697,7 @@ mod tests {
             notes: None,
             price_input_per_million: 0.0,
             price_output_per_million: 0.0,
+            price_cache_read_per_million: None,
             price_per_request: 0.0,
             five_hour_max: 0.0,
             seven_day_max: 0.0,

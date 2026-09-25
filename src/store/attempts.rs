@@ -1,4 +1,5 @@
 use super::*;
+use crate::pricing::{Prices, Tokens};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum AttemptState {
@@ -80,6 +81,8 @@ pub struct Attempt {
     pub num_turns: i64,
     pub tool_calls: i64,
     pub cost_usd: Option<f64>,
+    /// The claude CLI's own cost when `cost_usd` was priced at list from tokens.
+    pub cli_cost_usd: Option<f64>,
     pub agent_ms: i64,
     pub commits: i64,
     pub files_changed: i64,
@@ -123,6 +126,8 @@ pub struct FinishAttempt {
     pub num_turns: i64,
     pub tool_calls: i64,
     pub cost_usd: Option<f64>,
+    /// The claude CLI's own cost when `cost_usd` was priced at list from tokens.
+    pub cli_cost_usd: Option<f64>,
     pub agent_ms: i64,
     pub commits: i64,
     pub files_changed: i64,
@@ -227,6 +232,7 @@ pub(super) const ATTEMPT_COLUMNS: &[&str] = &[
     "runner",
     "provider",
     "repriced_at",
+    "cli_cost_usd",
 ];
 
 pub(super) const OP_COLUMNS: &[&str] = &[
@@ -262,6 +268,7 @@ fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
         num_turns: r.get("num_turns")?,
         tool_calls: r.get("tool_calls")?,
         cost_usd: r.get("cost_usd")?,
+        cli_cost_usd: r.get("cli_cost_usd")?,
         agent_ms: r.get("agent_ms")?,
         commits: r.get("commits")?,
         files_changed: r.get("files_changed")?,
@@ -328,7 +335,7 @@ impl Store {
              result_text=?15, envelope_json=?16, rl_five_hour=?17, rl_seven_day=?18, rl_five_hour_resets=?19,
              rl_seven_day_resets=?20, end_sha=?21, outputs_json=?22, session_id=?23, first_edit=?24,
              input_tokens=?25, output_tokens=?26, cache_read_input_tokens=?27, cache_creation_input_tokens=?28,
-             early_signals=?29, early_near=?30 WHERE id=?1",
+             early_signals=?29, early_near=?30, cli_cost_usd=?31 WHERE id=?1",
             params![
                 a.id,
                 a.state.as_str(),
@@ -360,6 +367,7 @@ impl Store {
                 a.cache_creation_input_tokens,
                 a.early_signals,
                 a.early_near,
+                a.cli_cost_usd,
             ],
         )?;
         Ok(())
@@ -460,56 +468,85 @@ impl Store {
     }
 
     /// `forge stats --reprice` (docs/ECONOMIST.md, "Repricing a
-    /// free-reporting provider"): for every attempt with `cost_usd` 0 or
-    /// NULL, recorded `input_tokens`/`output_tokens`, and a provider
-    /// `prices` names (provider -> (price per million input tokens, price
-    /// per million output tokens), the operator config's own numbers),
-    /// sets `cost_usd` to tokens times price — the same arithmetic
-    /// `agent.rs` uses when a provider reports it live. `provider`
-    /// narrows to one provider's attempts. Without `force`, only a row
-    /// that has never been repriced (`repriced_at` NULL) and still reads
-    /// `cost_usd` 0 or NULL is touched; a row whose provider reported a
-    /// real cost at launch is never selected, repriced or not. With
-    /// `force`, every row this verb repriced before (`repriced_at` not
-    /// NULL) is redone from its tokens and the current price, whatever
-    /// its `cost_usd` reads now — a repriced row's `cost_usd` no longer
-    /// gates whether `--force` can reach it.
+    /// free-reporting provider"): sets `cost_usd` from recorded tokens at
+    /// the provider's `prices` (the operator config's own numbers; the
+    /// flag marks a claude-cli provider). `provider` narrows to one
+    /// provider's attempts. Without `force`, a non-claude row is touched
+    /// only when never repriced (`repriced_at` NULL) and `cost_usd` reads 0
+    /// or NULL, so a cost the provider reported at launch is never
+    /// overwritten. A claude row is also touched when it carries the CLI's
+    /// own figure from before prices were set: `cli_cost_usd` NULL and
+    /// never repriced, whatever `cost_usd` reads; the old figure moves to
+    /// `cli_cost_usd`, and cache tokens are priced. With `force`, every
+    /// row this verb repriced before is redone from its tokens.
     pub fn reprice_attempts(
         &self,
         provider: Option<&str>,
         force: bool,
-        prices: &BTreeMap<String, (f64, f64)>,
+        prices: &BTreeMap<String, (Prices, bool)>,
     ) -> Result<RepriceResult> {
         let c = self.lock();
-        let candidates: Vec<(i64, String, i64, i64)> = {
+        type Candidate = (i64, String, Tokens, Option<f64>, Option<f64>, Option<i64>);
+        let candidates: Vec<Candidate> = {
             let mut stmt = c.prepare(
-                "SELECT id, provider, input_tokens, output_tokens FROM attempts
+                "SELECT id, provider, input_tokens, output_tokens, cache_read_input_tokens,
+                        cache_creation_input_tokens, cost_usd, cli_cost_usd, repriced_at FROM attempts
                  WHERE input_tokens IS NOT NULL AND output_tokens IS NOT NULL
-                   AND (?1 IS NULL OR provider = ?1)
-                   AND (((cost_usd = 0 OR cost_usd IS NULL) AND repriced_at IS NULL)
-                        OR (?2 = 1 AND repriced_at IS NOT NULL))",
+                   AND (?1 IS NULL OR provider = ?1)",
             )?;
-            stmt.query_map(params![provider, force as i64], |r| {
+            stmt.query_map(params![provider], |r| {
                 Ok((
                     r.get("id")?,
                     r.get("provider")?,
-                    r.get("input_tokens")?,
-                    r.get("output_tokens")?,
+                    Tokens {
+                        input: r.get("input_tokens")?,
+                        output: r.get("output_tokens")?,
+                        cache_read: r
+                            .get::<_, Option<i64>>("cache_read_input_tokens")?
+                            .unwrap_or(0),
+                        cache_creation: r
+                            .get::<_, Option<i64>>("cache_creation_input_tokens")?
+                            .unwrap_or(0),
+                    },
+                    r.get("cost_usd")?,
+                    r.get("cli_cost_usd")?,
+                    r.get("repriced_at")?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
         };
         let now = crate::unix_now();
         let mut result = RepriceResult::default();
-        for (id, provider, input_tokens, output_tokens) in candidates {
-            let Some((price_input, price_output)) = prices.get(&provider) else {
+        for (id, provider, tokens, old_cost, cli_cost, repriced_at) in candidates {
+            let Some((price, claude)) = prices.get(&provider) else {
                 continue;
             };
-            let cost = input_tokens as f64 * price_input / 1_000_000.0
-                + output_tokens as f64 * price_output / 1_000_000.0;
+            let free = old_cost.is_none_or(|c| c == 0.0);
+            let eligible = match repriced_at {
+                Some(_) => force,
+                None => free || (*claude && cli_cost.is_none()),
+            };
+            if !eligible {
+                continue;
+            }
+            let tokens = if *claude {
+                tokens
+            } else {
+                Tokens {
+                    cache_read: 0,
+                    cache_creation: 0,
+                    ..tokens
+                }
+            };
+            let cost = price.cost(tokens);
+            let cli = if *claude && repriced_at.is_none() && cli_cost.is_none() {
+                old_cost.filter(|c| *c > 0.0)
+            } else {
+                cli_cost
+            };
             c.execute(
-                "UPDATE attempts SET cost_usd=?2, repriced_at=?3 WHERE id=?1",
-                params![id, cost, now],
+                "UPDATE attempts SET cost_usd=?2, repriced_at=?3, cli_cost_usd=?4 WHERE id=?1",
+                params![id, cost, now, cli],
             )?;
             result.changed += 1;
             result.total_usd += cost;
@@ -643,6 +680,7 @@ mod tests {
             cache_creation_input_tokens: None,
             early_signals: "[]".into(),
             early_near: "[]".into(),
+            cli_cost_usd: None,
         };
         let anthropic_attempt = s
             .insert_attempt(&Attempt {
@@ -744,9 +782,67 @@ mod tests {
             cache_creation_input_tokens: None,
             early_signals: "[]".into(),
             early_near: "[]".into(),
+            cli_cost_usd: None,
         })
         .unwrap();
         id
+    }
+
+    fn price(input: f64, output: f64, claude: bool) -> (Prices, bool) {
+        (
+            Prices {
+                input,
+                output,
+                cache_read: None,
+            },
+            claude,
+        )
+    }
+
+    #[test]
+    fn reprice_moves_a_claude_rows_cli_figure_aside_and_prices_the_cache() {
+        let (_dir, s, task_id) = reprice_fixture();
+        let id = reprice_attempt(
+            &s,
+            task_id,
+            1,
+            "anthropic",
+            Some(1.23),
+            Some(1_000_000),
+            Some(500_000),
+        );
+        s.lock()
+            .execute(
+                "UPDATE attempts SET cache_read_input_tokens=2000000, cache_creation_input_tokens=1000000 WHERE id=?1",
+                params![id],
+            )
+            .unwrap();
+        let prices = BTreeMap::from([("anthropic".to_string(), price(4.0, 20.0, true))]);
+        let first = s.reprice_attempts(None, false, &prices).unwrap();
+        assert_eq!(first.changed, 1);
+        let row = |s: &Store| {
+            s.lock()
+                .query_row(
+                    "SELECT cost_usd, cli_cost_usd, repriced_at FROM attempts WHERE id=?1",
+                    params![id],
+                    |r| {
+                        Ok((
+                            r.get::<_, f64>("cost_usd")?,
+                            r.get::<_, Option<f64>>("cli_cost_usd")?,
+                            r.get::<_, Option<i64>>("repriced_at")?,
+                        ))
+                    },
+                )
+                .unwrap()
+        };
+        let (cost, cli, at) = row(&s);
+        // 4 + 10 + 0.8 + 4
+        assert!((cost - 18.8).abs() < 1e-9, "{cost}");
+        assert_eq!(cli, Some(1.23));
+        assert!(at.is_some());
+        assert_eq!(s.reprice_attempts(None, false, &prices).unwrap().changed, 0);
+        assert_eq!(s.reprice_attempts(None, true, &prices).unwrap().changed, 1);
+        assert_eq!(row(&s).1, Some(1.23));
     }
 
     #[test]
@@ -789,8 +885,8 @@ mod tests {
         let no_tokens = reprice_attempt(&s, task_id, 5, "openai", Some(0.0), None, None);
 
         let prices = BTreeMap::from([
-            ("openai".to_string(), (2.0, 6.0)),
-            ("anthropic".to_string(), (3.0, 15.0)),
+            ("openai".to_string(), price(2.0, 6.0, false)),
+            ("anthropic".to_string(), price(3.0, 15.0, false)),
         ]);
         let result = s.reprice_attempts(None, false, &prices).unwrap();
         assert_eq!(result.changed, 2);
@@ -837,8 +933,8 @@ mod tests {
             Some(0),
         );
         let prices = BTreeMap::from([
-            ("openai".to_string(), (1.0, 1.0)),
-            ("anthropic".to_string(), (1.0, 1.0)),
+            ("openai".to_string(), price(1.0, 1.0, false)),
+            ("anthropic".to_string(), price(1.0, 1.0, false)),
         ]);
         let result = s.reprice_attempts(Some("openai"), false, &prices).unwrap();
         assert_eq!(result.changed, 1);
@@ -860,7 +956,7 @@ mod tests {
             Some(1_000_000),
             Some(0),
         );
-        let prices = BTreeMap::from([("openai".to_string(), (0.0, 0.0))]);
+        let prices = BTreeMap::from([("openai".to_string(), price(0.0, 0.0, false))]);
 
         let first = s.reprice_attempts(None, false, &prices).unwrap();
         assert_eq!(first.changed, 1);
@@ -896,7 +992,7 @@ mod tests {
             Some(1_000_000),
             Some(500_000),
         );
-        let prices = BTreeMap::from([("openai".to_string(), (2.0, 6.0))]);
+        let prices = BTreeMap::from([("openai".to_string(), price(2.0, 6.0, false))]);
 
         let cost = |id: i64| {
             s.attempts(task_id)

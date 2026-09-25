@@ -25,6 +25,9 @@ pub struct Outcome {
     pub num_turns: i64,
     pub tool_calls: i64,
     pub cost_usd: Option<f64>,
+    /// The claude CLI's own `total_cost_usd`, kept when `cost_usd` was
+    /// computed from tokens at the provider's list prices (`pricing`).
+    pub cli_cost_usd: Option<f64>,
     /// Token counts from the result frame's usage object.
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
@@ -142,6 +145,9 @@ pub struct Provider {
     /// its own (codex): 0 for a local model.
     pub price_input_per_million: f64,
     pub price_output_per_million: f64,
+    /// USD per million cache-read tokens for a priced claude provider;
+    /// `None` means a tenth of the input price.
+    pub price_cache_read_per_million: Option<f64>,
     /// USD per premium request, for a runner whose CLI meters requests
     /// rather than tokens (copilot: a plan's monthly allowance, then a list
     /// price per request over it); 0 within the allowance. Never consulted
@@ -176,6 +182,7 @@ impl Default for Provider {
             notes: None,
             price_input_per_million: 0.0,
             price_output_per_million: 0.0,
+            price_cache_read_per_million: None,
             price_per_request: 0.0,
             five_hour_max: 0.9,
             seven_day_max: 0.95,
@@ -909,6 +916,9 @@ async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
         )?;
     }
     out.stderr_text = stderr_text;
+    if let Some(prices) = crate::pricing::Prices::for_claude(l.provider) {
+        crate::pricing::price_outcome(&mut out, &prices);
+    }
     Ok(out)
 }
 

@@ -78,6 +78,7 @@ async fn record_verdict(
             cache_creation_input_tokens: None,
             early_signals: "[]".to_string(),
             early_near: "[]".to_string(),
+            cli_cost_usd: None,
         })
         .env()?;
     Ok(a.id)

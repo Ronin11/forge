@@ -579,3 +579,45 @@ fn a_task_on_a_copilot_provider_runs_end_to_end_and_prices_premium_requests() {
     assert_eq!(a["runner"], "copilot-cli");
     assert_eq!(a["provider"], "fake-copilot");
 }
+
+#[test]
+fn a_priced_claude_provider_records_the_computed_cost_beside_the_clis_own() {
+    let e = Env::new();
+    write_config(
+        &e,
+        "[providers.anthropic]\nprice_usd_per_million_input = 4.0\nprice_usd_per_million_output = 20.0\n",
+    );
+    let o = e.run("ok.sh", &["--retries", "0"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (cost, cli): (f64, Option<f64>) = e
+        .db()
+        .query_row(
+            "SELECT cost_usd, cli_cost_usd FROM attempts WHERE task_id=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    // ok.sh reports 123 in, 45 out, 67 cache read, 8 cache creation and $0.01.
+    let want = (123.0 * 4.0 + 45.0 * 20.0 + 67.0 * 0.4 + 8.0 * 4.0) / 1e6;
+    assert!((cost - want).abs() < 1e-9, "{cost} vs {want}");
+    assert_eq!(cli, Some(0.01));
+    let doc = e.trace_json("1");
+    assert_eq!(doc["attempts"][0]["cli_cost_usd"], 0.01);
+}
+
+#[test]
+fn an_unpriced_claude_provider_keeps_the_clis_figure() {
+    let e = Env::new();
+    let o = e.run("ok.sh", &["--retries", "0"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (cost, cli): (f64, Option<f64>) = e
+        .db()
+        .query_row(
+            "SELECT cost_usd, cli_cost_usd FROM attempts WHERE task_id=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(cost, 0.01);
+    assert_eq!(cli, None);
+}

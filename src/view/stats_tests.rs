@@ -272,6 +272,7 @@ async fn repair_cost_attributes_a_later_landings_cost_by_the_share_of_lines_it_r
                 cache_creation_input_tokens: None,
                 early_signals: "[]".into(),
                 early_near: "[]".into(),
+                cli_cost_usd: None,
             })
             .unwrap();
     };

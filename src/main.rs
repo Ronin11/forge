@@ -34,6 +34,7 @@ mod journal;
 mod landing;
 mod operation;
 mod plugins;
+mod pricing;
 mod profile;
 mod prompts;
 mod queue;
