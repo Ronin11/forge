@@ -175,3 +175,89 @@ impl Execution {
         self.bwrap.as_ref().is_ok_and(|sb| sb.grant_ro(path, dir))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn execution_config_defaults_and_rejects_unknown_backends() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("forge.toml");
+        let defaults = "[defaults]\nbase_branch = \"main\"\n";
+        std::fs::write(&path, defaults).unwrap();
+        assert_eq!(
+            config::load_working(dir.path())
+                .await
+                .unwrap()
+                .execution
+                .backend,
+            Backend::Bwrap
+        );
+        std::fs::write(
+            &path,
+            format!("{defaults}[execution]\nbackend = \"host\"\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            config::load_working(dir.path())
+                .await
+                .unwrap()
+                .execution
+                .backend,
+            Backend::Host
+        );
+        std::fs::write(&path, format!("{defaults}[execution]\nbackend = \"ssh\"\n")).unwrap();
+        assert!(config::load_working(dir.path()).await.is_err());
+    }
+
+    #[test]
+    fn host_preserves_argv_cwd_and_explicit_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let argv = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "printf '%s:%s' \"$VALUE\" \"$1\"; test \"$PWD\" = \"$EXPECTED\"".into(),
+            "sh".into(),
+            "two words".into(),
+        ];
+        let env = vec![
+            ("VALUE".into(), "a value".into()),
+            ("EXPECTED".into(), dir.path().display().to_string()),
+        ];
+        let output = Host
+            .command(dir.path(), &argv, &env, &Policy::new([]))
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"a value:two words");
+    }
+
+    #[test]
+    fn unavailable_bwrap_never_falls_back_to_host() {
+        let execution = Execution {
+            bwrap: Err("bwrap unavailable".into()),
+            backends: Mutex::new(BTreeMap::new()),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let argv = vec!["/bin/true".into()];
+        assert!(
+            !execution
+                .command(dir.path(), &argv, &[])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        execution.set_backend(dir.path(), Backend::Host);
+        assert!(
+            execution
+                .command(dir.path(), &argv, &[])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        assert_eq!(execution.backend(&dir.path().join("child")), Backend::Host);
+    }
+}

@@ -30,6 +30,13 @@ fn host_executor_runs_unsandboxed_and_records_guarantees() {
     )
     .unwrap();
     git(&e.repo, &["commit", "-qam", "select host executor"]);
+    // An uncommitted configuration cannot change the trusted executor.
+    let trusted = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        trusted.replace("backend = \"host\"", "backend = \"bwrap\""),
+    )
+    .unwrap();
     let output = e
         .cmd("ok.sh")
         .env("FORGE_SANDBOX", "1")
@@ -58,6 +65,7 @@ fn host_executor_runs_unsandboxed_and_records_guarantees() {
             "credentials_seeded": false, "checks_under_kernel_control": true,
         })
     );
+    std::fs::write(&path, trusted).unwrap();
     let output = e
         .cmd("ok.sh")
         .env("FORGE_SANDBOX", "1")

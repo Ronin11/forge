@@ -39,8 +39,8 @@ And one rule of composition, enforced, not preferred:
 
 ## Executors
 
-Today the only executor is bwrap on this host (`src/sandbox.rs`), and
-it is the security boundary: tmpfs home, the worktree bound, an egress
+The executor contract (`src/executor.rs`) supports bwrap and host.
+Bwrap (`src/sandbox.rs`) is the default security boundary: tmpfs home, the worktree bound, an egress
 proxy, private copies of the CLIs' credentials, package caches overlaid.
 Some work cannot run there: a step that has to touch the dev server, a
 different OS image, a machine a second operator runs. So the executor
@@ -55,8 +55,16 @@ backend = "bwrap"        # the default; "host" (unsandboxed, today's FORGE_SANDB
 # user = "forge"
 ```
 
-The contract every backend meets, and `forge doctor` reports which
-guarantees each one actually provides on this machine:
+`[execution]` is read from the trusted base, like `[sandbox]` egress.
+Each attempt records `executor` and `guarantees` in its inputs. Host
+runs directly with the agent environment: it provides kernel-controlled
+checks, but no private worktree, bounded egress, or private credential
+seeding. `forge doctor` reports an `executors.<backend>` row and warns
+that host egress is unbounded. `FORGE_SANDBOX=0` remains an operator
+override selecting host. Container and SSH backends are not implemented.
+
+The contract reports these guarantees as data, and `forge doctor` reports
+which each backend provides on this machine:
 
 - the worktree is present and writable, nothing else of the operator's
   home is visible;
