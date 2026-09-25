@@ -2174,6 +2174,7 @@ fn twilio_code_extracts_a_code() {
 fn plugin_forge_bin_survives_worker_binary_replacement() {
     for inherited in [false, true] {
         let e = Env::new();
+        std::fs::create_dir_all(&e.home).unwrap();
         let bin = e.home.join("forge-launch");
         std::fs::copy(env!("CARGO_BIN_EXE_forge"), &bin).unwrap();
         let plugin = e.home.join("plugins/stable-bin");
