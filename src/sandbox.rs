@@ -152,8 +152,20 @@ pub fn parse_bwrap_version(out: &str) -> Option<BwrapVersion> {
 
 /// Run `bwrap --version` and parse it; `None` when it cannot be run or read.
 pub fn bwrap_version(bwrap: &Path) -> Option<BwrapVersion> {
-    let out = Command::new(bwrap).arg("--version").output().ok()?;
-    parse_bwrap_version(&String::from_utf8_lossy(&out.stdout))
+    for attempt in 0..20 {
+        match Command::new(bwrap).arg("--version").output() {
+            // Freshly installed executables can remain briefly busy after
+            // their writer closes, just like freshly written agent scripts.
+            Err(err) if err.raw_os_error() == Some(libc::ETXTBSY) && attempt < 19 => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => {
+                let out = result.ok()?;
+                return parse_bwrap_version(&String::from_utf8_lossy(&out.stdout));
+            }
+        }
+    }
+    unreachable!()
 }
 
 /// Whether a bwrap of this version has overlay support. An unreadable
