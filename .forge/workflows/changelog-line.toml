@@ -3,7 +3,7 @@ kind = "run"
 description = "a landed task's text and diff stat become a one-line changelog entry, appended to CHANGELOG.md — the first bounded judgment measured across providers (docs/JOBS.md, \"Steps\")"
 
 steps = [
-  { action = "summarise-changelog-line", role = "summarise" },
+  { action = "summarise-changelog-line", role = "summarise", judgment = "writing one sentence that says what a change means is not a pattern a script can match" },
   { action = "append-changelog-line",    effect = "file" },
 ]
 

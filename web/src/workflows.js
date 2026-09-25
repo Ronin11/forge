@@ -34,10 +34,12 @@
   function profileLine(measured) {
     if (!measured || !measured.current) return '<span class="mute">no runs</span>';
     const c = measured.current;
-    if (!c.n) return '<span class="mute">no runs</span>';
-    if (!c.known) return `<span class="mute">${c.n} run(s), not yet known</span>`;
+    const share = measured.directive_share != null
+      ? ` · <span title="directive share of cost">${pct(measured.directive_share)} directive</span>` : '';
+    if (!c.n) return share ? `<span class="mute">no runs</span>${share}` : '<span class="mute">no runs</span>';
+    if (!c.known) return `<span class="mute">${c.n} run(s), not yet known</span>${share}`;
     const cost = c.cost_per_success != null ? usd(c.cost_per_success) + '/success' : 'no successes';
-    return `${pct(c.rate)} <span class="mute">(${pct(c.rate_lo)}–${pct(c.rate_hi)})</span> · ${cost} · ${c.n} run(s)`
+    return `${pct(c.rate)} <span class="mute">(${pct(c.rate_lo)}–${pct(c.rate_hi)})</span> · ${cost} · ${c.n} run(s)${share}`
       + (measured.regressed ? ' <span class="failed">REGRESSION</span>' : '');
   }
 

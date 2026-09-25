@@ -236,7 +236,7 @@ pub(super) async fn stats(args: StatsOptions) -> Result<()> {
     }
     let doc = crate::view::stats_doc(&f, &scope, None).await?;
     out!(
-        "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9} {:>6} {:>9}",
+        "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9} {:>6} {:>9} {:>5}",
         "WF",
         "HASH",
         "TASKS",
@@ -248,11 +248,12 @@ pub(super) async fn stats(args: StatsOptions) -> Result<()> {
         "COST",
         "$/OK",
         "LANDED",
-        "$/LANDED"
+        "$/LANDED",
+        "DIR%"
     );
     for w in &doc.workflows {
         out!(
-            "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9} {:>6} {:>9}",
+            "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9} {:>6} {:>9} {:>5}",
             w.workflow,
             w.hash,
             w.pieces,
@@ -269,6 +270,10 @@ pub(super) async fn stats(args: StatsOptions) -> Result<()> {
             w.landed,
             match w.cost_per_landed_usd {
                 Some(c) => format!("${c:.2}"),
+                None => "-".into(),
+            },
+            match w.directive_share {
+                Some(s) => format!("{:.0}%", s * 100.0),
                 None => "-".into(),
             }
         );
