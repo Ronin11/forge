@@ -45,5 +45,15 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # deploy-smoke launches headless Chromium through Playwright; the
+      # operation installs the package itself, only the browser must exist.
+      - name: Install Playwright's Chromium
+        run: npx -y playwright install --with-deps chromium
+
+      # The e2e suite runs the debug binaries beside forge (forge-test,
+      # forge-web); `cargo test` alone does not build every workspace bin.
+      - name: cargo build (all targets)
+        run: cargo build --workspace --all-targets
+
       - name: cargo test
         run: cargo test --workspace
