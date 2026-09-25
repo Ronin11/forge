@@ -742,6 +742,7 @@ async fn run_directive_step(
     let mut ts = t.clone();
     if let Some(m) = &step.model {
         ts.model = m.clone();
+        ts.model_source = "step".to_string();
     }
     if let Some(n) = step.max_turns {
         ts.max_turns = n as i64;
@@ -774,6 +775,7 @@ async fn run_directive_step(
                     &ts.model,
                     &ts.model,
                     provider,
+                    crate::attempt::model_pinned(&ts.model_source),
                 ),
                 source: crate::attempt::attempt_model_source(
                     step.model.as_deref(),

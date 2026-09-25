@@ -323,7 +323,12 @@ fn scratch_dir(worktree: &str) -> PathBuf {
 
 /// The model a step runs and its `inputs_json` records. A task names a
 /// model in the Claude runner's vocabulary (`sonnet`, `opus`), so the
-/// task's model applies only on that runner; a step routed by role to a
+/// task's model applies only on that runner, except that a claude provider
+/// other than the built-in "anthropic" which names a model of its own
+/// (`[providers.anthropic-opus]`, `model = "opus"`) wins over the task's
+/// default, so the economist can have an opus arm. A model the task
+/// pinned explicitly (`pinned`: a `--model` flag, or a workflow step's own
+/// `model`) still wins over the provider's. A step routed by role to a
 /// provider on another runner takes that provider's configured model, or
 /// the runner's own default when it has none (task 518's review, routed
 /// to codex, asked OpenAI for `sonnet` and was refused). On the Claude
@@ -335,25 +340,42 @@ pub(crate) fn attempt_model(
     task_model: &str,
     requested: &str,
     provider: &agent::Provider,
+    pinned: bool,
 ) -> String {
     match provider.runner {
         agent::Runner::ClaudeCli if step == "supervisor" => requested.to_string(),
-        agent::Runner::ClaudeCli => task_model.to_string(),
+        agent::Runner::ClaudeCli => match &provider.model {
+            Some(m) if provider_model_applies(provider, pinned) => m.clone(),
+            _ => task_model.to_string(),
+        },
         _ => provider.model.clone().unwrap_or_default(),
     }
+}
+
+/// Whether a claude provider's own model beats the task's default.
+fn provider_model_applies(provider: &agent::Provider, pinned: bool) -> bool {
+    !pinned && provider.model.is_some() && provider.name != "anthropic"
+}
+
+/// Whether the task's model on this step was named explicitly: by `--model`
+/// (`model_source` `"flag"`) or by the workflow step's own `model`, which
+/// `engine::run_directive_step` marks with source `"step"` on its copy.
+pub(crate) fn model_pinned(model_source: &str) -> bool {
+    matches!(model_source, "flag" | "step")
 }
 
 /// Where the model `attempt_model` picked actually came from, for
 /// `Task::routing` (see docs/ECONOMIST.md, "The routing record"): on the
 /// Claude runner, a workflow step's own `model` wins with source
 /// `"default"` (the action's own declared model, never a flag, a
-/// project's, or the operator's); otherwise the task's model applies, and
-/// `model_source` already names where that came from (see
+/// project's, or the operator's); then a `--model` flag; then a claude
+/// provider's own configured model, with source `"operator"` (only the
+/// operator configures a provider's model); otherwise the task's model
+/// applies, and `model_source` already names where that came from (see
 /// `queue::enqueue`). Off the Claude runner, `step`'s override never
 /// applies (`attempt_model` ignores it there too): the provider's own
-/// configured model wins with source `"operator"` (only the operator
-/// configures a provider's model), else `"default"` when the provider
-/// names none and the runner's own default applies.
+/// configured model wins with source `"operator"`, else `"default"` when
+/// the provider names none and the runner's own default applies.
 pub(crate) fn attempt_model_source(
     step_model: Option<&str>,
     provider: &agent::Provider,
@@ -361,6 +383,9 @@ pub(crate) fn attempt_model_source(
 ) -> String {
     match provider.runner {
         agent::Runner::ClaudeCli if step_model.is_some() => "default".to_string(),
+        agent::Runner::ClaudeCli if provider_model_applies(provider, model_source == "flag") => {
+            "operator".to_string()
+        }
         agent::Runner::ClaudeCli => model_source.to_string(),
         _ if provider.model.is_some() => "operator".to_string(),
         _ => "default".to_string(),
@@ -421,7 +446,13 @@ pub async fn new_attempt(
     inputs.workflow = t.workflow.clone();
     inputs.workflow_hash = t.workflow_hash.clone();
     inputs.step = step.to_string();
-    inputs.model = attempt_model(step, &t.model, &inputs.model, provider);
+    inputs.model = attempt_model(
+        step,
+        &t.model,
+        &inputs.model,
+        provider,
+        model_pinned(&t.model_source),
+    );
     inputs.max_turns = t.max_turns;
     inputs.timeout_secs = t.timeout_secs;
     inputs.base_sha = t.base_sha.clone();
@@ -457,7 +488,13 @@ async fn launch(
     start_sha: &str,
     provider: &agent::Provider,
 ) -> Result<agent::Outcome, Fault> {
-    let model = attempt_model(step, &t.model, &t.model, provider);
+    let model = attempt_model(
+        step,
+        &t.model,
+        &t.model,
+        provider,
+        model_pinned(&t.model_source),
+    );
     let outcome = crate::directive::launch(
         f,
         crate::directive::Spec {
@@ -615,89 +652,96 @@ pub async fn record(
 mod tests {
     use super::*;
 
+    fn provider(name: &str, runner: agent::Runner, model: Option<&str>) -> agent::Provider {
+        agent::Provider {
+            name: name.into(),
+            runner,
+            model: model.map(str::to_string),
+            base_url: None,
+            api_key_env: None,
+            env: vec![],
+            extra_args: vec![],
+            notes: None,
+            price_input_per_million: 0.0,
+            price_output_per_million: 0.0,
+            price_per_request: 0.0,
+            five_hour_max: 0.0,
+            seven_day_max: 0.0,
+            nudges: 0,
+        }
+    }
+
+    fn claude(model: Option<&str>) -> agent::Provider {
+        provider("anthropic-opus", agent::Runner::ClaudeCli, model)
+    }
+
+    fn codex(model: Option<&str>) -> agent::Provider {
+        provider("openai", agent::Runner::CodexCli, model)
+    }
+
     #[test]
     fn attempt_model_keeps_the_supervisors_own_model() {
-        let claude = |model: Option<&str>| agent::Provider {
-            name: "anthropic".into(),
-            runner: agent::Runner::ClaudeCli,
-            model: model.map(str::to_string),
-            base_url: None,
-            api_key_env: None,
-            env: vec![],
-            extra_args: vec![],
-            notes: None,
-            price_input_per_million: 0.0,
-            price_output_per_million: 0.0,
-            price_per_request: 0.0,
-            five_hour_max: 0.0,
-            seven_day_max: 0.0,
-            nudges: 0,
-        };
-        let codex = |model: Option<&str>| agent::Provider {
-            name: "openai".into(),
-            runner: agent::Runner::CodexCli,
-            model: model.map(str::to_string),
-            base_url: None,
-            api_key_env: None,
-            env: vec![],
-            extra_args: vec![],
-            notes: None,
-            price_input_per_million: 0.0,
-            price_output_per_million: 0.0,
-            price_per_request: 0.0,
-            five_hour_max: 0.0,
-            seven_day_max: 0.0,
-            nudges: 0,
-        };
-        // Claude runner: the task's model, the supervisor's own.
         assert_eq!(
-            attempt_model("supervisor", "task-model", "opus", &claude(Some("sonnet"))),
+            attempt_model(
+                "supervisor",
+                "task-model",
+                "opus",
+                &claude(Some("sonnet")),
+                false
+            ),
             "opus"
         );
         assert_eq!(
-            attempt_model("code", "task-model", "whatever", &claude(Some("sonnet"))),
-            "task-model"
-        );
-        assert_eq!(
-            attempt_model("investigate", "task-model", "whatever", &claude(None)),
-            "task-model"
-        );
-        // Another runner: the provider's model, else its own default; never the task's alias.
-        assert_eq!(
-            attempt_model("review", "sonnet", "sonnet", &codex(Some("gpt-5"))),
-            "gpt-5"
-        );
-        assert_eq!(
-            attempt_model("review", "sonnet", "sonnet", &codex(None)),
-            ""
-        );
-        assert_eq!(
-            attempt_model("supervisor", "sonnet", "opus", &codex(None)),
+            attempt_model("supervisor", "sonnet", "opus", &codex(None), false),
             ""
         );
     }
 
     #[test]
-    fn attempt_model_uses_the_tasks_model_for_every_other_step() {}
+    fn attempt_model_a_claude_providers_own_model_beats_the_tasks_default() {
+        let p = claude(Some("opus"));
+        assert_eq!(attempt_model("code", "sonnet", "sonnet", &p, false), "opus");
+        assert_eq!(attempt_model_source(None, &p, "experiment"), "operator");
+    }
 
     #[test]
-    fn attempt_model_source_inherits_project_on_the_claude_runner() {
-        let claude = agent::Provider {
-            name: "anthropic".into(),
-            runner: agent::Runner::ClaudeCli,
-            model: None,
-            base_url: None,
-            api_key_env: None,
-            env: vec![],
-            extra_args: vec![],
-            notes: None,
-            price_input_per_million: 0.0,
-            price_output_per_million: 0.0,
-            price_per_request: 0.0,
-            five_hour_max: 0.0,
-            seven_day_max: 0.0,
-            nudges: 0,
-        };
-        assert_eq!(attempt_model_source(None, &claude, "project"), "project");
+    fn attempt_model_a_pinned_model_beats_the_claude_providers() {
+        let p = claude(Some("opus"));
+        assert_eq!(
+            attempt_model("code", "sonnet", "sonnet", &p, true),
+            "sonnet"
+        );
+        assert_eq!(attempt_model_source(None, &p, "flag"), "flag");
+        assert_eq!(attempt_model_source(Some("sonnet"), &p, "step"), "default");
+        assert!(model_pinned("flag") && model_pinned("step") && !model_pinned("project"));
+    }
+
+    #[test]
+    fn attempt_model_a_claude_provider_without_a_model_takes_the_tasks() {
+        let p = claude(None);
+        assert_eq!(
+            attempt_model("code", "sonnet", "sonnet", &p, false),
+            "sonnet"
+        );
+        assert_eq!(attempt_model_source(None, &p, "project"), "project");
+    }
+
+    #[test]
+    fn attempt_model_the_builtin_anthropic_keeps_the_tasks_model() {
+        let p = provider("anthropic", agent::Runner::ClaudeCli, Some("sonnet"));
+        assert_eq!(attempt_model("code", "opus", "opus", &p, false), "opus");
+        assert_eq!(attempt_model_source(None, &p, "project"), "project");
+    }
+
+    #[test]
+    fn attempt_model_another_runner_takes_the_providers_model_never_the_tasks() {
+        assert_eq!(
+            attempt_model("review", "sonnet", "sonnet", &codex(Some("gpt-5")), false),
+            "gpt-5"
+        );
+        assert_eq!(
+            attempt_model("review", "sonnet", "sonnet", &codex(None), true),
+            ""
+        );
     }
 }
