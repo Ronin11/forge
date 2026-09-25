@@ -67,6 +67,10 @@ pub struct Sandbox {
     /// discarded with it (see `command`), so one attempt can never poison
     /// what another reads from the operator's real cache.
     extra_rw: Vec<PathBuf>,
+    /// Whether the bwrap found has `--overlay-src`/`--tmp-overlay` (0.10.0
+    /// and later), probed once in `detect`. Without it the package caches
+    /// are not bound at all.
+    overlay: bool,
     /// The operator-warmed dependency cache, read-only (`[sandbox]
     /// dependency_cache`).
     dependency_cache: Option<PathBuf>,
@@ -98,6 +102,36 @@ pub struct Sandbox {
 struct Granted {
     hosts: Vec<Rule>,
     ro: Vec<PathBuf>,
+}
+
+/// The first bwrap with `--overlay-src` and `--tmp-overlay`.
+pub const OVERLAY_MIN: (u64, u64, u64) = (0, 10, 0);
+
+/// Parse the version out of `bwrap --version` output (`bubblewrap 0.9.0`).
+pub fn parse_bwrap_version(out: &str) -> Option<(u64, u64, u64)> {
+    let word = out
+        .split_whitespace()
+        .find(|w| w.starts_with(|c: char| c.is_ascii_digit()))?;
+    let mut it = word.split('.').map(|n| {
+        let digits: String = n.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse::<u64>().ok()
+    });
+    let major = it.next()??;
+    let minor = it.next().flatten().unwrap_or(0);
+    let patch = it.next().flatten().unwrap_or(0);
+    Some((major, minor, patch))
+}
+
+/// Run `bwrap --version` and parse it; `None` when it cannot be run or read.
+pub fn bwrap_version(bwrap: &Path) -> Option<(u64, u64, u64)> {
+    let out = Command::new(bwrap).arg("--version").output().ok()?;
+    parse_bwrap_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Whether a bwrap of this version has overlay support. An unreadable
+/// version counts as no support: the degraded launch always works.
+pub fn version_has_overlay(v: Option<(u64, u64, u64)>) -> bool {
+    v.is_some_and(|v| v >= OVERLAY_MIN)
 }
 
 /// Quote `s` as a single POSIX shell argument.
@@ -165,6 +199,7 @@ impl Sandbox {
         let Ok((bwrap, _)) = resolve_binary("bwrap") else {
             bail!("bwrap not found; install bubblewrap or set FORGE_SANDBOX=0 to run unsandboxed");
         };
+        let overlay = version_has_overlay(bwrap_version(&bwrap));
         let home = PathBuf::from(std::env::var("HOME").context("HOME is not set")?);
         let mut agent_dirs: BTreeSet<PathBuf> = BTreeSet::new();
         let mut bins = vec![agent_bin.to_string()];
@@ -225,6 +260,7 @@ impl Sandbox {
                 .chain(relay_dir)
                 .collect(),
             extra_rw: paths.rw.iter().cloned().chain(extra_rw).collect(),
+            overlay,
             dependency_cache: paths.dependency_cache.clone(),
             model_hosts,
             relay_exe,
@@ -410,8 +446,15 @@ impl Sandbox {
         // with the sandbox, so one attempt can never poison what another
         // reads from the operator's real cache. `--overlay-src` has no
         // `-try` form, so a cache the operator never populated is skipped
-        // rather than failing the launch.
-        for p in self.extra_rw.iter().filter(|p| p.exists()) {
+        // rather than failing the launch. A bwrap without overlay support
+        // gets no cache bind at all (never read-write, which would let an
+        // attempt poison what another reads): a cold cache, launch proceeds.
+        let caches = if self.overlay {
+            &self.extra_rw[..]
+        } else {
+            &[]
+        };
+        for p in caches.iter().filter(|p| p.exists()) {
             cmd.arg("--overlay-src").arg(p);
             cmd.arg("--tmp-overlay").arg(p);
         }
@@ -514,6 +557,7 @@ mod tests {
             claude_json_seed: PathBuf::from("/home/real/.claude.json"),
             extra_ro: vec![PathBuf::from("/opt/toolchain")],
             extra_rw: vec![npm_cache.clone()],
+            overlay: true,
             dependency_cache: None,
             model_hosts: vec![Rule::parse("api.example.com").unwrap()],
             relay_exe: PathBuf::from("/opt/forge/forge"),
@@ -671,6 +715,54 @@ mod tests {
         assert!(!provider_dir.exists(), "provider state must be discarded");
     }
 
+    #[test]
+    fn bwrap_versions_parse_and_gate_overlay() {
+        assert_eq!(parse_bwrap_version("bubblewrap 0.9.0\n"), Some((0, 9, 0)));
+        assert_eq!(parse_bwrap_version("bubblewrap 0.10.1"), Some((0, 10, 1)));
+        assert_eq!(parse_bwrap_version("bubblewrap 0.11"), Some((0, 11, 0)));
+        assert_eq!(parse_bwrap_version("no version"), None);
+        assert!(!version_has_overlay(Some((0, 9, 0))));
+        assert!(version_has_overlay(Some((0, 10, 0))));
+        assert!(version_has_overlay(Some((1, 0, 0))));
+        assert!(!version_has_overlay(None));
+    }
+
+    #[test]
+    fn a_fake_bwrap_version_is_probed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("bwrap");
+        std::fs::write(&fake, "#!/bin/sh\necho 'bubblewrap 0.9.0'\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(bwrap_version(&fake), Some((0, 9, 0)));
+    }
+
+    #[test]
+    fn without_overlay_support_caches_are_not_bound() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("npm");
+        std::fs::create_dir_all(&cache).unwrap();
+        let worktree = root.path().join("wt");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let mut sb = test_sandbox("api.example.com");
+        sb.extra_rw = vec![cache.clone()];
+        sb.overlay = false;
+        let args: Vec<String> = sb
+            .command(&worktree, &["true".to_string()], &[])
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(!args.iter().any(|a| a.contains("overlay")));
+        assert!(!args.iter().any(|a| a == cache.to_str().unwrap()));
+        sb.overlay = true;
+        let args: Vec<String> = sb
+            .command(&worktree, &["true".to_string()], &[])
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.iter().any(|a| a == "--overlay-src"));
+    }
+
     fn test_sandbox(model: &str) -> Sandbox {
         Sandbox {
             bwrap: PathBuf::from("/usr/bin/bwrap"),
@@ -682,6 +774,7 @@ mod tests {
             claude_json_seed: PathBuf::from("/home/real/.claude.json"),
             extra_ro: vec![],
             extra_rw: vec![],
+            overlay: true,
             dependency_cache: None,
             model_hosts: vec![Rule::parse(model).unwrap()],
             relay_exe: PathBuf::from("/opt/forge/forge"),

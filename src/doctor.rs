@@ -156,12 +156,35 @@ fn check_binaries() -> Vec<Check> {
     out.push(binary("git", true, ""));
     let sandbox_off = config::env("SANDBOX").as_deref() == Ok("0");
     out.push(match (sandbox::resolve_binary("bwrap"), sandbox_off) {
-        (Ok((_, p)), false) => check(
-            "sandbox",
-            Status::Ok,
-            format!("bwrap at {}", p.display()),
-            "",
-        ),
+        (Ok((_, p)), false) => match sandbox::bwrap_version(&p) {
+            Some(v) if !sandbox::version_has_overlay(Some(v)) => {
+                let v = format!("{}.{}.{}", v.0, v.1, v.2);
+                check(
+                    "sandbox",
+                    Status::Warn,
+                    format!(
+                        "package caches are not shared with attempts: bwrap {v} has no overlay support; bwrap at {}",
+                        p.display()
+                    ),
+                    "install bubblewrap >= 0.10",
+                )
+            }
+            Some(v) => check(
+                "sandbox",
+                Status::Ok,
+                format!("bwrap {}.{}.{} at {}", v.0, v.1, v.2, p.display()),
+                "",
+            ),
+            None => check(
+                "sandbox",
+                Status::Warn,
+                format!(
+                    "package caches are not shared with attempts: bwrap version unknown; bwrap at {}",
+                    p.display()
+                ),
+                "install bubblewrap >= 0.10",
+            ),
+        },
         (Ok(_), true) => check(
             "sandbox",
             Status::Warn,

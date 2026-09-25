@@ -870,3 +870,57 @@ fn a_directive_attempts_sandbox_can_run_forge_test_against_a_fake_repository() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(e.task(1).0, "succeeded");
 }
+
+/// A bwrap without overlay support (0.9.0, Ubuntu 24.04) degrades: the
+/// package caches are not bound and the attempt still runs.
+#[test]
+fn a_bwrap_without_overlay_support_still_runs_the_attempt_with_no_overlay_flags() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Env::new();
+    if e.sandbox_disabled() {
+        eprintln!("FORGE_TEST_NO_SANDBOX=1: skipping, bwrap unavailable");
+        return;
+    }
+    let real = String::from_utf8(
+        std::process::Command::new("sh")
+            .args(["-c", "command -v bwrap"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let bin = e.home.join("fake-bwrap-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let log = e.home.join("bwrap-args.log");
+    let script = format!(
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'bubblewrap 0.9.0'; exit 0; fi\n\
+         printf '%s\\n' \"$@\" >> {log}\n\
+         for a in \"$@\"; do case \"$a\" in --overlay-src|--tmp-overlay) echo 'bwrap: Unknown option '\"$a\" >&2; exit 1;; esac; done\n\
+         exec {real} \"$@\"\n",
+        log = log.display(),
+        real = real.trim()
+    );
+    let fake = bin.join("bwrap");
+    std::fs::write(&fake, script).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", path)
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--no-land",
+        ])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let logged = std::fs::read_to_string(&log).expect("the fake bwrap was used");
+    assert!(!logged.contains("--overlay-src"), "{logged}");
+    assert!(!logged.contains("--tmp-overlay"), "{logged}");
+}

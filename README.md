@@ -22,7 +22,8 @@ task --> sandboxed attempt --> verify (repo checks, then hidden tests) --> land 
 ## Quickstart
 
 Prerequisites: Linux, Rust, bubblewrap (`bwrap` on `PATH`, with
-unprivileged user namespaces allowed), git, and the `claude` CLI, logged
+unprivileged user namespaces allowed; 0.10 or later, older ones run attempts
+with cold package caches), git, and the `claude` CLI, logged
 in (Forge runs it as the agent; codex and copilot are providers you add
 in `config.toml`). A systemd user session is optional: without one,
 `forge init` prints the commands to run the worker and web client by hand.
