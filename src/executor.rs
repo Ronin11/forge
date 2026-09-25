@@ -106,6 +106,10 @@ impl Execution {
         if config::env("SANDBOX").as_deref() == Ok("0") {
             return Ok(None);
         }
+        // A missing agent is a worker setup error, not a backend limitation.
+        // Report it before claiming any work; only sandbox availability may
+        // be deferred until the repository's backend is known.
+        crate::sandbox::resolve_binary(agent)?;
         Ok(Some(Self {
             bwrap: Sandbox::detect(agent, paths, ro, rw, hosts).map_err(|e| format!("{e:#}")),
             backends: Mutex::new(BTreeMap::new()),
