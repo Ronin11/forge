@@ -202,7 +202,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
 
     // The repository's remote, from its forge.toml at the base branch.
     let base_cfg = config::load_at(&repo, &repo, &t.base_branch).await.task()?;
-    if base_cfg.execution.backend != crate::executor::Backend::Ssh || f.sandbox.is_none() {
+    if base_cfg.execution.backend() != crate::executor::Backend::Ssh || f.sandbox.is_none() {
         crate::sandbox::resolve_binary(&crate::agent::agent_bin()).env()?;
     }
     let remote_url = match &base_cfg.push_remote {

@@ -49,7 +49,7 @@ becomes a contract with backends:
 ```toml
 # a project's forge.toml, or a deploy target's record
 [execution]
-backend = "bwrap"        # the default; "host" (unsandboxed, today's FORGE_SANDBOX=0), "container", "ssh"
+backend = "bwrap"        # the default where bwrap is installed, else host; "host" (unsandboxed, today's FORGE_SANDBOX=0), "container", "ssh"
 # backend = "ssh"
 # host = "dev.home"
 # user = "forge"

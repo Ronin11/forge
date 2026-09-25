@@ -33,8 +33,22 @@ enum WorkResult {
     Job(i64, JobState),
 }
 
+/// Whether a process with this pid exists, by signal 0: no signal is sent,
+/// only the permission and existence checks run. `ESRCH` means no such
+/// process; `EPERM` means one exists that is not ours to signal. Works on
+/// every unix, `/proc` or not (macOS has none).
 pub fn pid_alive(pid: i64) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
+    // 0 and negative pids name process groups, not a process.
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    if pid <= 0 {
+        return false;
+    }
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 /// The worker as `worker.pid` says: pid, its binary, whether it is alive,
@@ -43,7 +57,9 @@ pub struct WorkerStatus {
     pub pid: i64,
     pub exe: String,
     pub running: bool,
-    pub stale: bool,
+    /// `None` when there is no `/proc` to read the running binary from
+    /// (macOS): the stale-binary check is skipped, not passed.
+    pub stale: Option<bool>,
 }
 
 pub fn worker_status(paths: &Paths) -> Option<WorkerStatus> {
@@ -52,10 +68,17 @@ pub fn worker_status(paths: &Paths) -> Option<WorkerStatus> {
     let pid: i64 = it.next().and_then(|p| p.parse().ok()).unwrap_or(0);
     let exe = it.next().unwrap_or("").to_string();
     let running = pid > 0 && pid_alive(pid);
-    let stale = running
-        && std::fs::read_link(format!("/proc/{pid}/exe"))
-            .map(|p| p.to_string_lossy().ends_with(" (deleted)"))
-            .unwrap_or(false);
+    let stale = if !running {
+        Some(false)
+    } else if Path::new("/proc").exists() {
+        Some(
+            std::fs::read_link(format!("/proc/{pid}/exe"))
+                .map(|p| p.to_string_lossy().ends_with(" (deleted)"))
+                .unwrap_or(false),
+        )
+    } else {
+        None
+    };
     Some(WorkerStatus {
         pid,
         exe,
@@ -1028,6 +1051,33 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn this_process_is_alive() {
+        assert!(super::pid_alive(std::process::id() as i64));
+    }
+
+    #[test]
+    fn pid_one_is_alive_even_when_it_is_not_ours_to_signal() {
+        // As a non-root user kill(1, 0) fails with EPERM: alive all the same.
+        assert!(super::pid_alive(1));
+    }
+
+    #[test]
+    fn a_reaped_child_is_dead() {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id() as i64;
+        child.wait().unwrap();
+        assert!(!super::pid_alive(pid));
+    }
+
+    #[test]
+    fn zero_negative_and_out_of_range_pids_are_never_alive() {
+        // kill(0, ..) and kill(-1, ..) address process groups; never ask.
+        assert!(!super::pid_alive(0));
+        assert!(!super::pid_alive(-1));
+        assert!(!super::pid_alive(i64::from(i32::MAX) + 1));
+    }
+
     /// A rate-limit sample older than the window it describes holds
     /// nothing, whatever reset time it names; a fresh one at its cap does.
     #[test]

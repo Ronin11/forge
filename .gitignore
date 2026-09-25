@@ -1,3 +1,6 @@
 /target
 /mutants.out
 /dist
+
+# scripts/release.sh output; a release is cut from a tag, never committed
+dist/

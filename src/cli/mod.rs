@@ -711,7 +711,7 @@ fn worker_json(f: &Forge) -> serde_json::Value {
     match worker::worker_status(&f.paths) {
         None => serde_json::json!({"running": false}),
         Some(w) => {
-            serde_json::json!({"running": w.running, "pid": w.pid, "exe": w.exe, "stale_binary": w.stale})
+            serde_json::json!({"running": w.running, "pid": w.pid, "exe": w.exe, "stale_binary": w.stale.unwrap_or(false)})
         }
     }
 }

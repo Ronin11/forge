@@ -1,0 +1,100 @@
+name: Release
+
+# A `v*` tag builds the release archive scripts/release.sh packs (the
+# binaries, both units, the config template) for every target, merges
+# their checksums into one SHA256SUMS, and attaches it all to a GitHub
+# release of the tag's name. `forge upgrade <url>` installs from the
+# archive and the SHA256SUMS beside it, so the sums file must name every
+# archive: one publish job merges them (two jobs uploading a file of the
+# same name would leave only the last, which is what v0.2.0's first cut
+# did). The tag must equal what the built `forge version` reports: the
+# archive is named from the binary, never from the tag, and the two are
+# checked before anything is published.
+
+on:
+  push:
+    tags: ["v*"]
+  # A manual run builds and packs every target without publishing: the
+  # way to prove a new target compiles before a tag depends on it.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          # macOS runs attempts on the host backend only: bubblewrap and
+          # network namespaces are Linux, so there is no sandbox there and
+          # doctor says so. The binaries build and run.
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-release-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build and pack
+        run: scripts/release.sh ${{ matrix.target }}
+
+      - name: The tag names the version the binary reports
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          archive="$(ls dist/forge-*-${{ matrix.target }}.tar.gz)"
+          version="$(basename "$archive" | sed -E 's/^forge-(.*)-${{ matrix.target }}\.tar\.gz$/\1/')"
+          test "v$version" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} but the archive is $archive" >&2; exit 1; }
+
+      - name: Keep the archive and its checksum line
+        uses: actions/upload-artifact@v4
+        with:
+          name: forge-${{ matrix.target }}
+          path: |
+            dist/forge-*.tar.gz
+            dist/SHA256SUMS
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect every target's archive
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: One SHA256SUMS naming every archive
+        run: |
+          mkdir -p release
+          for d in dist/forge-*; do
+            cp "$d"/forge-*.tar.gz release/
+            cat "$d"/SHA256SUMS >> release/SHA256SUMS
+          done
+          sort -k2 -o release/SHA256SUMS release/SHA256SUMS
+          cat release/SHA256SUMS
+          (cd release && sha256sum -c SHA256SUMS)
+
+      - name: Attach to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/forge-*.tar.gz
+            release/SHA256SUMS
+          generate_release_notes: true

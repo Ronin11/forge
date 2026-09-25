@@ -21,11 +21,13 @@ task --> sandboxed attempt --> verify (repo checks, then hidden tests) --> land 
 
 ## Quickstart
 
-Prerequisites: Linux, Rust, bubblewrap (`bwrap` on `PATH`, with
-unprivileged user namespaces allowed; 0.10 or later, older ones run attempts
-with cold package caches), git, and the `claude` CLI, logged
-in (Forge runs it as the agent; codex and copilot are providers you add
-in `config.toml`). A systemd user session is optional: without one,
+Prerequisites: Rust, git, and Linux with bubblewrap for a sandbox (`bwrap`
+on `PATH`, with unprivileged user namespaces allowed; 0.10 or later, older
+ones run attempts with cold package caches). macOS (aarch64) runs
+unsandboxed: without `bwrap`, attempts run on the host backend, with no
+egress bound and no private home, and `forge doctor` warns so. And the
+`claude` CLI, logged in (Forge runs it as the agent; codex and copilot are
+providers you add in `config.toml`). A systemd user session is optional: without one,
 `forge init` prints the commands to run the worker and web client by hand.
 
 ```sh
@@ -347,7 +349,9 @@ web/      forge-web: the same seat in a browser
 - `FORGE_CLAUDE_BIN` overrides the agent binary. Anything that accepts the
   same flags and emits stream-json works; the tests use shell scripts.
 - `FORGE_SANDBOX=0` runs the agent and checks directly on the host.
-  Without it, missing `bwrap` is an error.
+  Without it, a machine with no `bwrap` runs a repository that declares no
+  `[execution] backend` on the host (doctor warns); one that declares
+  `backend = "bwrap"` refuses to run.
 
 ## Building
 
