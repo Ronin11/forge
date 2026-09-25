@@ -414,3 +414,7 @@ a stop timeout long enough to drain a running attempt. After a rebuild,
 running worker's binary has been rebuilt underneath it. A deploy target
 using the `deploy-self` method does the rebuild and the restarts on every
 landing on this repository (docs/DEPLOY.md, "Deploying Forge itself").
+
+## License
+
+MIT; see [LICENSE](LICENSE).

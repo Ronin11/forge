@@ -1,5 +1,6 @@
 [package]
 name = "forge-repomap"
+license = "MIT"
 version = "0.1.0"
 edition = "2024"
 description = "A deterministic map of a repository for a coding agent: symbols per file, ranked against a task, cut to a budget. No model, no kernel."

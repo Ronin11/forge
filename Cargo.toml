@@ -3,6 +3,7 @@ members = ["tui", "repomap", "web", "client", "portal", "forge-test"]
 
 [package]
 name = "forge"
+license = "MIT"
 version = "0.2.0"
 edition = "2024"
 

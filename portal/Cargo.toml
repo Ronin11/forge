@@ -1,5 +1,6 @@
 [package]
 name = "forge-portal"
+license = "MIT"
 version = "0.1.0"
 edition = "2024"
 description = "The customer portal: a read-only page at /p/<token> showing one project's work in plain words (see docs/PORTAL.md)."

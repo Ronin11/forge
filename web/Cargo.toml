@@ -1,5 +1,6 @@
 [package]
 name = "forge-web"
+license = "MIT"
 version = "0.1.0"
 edition = "2024"
 description = "A browser client for Forge. Speaks only the JSON the forge CLI emits and acts only through forge verbs."

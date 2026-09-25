@@ -1,5 +1,6 @@
 [package]
 name = "forge-test"
+license = "MIT"
 version = "0.1.0"
 edition = "2024"
 description = "Names the failing tests in go, pytest, jest and cargo test output. No model, no kernel."

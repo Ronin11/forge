@@ -1,5 +1,6 @@
 [package]
 name = "forge-client"
+license = "MIT"
 version = "0.1.0"
 edition = "2024"
 description = "The one Rust client of the forge CLI: resolves the forge binary, runs verbs, and parses their --json output into typed rows, per docs/CLIENT.md."

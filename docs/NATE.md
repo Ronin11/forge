@@ -32,10 +32,6 @@ job does not read this; a person does.
 - [ ] **The rate-limit rerun.** When the weekly window sits near 97%,
   queue about $70 of real work and let the refusal path run for real
   (docs/LATER.md, the rate-limit experiment).
-- [ ] **A license.** Cargo.toml has no `license` and the tree has no
-  LICENSE file; the mentor-ready initiative fills in the rest of the
-  metadata but the license is your choice (MIT, Apache-2.0, or both is the
-  Rust norm; something else if Forge stays private).
 - [ ] **Publish for the mentor.** The remote is a bare repository on this
   box. A private GitHub repository with this history pushed is the way to
   share it: the history is clean (no keys, every phone number a 555
