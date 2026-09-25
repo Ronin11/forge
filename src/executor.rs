@@ -146,6 +146,18 @@ exit "$status"
     command
 }
 
+/// The backend a repository that names none runs on: bwrap, or host on a
+/// machine without bwrap at all (macOS), where refusing to run would leave
+/// Forge unusable. A repository that declares `backend = "bwrap"` still
+/// fails closed without it; `forge doctor` warns what host forgoes.
+pub fn default_backend() -> Backend {
+    if crate::sandbox::resolve_binary("bwrap").is_ok() {
+        Backend::Bwrap
+    } else {
+        Backend::Host
+    }
+}
+
 /// Remote CLIs are resolved by the remote shell, never by local mise.
 pub fn agent_bin(execution: Option<&Execution>, path: &Path, name: String) -> String {
     if execution.is_some_and(|e| e.backend(path) == Backend::Ssh) {
@@ -160,6 +172,8 @@ pub fn agent_bin(execution: Option<&Execution>, path: &Path, name: String) -> St
 /// choosing bwrap still fails closed, never falling back to the host.
 pub struct Execution {
     bwrap: Result<Sandbox, String>,
+    /// Where a path with no declared backend runs (`default_backend`).
+    fallback: Backend,
     backends: Mutex<BTreeMap<PathBuf, Backend>>,
     remotes: Mutex<BTreeMap<PathBuf, String>>,
 }
@@ -175,6 +189,7 @@ impl Execution {
             return Ok(None);
         }
         Ok(Some(Self {
+            fallback: default_backend(),
             bwrap: Sandbox::detect(agent, paths, ro, rw, hosts).map_err(|e| format!("{e:#}")),
             backends: Mutex::new(BTreeMap::new()),
             remotes: Mutex::new(BTreeMap::new()),
@@ -187,8 +202,13 @@ impl Execution {
             .insert(path.to_owned(), backend);
     }
     pub fn configure(&self, path: &Path, cfg: &config::Execution) {
-        self.set_backend(path, cfg.backend);
-        if cfg.backend == Backend::Ssh {
+        match cfg.declared {
+            Some(backend) => self.set_backend(path, backend),
+            None => {
+                self.backends.lock().unwrap().remove(path);
+            }
+        }
+        if cfg.declared == Some(Backend::Ssh) {
             self.remotes.lock().unwrap().insert(
                 path.to_owned(),
                 cfg.ssh_destination().expect("validated execution config"),
@@ -199,7 +219,7 @@ impl Execution {
         let backends = self.backends.lock().unwrap();
         path.ancestors()
             .find_map(|p| backends.get(p).copied())
-            .unwrap_or_default()
+            .unwrap_or(self.fallback)
     }
     pub fn guarantees(&self, path: &Path) -> Guarantees {
         match self.backend(path) {
@@ -278,8 +298,8 @@ mod tests {
                 .await
                 .unwrap()
                 .execution
-                .backend,
-            Backend::Bwrap
+                .declared,
+            None
         );
         std::fs::write(
             &path,
@@ -291,8 +311,8 @@ mod tests {
                 .await
                 .unwrap()
                 .execution
-                .backend,
-            Backend::Host
+                .declared,
+            Some(Backend::Host)
         );
         std::fs::write(&path, format!("{defaults}[execution]\nbackend = \"ssh\"\n")).unwrap();
         assert!(config::load_working(dir.path()).await.is_err());
@@ -324,6 +344,7 @@ mod tests {
     fn unavailable_bwrap_never_falls_back_to_host() {
         let execution = Execution {
             bwrap: Err("bwrap unavailable".into()),
+            fallback: Backend::Bwrap,
             backends: Mutex::new(BTreeMap::new()),
             remotes: Mutex::new(BTreeMap::new()),
         };
@@ -347,5 +368,44 @@ mod tests {
                 .success()
         );
         assert_eq!(execution.backend(&dir.path().join("child")), Backend::Host);
+    }
+
+    #[test]
+    fn without_bwrap_an_undeclared_repository_runs_on_the_host() {
+        let execution = Execution {
+            bwrap: Err("bwrap not found".into()),
+            fallback: Backend::Host,
+            backends: Mutex::new(BTreeMap::new()),
+            remotes: Mutex::new(BTreeMap::new()),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let argv = vec!["/bin/sh".into(), "-c".into(), "true".into()];
+        execution.configure(dir.path(), &config::Execution::default());
+        assert_eq!(execution.backend(dir.path()), Backend::Host);
+        assert!(!execution.guarantees(dir.path()).egress_bounded);
+        assert!(
+            execution
+                .command(dir.path(), &argv, &[])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        // Declaring bwrap still fails closed.
+        execution.configure(
+            dir.path(),
+            &config::Execution {
+                declared: Some(Backend::Bwrap),
+                ..Default::default()
+            },
+        );
+        assert!(
+            !execution
+                .command(dir.path(), &argv, &[])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
     }
 }

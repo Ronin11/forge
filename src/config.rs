@@ -85,12 +85,19 @@ struct Defaults {
 
 #[derive(Clone, Deserialize, Default)]
 pub struct Execution {
-    #[serde(default)]
-    pub backend: crate::executor::Backend,
+    /// `None` when the repository names no backend: the machine decides
+    /// (bwrap where it is installed, else host; `executor::default_backend`).
+    #[serde(rename = "backend", default)]
+    pub declared: Option<crate::executor::Backend>,
     pub host: Option<String>,
     pub user: Option<String>,
 }
 impl Execution {
+    /// The backend this repository runs on, on this machine.
+    pub fn backend(&self) -> crate::executor::Backend {
+        self.declared
+            .unwrap_or_else(crate::executor::default_backend)
+    }
     pub fn ssh_destination(&self) -> Result<String> {
         let valid = |s: &str| {
             !s.is_empty()
@@ -110,7 +117,7 @@ impl Execution {
         }
     }
     fn validate(&self) -> Result<()> {
-        if self.backend == crate::executor::Backend::Ssh {
+        if self.declared == Some(crate::executor::Backend::Ssh) {
             self.ssh_destination()?;
         }
         Ok(())

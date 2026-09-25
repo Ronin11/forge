@@ -198,9 +198,9 @@ fn check_binaries() -> Vec<Check> {
         ),
         (Err(_), false) => check(
             "sandbox",
-            Status::Fail,
-            "bwrap not found",
-            "install bubblewrap, or set FORGE_SANDBOX=0 to run unsandboxed",
+            Status::Warn,
+            "bwrap not found: attempts run on the host backend, with no egress bound and no private home",
+            "install bubblewrap (Linux) to sandbox attempts",
         ),
     });
     out
@@ -228,7 +228,12 @@ fn check_egress(paths: &Paths, store: &Store) -> Vec<Check> {
             "unset FORGE_SANDBOX",
         )
     } else if sandbox::resolve_binary("bwrap").is_err() {
-        check("egress", Status::Fail, "bwrap not found", "install bubblewrap")
+        check(
+            "egress",
+            Status::Warn,
+            "bwrap not found: attempts have the host's network; no egress policy is enforced",
+            "install bubblewrap (Linux) to bound egress",
+        )
     } else {
         match std::process::Command::new("bwrap")
             .args(["--unshare-net", "--ro-bind", "/", "/", "--dev", "/dev", "true"])
@@ -639,7 +644,10 @@ fn check_worker(paths: &Paths) -> Vec<Check> {
         (true, None) => check(
             "worker",
             Status::Ok,
-            format!("pid {} running (no /proc: stale-binary check skipped)", w.pid),
+            format!(
+                "pid {} running (no /proc: stale-binary check skipped)",
+                w.pid
+            ),
             "",
         ),
         (false, _) => check(
@@ -1028,8 +1036,8 @@ fn check_executors(store: &Store, paths: &Paths) -> Vec<Check> {
         for repo in store.project_repos(&project.name).unwrap_or_default() {
             match config::load_working_execution(std::path::Path::new(&repo.repo)) {
                 Ok(execution) => {
-                    backends.insert(execution.backend);
-                    if execution.backend == Backend::Ssh {
+                    backends.insert(execution.backend());
+                    if execution.backend() == Backend::Ssh {
                         let destination = execution.ssh_destination().unwrap();
                         if let Ok(home) = config::load_home(&paths.home) {
                             for (name, provider) in home.providers {
@@ -1079,7 +1087,7 @@ fn check_executors(store: &Store, paths: &Paths) -> Vec<Check> {
         }
     }
     if backends.is_empty() {
-        backends.insert(Backend::Bwrap);
+        backends.insert(crate::executor::default_backend());
     }
     if config::env("SANDBOX").as_deref() == Ok("0") {
         backends.insert(Backend::Host);

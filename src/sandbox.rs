@@ -15,8 +15,10 @@
 //! proxy allows the model endpoint, always, and what the repository's
 //! forge.toml declares under `[sandbox] egress`, and refuses the rest.
 //!
-//! Sandboxing is on by default and refuses to run without bwrap unless
-//! `FORGE_SANDBOX=0` is set explicitly.
+//! Sandboxing is on by default where bwrap is installed. A machine without
+//! it (macOS) runs repositories that declare no `[execution] backend` on
+//! the host (`executor::default_backend`), and `forge doctor` warns what
+//! that forgoes; one that declares `backend = "bwrap"` still refuses.
 
 use crate::egress::{self, Policy, Proxies, Rule};
 use anyhow::{Context, Result, bail};
@@ -237,7 +239,9 @@ impl Sandbox {
         model_hosts: Vec<Rule>,
     ) -> Result<Sandbox> {
         let Ok((bwrap, _)) = resolve_binary("bwrap") else {
-            bail!("bwrap not found; install bubblewrap or set FORGE_SANDBOX=0 to run unsandboxed");
+            bail!(
+                "bwrap not found; install bubblewrap, or declare [execution] backend = \"host\" to run unsandboxed"
+            );
         };
         let overlay = version_has_overlay(bwrap_version(&bwrap));
         let home = PathBuf::from(std::env::var("HOME").context("HOME is not set")?);
