@@ -225,3 +225,108 @@ fn an_effect_workflow_is_not_enabled_or_scheduled_until_a_fixture_passes() {
     assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
     assert_eq!(job_count(&e), 1);
 }
+
+const EDGE_TRIAGE_ACTION: &str = r#"name = "triage"
+kind = "directive"
+contract = "plan"
+description = "sort a message"
+outcomes = ["reply", "uncertain", "nothing-to-do"]
+schema = '''
+{"type":"object","required":["job"],"properties":{"job":{"type":"string"}}}
+'''
+"#;
+
+const ASK_ACTION: &str = r#"name = "ask-april"
+kind = "operation"
+description = "hand the message to a person"
+run = ["true"]
+"#;
+
+fn edge_workflow(name: &str, on: &str, extra: &str) -> String {
+    format!(
+        r#"name = "{name}"
+kind = "run"
+description = "routes on the triage outcome"
+
+steps = [
+  {{ action = "triage", role = "read", judgment = "an unknown sender's ask is not a pattern a rule can match", on = {on}{extra} }},
+  {{ action = "ask-april" }},
+]
+
+[trigger]
+on = "manual"
+
+[limits]
+budget_usd = 1.0
+per_day = 10
+on_failure = "drop"
+"#
+    )
+}
+
+fn edge_setup(e: &Env, on: &str, extra: &str) {
+    new_project(e);
+    let d = e.home.join("workflows");
+    std::fs::write(d.join("actions/triage.toml"), EDGE_TRIAGE_ACTION).unwrap();
+    std::fs::write(d.join("actions/ask-april.toml"), ASK_ACTION).unwrap();
+    std::fs::write(
+        d.join("triage-flow.toml"),
+        edge_workflow("triage-flow", on, extra),
+    )
+    .unwrap();
+}
+
+fn step_actions(doc: &serde_json::Value) -> Vec<String> {
+    doc["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["node"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn an_outcome_edge_routes_to_a_step_and_end_ends_the_run_ok() {
+    let e = Env::new();
+    edge_setup(
+        &e,
+        r#"{ uncertain = "ask-april", nothing-to-do = "end" }"#,
+        "",
+    );
+    let doc = start_triage(&e, "job-directive-outcome.sh");
+    assert_eq!(doc["state"], "ok", "{doc}");
+    assert_eq!(step_actions(&doc), ["0-triage", "1-ask-april"], "{doc}");
+
+    let doc = start_triage(&e, "job-directive-nothing.sh");
+    assert_eq!(doc["state"], "ok", "{doc}");
+    assert_eq!(step_actions(&doc), ["0-triage"], "{doc}");
+}
+
+#[test]
+fn a_loop_stops_at_the_target_steps_attempt_cap() {
+    let e = Env::new();
+    edge_setup(&e, r#"{ uncertain = "0-triage" }"#, ", max_attempts = 2");
+    let doc = start_triage(&e, "job-directive-outcome.sh");
+    assert_eq!(doc["state"], "failed", "{doc}");
+    assert_eq!(step_actions(&doc), ["0-triage", "0-triage"], "{doc}");
+    assert!(
+        doc["verdict_json"]
+            .as_str()
+            .unwrap()
+            .contains("attempt cap"),
+        "{doc}"
+    );
+}
+
+#[test]
+fn an_edge_on_a_build_workflow_is_refused_by_the_lint() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let build = r#"name = "candidate"
+steps = [ { action = "code", on = { failure = "end" } }, { action = "verify" } ]
+"#;
+    let o = e.forge_stdin("ok.sh", &["workflows", "lint", "--stdin"], build);
+    assert!(!o.status.success());
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("build workflows keep the list"), "{out}");
+}

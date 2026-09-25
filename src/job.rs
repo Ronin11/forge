@@ -1419,27 +1419,15 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
     );
 
     if let Some((action, job_row)) = on_failure {
-        match action {
-            FailureAction::Stop => {}
-            FailureAction::Retry => {
-                if let Err(e) = retry_job(f, &job_row, input_text).await {
-                    eprintln!("job {job_id} retry: {e:#}");
-                }
-            }
-            FailureAction::Ask(to) => {
-                let effects = f.store.job_effects(job_id).unwrap_or_default();
-                let reason = failure_reason(job_id, workflow, &verdict, &effects);
-                if let Err(e) = ask(
-                    f,
-                    project,
-                    &repo.display().to_string(),
-                    to.as_deref(),
-                    reason,
-                ) {
-                    eprintln!("job {job_id} ask: {e:#}");
-                }
-            }
-        }
+        flow::apply_on_failure(
+            f,
+            &job_row,
+            action,
+            &verdict,
+            (project, workflow, repo),
+            input_text,
+        )
+        .await;
     }
     Ok(())
 }

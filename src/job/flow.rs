@@ -3,7 +3,12 @@
 //! failure, else the list order; a loop is bounded by the target step's
 //! attempt cap and by nothing else.
 
+use super::{FailureAction, ask, failure_reason, retry_job};
+use crate::checks;
+use crate::ctx::Forge;
+use crate::store::Job;
 use crate::workflows::{RunStep, edges};
+use std::path::Path;
 
 pub(super) enum Route {
     Go(usize),
@@ -47,4 +52,32 @@ fn loop_bound(steps: &[RunStep], to: usize, runs: &[u32]) -> Option<String> {
             steps[to].node, runs[to]
         )
     })
+}
+
+/// What `[limits] on_failure` decided, done once the job row is final.
+pub(super) async fn apply_on_failure(
+    f: &Forge,
+    job_row: &Job,
+    action: FailureAction,
+    verdict: &[checks::CheckResult],
+    (project, workflow, repo): (&str, &str, &Path),
+    input_text: &str,
+) {
+    let job_id = job_row.id;
+    match action {
+        FailureAction::Stop => {}
+        FailureAction::Retry => {
+            if let Err(e) = retry_job(f, job_row, input_text).await {
+                eprintln!("job {job_id} retry: {e:#}");
+            }
+        }
+        FailureAction::Ask(to) => {
+            let effects = f.store.job_effects(job_id).unwrap_or_default();
+            let reason = failure_reason(job_id, workflow, verdict, &effects);
+            let repo = repo.display().to_string();
+            if let Err(e) = ask(f, project, &repo, to.as_deref(), reason) {
+                eprintln!("job {job_id} ask: {e:#}");
+            }
+        }
+    }
 }
