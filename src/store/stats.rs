@@ -84,6 +84,17 @@ pub struct TaskTtl {
     pub secs: i64,
 }
 
+/// One step under one version of its prompt (`inputs_json`'s
+/// `prompt_hash`; empty for a step with no prompt of its own).
+pub struct PromptStat {
+    pub workflow: String,
+    pub step: String,
+    pub prompt_hash: String,
+    pub attempts: i64,
+    pub succeeded: i64,
+    pub cost: f64,
+}
+
 pub struct StepStat {
     pub workflow: String,
     pub step: String,
@@ -844,6 +855,31 @@ impl Store {
             }
         }
         Ok(stats)
+    }
+
+    /// Outcomes per workflow step and prompt version.
+    pub fn prompt_stats(&self, scope: &StatsFilter) -> Result<Vec<PromptStat>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT t.workflow AS workflow, a.step AS step,
+                    COALESCE(json_extract(a.inputs_json, '$.prompt_hash'), '') AS prompt_hash,
+                    COUNT(*) AS attempts, SUM(a.state='succeeded') AS succeeded,
+                    COALESCE(SUM(a.cost_usd),0) AS cost
+             FROM attempts a JOIN tasks t ON t.id=a.task_id WHERE a.state != 'running'
+               AND (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
+             GROUP BY t.workflow, a.step, prompt_hash ORDER BY t.workflow, a.step, prompt_hash",
+        )?;
+        let rows = stmt.query_map(params![scope.project, scope.initiative], |r| {
+            Ok(PromptStat {
+                workflow: r.get("workflow")?,
+                step: r.get("step")?,
+                prompt_hash: r.get("prompt_hash")?,
+                attempts: r.get("attempts")?,
+                succeeded: r.get("succeeded")?,
+                cost: r.get("cost")?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Outcomes per workflow step.
