@@ -239,14 +239,17 @@ copy.
 `Cargo.toml` and fails `cargo test --workspace` if the script's `BINS=` list
 drifts from them, so a new crate that ships a binary cannot be forgotten.
 
-There is no `.github/workflows/release.yml` yet — this repository has no
-`.github` directory. Once it exists, add a workflow triggered on a `v*` tag
-that runs `scripts/release.sh` (one job per target triple in the matrix)
-and uploads each `dist/forge-*.tar.gz` and `dist/SHA256SUMS` as release
-assets. Until then, cut a release by hand: tag the commit `v<version>`
-matching `Cargo.toml`'s `[package] version` (so `forge version` names the
-same tag), run `scripts/release.sh` for each target the release ships, and
-attach the resulting `dist/` files to the tag.
+`.github/workflows/release.yml` runs on a `v*` tag: one job per target
+triple in its matrix (`x86_64-unknown-linux-gnu` today), each running
+`scripts/release.sh` for its target, checking that the tag equals the
+version the built binary reports, and attaching `dist/forge-*.tar.gz` and
+`dist/SHA256SUMS` to a GitHub release of the tag's name. To cut one: bump
+`[package] version` in Cargo.toml and land it, then tag that commit
+`v<version>` and push the tag to origin — the bare repository's
+post-update hook mirrors `main` and `v*` tags to GitHub, so the release
+builds from there without a hand push. `forge upgrade
+https://github.com/Ronin11/forge/releases/download/v<version>/forge-<version>-<target>.tar.gz`
+installs it on another machine.
 
 
 ### When the worker dies
