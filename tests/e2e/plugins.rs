@@ -2188,7 +2188,7 @@ fn plugin_forge_bin_survives_worker_binary_replacement() {
             plugin.join("run.sh"),
             r#"#!/bin/bash
 set -eu
-"$FORGE_BIN" --version
+"$FORGE_BIN" --help
 printf '%s\n' "$FORGE_BIN" >> "$FORGE_PLUGIN_STATE/observed"
 exec sleep 3600
 "#,
