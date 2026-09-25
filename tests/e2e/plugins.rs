@@ -2169,3 +2169,77 @@ fn twilio_code_extracts_a_code() {
     let o = twilio(&fx, &["code", "+15555550101"]);
     assert!(!o.status.success());
 }
+
+#[test]
+fn plugin_forge_bin_survives_worker_binary_replacement() {
+    for inherited in [false, true] {
+        let e = Env::new();
+        let bin = e.home.join("forge-launch");
+        std::fs::copy(env!("CARGO_BIN_EXE_forge"), &bin).unwrap();
+        let plugin = e.home.join("plugins/stable-bin");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(
+            plugin.join("plugin.toml"),
+            "name = \"stable-bin\"\nrun = [\"bash\", \"run.sh\"]\ncapabilities = [\"events\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            plugin.join("run.sh"),
+            r#"#!/bin/bash
+set -eu
+"$FORGE_BIN" --version
+printf '%s\n' "$FORGE_BIN" >> "$FORGE_PLUGIN_STATE/observed"
+exec sleep 3600
+"#,
+        )
+        .unwrap();
+        assert!(
+            e.forge("ok.sh", &["plugin", "enable", "stable-bin"])
+                .status
+                .success()
+        );
+
+        let template = e.cmd("ok.sh");
+        let mut cmd = Command::new(&bin);
+        for (key, value) in template.get_envs() {
+            if let Some(value) = value {
+                cmd.env(key, value);
+            }
+        }
+        cmd.env_remove("FORGE_BIN");
+        let expected = if inherited {
+            let alias = e.home.join("forge-unit-path");
+            std::os::unix::fs::symlink(&bin, &alias).unwrap();
+            cmd.env("FORGE_BIN", &alias);
+            alias
+        } else {
+            bin.clone()
+        };
+        let mut worker = Worker::spawn(cmd.args(["work", "--poll", "1"]));
+        let observed = e.home.join("plugins-state/stable-bin/observed");
+        assert!(wait_until(|| observed.exists(), Duration::from_secs(10)));
+
+        // Deploy replaces the inode rather than writing to an executing file.
+        let replacement = e.home.join("forge-new");
+        std::fs::copy(env!("CARGO_BIN_EXE_forge"), &replacement).unwrap();
+        std::fs::rename(replacement, &bin).unwrap();
+        assert!(
+            e.forge("ok.sh", &["plugin", "restart", "stable-bin"])
+                .status
+                .success()
+        );
+        assert!(
+            wait_until(
+                || std::fs::read_to_string(&observed).is_ok_and(|text| text.lines().count() >= 2),
+                Duration::from_secs(30),
+            ),
+            "restarted plugin must successfully invoke FORGE_BIN"
+        );
+        let text = std::fs::read_to_string(&observed).unwrap();
+        for path in text.lines() {
+            assert_eq!(Path::new(path), expected);
+            assert!(Path::new(path).is_file());
+        }
+        worker.stop();
+    }
+}

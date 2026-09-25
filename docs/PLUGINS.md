@@ -172,7 +172,7 @@ and check gets (`PATH`, `HOME`, and the rest in `src/agent.rs`).
 
 | Variable | Meaning |
 |---|---|
-| `FORGE_BIN` | The forge binary to call. Always set; never assume `forge` is on `PATH`. |
+| `FORGE_BIN` | The stable forge launch path to call: the worker's inherited FORGE_BIN, or its launch name. It stays usable across binary replacement and plugin restarts during deploys. Always set; never assume `forge` is on `PATH`. |
 | `FORGE_HOME` | Forge's data directory, so a plugin's `forge` calls see the same store. The name from now on. |
 | `FORGE2_HOME` | The same value as `FORGE_HOME`, kept for one release for a plugin still written against the old name; do not rely on it past that. |
 | `FORGE_PLUGIN_DIR` | The plugin's own directory: its config, its assets. |

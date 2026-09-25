@@ -470,7 +470,7 @@ fn spawn_plugin(plugin: &Plugin, home: &Path, state_dir: &Path, log_path: &Path)
         .open(log_path)
         .with_context(|| format!("opening {}", log_path.display()))?;
     let stderr_file = stdout_file.try_clone()?;
-    let bin = std::env::current_exe().context("the forge binary's own path")?;
+    let bin = crate::binary::launch_path()?;
     let mut cmd = Command::new(&plugin.manifest.run[0]);
     cmd.args(&plugin.manifest.run[1..])
         .current_dir(&plugin.dir)

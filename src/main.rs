@@ -10,6 +10,7 @@ mod argument_policy_tests;
 mod assess;
 mod attempt;
 mod audit;
+mod binary;
 mod checks;
 mod cli;
 mod concierge;

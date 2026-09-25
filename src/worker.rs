@@ -837,7 +837,7 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         &pid_file,
         format!(
             "{pid} {}\n",
-            std::env::current_exe()
+            crate::binary::launch_path()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default()
         ),

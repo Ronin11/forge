@@ -145,7 +145,7 @@ fn install_units(home: &Path) -> Result<StepResult> {
             "HOME is not set; cannot locate ~/.config/systemd/user",
         ));
     };
-    let forge_bin = std::env::current_exe()?;
+    let forge_bin = crate::binary::without_deleted_suffix(&std::env::current_exe()?);
     let bin_dir = forge_bin
         .parent()
         .map(Path::to_path_buf)
