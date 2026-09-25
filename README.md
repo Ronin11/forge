@@ -21,14 +21,21 @@ task --> sandboxed attempt --> verify (repo checks, then hidden tests) --> land 
 
 ## Quickstart
 
-Prerequisites: Rust, bubblewrap (`bwrap` on `PATH`), git, and the
-`claude` CLI, logged in (Forge runs it as the agent).
+Prerequisites: Linux, Rust, bubblewrap (`bwrap` on `PATH`, with
+unprivileged user namespaces allowed), git, and the `claude` CLI, logged
+in (Forge runs it as the agent; codex and copilot are providers you add
+in `config.toml`). A systemd user session is optional: without one,
+`forge init` prints the commands to run the worker and web client by hand.
 
 ```sh
-cargo build --release                        # build the workspace
+cargo build --release --workspace            # the kernel and, beside it, forge-web, forge-tui, forge-test, forge-repomap
+export PATH="$PWD/target/release:$PATH"      # or symlink the binaries somewhere already on PATH
 forge init                                   # set up FORGE_HOME: config, workflow catalog, web.token, units
 forge doctor                                 # check this machine can run attempts (forge init ends with this too)
 ```
+
+A bare `cargo build --release` builds the kernel alone, and `forge init`
+then writes a web unit pointing at a `forge-web` that is not there.
 
 `forge init [--home DIR]` creates FORGE_HOME (default `~/.local/share/forge`),
 writes the operator's `config.toml` template if none exists, commits the
