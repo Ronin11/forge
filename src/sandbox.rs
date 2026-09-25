@@ -107,31 +107,63 @@ struct Granted {
 /// The first bwrap with `--overlay-src` and `--tmp-overlay`.
 pub const OVERLAY_MIN: (u64, u64, u64) = (0, 10, 0);
 
+/// A bwrap version: `major.minor.patch` plus an optional prerelease tag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BwrapVersion {
+    pub major: u64,
+    pub minor: u64,
+    pub patch: u64,
+    pub pre: Option<String>,
+}
+
+impl std::fmt::Display for BwrapVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
+        if let Some(pre) = &self.pre {
+            write!(f, "-{pre}")?;
+        }
+        Ok(())
+    }
+}
+
 /// Parse the version out of `bwrap --version` output (`bubblewrap 0.9.0`).
-pub fn parse_bwrap_version(out: &str) -> Option<(u64, u64, u64)> {
+pub fn parse_bwrap_version(out: &str) -> Option<BwrapVersion> {
     let word = out
         .split_whitespace()
         .find(|w| w.starts_with(|c: char| c.is_ascii_digit()))?;
-    let mut it = word.split('.').map(|n| {
+    let (core, pre) = match word.split_once('-') {
+        Some((core, pre)) => (core, Some(pre.to_string()).filter(|p| !p.is_empty())),
+        None => (word, None),
+    };
+    let mut it = core.split('.').map(|n| {
         let digits: String = n.chars().take_while(char::is_ascii_digit).collect();
         digits.parse::<u64>().ok()
     });
     let major = it.next()??;
     let minor = it.next().flatten().unwrap_or(0);
     let patch = it.next().flatten().unwrap_or(0);
-    Some((major, minor, patch))
+    Some(BwrapVersion {
+        major,
+        minor,
+        patch,
+        pre,
+    })
 }
 
 /// Run `bwrap --version` and parse it; `None` when it cannot be run or read.
-pub fn bwrap_version(bwrap: &Path) -> Option<(u64, u64, u64)> {
+pub fn bwrap_version(bwrap: &Path) -> Option<BwrapVersion> {
     let out = Command::new(bwrap).arg("--version").output().ok()?;
     parse_bwrap_version(&String::from_utf8_lossy(&out.stdout))
 }
 
 /// Whether a bwrap of this version has overlay support. An unreadable
-/// version counts as no support: the degraded launch always works.
-pub fn version_has_overlay(v: Option<(u64, u64, u64)>) -> bool {
-    v.is_some_and(|v| v >= OVERLAY_MIN)
+/// version counts as no support: the degraded launch always works. A
+/// prerelease of the minimum sorts below it, the semver way.
+pub fn version_has_overlay(v: Option<BwrapVersion>) -> bool {
+    v.is_some_and(|v| {
+        let core = (v.major, v.minor, v.patch);
+        core > OVERLAY_MIN || (core == OVERLAY_MIN && v.pre.is_none())
+    })
 }
 
 /// Quote `s` as a single POSIX shell argument.
@@ -717,13 +749,34 @@ mod tests {
 
     #[test]
     fn bwrap_versions_parse_and_gate_overlay() {
-        assert_eq!(parse_bwrap_version("bubblewrap 0.9.0\n"), Some((0, 9, 0)));
-        assert_eq!(parse_bwrap_version("bubblewrap 0.10.1"), Some((0, 10, 1)));
-        assert_eq!(parse_bwrap_version("bubblewrap 0.11"), Some((0, 11, 0)));
+        let v = |a, b, c| {
+            Some(BwrapVersion {
+                major: a,
+                minor: b,
+                patch: c,
+                pre: None,
+            })
+        };
+        let pre = |a, b, c, p: &str| {
+            Some(BwrapVersion {
+                major: a,
+                minor: b,
+                patch: c,
+                pre: Some(p.to_string()),
+            })
+        };
+        assert_eq!(parse_bwrap_version("bubblewrap 0.9.0\n"), v(0, 9, 0));
+        assert_eq!(parse_bwrap_version("bubblewrap 0.10.1"), v(0, 10, 1));
+        assert_eq!(parse_bwrap_version("bubblewrap 0.11"), v(0, 11, 0));
         assert_eq!(parse_bwrap_version("no version"), None);
-        assert!(!version_has_overlay(Some((0, 9, 0))));
-        assert!(version_has_overlay(Some((0, 10, 0))));
-        assert!(version_has_overlay(Some((1, 0, 0))));
+        let rc = parse_bwrap_version("bubblewrap 0.10.0-rc.1");
+        assert_eq!(rc, pre(0, 10, 0, "rc.1"));
+        assert_eq!(rc.clone().unwrap().to_string(), "0.10.0-rc.1");
+        assert!(!version_has_overlay(rc));
+        assert!(version_has_overlay(v(0, 10, 0)));
+        assert!(version_has_overlay(pre(0, 10, 1, "rc.1")));
+        assert!(!version_has_overlay(v(0, 9, 0)));
+        assert!(version_has_overlay(v(1, 0, 0)));
         assert!(!version_has_overlay(None));
     }
 
@@ -734,7 +787,7 @@ mod tests {
         let fake = dir.path().join("bwrap");
         std::fs::write(&fake, "#!/bin/sh\necho 'bubblewrap 0.9.0'\n").unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(bwrap_version(&fake), Some((0, 9, 0)));
+        assert_eq!(bwrap_version(&fake).unwrap().to_string(), "0.9.0");
     }
 
     #[test]

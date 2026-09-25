@@ -66,6 +66,40 @@ fn doctor_runs_and_reports_the_essentials() {
 }
 
 #[test]
+fn doctor_warns_on_a_prerelease_bwrap_below_the_overlay_minimum() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Env::new();
+    let bin = e.home.join("fake-rc-bwrap-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("bwrap");
+    std::fs::write(&fake, "#!/bin/sh\necho 'bubblewrap 0.10.0-rc.1'\n").unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", path)
+        .env("FORGE_SANDBOX", "1")
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
+    let checks: Vec<serde_json::Value> = serde_json::from_slice(&o.stdout).unwrap_or_else(|_| {
+        panic!("{}", String::from_utf8_lossy(&o.stdout));
+    });
+    let row = checks
+        .iter()
+        .find(|c| c["name"] == "sandbox")
+        .expect("a sandbox row");
+    let detail = row["detail"].as_str().unwrap();
+    assert_eq!(row["status"], "warn", "{row}");
+    assert!(detail.contains("0.10.0-rc.1"), "{detail}");
+    assert!(detail.contains("no overlay support"), "{detail}");
+}
+
+#[test]
 fn an_attempt_runs_sandboxed_when_bwrap_is_present() {
     let e = Env::new();
     if e.sandbox_disabled() {

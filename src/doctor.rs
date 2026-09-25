@@ -157,8 +157,7 @@ fn check_binaries() -> Vec<Check> {
     let sandbox_off = config::env("SANDBOX").as_deref() == Ok("0");
     out.push(match (sandbox::resolve_binary("bwrap"), sandbox_off) {
         (Ok((_, p)), false) => match sandbox::bwrap_version(&p) {
-            Some(v) if !sandbox::version_has_overlay(Some(v)) => {
-                let v = format!("{}.{}.{}", v.0, v.1, v.2);
+            Some(v) if !sandbox::version_has_overlay(Some(v.clone())) => {
                 check(
                     "sandbox",
                     Status::Warn,
@@ -172,7 +171,7 @@ fn check_binaries() -> Vec<Check> {
             Some(v) => check(
                 "sandbox",
                 Status::Ok,
-                format!("bwrap {}.{}.{} at {}", v.0, v.1, v.2, p.display()),
+                format!("bwrap {v} at {}", p.display()),
                 "",
             ),
             None => check(
