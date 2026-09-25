@@ -1501,6 +1501,9 @@ async fn finish(
     if let Some(iid) = t.initiative {
         crate::view::maybe_settle_initiative(f, id, iid).env()?;
     }
+    if t.state == TaskState::Succeeded && (!t.land || !t.landed_sha.is_empty()) {
+        crate::queue::settle_superseded(f, id).env()?;
+    }
     // A dependent waiting on this task, blocked with a stale reason
     // because its after list has since been re-pointed here, is released
     // or given a fresh reason now that this task itself has landed,
