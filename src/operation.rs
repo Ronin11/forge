@@ -184,6 +184,7 @@ pub(crate) async fn run_operation(
             let vref = format!("verify/{}", t.id);
             let files = git::ls_tree(&repo, &vref, &cfg.namespace).await.task()?;
             git::archive_into(&repo, &vref, &files, dir).await.task()?;
+            f.allow_egress(dir, cfg, t.trust);
             dir.clone()
         }
         None => wt.clone(),
