@@ -417,7 +417,7 @@ async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOutcome> {
     let output_ref = output_text
         .as_ref()
         .map(|text| {
-            let path = idir.join(format!("output-{}.json", action.name));
+            let path = idir.join(format!("output-{}-{seq}.json", action.name));
             std::fs::write(&path, text)?;
             Ok::<_, anyhow::Error>(path)
         })
@@ -492,9 +492,10 @@ fn recorded_directive(
     action: &workflows::ActionDef,
     recorded: &serde_json::Value,
     idir: &Path,
+    seq: i64,
 ) -> Result<DirectiveOutcome> {
     let text = recorded.to_string();
-    let path = idir.join(format!("output-{}.json", action.name));
+    let path = idir.join(format!("output-{}-{seq}.json", action.name));
     std::fs::write(&path, &text)?;
     let effective = action.effective_schema();
     let schema: serde_json::Value = serde_json::from_str(effective.as_deref().unwrap_or("{}"))
@@ -1228,7 +1229,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
                 Kind::Directive => {
                     let started_at = unix_now();
                     let ran = match recorded.get(&action.name) {
-                        Some(output) => recorded_directive(action, output, &idir),
+                        Some(output) => recorded_directive(action, output, &idir, seq),
                         None => {
                             run_directive(RunDirective {
                                 f,
@@ -2775,14 +2776,15 @@ mod tests {
             r#"{"type":"object","required":["kind"],"properties":{"kind":{"type":"string"}}}"#
                 .to_string(),
         );
-        let ok = recorded_directive(&a, &serde_json::json!({"kind": "bug"}), dir.path()).unwrap();
+        let ok =
+            recorded_directive(&a, &serde_json::json!({"kind": "bug"}), dir.path(), 0).unwrap();
         assert!(ok.check.ok);
         assert_eq!(ok.provider, "recorded");
         assert_eq!(ok.cost_usd, 0.0);
         assert_eq!(ok.output_text, r#"{"kind":"bug"}"#);
         let path = ok.output_ref.unwrap();
         assert_eq!(std::fs::read_to_string(path).unwrap(), r#"{"kind":"bug"}"#);
-        let bad = recorded_directive(&a, &serde_json::json!({"kind": 3}), dir.path()).unwrap();
+        let bad = recorded_directive(&a, &serde_json::json!({"kind": 3}), dir.path(), 0).unwrap();
         assert!(!bad.check.ok);
         assert!(
             bad.check.tail.contains("does not match the schema"),
