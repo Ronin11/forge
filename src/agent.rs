@@ -3,56 +3,8 @@
 //! first. Numbers Forge records come from the CLI's accounting or Forge's
 //! own clock, never from the model's prose.
 
-/// A Codex phase with its command, environment, and streaming output sinks.
-struct RunCodexPhase<'a> {
-    l: &'a Launch<'a>,
-    argv: &'a [String],
-    extra_env: &'a [(String, String)],
-    start: &'a Instant,
-    log: &'a mut File,
-    out: &'a mut Outcome,
-    watch: &'a mut Watch,
-}
-
-/// One agent invocation, including its sandbox, limits, identity, and output sinks.
-struct AgentRun<'a> {
-    sandbox: Option<&'a Sandbox>,
-    worktree: &'a Path,
-    argv: &'a [String],
-    identity: &'a [(String, String)],
-    prompt: &'a str,
-    bin: &'a str,
-    timeout: Duration,
-    writes: bool,
-    early_ending: crate::config::EarlyEnding,
-    task_id: i64,
-    report: &'a Reporter,
-    log: &'a mut File,
-}
-
-/// A JSON-streaming agent phase and the parser that folds frames into its outcome.
-struct RunJsonPhase<'a> {
-    l: &'a Launch<'a>,
-    argv: &'a [String],
-    extra_env: &'a [(String, String)],
-    start: &'a Instant,
-    log: &'a mut File,
-    out: &'a mut Outcome,
-    watch: &'a mut Watch,
-    apply: &'a mut (dyn FnMut(&Value, &mut Outcome, &mut Watch) -> Option<String> + Send + 'a),
-}
-
-/// A Copilot phase with its output sinks and cumulative token accounting.
-struct RunCopilotPhase<'a> {
-    l: &'a Launch<'a>,
-    argv: &'a [String],
-    extra_env: &'a [(String, String)],
-    start: &'a Instant,
-    log: &'a mut File,
-    out: &'a mut Outcome,
-    watch: &'a mut Watch,
-    tally: &'a mut CopilotTally,
-}
+mod inputs;
+use inputs::{AgentRun, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
 
 use crate::report::{Event, Reporter};
 use crate::sandbox::Sandbox;
