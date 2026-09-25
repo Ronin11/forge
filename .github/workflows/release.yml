@@ -1,11 +1,15 @@
 name: Release
 
 # A `v*` tag builds the release archive scripts/release.sh packs (the
-# binaries, both units, the config template) and attaches it, with its
-# SHA256SUMS, to a GitHub release of the same name. `forge upgrade <url>`
-# installs from those two files. The tag must equal what the built
-# `forge version` reports: the archive is named from the binary, never
-# from the tag, and the two are checked against each other before upload.
+# binaries, both units, the config template) for every target, merges
+# their checksums into one SHA256SUMS, and attaches it all to a GitHub
+# release of the tag's name. `forge upgrade <url>` installs from the
+# archive and the SHA256SUMS beside it, so the sums file must name every
+# archive: one publish job merges them (two jobs uploading a file of the
+# same name would leave only the last, which is what v0.2.0's first cut
+# did). The tag must equal what the built `forge version` reports: the
+# archive is named from the binary, never from the tag, and the two are
+# checked before anything is published.
 
 on:
   push:
@@ -18,7 +22,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  build:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -54,15 +58,11 @@ jobs:
       - name: The tag names the version the binary reports
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          # The archive is named from the built binary's own `forge version`
-          # (scripts/release.sh), whichever target directory the build used.
           archive="$(ls dist/forge-*-${{ matrix.target }}.tar.gz)"
           version="$(basename "$archive" | sed -E 's/^forge-(.*)-${{ matrix.target }}\.tar\.gz$/\1/')"
           test "v$version" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} but the archive is $archive" >&2; exit 1; }
-          ls -la dist/
 
-      - name: Keep the archive from a manual run
-        if: "!startsWith(github.ref, 'refs/tags/v')"
+      - name: Keep the archive and its checksum line
         uses: actions/upload-artifact@v4
         with:
           name: forge-${{ matrix.target }}
@@ -70,11 +70,31 @@ jobs:
             dist/forge-*.tar.gz
             dist/SHA256SUMS
 
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect every target's archive
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: One SHA256SUMS naming every archive
+        run: |
+          mkdir -p release
+          for d in dist/forge-*; do
+            cp "$d"/forge-*.tar.gz release/
+            cat "$d"/SHA256SUMS >> release/SHA256SUMS
+          done
+          sort -k2 -o release/SHA256SUMS release/SHA256SUMS
+          cat release/SHA256SUMS
+          (cd release && sha256sum -c SHA256SUMS)
+
       - name: Attach to the release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/forge-*.tar.gz
-            dist/SHA256SUMS
+            release/forge-*.tar.gz
+            release/SHA256SUMS
           generate_release_notes: true
