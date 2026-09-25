@@ -585,6 +585,7 @@ mod tests {
             prompt_hash: String::new(),
             includes: vec![],
             schema: None,
+            outcomes: vec![],
             file_into_initiative: false,
             overlay: false,
             verifies: false,

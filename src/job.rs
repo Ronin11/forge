@@ -327,6 +327,7 @@ struct DirectiveOutcome {
     check: checks::CheckResult,
     output_text: String,
     output_ref: Option<PathBuf>,
+    outcome: String,
 }
 
 /// A job step's directive (docs/JOBS.md, "Steps"): a bounded launch with no
@@ -373,7 +374,8 @@ async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOutcome> {
     let log_path = f.paths.logs.join(format!("job-{job_id}-{seq}.jsonl"));
     // Guaranteed present and valid JSON Schema by `workflows::job_steps`
     // and `parse_action`.
-    let schema = action.schema.as_deref().unwrap_or("{}");
+    let effective = action.effective_schema();
+    let schema = effective.as_deref().unwrap_or("{}");
 
     let outcome = crate::directive::launch(
         f,
@@ -432,6 +434,7 @@ async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOutcome> {
         },
         output_text: output_text.clone().unwrap_or_default(),
         output_ref: output_ref.clone(),
+        outcome: String::new(),
     };
     if let Some(why) = crate::directive::failure(&outcome) {
         return Ok(fail(why.tail(&stderr_tail)));
@@ -467,7 +470,15 @@ async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOutcome> {
         },
         output_text: structured.clone(),
         output_ref,
+        outcome: outcome_of(&instance),
     })
+}
+
+fn outcome_of(v: &serde_json::Value) -> String {
+    v.get("outcome")
+        .and_then(|o| o.as_str())
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// A directive step's stand-in during a fixture replay (docs/JOBS.md,
@@ -483,7 +494,8 @@ fn recorded_directive(
     let text = recorded.to_string();
     let path = idir.join(format!("output-{}.json", action.name));
     std::fs::write(&path, &text)?;
-    let schema: serde_json::Value = serde_json::from_str(action.schema.as_deref().unwrap_or("{}"))
+    let effective = action.effective_schema();
+    let schema: serde_json::Value = serde_json::from_str(effective.as_deref().unwrap_or("{}"))
         .context("the action's schema is not valid JSON")?;
     let (ok, tail) = match jsonschema::validate(&schema, recorded) {
         Ok(()) => (true, String::new()),
@@ -505,6 +517,11 @@ fn recorded_directive(
         },
         output_text: text,
         output_ref: Some(path),
+        outcome: if ok {
+            outcome_of(recorded)
+        } else {
+            String::new()
+        },
     })
 }
 
@@ -657,6 +674,9 @@ pub async fn start_scheduled(
     source: workflows::JobSource,
     slot: i64,
 ) -> Result<i64> {
+    if f.store.last_scheduled_job(project, workflow)?.is_none() {
+        require_fixture_pass(f, project, workflow, landed_sha).await?;
+    }
     queue_triggered(QueueTriggered {
         f,
         project,
@@ -669,6 +689,48 @@ pub async fn start_scheduled(
         event_at: slot,
         input_text: "{}",
     })
+}
+
+/// The gate on automations that act on the world (docs/EXECUTION.md,
+/// "Verifiable inside, optional outside"): a run workflow with any
+/// `effect` step is not enabled — `forge job enable`, or the scheduler's
+/// first run — until `forge job test` passes on a fixture for it in the
+/// project's repository. A workflow with no effect step passes untouched.
+/// The refusal names the fixture directory it looked for.
+pub async fn require_fixture_pass(
+    f: &Forge,
+    project: &str,
+    workflow: &str,
+    landed_sha: &str,
+) -> Result<()> {
+    let repo = f
+        .store
+        .first_repo(project)?
+        .with_context(|| format!("project {project:?} has no registered repository"))?;
+    let repo = PathBuf::from(repo);
+    let (_, steps, _) =
+        workflows::resolve_job_for_project(&f.paths.home, &repo, landed_sha, workflow)?;
+    if !steps.iter().any(|s| s.effect.is_some()) {
+        return Ok(());
+    }
+    let dir = repo.join(".forge/fixtures").join(workflow);
+    let refuse = |why: String| {
+        anyhow::anyhow!(
+            "run workflow {workflow:?} has an effect step and cannot be enabled until `forge job test` has passed on a fixture for it; looked for fixtures under {}: {why}",
+            dir.display()
+        )
+    };
+    let outcomes = test(&repo, Some(workflow))
+        .await
+        .map_err(|e| refuse(format!("{e:#}")))?;
+    let failed: Vec<String> = outcomes
+        .iter()
+        .filter_map(|o| o.differences.first().map(|d| format!("{}: {d}", o.name)))
+        .collect();
+    if !failed.is_empty() {
+        return Err(refuse(format!("a fixture fails: {}", failed.join("; "))));
+    }
+    Ok(())
 }
 
 /// The input a message trigger gives its job (docs/JOBS.md, "Triggers"):
@@ -997,6 +1059,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
             exit_code: r.exit,
             output_ref,
             tail: tail.clone(),
+            outcome: String::new(),
         })?;
         if !r.ok {
             ok = false;
@@ -1114,6 +1177,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
                     exit_code: r.exit,
                     output_ref,
                     tail: tail.clone(),
+                    outcome: String::new(),
                 })?;
                 for line in log_lines(&effect_log).into_iter().skip(before) {
                     let mut parts = line.splitn(3, '\t');
@@ -1196,6 +1260,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
                     finished_at: Some(unix_now()),
                     exit_code: None,
                     tail: String::new(),
+                    outcome: d.outcome,
                     output_ref: d
                         .output_ref
                         .as_ref()
@@ -2309,6 +2374,7 @@ mod tests {
             prompt_hash: String::new(),
             includes: vec![],
             schema: None,
+            outcomes: vec![],
             file_into_initiative: false,
             overlay: false,
             verifies: false,

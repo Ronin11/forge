@@ -147,6 +147,11 @@ pub struct JobStep {
     /// The last lines of an operation step's stdout and stderr, pass or
     /// fail; empty for a directive step.
     pub tail: String,
+    /// A directive step's declared outcome (docs/EXECUTION.md, "Outcomes,
+    /// then edges"): the `outcome` field its structured output returned;
+    /// empty when its action declares none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub outcome: String,
 }
 
 /// One effect a job's step performed on the world (see docs/JOBS.md,
@@ -221,6 +226,7 @@ pub(super) const JOB_STEP_COLUMNS: &[&str] = &[
     "exit_code",
     "output_ref",
     "tail",
+    "outcome",
 ];
 
 pub(super) const JOB_EFFECT_COLUMNS: &[&str] = &[
@@ -267,6 +273,7 @@ fn job_step_from_row(r: &Row) -> rusqlite::Result<JobStep> {
         exit_code: r.get("exit_code")?,
         output_ref: r.get("output_ref")?,
         tail: r.get("tail")?,
+        outcome: r.get("outcome")?,
     })
 }
 
@@ -361,8 +368,8 @@ impl Store {
     pub fn append_job_step(&self, s: &JobStep) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO job_steps (job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref, tail)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO job_steps (job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref, tail, outcome)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 s.job_id,
                 s.seq,
@@ -376,6 +383,7 @@ impl Store {
                 s.exit_code,
                 s.output_ref,
                 s.tail,
+                s.outcome,
             ],
         )?;
         Ok(c.last_insert_rowid())
@@ -1042,6 +1050,7 @@ mod tests {
             exit_code: None,
             output_ref: "step-0.json".into(),
             tail: String::new(),
+            outcome: String::new(),
         };
         let effect = JobEffect {
             id: 2,

@@ -80,6 +80,13 @@ pub struct StatsWorkflowRow {
     /// previous one, or with fewer than `crate::profile::MIN_N` pieces
     /// on either side.
     pub regressed: bool,
+    /// Cost, in USD, of this version's directive steps
+    /// (docs/EXECUTION.md, rule 4).
+    pub directive_cost_usd: f64,
+    /// `directive_cost_usd` over everything the version cost; `None` when
+    /// it cost nothing. The drift toward using the model for what a script
+    /// can do, as a number.
+    pub directive_share: Option<f64>,
     #[serde(flatten)]
     pub legacy: serde_json::Map<String, Value>,
 }
@@ -137,6 +144,8 @@ impl From<&WorkflowStat> for StatsWorkflowRow {
             rate_lo,
             rate_hi,
             regressed: false,
+            directive_cost_usd: 0.0,
+            directive_share: None,
             legacy,
         }
     }
@@ -1056,6 +1065,21 @@ pub async fn stats_doc(
         .map(Into::into)
         .collect();
     mark_workflow_regressions(f, &mut workflows)?;
+    for j in f.store.job_workflow_stats(scope)? {
+        if !workflows
+            .iter()
+            .any(|w| w.workflow == j.workflow && w.hash == j.hash)
+        {
+            workflows.push((&j).into());
+        }
+    }
+    let costs = f.store.directive_costs(scope)?;
+    for w in &mut workflows {
+        if let Some((directive, total)) = costs.get(&(w.workflow.clone(), w.hash.clone())) {
+            w.directive_cost_usd = *directive;
+            w.directive_share = (*total > 0.0).then(|| directive / total);
+        }
+    }
     Ok(StatsDoc {
         workflows,
         steps: f.store.step_stats(scope)?.iter().map(Into::into).collect(),

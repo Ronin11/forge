@@ -646,4 +646,7 @@ CREATE TABLE job_trust (
     // "Price every provider at its API list"). NULL when the CLI's figure
     // is the cost.
     "ALTER TABLE attempts ADD COLUMN cli_cost_usd REAL;",
+    // The outcome a directive step returned, when its action declares
+    // outcomes (docs/EXECUTION.md, "Outcomes, then edges").
+    "ALTER TABLE job_steps ADD COLUMN outcome TEXT NOT NULL DEFAULT '';",
 ];

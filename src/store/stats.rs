@@ -674,6 +674,101 @@ impl Store {
         Ok(stats)
     }
 
+    /// One outcomes row per run-workflow version, from its finished jobs:
+    /// `ok` counts as succeeded, `failed` as failed, `needs_human` as
+    /// blocked. What lets `forge stats` show a run workflow's directive
+    /// share beside the build workflows' rows.
+    pub fn job_workflow_stats(&self, scope: &StatsFilter) -> Result<Vec<WorkflowStat>> {
+        if scope.initiative.is_some() {
+            return Ok(Vec::new());
+        }
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT workflow, workflow_hash AS hash, COUNT(*) AS jobs, SUM(state='ok') AS ok,
+                    SUM(state='failed') AS failed, SUM(state='needs_human') AS needs_human,
+                    COALESCE(SUM(cost_usd), 0) AS cost
+             FROM jobs WHERE state IN ('ok','failed','needs_human')
+               AND (?1 IS NULL OR project = ?1)
+             GROUP BY workflow, workflow_hash ORDER BY workflow, workflow_hash",
+        )?;
+        let rows = stmt.query_map(params![scope.project], |r| {
+            Ok(WorkflowStat {
+                workflow: r.get("workflow")?,
+                hash: r.get("hash")?,
+                tasks: r.get("jobs")?,
+                succeeded: r.get("ok")?,
+                failed: r.get("failed")?,
+                blocked: r.get("needs_human")?,
+                unverified: 0,
+                cost: r.get("cost")?,
+                attempts: 0,
+                landed: 0,
+                broke_base: 0,
+                repaired: 0,
+                repair_cost: 0.0,
+                added_lines: 0,
+                churned_lines: 0,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Directive cost and total cost per workflow version, from attempts
+    /// (every attempt is a directive's) and job steps (by their `kind`):
+    /// the numbers behind a workflow's directive share
+    /// (docs/EXECUTION.md, rule 4). Keyed by `(workflow, hash)`.
+    pub fn directive_costs(
+        &self,
+        scope: &StatsFilter,
+    ) -> Result<BTreeMap<(String, String), (f64, f64)>> {
+        let c = self.lock();
+        let mut out: BTreeMap<(String, String), (f64, f64)> = BTreeMap::new();
+        let mut tasks = c.prepare(
+            "SELECT t.workflow AS workflow, t.workflow_hash AS hash, COALESCE(SUM(a.cost_usd), 0) AS cost
+             FROM attempts a JOIN tasks t ON t.id = a.task_id
+             WHERE (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
+             GROUP BY t.workflow, t.workflow_hash",
+        )?;
+        let rows = tasks.query_map(params![scope.project, scope.initiative], |r| {
+            Ok((
+                r.get::<_, String>("workflow")?,
+                r.get::<_, String>("hash")?,
+                r.get::<_, f64>("cost")?,
+            ))
+        })?;
+        for row in rows {
+            let (w, h, cost) = row?;
+            let e = out.entry((w, h)).or_default();
+            e.0 += cost;
+            e.1 += cost;
+        }
+        if scope.initiative.is_none() {
+            let mut jobs = c.prepare(
+                "SELECT j.workflow AS workflow, j.workflow_hash AS hash,
+                    COALESCE(SUM(CASE WHEN js.kind = 'directive' THEN js.cost_usd ELSE 0 END), 0) AS directive,
+                    COALESCE(SUM(js.cost_usd), 0) AS total
+                 FROM job_steps js JOIN jobs j ON j.id = js.job_id
+                 WHERE ?1 IS NULL OR j.project = ?1
+                 GROUP BY j.workflow, j.workflow_hash",
+            )?;
+            let rows = jobs.query_map(params![scope.project], |r| {
+                Ok((
+                    r.get::<_, String>("workflow")?,
+                    r.get::<_, String>("hash")?,
+                    r.get::<_, f64>("directive")?,
+                    r.get::<_, f64>("total")?,
+                ))
+            })?;
+            for row in rows {
+                let (w, h, directive, total) = row?;
+                let e = out.entry((w, h)).or_default();
+                e.0 += directive;
+                e.1 += total;
+            }
+        }
+        Ok(out)
+    }
+
     /// Time to live for this scope's landed tasks (see `TaskTtl`): one row
     /// per landed task that already has an answer — its own `landed_at`,
     /// or, when an on-landing deploy ran on its behalf and has finished, that
