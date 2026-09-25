@@ -81,3 +81,34 @@ pub(super) async fn apply_on_failure(
         }
     }
 }
+
+/// `next_step`, applied: the next cursor position, or `None` when the run
+/// stops, with `ok` and the verdict updated for a failure or a spent loop.
+pub(super) fn advance(
+    steps: &[RunStep],
+    at: usize,
+    (failed, outcome): (bool, &str),
+    runs: &[u32],
+    ok: &mut bool,
+    verdict: &mut Vec<checks::CheckResult>,
+) -> Option<usize> {
+    match next_step(steps, at, failed, outcome, runs) {
+        Route::Go(n) => Some(n),
+        Route::End => None,
+        Route::Failed => {
+            *ok = false;
+            None
+        }
+        Route::Capped(why) => {
+            *ok = false;
+            verdict.push(checks::CheckResult {
+                level: "L0".to_string(),
+                name: "loop".to_string(),
+                ok: false,
+                tail: why,
+                ..Default::default()
+            });
+            None
+        }
+    }
+}

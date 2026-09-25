@@ -1313,24 +1313,9 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
                 }
             }
         }
-        match flow::next_step(steps, at, failed, &outcome, &runs) {
-            flow::Route::Go(n) => at = n,
-            flow::Route::End => break,
-            flow::Route::Failed => {
-                ok = false;
-                break;
-            }
-            flow::Route::Capped(why) => {
-                ok = false;
-                verdict.push(checks::CheckResult {
-                    level: "L0".to_string(),
-                    name: "loop".to_string(),
-                    ok: false,
-                    tail: why,
-                    ..Default::default()
-                });
-                break;
-            }
+        match flow::advance(steps, at, (failed, &outcome), &runs, &mut ok, &mut verdict) {
+            Some(n) => at = n,
+            None => break,
         }
     }
 
