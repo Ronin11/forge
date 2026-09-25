@@ -32,7 +32,7 @@ async fn record_verdict(
         base_sha: sha.to_string(),
         start_sha: sha.to_string(),
         task_checks: t.checks.clone(),
-        ..Default::default()
+        ..f.execution_inputs(Path::new(&t.worktree))
     };
     let mut a = Attempt {
         task_id: t.id,

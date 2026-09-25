@@ -3,7 +3,7 @@
 
 use crate::agent;
 use crate::config::{self, Budget};
-use crate::executor::Execution as Sandbox;
+use crate::executor::Execution;
 use crate::report::Reporter;
 use crate::store::{Store, Task};
 use anyhow::{Context, Result};
@@ -165,7 +165,7 @@ pub struct Forge {
     /// `[environment]`: what a failed attempt's environment need may be
     /// granted automatically (see `environment`).
     pub environment: crate::environment::Policy,
-    pub sandbox: Option<Sandbox>,
+    pub sandbox: Option<Execution>,
     pub report: Reporter,
 }
 
@@ -185,7 +185,7 @@ impl Forge {
             {
                 extra_ro.push(dir.to_path_buf());
             }
-            Sandbox::detect(
+            Execution::detect(
                 &agent::agent_bin(),
                 &home.sandbox,
                 extra_ro,
@@ -317,8 +317,27 @@ impl Forge {
         }
     }
 
-    pub fn sandboxed(&self) -> bool {
-        self.sandbox.is_some()
+    pub fn sandboxed(&self, worktree: &Path) -> bool {
+        self.sandbox
+            .as_ref()
+            .is_some_and(|s| s.backend(worktree) == crate::executor::Backend::Bwrap)
+    }
+
+    pub fn execution_inputs(&self, worktree: &Path) -> crate::audit::Inputs {
+        let backend = self
+            .sandbox
+            .as_ref()
+            .map(|s| s.backend(worktree))
+            .unwrap_or(crate::executor::Backend::Host);
+        crate::audit::Inputs {
+            executor: backend.as_str().to_string(),
+            guarantees: self
+                .sandbox
+                .as_ref()
+                .map(|s| s.guarantees(worktree))
+                .unwrap_or_else(|| backend.guarantees()),
+            ..Default::default()
+        }
     }
 
     /// A task's project, when it has one and the row still exists. Errors

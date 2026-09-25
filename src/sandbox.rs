@@ -371,11 +371,16 @@ impl Sandbox {
     /// Build the bwrap command that runs `argv` inside the worktree with
     /// exactly `env` (HOME is forced to the tmpfs home).
     #[cfg(test)]
-    pub fn command(&self, worktree: &Path, argv: &[String], env: &[(String, String)]) -> Command {
-        self.command_with_policy(worktree, argv, env, &self.policy_for(worktree))
+    pub fn command_for_worktree(
+        &self,
+        worktree: &Path,
+        argv: &[String],
+        env: &[(String, String)],
+    ) -> Command {
+        self.command(worktree, argv, env, &self.policy_for(worktree))
     }
 
-    pub fn command_with_policy(
+    pub fn command(
         &self,
         worktree: &Path,
         argv: &[String],
@@ -606,7 +611,7 @@ mod tests {
             granted: Mutex::new(BTreeMap::new()),
         };
         sandbox.set_cache_dir(&worktree, repo_cache.clone());
-        let cmd = sandbox.command(&worktree, &["true".to_string()], &[]);
+        let cmd = sandbox.command_for_worktree(&worktree, &["true".to_string()], &[]);
         let args: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -808,7 +813,7 @@ mod tests {
         sb.extra_rw = vec![cache.clone()];
         sb.overlay = false;
         let args: Vec<String> = sb
-            .command(&worktree, &["true".to_string()], &[])
+            .command_for_worktree(&worktree, &["true".to_string()], &[])
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
@@ -816,7 +821,7 @@ mod tests {
         assert!(!args.iter().any(|a| a == cache.to_str().unwrap()));
         sb.overlay = true;
         let args: Vec<String> = sb
-            .command(&worktree, &["true".to_string()], &[])
+            .command_for_worktree(&worktree, &["true".to_string()], &[])
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
@@ -873,7 +878,7 @@ mod tests {
     #[tokio::test]
     async fn the_command_has_a_namespace_of_its_own_and_one_route_out() {
         let sb = test_sandbox("api.example.com");
-        let cmd = sb.command(Path::new("/work/1"), &["true".to_string()], &[]);
+        let cmd = sb.command_for_worktree(Path::new("/work/1"), &["true".to_string()], &[]);
         let args = args_of(&cmd);
         assert!(args.iter().any(|a| a == "--unshare-net"), "{args:?}");
         let bind = args
@@ -907,7 +912,7 @@ mod tests {
     #[test]
     fn without_a_runtime_there_is_no_route_but_the_network_is_still_unshared() {
         let sb = test_sandbox("api.example.com");
-        let cmd = sb.command(Path::new("/work/1"), &["true".to_string()], &[]);
+        let cmd = sb.command_for_worktree(Path::new("/work/1"), &["true".to_string()], &[]);
         let args = args_of(&cmd);
         assert!(args.iter().any(|a| a == "--unshare-net"), "{args:?}");
         assert!(

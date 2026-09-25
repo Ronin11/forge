@@ -254,6 +254,10 @@ pub async fn run_attempt(
             scratch: None,
         },
     };
+    f.allow_egress(&spec.dir, cfg, t.trust);
+    if let Some(scratch) = &spec.scratch {
+        f.allow_egress(scratch, cfg, t.trust);
+    }
     let mut inputs = spec.inputs;
     let mut spec_prompt = spec.prompt;
     if let Some(prev) = resume.and_then(|r| r.fresh_from.as_deref()) {
@@ -484,17 +488,9 @@ pub async fn new_attempt(args: NewAttempt<'_>) -> Result<(Attempt, PathBuf), Fau
         Some(r) => r.start_sha.clone(),
         None => git::head(dir).await.task()?,
     };
-    let backend = f
-        .sandbox
-        .as_ref()
-        .map(|s| s.backend(dir))
-        .unwrap_or(crate::executor::Backend::Host);
-    inputs.executor = backend.as_str().to_string();
-    inputs.guarantees = f
-        .sandbox
-        .as_ref()
-        .map(|s| s.guarantees(dir))
-        .unwrap_or_else(|| backend.guarantees());
+    let execution = f.execution_inputs(dir);
+    inputs.executor = execution.executor;
+    inputs.guarantees = execution.guarantees;
     inputs.workflow = t.workflow.clone();
     inputs.workflow_hash = t.workflow_hash.clone();
     inputs.step = step.to_string();

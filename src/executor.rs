@@ -84,7 +84,7 @@ impl Executor for Sandbox {
         env: &[(String, String)],
         egress: &Policy,
     ) -> Command {
-        self.command_with_policy(worktree, argv, env, egress)
+        self.command(worktree, argv, env, egress)
     }
 }
 

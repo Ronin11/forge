@@ -15,7 +15,7 @@ pub(super) struct RunCodexPhase<'a> {
 
 /// One agent invocation, including its sandbox, limits, identity, and output sinks.
 pub(super) struct AgentRun<'a> {
-    pub(super) sandbox: Option<&'a Sandbox>,
+    pub(super) sandbox: Option<&'a Execution>,
     pub(super) worktree: &'a Path,
     pub(super) argv: &'a [String],
     pub(super) identity: &'a [(String, String)],

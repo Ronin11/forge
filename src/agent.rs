@@ -6,7 +6,7 @@
 mod inputs;
 use inputs::{AgentRun, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
 
-use crate::executor::Execution as Sandbox;
+use crate::executor::Execution;
 use crate::report::{Event, Reporter};
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -302,7 +302,7 @@ pub fn agent_env() -> Vec<(String, String)> {
 /// A command for `argv` in the worktree, through the sandbox when there is
 /// one, with the agent environment plus `extra_env`.
 pub fn command_in(
-    sandbox: Option<&Sandbox>,
+    sandbox: Option<&Execution>,
     worktree: &Path,
     argv: &[String],
     extra_env: &[(String, String)],
@@ -357,7 +357,7 @@ pub struct Launch<'a> {
     pub max_turns: u32,
     pub timeout: Duration,
     pub log_path: &'a Path,
-    pub sandbox: Option<&'a Sandbox>,
+    pub sandbox: Option<&'a Execution>,
     pub report: &'a Reporter,
     pub step: &'a str,
     /// The provider this step runs under: which CLI, and what it adds to

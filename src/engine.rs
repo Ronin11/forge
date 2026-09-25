@@ -226,7 +226,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
             max_turns: t.max_turns,
             max_attempts: t.max_attempts,
             timeout_secs: t.timeout_secs,
-            sandboxed: f.sandboxed(),
+            sandboxed: f.sandboxed(&wt),
         },
     );
     f.report.emit(

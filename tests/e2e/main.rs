@@ -9,6 +9,7 @@ mod contracts;
 mod deploy;
 mod economist;
 mod environment;
+mod executors;
 mod fixtures;
 mod graph;
 mod init;

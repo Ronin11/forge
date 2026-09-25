@@ -171,6 +171,7 @@ pub fn block(f: &Forge, t: &Task, need: &Need, question: &str) -> Result<()> {
         task_id: t.id,
         attempt_no: attempts.len() as i64 + 1,
         step: STEP.into(),
+        inputs_json: serde_json::to_string(&f.execution_inputs(std::path::Path::new(&t.worktree)))?,
         step_seq: attempts.iter().map(|a| a.step_seq).max().unwrap_or(0) + 1,
         state: AttemptState::Running,
         started_at: now,

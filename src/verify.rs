@@ -28,7 +28,7 @@ use crate::agent::Outcome;
 use crate::checks::{CheckResult, last_lines, run_one};
 use crate::config::{Config, is_protected};
 use crate::envelope::{self, Change, Envelope, Kind};
-use crate::executor::Execution as Sandbox;
+use crate::executor::Execution;
 use crate::report::{Event, Reporter};
 use crate::store::AttemptState;
 use crate::workflows::Contract;
@@ -74,7 +74,7 @@ pub struct Subject<'a> {
     /// it. When HEAD contains it, the branch is measured against it: the
     /// merge carried the base's changes, the agent did not make them.
     pub pending_main: Option<&'a str>,
-    pub sandbox: Option<&'a Sandbox>,
+    pub sandbox: Option<&'a Execution>,
     pub report: &'a Reporter,
     /// The tests contract's scratch directory for the red-on-base run;
     /// created and removed by the verdict. Other contracts leave it None.

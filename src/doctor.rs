@@ -1014,9 +1014,6 @@ pub fn run() -> Result<Vec<Check>> {
     }
 }
 
-/// The same checks as `run`, against an already-resolved `paths` rather
-/// than re-resolving `FORGE_HOME`: what `forge init` calls so its closing
-/// doctor pass looks at the exact home it just set up, even with `--home`.
 fn check_executors(store: &Store) -> Vec<Check> {
     use crate::executor::Backend;
     let mut backends = std::collections::BTreeSet::new();
@@ -1074,6 +1071,9 @@ fn check_executors(store: &Store) -> Vec<Check> {
     out
 }
 
+/// The same checks as `run`, against an already-resolved `paths` rather
+/// than re-resolving `FORGE_HOME`: what `forge init` calls so its closing
+/// doctor pass looks at the exact home it just set up, even with `--home`.
 pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     let mut out = check_binaries();
     out.extend(check_legacy_env());

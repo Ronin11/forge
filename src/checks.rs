@@ -15,13 +15,13 @@ pub struct RunOneCapped<'a> {
     pub name: &'a str,
     pub argv: &'a [String],
     pub cwd: &'a Path,
-    pub sandbox: Option<&'a Sandbox>,
+    pub sandbox: Option<&'a Execution>,
     pub timeout: Duration,
     pub env: &'a [(String, String)],
     pub cap_bytes: usize,
 }
 
-use crate::executor::Execution as Sandbox;
+use crate::executor::Execution;
 use serde::{Deserialize, Serialize};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -119,7 +119,7 @@ pub async fn run_one(
     name: &str,
     argv: &[String],
     cwd: &Path,
-    sandbox: Option<&Sandbox>,
+    sandbox: Option<&Execution>,
     timeout: Duration,
     env: &[(String, String)],
 ) -> CheckResult {
