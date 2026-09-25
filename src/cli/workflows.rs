@@ -90,11 +90,20 @@ fn validate_workflows(path: Option<PathBuf>) -> Result<()> {
 /// show --json` both print for one workflow: current version, previous
 /// version if any (with regression flag), all versions combined, and the
 /// same breakdown per provider.
+/// A workflow version's directive share of cost (docs/EXECUTION.md, rule
+/// 4): `None` when it has cost nothing.
+fn directive_share(f: &Forge, w: &workflows::Workflow) -> Option<f64> {
+    let costs = f.store.directive_costs(&Default::default()).ok()?;
+    let (directive, total) = costs.get(&(w.name.clone(), w.hash.clone()))?;
+    (*total > 0.0).then(|| directive / total)
+}
+
 fn measured_doc(f: &Forge, w: &workflows::Workflow) -> Result<serde_json::Value> {
     let m = measure(f, w)?;
     Ok(serde_json::json!({
         "current": m.current, "previous": m.previous.as_ref().map(|(h, p)| serde_json::json!({"hash": h, "profile": p})),
         "all_versions": m.all, "regressed": m.regressed,
+        "directive_share": directive_share(f, w),
         "by_provider": profile::measure_by_provider(&f.store, &w.name, &w.hash).ok().map(|ps| ps.into_iter().map(|(provider, pm)| serde_json::json!({
             "provider": provider, "current": pm.current,
             "previous": pm.previous.as_ref().map(|(h, p)| serde_json::json!({"hash": h, "profile": p})),
@@ -359,6 +368,7 @@ async fn list_workflows(project: Option<String>, json: bool) -> Result<()> {
                 "measured": m.as_ref().map(|m| serde_json::json!({
                     "current": m.current, "previous": m.previous.as_ref().map(|(h, p)| serde_json::json!({"hash": h, "profile": p})),
                     "all_versions": m.all, "regressed": m.regressed,
+                    "directive_share": directive_share(&f, w),
                     "by_provider": profile::measure_by_provider(&f.store, &w.name, &w.hash).ok().map(|ps| ps.into_iter().map(|(provider, pm)| serde_json::json!({
                         "provider": provider, "current": pm.current,
                         "previous": pm.previous.as_ref().map(|(h, p)| serde_json::json!({"hash": h, "profile": p})),

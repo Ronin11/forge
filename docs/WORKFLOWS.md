@@ -394,6 +394,13 @@ catalog's own `setup` and `docs`), one a `kind = "run"` workflow (a
 webhook that writes what it is sent, composed from the catalog's own
 `write-file`) — both lint clean, so both fixtures expect `state = "ok"`.
 
+A directive step in a run workflow names `judgment = "<one sentence
+saying what a script cannot do here>"` beside its `role`, and the lint
+(`forge workflows lint`, `validate`) refuses one without it; an action
+may declare `outcomes = [...]`, which its schema then requires as an
+`outcome` field (docs/EXECUTION.md, docs/JOBS.md "Steps"). A workflow
+drafted here must carry both where they apply.
+
 ### The page
 
 `/workflows/new` is the operator's front door to `author-workflow`: a

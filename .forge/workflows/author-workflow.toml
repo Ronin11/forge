@@ -4,7 +4,7 @@ description = "the prompter: turns an operator's plain-language description of a
 
 steps = [
   { action = "dump-workflow-catalog" },
-  { action = "draft-workflow",       role = "author" },
+  { action = "draft-workflow",       role = "author", judgment = "turning a plain-language description into a workflow no rule can enumerate" },
   { action = "lint-workflow-draft" },
 ]
 

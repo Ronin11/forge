@@ -10,6 +10,7 @@ mod deploy;
 mod economist;
 mod environment;
 mod executors;
+mod execution;
 mod fixtures;
 mod graph;
 mod init;

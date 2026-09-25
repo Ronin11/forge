@@ -492,7 +492,7 @@ kind = "run"
 description = "a directive job step's action names no schema"
 
 steps = [
-  { action = "code", role = "write" },
+  { action = "code", role = "write", judgment = "a script cannot read free text and decide what it means" },
 ]
 
 [trigger]
@@ -535,7 +535,7 @@ kind = "run"
 description = "extract a job then log its price: a directive feeding an operation"
 
 steps = [
-  { action = "extract-job", role = "read" },
+  { action = "extract-job", role = "read", judgment = "a script cannot read free text and decide what it means" },
   { action = "log-price",   effect = "row" },
 ]
 
@@ -668,7 +668,7 @@ kind = "run"
 description = "a per-run budget the one directive step already exceeds"
 
 steps = [
-  { action = "extract-job", role = "read" },
+  { action = "extract-job", role = "read", judgment = "a script cannot read free text and decide what it means" },
   { action = "log-price",   effect = "row" },
 ]
 
@@ -3041,7 +3041,7 @@ kind = "run"
 description = "a directive judges the input and an operation logs what it said"
 
 steps = [
-  { action = "judge-thing", role = "summarise" },
+  { action = "judge-thing", role = "summarise", judgment = "a script cannot read free text and decide what it means" },
   { action = "log-kind", effect = "row" },
 ]
 

@@ -174,6 +174,13 @@ pub(super) enum JobCmd {
         /// fixtures (default: the current directory)
         path: Option<PathBuf>,
     },
+    /// Check a project's run workflow may be enabled: one with an effect
+    /// step needs `forge job test` to pass on a fixture for it in the
+    /// project's repository, and is refused, naming the fixture directory
+    /// it looked for, until it does (docs/EXECUTION.md, "Verifiable
+    /// inside, optional outside"). The scheduler applies the same gate
+    /// before a workflow's first scheduled run
+    Enable { project: String, workflow: String },
     /// Bench a run workflow's directive steps against every fixture under
     /// the project repository's `.forge/fixtures/<workflow>/`, once per
     /// named provider, in dry-run mode: schema-valid share, expected-kind
@@ -589,6 +596,22 @@ async fn job_test(workflow: Option<String>, path: Option<PathBuf>) -> Result<()>
     Ok(())
 }
 
+/// `forge job enable <project> <workflow>`: see `crate::job::require_fixture_pass`.
+async fn job_enable(project: String, workflow: String) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    f.store
+        .project(&project)?
+        .with_context(|| format!("no project {project}"))?;
+    let runs = crate::worker::project_run_workflows(&f, &project, "job enable").await;
+    let (_, _, _, sha) = runs
+        .into_iter()
+        .find(|(name, ..)| *name == workflow)
+        .with_context(|| format!("{project} has no run workflow {workflow:?}"))?;
+    crate::job::require_fixture_pass(&f, &project, &workflow, &sha).await?;
+    out!("{project}/{workflow} may be enabled");
+    Ok(())
+}
+
 /// `forge job bench <project> <workflow> --providers a,b`: see
 /// `crate::job::bench`.
 async fn job_bench(project: String, workflow: String, providers: Vec<String>) -> Result<()> {
@@ -841,6 +864,7 @@ async fn dispatch_job(cmd: Cmd) -> Result<()> {
             JobCmd::Show { id, json } => job_show(id, json),
             JobCmd::Log { project, json } => job_log(project, json),
             JobCmd::Test { workflow, path } => job_test(workflow, path).await,
+            JobCmd::Enable { project, workflow } => job_enable(project, workflow).await,
             JobCmd::Bench {
                 project,
                 workflow,

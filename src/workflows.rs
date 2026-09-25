@@ -490,6 +490,9 @@ struct ActionRaw {
     /// "Steps"). Unused by a build workflow, which holds every directive to
     /// the envelope schema instead.
     schema: Option<String>,
+    /// Directive: the named outcomes its structured result picks one of
+    /// (docs/EXECUTION.md, "Outcomes, then edges").
+    outcomes: Option<Vec<String>>,
     /// Directive (plan contract): when true and the task has an
     /// initiative id, file the plan's items as sibling tasks in that
     /// initiative after this step, instead of running the code step in
@@ -527,6 +530,8 @@ pub struct ActionDef {
     pub brief: String,
     pub prompt: Option<String>,
     pub schema: Option<String>,
+    #[serde(default)]
+    pub outcomes: Vec<String>,
     pub file_into_initiative: bool,
     pub overlay: bool,
     pub verifies: bool,
@@ -536,6 +541,34 @@ pub struct ActionDef {
 }
 
 impl ActionDef {
+    /// The schema a job directive's output is held to: the declared
+    /// `schema`, with a required `outcome` field constrained to `outcomes`
+    /// when the action declares any (docs/EXECUTION.md, "Outcomes, then
+    /// edges").
+    pub fn effective_schema(&self) -> Option<String> {
+        let schema = self.schema.as_deref()?;
+        if self.outcomes.is_empty() {
+            return Some(schema.to_string());
+        }
+        let mut v: serde_json::Value = serde_json::from_str(schema).ok()?;
+        let obj = v.as_object_mut()?;
+        let props = obj
+            .entry("properties")
+            .or_insert_with(|| serde_json::json!({}));
+        props.as_object_mut()?.insert(
+            "outcome".into(),
+            serde_json::json!({"type": "string", "enum": self.outcomes}),
+        );
+        let req = obj
+            .entry("required")
+            .or_insert_with(|| serde_json::json!([]));
+        let req = req.as_array_mut()?;
+        if !req.iter().any(|r| r == "outcome") {
+            req.push("outcome".into());
+        }
+        Some(v.to_string())
+    }
+
     /// An operation that changes the tree: the kernel commits what it
     /// changed and verifies the result, as it does after a directive.
     pub fn mutates(&self) -> bool {
@@ -580,6 +613,9 @@ struct StepRaw {
     /// A job step's operation: the effect it performs (docs/JOBS.md,
     /// "Effects").
     effect: Option<EffectKind>,
+    /// A run workflow's directive step: one sentence saying what a script
+    /// cannot do here (docs/EXECUTION.md, rule 4).
+    judgment: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -651,6 +687,8 @@ pub struct StepRef {
     pub timeout_secs: Option<u32>,
     pub role: Option<String>,
     pub effect: Option<EffectKind>,
+    #[serde(default)]
+    pub judgment: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1021,10 +1059,11 @@ fn parse_action(path: &Path, text: &str, hash: String) -> Result<ActionDef> {
             || !raw.brief.is_empty()
             || raw.prompt.is_some()
             || raw.schema.is_some()
+            || raw.outcomes.is_some()
             || raw.file_into_initiative)
     {
         bail!(
-            "{}: contract, paths, brief, prompt, schema, and file_into_initiative apply to directives only",
+            "{}: contract, paths, brief, prompt, schema, outcomes, and file_into_initiative apply to directives only",
             path.display()
         );
     }
@@ -1033,6 +1072,15 @@ fn parse_action(path: &Path, text: &str, hash: String) -> Result<ActionDef> {
             .with_context(|| format!("{}: `schema` is not valid JSON", path.display()))?;
         jsonschema::validator_for(&v)
             .with_context(|| format!("{}: `schema` is not a valid JSON Schema", path.display()))?;
+    }
+    if let Some(o) = &raw.outcomes {
+        let mut seen = std::collections::BTreeSet::new();
+        if o.is_empty() || o.iter().any(|n| n.trim().is_empty() || !seen.insert(n)) {
+            bail!(
+                "{}: `outcomes` needs at least one name, none empty or repeated",
+                path.display()
+            );
+        }
     }
     if raw.kind == Kind::Directive && (raw.overlay || raw.verifies) {
         bail!(
@@ -1102,6 +1150,7 @@ fn parse_action(path: &Path, text: &str, hash: String) -> Result<ActionDef> {
         brief: raw.brief,
         prompt: raw.prompt,
         schema: raw.schema,
+        outcomes: raw.outcomes.unwrap_or_default(),
         file_into_initiative: raw.file_into_initiative,
         overlay: raw.overlay,
         verifies: raw.verifies,
@@ -1192,6 +1241,7 @@ pub(crate) fn parse_workflow(path: &Path, text: &str, hash: String) -> Result<Wo
             timeout_secs: s.timeout_secs,
             role: s.role,
             effect: s.effect,
+            judgment: s.judgment,
         });
     }
     Ok(Workflow {
@@ -1566,6 +1616,8 @@ pub struct RunStep {
     pub model: Option<String>,
     pub max_turns: Option<u32>,
     pub timeout_secs: Option<u32>,
+    /// The effect an operation step declares (docs/JOBS.md, "Effects").
+    pub effect: Option<EffectKind>,
 }
 
 /// A job step, resolved to the action it names (docs/JOBS.md, "Steps"). A
@@ -1648,6 +1700,18 @@ fn job_steps_into(
                         wf.name
                     );
                 }
+                if s.judgment.as_deref().is_none_or(|j| j.trim().is_empty()) {
+                    bail!(
+                        "{:?}: job step {name:?} is a directive and carries no `judgment`; every directive step in a run workflow says what a script cannot do here: judgment = \"<one sentence>\" (docs/EXECUTION.md, rule 4: \"an operation unless judgment is genuinely needed\")",
+                        wf.name
+                    );
+                }
+            }
+            Kind::Operation if s.judgment.is_some() => {
+                bail!(
+                    "{:?}: job step {name:?} is an operation; `judgment` applies to directive steps only",
+                    wf.name
+                );
             }
             Kind::Operation if s.role.is_some() => {
                 bail!(
@@ -1662,6 +1726,7 @@ fn job_steps_into(
             max_turns: s.max_turns.or(action.max_turns),
             timeout_secs: s.timeout_secs.or(action.timeout_secs),
             role: s.role.clone(),
+            effect: s.effect,
             action,
         });
     }
@@ -2829,9 +2894,9 @@ kind = "run"
 description = "a customer texts a photo of a job; they get a quote back and it goes in the book"
 
 steps = [
-  { action = "extract-job",  role = "read" },
+  { action = "extract-job",  role = "read", judgment = "a script cannot read free text and decide what it means" },
   { action = "price-job" },
-  { action = "draft-quote",  role = "write" },
+  { action = "draft-quote",  role = "write", judgment = "a script cannot read free text and decide what it means" },
   { action = "send-quote",   effect = "message" },
   { action = "log-quote",    effect = "row" },
 ]

@@ -583,6 +583,7 @@ mod tests {
             brief: String::new(),
             prompt: None,
             schema: None,
+            outcomes: vec![],
             file_into_initiative: false,
             overlay: false,
             verifies: false,

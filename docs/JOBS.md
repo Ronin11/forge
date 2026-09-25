@@ -312,6 +312,25 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (honour
   (`author-workflow`'s `dump-workflow-catalog` step is the first user of
   this on the job side — docs/WORKFLOWS.md, "Authoring").
 
+  Every directive step in a run workflow also carries `judgment =
+  "<one sentence saying what a script cannot do here>"`; the lint
+  refuses one without it, quoting the rule (docs/EXECUTION.md, "An
+  operation unless judgment is genuinely needed"), and refuses
+  `judgment` on an operation step. Build workflows are exempt for now.
+  A directive action may declare `outcomes = ["reply", "uncertain"]`
+  (an operation may not): its schema then requires an `outcome` field
+  constrained to that list, and the step's row in `job_steps` (and
+  `forge job show --json`'s `steps[].outcome`) records the one it
+  returned. `forge stats` and the web workflows list show each
+  workflow's `directive_share` of cost, so drift toward using the model
+  for what a script can do is a number.
+
+  A run workflow with any `effect` step cannot be enabled until `forge
+  job test` passes on a fixture for it: `forge job enable <project>
+  <workflow>` and the scheduler's first run of it both replay
+  `.forge/fixtures/<workflow>/*.json` in the project's repository and
+  refuse, naming that directory, when there is none or one fails.
+
   A step may instead name a sibling `kind = "run"` workflow
   (`{ workflow = "disk-and-logs" }`), the same field a build workflow
   splices a child in with; its steps are inlined in place, recursively, so
