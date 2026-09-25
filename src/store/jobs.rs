@@ -1050,6 +1050,7 @@ mod tests {
             exit_code: None,
             output_ref: "step-0.json".into(),
             tail: String::new(),
+            outcome: String::new(),
         };
         let effect = JobEffect {
             id: 2,

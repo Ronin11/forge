@@ -673,22 +673,23 @@ impl Store {
         }
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT workflow, workflow_hash, COUNT(*), SUM(state='ok'), SUM(state='failed'),
-                    SUM(state='needs_human'), COALESCE(SUM(cost_usd), 0)
+            "SELECT workflow, workflow_hash AS hash, COUNT(*) AS jobs, SUM(state='ok') AS ok,
+                    SUM(state='failed') AS failed, SUM(state='needs_human') AS needs_human,
+                    COALESCE(SUM(cost_usd), 0) AS cost
              FROM jobs WHERE state IN ('ok','failed','needs_human')
                AND (?1 IS NULL OR project = ?1)
              GROUP BY workflow, workflow_hash ORDER BY workflow, workflow_hash",
         )?;
         let rows = stmt.query_map(params![scope.project], |r| {
             Ok(WorkflowStat {
-                workflow: r.get(0)?,
-                hash: r.get(1)?,
-                tasks: r.get(2)?,
-                succeeded: r.get(3)?,
-                failed: r.get(4)?,
-                blocked: r.get(5)?,
+                workflow: r.get("workflow")?,
+                hash: r.get("hash")?,
+                tasks: r.get("jobs")?,
+                succeeded: r.get("ok")?,
+                failed: r.get("failed")?,
+                blocked: r.get("needs_human")?,
                 unverified: 0,
-                cost: r.get(6)?,
+                cost: r.get("cost")?,
                 attempts: 0,
                 landed: 0,
                 broke_base: 0,
@@ -712,16 +713,16 @@ impl Store {
         let c = self.lock();
         let mut out: BTreeMap<(String, String), (f64, f64)> = BTreeMap::new();
         let mut tasks = c.prepare(
-            "SELECT t.workflow, t.workflow_hash, COALESCE(SUM(a.cost_usd), 0)
+            "SELECT t.workflow AS workflow, t.workflow_hash AS hash, COALESCE(SUM(a.cost_usd), 0) AS cost
              FROM attempts a JOIN tasks t ON t.id = a.task_id
              WHERE (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
              GROUP BY t.workflow, t.workflow_hash",
         )?;
         let rows = tasks.query_map(params![scope.project, scope.initiative], |r| {
             Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, f64>(2)?,
+                r.get::<_, String>("workflow")?,
+                r.get::<_, String>("hash")?,
+                r.get::<_, f64>("cost")?,
             ))
         })?;
         for row in rows {
@@ -732,19 +733,19 @@ impl Store {
         }
         if scope.initiative.is_none() {
             let mut jobs = c.prepare(
-                "SELECT j.workflow, j.workflow_hash,
-                    COALESCE(SUM(CASE WHEN js.kind = 'directive' THEN js.cost_usd ELSE 0 END), 0),
-                    COALESCE(SUM(js.cost_usd), 0)
+                "SELECT j.workflow AS workflow, j.workflow_hash AS hash,
+                    COALESCE(SUM(CASE WHEN js.kind = 'directive' THEN js.cost_usd ELSE 0 END), 0) AS directive,
+                    COALESCE(SUM(js.cost_usd), 0) AS total
                  FROM job_steps js JOIN jobs j ON j.id = js.job_id
                  WHERE ?1 IS NULL OR j.project = ?1
                  GROUP BY j.workflow, j.workflow_hash",
             )?;
             let rows = jobs.query_map(params![scope.project], |r| {
                 Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, f64>(2)?,
-                    r.get::<_, f64>(3)?,
+                    r.get::<_, String>("workflow")?,
+                    r.get::<_, String>("hash")?,
+                    r.get::<_, f64>("directive")?,
+                    r.get::<_, f64>("total")?,
                 ))
             })?;
             for row in rows {
