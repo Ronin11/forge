@@ -1017,6 +1017,63 @@ pub fn run() -> Result<Vec<Check>> {
 /// The same checks as `run`, against an already-resolved `paths` rather
 /// than re-resolving `FORGE_HOME`: what `forge init` calls so its closing
 /// doctor pass looks at the exact home it just set up, even with `--home`.
+fn check_executors(store: &Store) -> Vec<Check> {
+    use crate::executor::Backend;
+    let mut backends = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for project in store.list_projects().unwrap_or_default() {
+        for repo in store.project_repos(&project.name).unwrap_or_default() {
+            match config::load_working_backend(std::path::Path::new(&repo.repo)) {
+                Ok(backend) => {
+                    backends.insert(backend);
+                }
+                Err(e) => out.push(check(
+                    "executors",
+                    Status::Fail,
+                    format!("{}: {e:#}", repo.repo),
+                    "fix [execution] backend",
+                )),
+            }
+        }
+    }
+    if backends.is_empty() {
+        backends.insert(Backend::Bwrap);
+    }
+    if config::env("SANDBOX").as_deref() == Ok("0") {
+        backends.insert(Backend::Host);
+    }
+    for backend in backends {
+        let available = backend == Backend::Host
+            || std::process::Command::new("bwrap")
+                .args([
+                    "--unshare-net",
+                    "--ro-bind",
+                    "/",
+                    "/",
+                    "--dev",
+                    "/dev",
+                    "true",
+                ])
+                .output()
+                .is_ok_and(|o| o.status.success());
+        let guarantees = if available {
+            backend.guarantees()
+        } else {
+            Default::default()
+        };
+        out.push(check(
+            &format!("executors.{}", backend.as_str()),
+            if !available { Status::Fail } else if !guarantees.egress_bounded { Status::Warn } else { Status::Ok },
+            format!("{}: worktree_private={}, egress_bounded={}, credentials_seeded={}, checks_under_kernel_control={}{}",
+                backend.as_str(), guarantees.worktree_private, guarantees.egress_bounded,
+                guarantees.credentials_seeded, guarantees.checks_under_kernel_control,
+                if !available { "; unavailable on this machine" } else if !guarantees.egress_bounded { "; egress is unbounded" } else { "" }),
+            if backend == Backend::Host { "use backend = \"bwrap\" to bound egress" } else { "" },
+        ));
+    }
+    out
+}
+
 pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     let mut out = check_binaries();
     out.extend(check_legacy_env());
@@ -1038,6 +1095,7 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
         }
     };
     out.extend(check_schema(&store));
+    out.extend(check_executors(&store));
     out.extend(check_project_purposes(&store));
     out.extend(check_egress(&paths, &store));
     out.extend(check_environment_grants(&store));

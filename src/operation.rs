@@ -603,6 +603,7 @@ mod tests {
 
     fn test_cfg(namespace: Vec<String>) -> config::Config {
         config::Config {
+            execution: Default::default(),
             checks: BTreeMap::new(),
             fixable: BTreeMap::new(),
             base_branch: "main".into(),

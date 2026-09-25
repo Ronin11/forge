@@ -25,6 +25,7 @@ mod engine;
 mod env_supervisor;
 mod envelope;
 mod environment;
+mod executor;
 mod experiment;
 
 mod git;

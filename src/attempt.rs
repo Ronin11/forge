@@ -484,6 +484,17 @@ pub async fn new_attempt(args: NewAttempt<'_>) -> Result<(Attempt, PathBuf), Fau
         Some(r) => r.start_sha.clone(),
         None => git::head(dir).await.task()?,
     };
+    let backend = f
+        .sandbox
+        .as_ref()
+        .map(|s| s.backend(dir))
+        .unwrap_or(crate::executor::Backend::Host);
+    inputs.executor = backend.as_str().to_string();
+    inputs.guarantees = f
+        .sandbox
+        .as_ref()
+        .map(|s| s.guarantees(dir))
+        .unwrap_or_else(|| backend.guarantees());
     inputs.workflow = t.workflow.clone();
     inputs.workflow_hash = t.workflow_hash.clone();
     inputs.step = step.to_string();

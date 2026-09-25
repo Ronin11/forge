@@ -21,7 +21,7 @@ pub struct RunOneCapped<'a> {
     pub cap_bytes: usize,
 }
 
-use crate::sandbox::Sandbox;
+use crate::executor::Execution as Sandbox;
 use serde::{Deserialize, Serialize};
 use std::os::unix::process::CommandExt;
 use std::path::Path;

@@ -28,8 +28,8 @@ use crate::agent::Outcome;
 use crate::checks::{CheckResult, last_lines, run_one};
 use crate::config::{Config, is_protected};
 use crate::envelope::{self, Change, Envelope, Kind};
+use crate::executor::Execution as Sandbox;
 use crate::report::{Event, Reporter};
-use crate::sandbox::Sandbox;
 use crate::store::AttemptState;
 use crate::workflows::Contract;
 use anyhow::Result;
@@ -1585,6 +1585,7 @@ mod tests {
 
     fn test_cfg() -> Config {
         Config {
+            execution: Default::default(),
             checks: std::collections::BTreeMap::new(),
             fixable: std::collections::BTreeMap::new(),
             base_branch: "main".into(),

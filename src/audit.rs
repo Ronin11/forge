@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 /// except the prompt text itself, which is the first line of the log.
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct Inputs {
+    #[serde(default)]
+    pub executor: String,
+    #[serde(default)]
+    pub guarantees: crate::executor::Guarantees,
     pub workflow: String,
     pub workflow_hash: String,
     pub step: String,

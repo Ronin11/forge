@@ -212,7 +212,6 @@ pub fn resolve_binary(name: &str) -> Result<(PathBuf, PathBuf)> {
 }
 
 impl Sandbox {
-    /// `Ok(None)` only when the operator opted out with FORGE_SANDBOX=0.
     /// `extra_ro` and `extra_rw` are bound alongside `paths.ro`/`paths.rw`;
     /// the caller resolves them (the executable's own directory) so
     /// detection stays a pure read of its inputs. A repository's own cache
@@ -224,10 +223,7 @@ impl Sandbox {
         extra_ro: Vec<PathBuf>,
         extra_rw: Vec<PathBuf>,
         model_hosts: Vec<Rule>,
-    ) -> Result<Option<Sandbox>> {
-        if crate::config::env("SANDBOX").as_deref() == Ok("0") {
-            return Ok(None);
-        }
+    ) -> Result<Sandbox> {
         let Ok((bwrap, _)) = resolve_binary("bwrap") else {
             bail!("bwrap not found; install bubblewrap or set FORGE_SANDBOX=0 to run unsandboxed");
         };
@@ -276,7 +272,7 @@ impl Sandbox {
         // The relay is this binary, so its directory has to be visible.
         let relay_exe = std::env::current_exe().context("finding the forge binary")?;
         let relay_dir = relay_exe.parent().map(Path::to_path_buf);
-        Ok(Some(Sandbox {
+        Ok(Sandbox {
             bwrap,
             home,
             agent_dirs: agent_dirs.into_iter().collect(),
@@ -300,7 +296,7 @@ impl Sandbox {
             declared: Mutex::new(BTreeMap::new()),
             caches: Mutex::new(BTreeMap::new()),
             granted: Mutex::new(BTreeMap::new()),
-        }))
+        })
     }
 
     /// Declare what attempts running in `worktree` may reach besides the
@@ -374,7 +370,18 @@ impl Sandbox {
 
     /// Build the bwrap command that runs `argv` inside the worktree with
     /// exactly `env` (HOME is forced to the tmpfs home).
+    #[cfg(test)]
     pub fn command(&self, worktree: &Path, argv: &[String], env: &[(String, String)]) -> Command {
+        self.command_with_policy(worktree, argv, env, &self.policy_for(worktree))
+    }
+
+    pub fn command_with_policy(
+        &self,
+        worktree: &Path,
+        argv: &[String],
+        env: &[(String, String)],
+        policy: &Policy,
+    ) -> Command {
         let mut cmd = Command::new(&self.bwrap);
         cmd.args([
             "--die-with-parent",
@@ -430,7 +437,7 @@ impl Sandbox {
         // The route out: the proxy for this worktree's policy, on a socket
         // bound in beside the seed. Without a runtime to run a proxy on
         // there is no route, and the namespace has nothing but loopback.
-        let socket = match self.proxies.socket_for(&self.policy_for(worktree)) {
+        let socket = match self.proxies.socket_for(policy) {
             Ok(s) => Some(s),
             Err(e) => {
                 eprintln!("egress: no route out for {}: {e:#}", worktree.display());

@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 #[derive(Deserialize, Default)]
 struct Raw {
     #[serde(default)]
+    execution: Execution,
+    #[serde(default)]
     checks: ChecksRaw,
     #[serde(default)]
     defaults: Defaults,
@@ -81,7 +83,14 @@ struct Defaults {
     check_timeout_secs: Option<u64>,
 }
 
+#[derive(Deserialize, Default)]
+pub struct Execution {
+    #[serde(default)]
+    pub backend: crate::executor::Backend,
+}
+
 pub struct Config {
+    pub execution: Execution,
     pub checks: BTreeMap<String, Vec<String>>,
     /// `[checks.fixable]`: for a check named here, the command that fixes
     /// what it flags, run by the engine before any agent repair when that
@@ -195,6 +204,7 @@ async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result
         None
     };
     Ok(Config {
+        execution: raw.execution,
         checks: raw.checks.checks,
         fixable: raw.checks.fixable,
         base_branch,
@@ -262,6 +272,12 @@ pub fn load_working_egress(dir: &Path) -> Result<Vec<crate::egress::Rule>> {
         .map(|e| crate::egress::Rule::parse(e))
         .collect::<Result<Vec<_>>>()
         .with_context(|| format!("{}: sandbox.egress", path.display()))
+}
+
+pub fn load_working_backend(dir: &Path) -> Result<crate::executor::Backend> {
+    let (_, _, text) = read_working(dir)?;
+    let raw: Raw = toml::from_str(&text)?;
+    Ok(raw.execution.backend)
 }
 
 fn read_working(repo: &Path) -> Result<(PathBuf, &'static str, String)> {

@@ -6,8 +6,8 @@
 mod inputs;
 use inputs::{AgentRun, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
 
+use crate::executor::Execution as Sandbox;
 use crate::report::{Event, Reporter};
-use crate::sandbox::Sandbox;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -311,14 +311,13 @@ pub fn command_in(
     env.extend(extra_env.iter().cloned());
     match sandbox {
         Some(sb) => sb.command(worktree, argv, &env),
-        None => {
-            let mut c = std::process::Command::new(&argv[0]);
-            c.args(&argv[1..])
-                .current_dir(worktree)
-                .env_clear()
-                .envs(env);
-            c
-        }
+        None => crate::executor::Executor::command(
+            &crate::executor::Host,
+            worktree,
+            argv,
+            &env,
+            &crate::egress::Policy::new([]),
+        ),
     }
 }
 
@@ -1403,7 +1402,9 @@ fn codex_common_argv(l: &Launch<'_>) -> Vec<String> {
         "-C".to_string(),
         l.worktree.display().to_string(),
     ];
-    if l.sandbox.is_some() {
+    if l.sandbox
+        .is_some_and(|s| s.backend(l.worktree) == crate::executor::Backend::Bwrap)
+    {
         argv.push("--dangerously-bypass-approvals-and-sandbox".into());
     } else {
         argv.push("-s".into());

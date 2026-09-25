@@ -3,8 +3,8 @@
 
 use crate::agent;
 use crate::config::{self, Budget};
+use crate::executor::Execution as Sandbox;
 use crate::report::Reporter;
-use crate::sandbox::Sandbox;
 use crate::store::{Store, Task};
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -240,6 +240,7 @@ impl Forge {
     /// `worktree` reach besides the model endpoint. No-op unsandboxed.
     pub fn allow_egress(&self, worktree: &Path, cfg: &config::Config, trust: crate::store::Trust) {
         if let Some(sandbox) = &self.sandbox {
+            sandbox.set_backend(worktree, cfg.execution.backend);
             // A level whose egress is `model` reaches the model endpoints
             // alone, whatever the repository declares.
             match self.trust_policy(trust).egress {
