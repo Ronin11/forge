@@ -967,7 +967,7 @@ mod tests {
         drop(free);
         let ready = dir.path().join("ready");
         let (a, r) = (addr.clone(), ready.clone());
-        let relay_task = tokio::spawn(async move { relay(&sock, &a, Some(&r)).await });
+        let relay_task = tokio::spawn(async move { relay(&sock, &a, Some(&r), None).await });
         for _ in 0..100 {
             if ready.exists() {
                 break;
@@ -987,6 +987,83 @@ mod tests {
         assert!(String::from_utf8_lossy(&out).contains("allow registry.npmjs.org"));
         relay_task.abort();
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn the_relay_records_each_refusal_beside_the_attempt() {
+        let (dir, sock, task) = start(&["registry.npmjs.org"]);
+        let clone = dir.path().join("clone");
+        std::fs::create_dir_all(clone.join(".git")).unwrap();
+        let record = refused_path(&clone).unwrap();
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = free.local_addr().unwrap().to_string();
+        drop(free);
+        let ready = dir.path().join("ready");
+        let (a, r, rec) = (addr.clone(), ready.clone(), record.clone());
+        let relay_task = tokio::spawn(async move { relay(&sock, &a, Some(&r), Some(&rec)).await });
+        for _ in 0..100 {
+            if ready.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let requests = [
+            "CONNECT http-intake.logs.example.com:443 HTTP/1.1\r\n\r\n".to_string(),
+            "CONNECT http-intake.logs.example.com:443 HTTP/1.1\r\n\r\n".to_string(),
+            "GET http://evil.example/x HTTP/1.1\r\nHost: evil.example\r\n\r\n".to_string(),
+            // The policy host answers 200: not a refusal.
+            format!("GET http://{POLICY_HOST}/ HTTP/1.1\r\n\r\n"),
+        ];
+        for req in requests {
+            let mut s = TcpStream::connect(&addr).await.unwrap();
+            s.write_all(req.as_bytes()).await.unwrap();
+            let mut out = Vec::new();
+            tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut out))
+                .await
+                .unwrap()
+                .ok();
+            assert!(!out.is_empty(), "the answer still reaches the client");
+        }
+        let got: Vec<String> = read_refused(&clone).iter().map(|r| r.to_string()).collect();
+        assert_eq!(
+            got,
+            ["http-intake.logs.example.com:443 x2", "evil.example:80 x1"]
+        );
+        // Carried across a new `.git`, and forgotten at the next attempt.
+        let refused = read_refused(&clone);
+        clear_refused(&clone);
+        assert!(read_refused(&clone).is_empty());
+        restore_refused(&clone, &refused);
+        assert_eq!(read_refused(&clone), refused);
+        relay_task.abort();
+        task.abort();
+    }
+
+    #[test]
+    fn a_403_counts_as_a_refusal_only_when_the_proxy_names_the_host_asked_for() {
+        let ask = b"CONNECT a.example:443 HTTP/1.1\r\n\r\n";
+        assert_eq!(requested(ask), Some(("a.example".into(), 443)));
+        assert_eq!(
+            requested(b"GET http://b.example:8080/x HTTP/1.1\r\n\r\n"),
+            Some(("b.example".into(), 8080))
+        );
+        assert_eq!(requested(b""), None);
+        let refused = format!("HTTP/1.1 403 Forbidden\r\n{REFUSED_HEADER}: a.example:443\r\n\r\n");
+        assert_eq!(
+            refused_in(refused.as_bytes()),
+            Some(("a.example".into(), 443))
+        );
+        // An upstream server's own 403 carries no header.
+        assert_eq!(refused_in(b"HTTP/1.1 403 Forbidden\r\n\r\n"), None);
+        let ok = format!("HTTP/1.1 200 OK\r\n{REFUSED_HEADER}: a.example:443\r\n\r\n");
+        assert_eq!(refused_in(ok.as_bytes()), None);
+    }
+
+    #[test]
+    fn a_directory_that_is_not_a_clone_records_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(refused_path(d.path()).is_none());
+        assert!(read_refused(d.path()).is_empty());
     }
 
     #[test]
