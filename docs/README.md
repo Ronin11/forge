@@ -68,6 +68,8 @@ documentation.
   the refactor plan that came out of it.
 - **REVIEW-2.md** — the second architectural review, ten days in, after the
   first review's plan had landed.
+- **REVIEW-3.md** — the third review, a cold read of the kernel's
+  concurrent paths, one section per slice, every defect with its task.
 - **LATER.md** — ideas from Forge 1's backlog worth revisiting later, and
   which of them have already been ported.
 - **CONTEXT.md** — a running status note on what a coding agent is told
