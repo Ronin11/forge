@@ -325,6 +325,15 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
         }
     );
     out!("trust      {}", t.trust.as_str());
+    if let Some(to) = &task.to {
+        out!(
+            "asked      {to}, {}",
+            task.delivered_at.map_or_else(
+                || "no delivery recorded".to_string(),
+                |at| format!("delivered {}", render::utc(at))
+            )
+        );
+    }
     out!("repo       {}", task.repo);
     out!("created    {}", render::utc(task.created_at));
     if let Some(pname) = &t.project {

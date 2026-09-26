@@ -696,7 +696,12 @@ fn requests_json(
                     })
                 })
                 .and_then(|e| e.needs_input);
+            let delivered_at = t
+                .question_to
+                .as_deref()
+                .and_then(|to| f.store.delivered_at(t.id, to).ok().flatten());
             crate::view::RequestRow {
+                delivered_at,
                 tried: q.as_ref().map(|q| q.tried.clone()).unwrap_or_default(),
                 path: q.as_ref().map(|q| q.path.clone()).unwrap_or_default(),
                 ..crate::view::RequestRow::from(t)

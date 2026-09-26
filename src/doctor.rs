@@ -695,6 +695,59 @@ fn check_queue(store: &Store) -> Vec<Check> {
     vec![c]
 }
 
+/// How long a question addressed to a contact may sit blocked before a
+/// missing delivery record is worth a row.
+const DELIVERY_GRACE_SECS: i64 = 600;
+
+/// Every blocked question addressed to a contact with no outbound message
+/// recorded on its task and that contact within ten minutes of blocking:
+/// either the plugin never sent it or it did not record the send, and the
+/// record cannot say which (see docs/PLUGINS.md, "message").
+fn check_deliveries(store: &Store, now: i64) -> Vec<Check> {
+    let blocked = match store.blocked(None, None) {
+        Ok(b) => b,
+        Err(e) => return vec![check("deliveries", Status::Fail, format!("{e:#}"), "")],
+    };
+    let mut lines = Vec::new();
+    let mut first = None;
+    for t in blocked {
+        let Some(to) = t.question_to.as_deref() else {
+            continue;
+        };
+        if crate::view::request_kind(&t.reason).0 != "question" {
+            continue;
+        }
+        if now - t.finished_at.unwrap_or(now) < DELIVERY_GRACE_SECS {
+            continue;
+        }
+        if matches!(store.delivered_at(t.id, to), Ok(None)) {
+            lines.push(format!("task {} to {to}", t.id));
+            first.get_or_insert((t.id, to.to_string(), t.project.clone()));
+        }
+    }
+    vec![match first {
+        None => check(
+            "deliveries",
+            Status::Ok,
+            "every question addressed to a contact has a delivery recorded",
+            "",
+        ),
+        Some((id, to, project)) => check(
+            "deliveries",
+            Status::Warn,
+            format!(
+                "{} question(s) with no delivery recorded after 10 minutes: {}",
+                lines.len(),
+                lines.join(", ")
+            ),
+            format!(
+                "resend it to {to}, then forge message record {} --channel <name> --to {to} --task {id} --text <question>",
+                project.as_deref().unwrap_or("<project>")
+            ),
+        ),
+    }]
+}
+
 /// Every project still carrying the migration's placeholder purpose
 /// (`Repository <path>.`, see `crate::store::is_placeholder_purpose`):
 /// `forge project show` and the portal already hide it, but the operator
@@ -1157,6 +1210,7 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     out.extend(check_learning(&paths, &store));
     out.extend(check_worker(&paths));
     out.extend(check_queue(&store));
+    out.extend(check_deliveries(&store, unix_now()));
     out.extend(check_worktrees(&store));
     out.extend(check_logs(&paths));
 

@@ -679,6 +679,9 @@ pub struct RequestRow {
     /// Who the question is addressed to; `None` means the operator.
     #[serde(default)]
     pub to: Option<String>,
+    /// When the question's delivery was recorded; `None` if it was not.
+    #[serde(default)]
+    pub delivered_at: Option<i64>,
     pub question: String,
     pub text: String,
     pub tried: String,

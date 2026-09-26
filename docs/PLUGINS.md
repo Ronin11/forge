@@ -96,6 +96,16 @@ contact, once per message, for the worker to run (docs/JOBS.md,
 "Triggers"). A channel plugin needs nothing beyond that record call to
 start automations; an outbound message (`--to`) starts none.
 
+Recording an outbound message is also the delivery contract for a
+question addressed to a contact (`needs_input.to`): a plugin that
+delivers one records it, after the send succeeded, with `forge message
+record <project> --channel <name> --to <contact> --task <id> --text
+<question>`. `forge requests --json` and `forge show` carry the newest
+such row as `delivered_at` (`null` when there is none), and `forge
+doctor` warns for every such question with no delivery recorded within
+ten minutes of blocking, naming the task and contact, so an unsent
+question is never mistaken for a sent one or the other way round.
+
 A plugin may declare more than one, and most useful ones do: watch for
 a blocked task, ask a person, file the answer with `forge answer`.
 

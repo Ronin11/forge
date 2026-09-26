@@ -2010,3 +2010,72 @@ fn forge_log_and_show_print_times_as_utc_whatever_the_tz() {
     assert_eq!(rows[0]["created_at"], 1_789_974_000);
     assert_eq!(rows[0]["created"], "2026-09-21 07:00:00");
 }
+
+#[test]
+fn a_question_to_a_contact_without_a_recorded_delivery_shows_in_doctor_until_it_is_recorded() {
+    let e = Env::new();
+    assert!(!e.run("needsinput.sh", &["--retries", "2"]).status.success());
+    let created = e.forge(
+        "ok.sh",
+        &["project", "new", "acme", "--purpose", "a test project"],
+    );
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    // Blocked twenty minutes ago, addressed to april.
+    e.db()
+        .execute(
+            "UPDATE tasks SET question_to='april', finished_at=?1 WHERE id=1",
+            [forge_now() - 1200],
+        )
+        .unwrap();
+
+    let doctor = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&doctor.stdout);
+    assert!(out.contains("deliveries"), "{out}");
+    assert!(out.contains("task 1 to april"), "{out}");
+    assert!(out.contains("resend it to april"), "{out}");
+    let r = &e.requests_json()[0];
+    assert_eq!(r["to"], "april");
+    assert!(r["delivered_at"].is_null(), "{r:?}");
+
+    let rec = e.forge(
+        "ok.sh",
+        &[
+            "message",
+            "record",
+            "acme",
+            "--channel",
+            "signal",
+            "--to",
+            "april",
+            "--task",
+            "1",
+            "--text",
+            "Which answer file?",
+        ],
+    );
+    assert!(
+        rec.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rec.stderr)
+    );
+
+    let doctor = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&doctor.stdout);
+    assert!(!out.contains("task 1 to april"), "{out}");
+    let r = &e.requests_json()[0];
+    assert!(r["delivered_at"].as_i64().is_some_and(|at| at > 0), "{r:?}");
+    let show = e.forge("ok.sh", &["show", "1", "--json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&show.stdout).unwrap();
+    assert!(doc["delivered_at"].as_i64().is_some(), "{doc}");
+}
+
+fn forge_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}

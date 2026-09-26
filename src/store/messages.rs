@@ -139,6 +139,19 @@ impl Store {
         .optional()?)
     }
 
+    /// When the newest outbound message on `task_id` to `contact` was
+    /// recorded: the delivery of a question addressed to them, or `None`
+    /// when no plugin has recorded one.
+    pub fn delivered_at(&self, task_id: i64, contact: &str) -> Result<Option<i64>> {
+        let c = self.lock();
+        Ok(c.query_row(
+            "SELECT MAX(at) FROM messages
+             WHERE task_id = ?1 AND contact = ?2 AND direction = 'out'",
+            params![task_id, contact],
+            |r| r.get(0),
+        )?)
+    }
+
     /// A project's messages, newest first, narrowed by contact, a minimum
     /// `at`, and/or direction.
     pub fn messages(&self, project: &str, q: &MessageFilter) -> Result<Vec<Message>> {

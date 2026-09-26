@@ -225,11 +225,11 @@ signal_send() {
     case "$dest" in
         group.*)
             "$SIGNAL_CLI" -a "$SIGNAL_ACCOUNT" send -m "$msg" -g "$dest" >/dev/null 2>&1 \
-                || log "send failed: $msg"
+                || { log "send failed: $msg"; return 1; }
             ;;
         *)
             "$SIGNAL_CLI" -a "$SIGNAL_ACCOUNT" send -m "$msg" "$dest" >/dev/null 2>&1 \
-                || log "send failed: $msg"
+                || { log "send failed: $msg"; return 1; }
             ;;
     esac
 }
@@ -394,8 +394,14 @@ outbound() {
             fi
         fi
 
-        signal_send "$dest" "$msg"
-        record_message "$(target_repo_project)" out "$notify_contact" "$msg" "$task"
+        # Recorded only when the send succeeded: the record is what says a
+        # question was delivered (docs/PLUGINS.md, "message"). The task's
+        # own project, when it has one, else the target repo's.
+        if signal_send "$dest" "$msg"; then
+            rec_project=$("$FORGE_BIN" show "$task" --json 2>/dev/null | json_str_pretty project | head -n1)
+            [ -n "$rec_project" ] || rec_project=$(target_repo_project)
+            record_message "$rec_project" out "$notify_contact" "$msg" "$task"
+        fi
     done
 }
 

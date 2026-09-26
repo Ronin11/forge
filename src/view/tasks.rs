@@ -127,6 +127,9 @@ pub struct RequestRow {
     /// Who the question is addressed to (a channel contact's name);
     /// absent means the operator.
     pub to: Option<String>,
+    /// For a question with a `to`: when the newest outbound message on
+    /// this task to that contact was recorded; `null` when none was.
+    pub delivered_at: Option<i64>,
     pub text: String,
     pub question: String,
     pub tried: String,
@@ -143,6 +146,7 @@ impl From<&Task> for RequestRow {
             id: t.id,
             kind,
             to: t.question_to.clone(),
+            delivered_at: None,
             text: text.clone(),
             question: text,
             tried: String::new(),
@@ -327,6 +331,11 @@ pub struct TraceTask {
     pub created_at: i64,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
+    /// Who the task's question is addressed to; absent means the operator.
+    pub to: Option<String>,
+    /// For a question with a `to`: the newest outbound message row on
+    /// this task to that contact, or `null` when none was recorded.
+    pub delivered_at: Option<i64>,
     pub project: Option<String>,
     pub initiative: Option<i64>,
     /// The economist's task-shape inputs (see docs/ECONOMIST.md, "Task
@@ -552,6 +561,11 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
         created_at: t.created_at,
         started_at: t.started_at,
         finished_at: t.finished_at,
+        to: t.question_to.clone(),
+        delivered_at: match t.question_to.as_deref() {
+            Some(to) => f.store.delivered_at(t.id, to)?,
+            None => None,
+        },
         project: t.project.clone(),
         initiative: t.initiative,
         inputs: TraceTaskShape {
