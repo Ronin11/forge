@@ -260,12 +260,7 @@ fn check_egress(paths: &Paths, store: &Store) -> Vec<Check> {
             Err(e) => check("egress", Status::Fail, format!("running bwrap: {e}"), ""),
         }
     });
-    if let Some(refused) = refused_lately(store)
-        && let Some(row) = out.last_mut()
-    {
-        row.detail
-            .push_str(&format!("; refused in the last 24h: {refused}"));
-    }
+    note_refused(store, out.last_mut());
     if let Ok(c) = config::load_home(&paths.home) {
         let model_only = [&c.trust.operator, &c.trust.contact, &c.trust.public]
             .iter()
@@ -332,10 +327,17 @@ fn check_egress(paths: &Paths, store: &Store) -> Vec<Check> {
     out
 }
 
-/// What the egress proxy refused attempts in the last day, by host and
-/// repository (`host xN (repository)`), most refused first: what the
-/// `[environment]` table and a repository's `[sandbox] egress` are tuned
-/// from. `None` when nothing was refused.
+/// Add to the egress row what the proxy refused attempts in the last day,
+/// by host and repository (`host xN (repository)`), most refused first:
+/// what the `[environment]` table and a repository's `[sandbox] egress`
+/// are tuned from. Nothing is added when nothing was refused.
+fn note_refused(store: &Store, row: Option<&mut Check>) {
+    if let (Some(refused), Some(row)) = (refused_lately(store), row) {
+        row.detail
+            .push_str(&format!("; refused in the last 24h: {refused}"));
+    }
+}
+
 fn refused_lately(store: &Store) -> Option<String> {
     let since = crate::unix_now() - 24 * 3600;
     let mut counts: std::collections::BTreeMap<(String, String), u64> = Default::default();
@@ -348,7 +350,7 @@ fn refused_lately(store: &Store) -> Option<String> {
         }
     }
     let mut rows: Vec<_> = counts.into_iter().collect();
-    rows.sort_by(|a, b| b.1.cmp(&a.1));
+    rows.sort_by_key(|r| std::cmp::Reverse(r.1));
     (!rows.is_empty()).then(|| {
         rows.iter()
             .map(|((host, repo), n)| format!("{host} x{n} ({repo})"))

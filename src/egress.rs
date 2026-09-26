@@ -661,7 +661,7 @@ pub fn read_refused(dir: &Path) -> Vec<Refused> {
         .into_iter()
         .map(|((host, port), count)| Refused { host, port, count })
         .collect();
-    out.sort_by(|a, b| b.count.cmp(&a.count));
+    out.sort_by_key(|r| std::cmp::Reverse(r.count));
     out
 }
 
