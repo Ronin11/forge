@@ -264,3 +264,42 @@ fn forge_init_relink_moves_an_existing_install_onto_the_release_layout() {
     );
     assert_eq!(std::fs::read_link(bin.join("current")).unwrap(), target);
 }
+
+#[test]
+fn forge_demo_fake_lands_a_task_and_a_second_run_offers_reset() {
+    let e = Env::new();
+    let o = e.forge("ok.sh", &["demo", "--fake"]);
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(o.status.success(), "{out}");
+    assert!(out.contains("forge trace 1"), "{out}");
+    assert!(out.contains("landed"), "{out}");
+    let origin = e.home.join("demo/origin.git");
+    assert_eq!(git(&origin, &["show", "main:answer.txt"]), "42");
+
+    let o = e.forge("ok.sh", &["demo", "--fake"]);
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(o.status.success() && out.contains("--reset"), "{out}");
+
+    let o = e.forge("ok.sh", &["demo", "--fake", "--reset"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+}
+
+#[test]
+fn forge_demo_fake_overrides_a_configured_codex_provider_and_roles() {
+    let e = Env::new();
+    std::fs::create_dir_all(&e.home).unwrap();
+    std::fs::write(
+        e.home.join("config.toml"),
+        "[providers.cx]\nrunner = \"codex-cli\"\n[roles]\ncode = \"cx\"\nreview = \"cx\"\nplan = \"cx\"\ntests = \"cx\"\n",
+    )
+    .unwrap();
+    let mut cmd = e.cmd("ok.sh");
+    cmd.env("FORGE_CODEX_BIN", "/nonexistent/codex")
+        .env("FORGE_CLAUDE_BIN_CODE", "/nonexistent/role-claude")
+        .args(["demo", "--fake"]);
+    let o = cmd.output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{out}");
+    let origin = e.home.join("demo/origin.git");
+    assert_eq!(git(&origin, &["show", "main:answer.txt"]), "42");
+}
