@@ -318,6 +318,39 @@ fn op_from_row(r: &Row) -> rusqlite::Result<Op> {
 }
 
 impl Store {
+    /// Every host the egress proxy refused an attempt that nonetheless
+    /// succeeded, since `since` (unix seconds): the telemetry and CDN
+    /// hosts a refusal never actually blocks, which a failure's environment
+    /// need must not be read from (`environment::refusals_worth_reading`).
+    pub fn hosts_refused_in_succeeded_attempts(
+        &self,
+        since: i64,
+    ) -> Result<std::collections::HashSet<String>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT outputs_json FROM attempts WHERE state='succeeded' AND started_at >= ?1 \
+             AND outputs_json LIKE '%\"refused\"%'",
+        )?;
+        let docs: Vec<String> = stmt
+            .query_map([since], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        // Read loosely: only the hosts matter, whatever else the outputs
+        // document of an older or newer release carries.
+        let mut hosts = std::collections::HashSet::new();
+        for d in docs {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&d)
+                && let Some(items) = v["refused"].as_array()
+            {
+                hosts.extend(
+                    items
+                        .iter()
+                        .filter_map(|r| r["host"].as_str().map(str::to_string)),
+                );
+            }
+        }
+        Ok(hosts)
+    }
+
     pub fn insert_attempt(&self, a: &Attempt) -> Result<i64> {
         let c = self.lock();
         c.execute(
@@ -859,6 +892,31 @@ mod tests {
         assert_eq!(s.reprice_attempts(None, false, &prices).unwrap().changed, 0);
         assert_eq!(s.reprice_attempts(None, true, &prices).unwrap().changed, 1);
         assert_eq!(row(&s).1, Some(1.23));
+    }
+
+    #[test]
+    fn hosts_refused_in_succeeded_attempts_are_the_noise_set() {
+        let (_dir, s, task_id) = reprice_fixture();
+        reprice_attempt(&s, task_id, 1, "anthropic", Some(0.01), Some(10), Some(5));
+        let c = s.lock();
+        c.execute(
+            "UPDATE attempts SET state='succeeded', outputs_json='{\"refused\":[{\"host\":\"telemetry.example\",\"port\":443,\"count\":3}]}' WHERE task_id=?1",
+            [task_id],
+        )
+        .unwrap();
+        drop(c);
+        let noise = s.hosts_refused_in_succeeded_attempts(0).unwrap();
+        assert!(noise.contains("telemetry.example"), "{noise:?}");
+        assert!(!noise.contains("registry.npmjs.org"));
+        // A refusal on a failed attempt is not noise.
+        let c = s.lock();
+        c.execute(
+            "UPDATE attempts SET state='checks_failed' WHERE task_id=?1",
+            [task_id],
+        )
+        .unwrap();
+        drop(c);
+        assert!(s.hosts_refused_in_succeeded_attempts(0).unwrap().is_empty());
     }
 
     #[test]
