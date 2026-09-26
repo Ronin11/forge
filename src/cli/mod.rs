@@ -357,6 +357,9 @@ enum Cmd {
         /// Created once the relay is listening
         #[arg(long)]
         ready: Option<std::path::PathBuf>,
+        /// Where each refusal the proxy answers is recorded, one JSON line per refusal
+        #[arg(long)]
+        refused: Option<std::path::PathBuf>,
     },
     /// List the workflows a task can run, with declared metadata and measured outcomes
     Workflows {

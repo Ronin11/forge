@@ -718,7 +718,7 @@ fn a_task_queued_while_another_runs_is_claimed_before_it_finishes() {
 
 /// Whether this machine can give a sandbox a network namespace of its own;
 /// nested inside another bwrap it cannot, and the egress tests skip.
-fn can_unshare_net() -> bool {
+pub(crate) fn can_unshare_net() -> bool {
     std::process::Command::new("bwrap")
         .args(["--unshare-net", "--ro-bind", "/", "/", "true"])
         .output()

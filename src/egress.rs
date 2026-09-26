@@ -24,6 +24,11 @@ pub const RELAY_ADDR: &str = "127.0.0.1:3128";
 /// the one host that always resolves, needing no network, so a probe can
 /// tell "the route to the proxy works" from "the route is missing".
 pub const POLICY_HOST: &str = "forge-egress.invalid";
+/// The header on the proxy's own 403, naming the refused `host:port`, so
+/// the relay can tell a refusal from a 403 an upstream server sent.
+pub const REFUSED_HEADER: &str = "X-Forge-Egress-Refused";
+/// The file, in a clone's `.git`, the relay records refusals in.
+pub const REFUSED_FILE: &str = "forge-egress-refused.jsonl";
 
 /// The host a request must name for a rule to apply.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -277,8 +282,12 @@ pub async fn serve(listener: UnixListener, policy: Arc<Policy>) {
 }
 
 async fn respond(s: &mut UnixStream, status: &str, body: &str) -> Result<()> {
+    respond_with(s, status, "", body).await
+}
+
+async fn respond_with(s: &mut UnixStream, status: &str, extra: &str, body: &str) -> Result<()> {
     let msg = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n{body}",
         body.len()
     );
     s.write_all(msg.as_bytes()).await?;
@@ -286,12 +295,33 @@ async fn respond(s: &mut UnixStream, status: &str, body: &str) -> Result<()> {
     Ok(())
 }
 
-fn refusal(host: &str, port: u16, policy: &Policy) -> String {
+/// Refuse `what` (`CONNECT host:port`, `GET http://host:port`): a 403 whose
+/// body names the host and the policy, and whose `REFUSED_HEADER` lets the
+/// relay in the sandbox record the refusal for the attempt.
+async fn refuse(
+    s: &mut UnixStream,
+    what: &str,
+    host: &str,
+    port: u16,
+    policy: &Policy,
+) -> Result<()> {
+    eprintln!("egress: refused {what}");
     let allowed: Vec<String> = policy.rules.iter().map(|r| r.to_string()).collect();
-    format!(
+    let body = format!(
         "forge egress: {host}:{port} is not allowed. This attempt may reach only: {}.\nA repository declares more in forge.toml under [sandbox] egress.\n",
         allowed.join(", ")
-    )
+    );
+    let header = format!("{REFUSED_HEADER}: {}\r\n", authority(host, port));
+    respond_with(s, "403 Forbidden", &header, &body).await
+}
+
+/// `host:port`, bracketing a v6 address so `split_authority` reads it back.
+fn authority(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
 }
 
 /// Split `host:port`, `host` (with `default`) or `[v6]:port`.
@@ -385,8 +415,8 @@ async fn handle(mut client: UnixStream, policy: &Policy) -> Result<()> {
             return respond(&mut client, "400 Bad Request", "bad CONNECT target\n").await;
         };
         let Some(matched) = policy.allows(&host, port) else {
-            eprintln!("egress: refused CONNECT {host}:{port}");
-            return respond(&mut client, "403 Forbidden", &refusal(&host, port, policy)).await;
+            let what = format!("CONNECT {host}:{port}");
+            return refuse(&mut client, &what, &host, port, policy).await;
         };
         let mut upstream = match dial(&host, port, matched).await {
             Ok(u) => u,
@@ -437,8 +467,8 @@ async fn handle(mut client: UnixStream, policy: &Policy) -> Result<()> {
         return respond(&mut client, "200 OK", &policy.describe()).await;
     }
     let Some(matched) = policy.allows(&host, port) else {
-        eprintln!("egress: refused {method} http://{host}:{port}");
-        return respond(&mut client, "403 Forbidden", &refusal(&host, port, policy)).await;
+        let what = format!("{method} http://{host}:{port}");
+        return refuse(&mut client, &what, &host, port, policy).await;
     };
     let mut upstream = match dial(&host, port, matched).await {
         Ok(u) => u,
@@ -481,7 +511,14 @@ async fn handle(mut client: UnixStream, policy: &Policy) -> Result<()> {
 /// loopback (the only network the namespace has) and pipe every connection
 /// to the proxy's unix socket. `ready` is created once listening, so the
 /// wrapper that started it can wait for the route before running the agent.
-pub async fn relay(socket: &Path, listen: &str, ready: Option<&Path>) -> Result<()> {
+/// Each refusal the proxy answers is appended to `refused` (see
+/// `refused_path`), so a refusal a tool swallowed is still on the record.
+pub async fn relay(
+    socket: &Path,
+    listen: &str,
+    ready: Option<&Path>,
+    refused: Option<&Path>,
+) -> Result<()> {
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("listening on {listen}"))?;
@@ -489,15 +526,175 @@ pub async fn relay(socket: &Path, listen: &str, ready: Option<&Path>) -> Result<
         std::fs::write(r, b"").with_context(|| format!("writing {}", r.display()))?;
     }
     loop {
-        let (mut tcp, _) = listener.accept().await?;
+        let (tcp, _) = listener.accept().await?;
         let socket = socket.to_path_buf();
+        let refused = refused.map(Path::to_path_buf);
         tokio::spawn(async move {
-            if let Ok(mut unix) = UnixStream::connect(&socket).await {
-                tokio::io::copy_bidirectional(&mut tcp, &mut unix)
-                    .await
-                    .ok();
+            if let Ok(unix) = UnixStream::connect(&socket).await {
+                pipe(tcp, unix, refused.as_deref()).await;
             }
         });
+    }
+}
+
+/// Read from `r` until the end of an HTTP head (or EOF, or the limit).
+async fn read_head(r: &mut (impl AsyncReadExt + Unpin)) -> Vec<u8> {
+    let mut head = Vec::new();
+    let mut chunk = [0u8; 4096];
+    while !head.windows(4).any(|w| w == b"\r\n\r\n") && head.len() <= HEAD_LIMIT {
+        match r.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => head.extend_from_slice(&chunk[..n]),
+        }
+    }
+    head
+}
+
+/// Pipe one connection both ways, reading the request head and the answer's
+/// head on the way through: a 403 from the proxy naming the host the request
+/// asked for is a refusal, recorded in `refused`.
+async fn pipe(tcp: TcpStream, unix: UnixStream, refused: Option<&Path>) {
+    let (mut tr, mut tw) = tcp.into_split();
+    let (mut ur, mut uw) = unix.into_split();
+    let request = read_head(&mut tr).await;
+    if uw.write_all(&request).await.is_err() {
+        return;
+    }
+    let asked = requested(&request);
+    let up = async {
+        tokio::io::copy(&mut tr, &mut uw).await.ok();
+        uw.shutdown().await.ok();
+    };
+    let down = async {
+        let answer = read_head(&mut ur).await;
+        if let (Some(path), Some(asked)) = (refused, &asked)
+            && refused_in(&answer).as_ref() == Some(asked)
+        {
+            note_refused(path, &asked.0, asked.1);
+        }
+        if tw.write_all(&answer).await.is_ok() {
+            tokio::io::copy(&mut ur, &mut tw).await.ok();
+        }
+        tw.shutdown().await.ok();
+    };
+    tokio::join!(up, down);
+}
+
+/// The host and port a proxy request asks for.
+fn requested(head: &[u8]) -> Option<(String, u16)> {
+    let head = String::from_utf8_lossy(head);
+    let mut parts = head.lines().next()?.split(' ');
+    let (method, target) = (parts.next()?, parts.next()?);
+    if method.eq_ignore_ascii_case("CONNECT") {
+        return split_authority(target, 443);
+    }
+    let rest = target.strip_prefix("http://")?;
+    split_authority(rest.split('/').next()?, 80)
+}
+
+/// The host and port a 403 from the proxy names in its `REFUSED_HEADER`.
+fn refused_in(head: &[u8]) -> Option<(String, u16)> {
+    let head = String::from_utf8_lossy(head);
+    let mut lines = head.lines();
+    if lines.next()?.split(' ').nth(1) != Some("403") {
+        return None;
+    }
+    lines.find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        k.trim()
+            .eq_ignore_ascii_case(REFUSED_HEADER)
+            .then(|| split_authority(v.trim(), 443))
+            .flatten()
+    })
+}
+
+/// One host the proxy refused an attempt, and how many times.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Refused {
+    pub host: String,
+    pub port: u16,
+    pub count: u64,
+}
+
+impl fmt::Display for Refused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} x{}", authority(&self.host, self.port), self.count)
+    }
+}
+
+/// Where the relays of attempts in `dir` record refusals: beside the
+/// attempt's own state in the clone's `.git`, which the kernel owns and
+/// no commit carries. `None` when `dir` is not a clone.
+pub fn refused_path(dir: &Path) -> Option<PathBuf> {
+    let git = dir.join(".git");
+    git.is_dir().then(|| git.join(REFUSED_FILE))
+}
+
+/// Append one refusal. Best effort: a record that cannot be written must
+/// never break the connection it describes.
+fn note_refused(path: &Path, host: &str, port: u16) {
+    use std::io::Write;
+    let line = serde_json::json!({ "host": host, "port": port, "count": 1 });
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+/// The refusals recorded for `dir`, one per host and port with the counts
+/// summed, most refused first.
+pub fn read_refused(dir: &Path) -> Vec<Refused> {
+    let Some(text) = refused_path(dir).and_then(|p| std::fs::read_to_string(p).ok()) else {
+        return Vec::new();
+    };
+    let mut counts: BTreeMap<(String, u16), u64> = BTreeMap::new();
+    for r in text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Refused>(l).ok())
+    {
+        *counts.entry((r.host, r.port)).or_default() += r.count;
+    }
+    let mut out: Vec<Refused> = counts
+        .into_iter()
+        .map(|((host, port), count)| Refused { host, port, count })
+        .collect();
+    out.sort_by_key(|r| std::cmp::Reverse(r.count));
+    out
+}
+
+/// Write `refused` back into `dir`'s record: what the agent was refused,
+/// carried across the verification checkout that replaces its `.git`, so
+/// the checks' own refusals add to it.
+pub fn restore_refused(dir: &Path, refused: &[Refused]) {
+    use std::io::Write;
+    let Some(path) = refused_path(dir) else {
+        return;
+    };
+    if refused.is_empty() {
+        return;
+    }
+    let text: String = refused
+        .iter()
+        .filter_map(|r| serde_json::to_string(r).ok())
+        .map(|l| format!("{l}\n"))
+        .collect();
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = f.write_all(text.as_bytes());
+    }
+}
+
+/// Forget what earlier attempts in `dir` were refused, so what is read at
+/// the end of this one is its own.
+pub fn clear_refused(dir: &Path) {
+    if let Some(p) = refused_path(dir) {
+        let _ = std::fs::remove_file(p);
     }
 }
 
@@ -770,7 +967,7 @@ mod tests {
         drop(free);
         let ready = dir.path().join("ready");
         let (a, r) = (addr.clone(), ready.clone());
-        let relay_task = tokio::spawn(async move { relay(&sock, &a, Some(&r)).await });
+        let relay_task = tokio::spawn(async move { relay(&sock, &a, Some(&r), None).await });
         for _ in 0..100 {
             if ready.exists() {
                 break;
@@ -790,6 +987,83 @@ mod tests {
         assert!(String::from_utf8_lossy(&out).contains("allow registry.npmjs.org"));
         relay_task.abort();
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn the_relay_records_each_refusal_beside_the_attempt() {
+        let (dir, sock, task) = start(&["registry.npmjs.org"]);
+        let clone = dir.path().join("clone");
+        std::fs::create_dir_all(clone.join(".git")).unwrap();
+        let record = refused_path(&clone).unwrap();
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = free.local_addr().unwrap().to_string();
+        drop(free);
+        let ready = dir.path().join("ready");
+        let (a, r, rec) = (addr.clone(), ready.clone(), record.clone());
+        let relay_task = tokio::spawn(async move { relay(&sock, &a, Some(&r), Some(&rec)).await });
+        for _ in 0..100 {
+            if ready.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let requests = [
+            "CONNECT http-intake.logs.example.com:443 HTTP/1.1\r\n\r\n".to_string(),
+            "CONNECT http-intake.logs.example.com:443 HTTP/1.1\r\n\r\n".to_string(),
+            "GET http://evil.example/x HTTP/1.1\r\nHost: evil.example\r\n\r\n".to_string(),
+            // The policy host answers 200: not a refusal.
+            format!("GET http://{POLICY_HOST}/ HTTP/1.1\r\n\r\n"),
+        ];
+        for req in requests {
+            let mut s = TcpStream::connect(&addr).await.unwrap();
+            s.write_all(req.as_bytes()).await.unwrap();
+            let mut out = Vec::new();
+            tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut out))
+                .await
+                .unwrap()
+                .ok();
+            assert!(!out.is_empty(), "the answer still reaches the client");
+        }
+        let got: Vec<String> = read_refused(&clone).iter().map(|r| r.to_string()).collect();
+        assert_eq!(
+            got,
+            ["http-intake.logs.example.com:443 x2", "evil.example:80 x1"]
+        );
+        // Carried across a new `.git`, and forgotten at the next attempt.
+        let refused = read_refused(&clone);
+        clear_refused(&clone);
+        assert!(read_refused(&clone).is_empty());
+        restore_refused(&clone, &refused);
+        assert_eq!(read_refused(&clone), refused);
+        relay_task.abort();
+        task.abort();
+    }
+
+    #[test]
+    fn a_403_counts_as_a_refusal_only_when_the_proxy_names_the_host_asked_for() {
+        let ask = b"CONNECT a.example:443 HTTP/1.1\r\n\r\n";
+        assert_eq!(requested(ask), Some(("a.example".into(), 443)));
+        assert_eq!(
+            requested(b"GET http://b.example:8080/x HTTP/1.1\r\n\r\n"),
+            Some(("b.example".into(), 8080))
+        );
+        assert_eq!(requested(b""), None);
+        let refused = format!("HTTP/1.1 403 Forbidden\r\n{REFUSED_HEADER}: a.example:443\r\n\r\n");
+        assert_eq!(
+            refused_in(refused.as_bytes()),
+            Some(("a.example".into(), 443))
+        );
+        // An upstream server's own 403 carries no header.
+        assert_eq!(refused_in(b"HTTP/1.1 403 Forbidden\r\n\r\n"), None);
+        let ok = format!("HTTP/1.1 200 OK\r\n{REFUSED_HEADER}: a.example:443\r\n\r\n");
+        assert_eq!(refused_in(ok.as_bytes()), None);
+    }
+
+    #[test]
+    fn a_directory_that_is_not_a_clone_records_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(refused_path(d.path()).is_none());
+        assert!(read_refused(d.path()).is_empty());
     }
 
     #[test]
