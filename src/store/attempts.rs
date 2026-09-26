@@ -472,10 +472,13 @@ impl Store {
     pub fn attempt_outputs_since(&self, since: i64) -> Result<Vec<(String, String)>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT t.repo, a.outputs_json FROM attempts a JOIN tasks t ON t.id = a.task_id
+            "SELECT t.repo AS repo, a.outputs_json AS outputs_json
+             FROM attempts a JOIN tasks t ON t.id = a.task_id
              WHERE a.started_at >= ?1 ORDER BY a.id",
         )?;
-        let rows = stmt.query_map(params![since], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let rows = stmt.query_map(params![since], |r| {
+            Ok((r.get("repo")?, r.get("outputs_json")?))
+        })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
