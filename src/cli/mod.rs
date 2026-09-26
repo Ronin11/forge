@@ -23,6 +23,7 @@ macro_rules! out {
     }};
 }
 
+mod demo;
 mod deploy;
 mod gc;
 mod initiatives;
@@ -320,6 +321,17 @@ enum Cmd {
         /// symlinks and the units through it. Idempotent.
         #[arg(long)]
         relink: bool,
+    },
+    /// A newcomer's first run: a scratch repository under FORGE_HOME/demo,
+    /// one small task run to completion, and where to look afterward.
+    /// A second run says the demo exists and offers --reset.
+    Demo {
+        /// Use the test fakes instead of the configured agent: costs nothing, needs no login
+        #[arg(long)]
+        fake: bool,
+        /// Wipe the demo repository and run it again
+        #[arg(long)]
+        reset: bool,
     },
     /// Check this machine can run attempts and nothing is stuck
     Doctor {
@@ -636,6 +648,7 @@ pub async fn main() -> Result<()> {
         Cmd::Gc { .. }
         | Cmd::Init { .. }
         | Cmd::Doctor { .. }
+        | Cmd::Demo { .. }
         | Cmd::Version
         | Cmd::Upgrade { .. }
         | Cmd::EgressRelay { .. }

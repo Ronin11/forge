@@ -35,6 +35,7 @@ cargo build --release --workspace            # the kernel and, beside it, forge-
 export PATH="$PWD/target/release:$PATH"      # or symlink the binaries somewhere already on PATH
 forge init                                   # set up FORGE_HOME: config, workflow catalog, web.token, units
 forge doctor                                 # check this machine can run attempts (forge init ends with this too)
+forge demo                                   # see a real task land on a scratch repo (--fake: no agent, no cost)
 ```
 
 A bare `cargo build --release` builds the kernel alone, and `forge init`
