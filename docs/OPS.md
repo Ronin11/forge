@@ -19,6 +19,58 @@ permissions for events.jsonl`) once `N` is above zero, so a systemic
 problem is visible even though no single attempt reported it as a
 failure.
 
+## The running binary: releases, the pointer, and the successor worker (design, 2026-09-25)
+
+Three incidents in two days came from one cause: a binary replaced in
+place under processes that were using it. A landing with a migration
+plus an operator's older checkout deployed over it took every CLI command
+down ("schema 63 is newer than this forge"); deploy-self swapped the
+file under a draining worker and its plugins were restarted with a path
+Linux marks "(deleted)", so a contact's interview question was never
+sent; and `forge deploy forge self` deployed the checkout's HEAD, thirty
+commits behind the landed truth. The fix is one invariant, enforced by
+who holds the pointer: **the store and every running binary agree.**
+
+- **Releases are directories; one symlink says which is live.** Whether
+  deploy-self built it from a landed sha or `forge upgrade` unpacked it
+  from a tarball, a release lands in `FORGE_HOME/bin/releases/<id>/` and
+  `FORGE_HOME/bin/current` is flipped to it by `rename` (atomic);
+  `previous` keeps the last one. `~/.local/bin/forge` and the units'
+  `ExecStart` point through `current`. Nothing ever overwrites a file a
+  process is executing, so there is no "(deleted)" path and no
+  half-written binary; rollback is one flip back. `upgrade` and
+  deploy-self are one code path with two sources.
+- **Origin is the truth.** `forge deploy forge self` deploys origin's
+  tip, refuses an id older than `current` without `--force`, and the
+  checkout under ~/Projects/forge is a place to read and hand-edit,
+  never the source of what runs.
+- **A staged release starts a successor worker; the old one drains.**
+  Deploy only stages: build, run the new binary's doctor-lite against a
+  scratch home, write `staged`. The worker starts a successor on the new
+  binary; the old worker stops claiming as soon as the store shows a
+  newer live worker, finishes what it holds, and exits. Claims go to the
+  newest version only. Plugins and web restart under the successor. No
+  drain wait for the fix to be live; no mixed versions touching an
+  attempt.
+- **Migrations are additive, or deferred.** Two versions share one
+  SQLite while the old worker drains, so a release may only add tables,
+  columns and indexes; a migration that drops or renames is tagged
+  `contract` and applied by the newest worker only once no older worker
+  is alive. A test refuses a non-additive migration without the tag (81
+  of the 83 `ALTER TABLE`s in the history are already `ADD COLUMN`).
+- **Config reloads between claims.** A `[providers]`, `[roles]` or
+  `[environment]` edit is picked up on a signal or the file's mtime,
+  never by a drain; only a binary change needs a successor.
+- **Doctor tells the truth about it.** "runs a binary rebuilt since it
+  started" becomes "release <id> staged; successor claiming; N attempts
+  draining on <old id>".
+
+Not a daemon, and not containers: the binary has nothing to isolate
+(SQLite and TLS are bundled) and everything a container would separate
+is what must be shared (the agent CLIs and their logins, bwrap, the
+store, the toolchain caches). Two directories and a symlink give the
+version separation; the successor worker gives the cutover.
+
 ## Installing and upgrading
 
 `forge init [--home DIR]` is what a second machine runs once, against the

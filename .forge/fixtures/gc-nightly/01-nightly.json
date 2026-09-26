@@ -1,0 +1,12 @@
+{
+  "input": {},
+  "expect": {
+    "state": "ok",
+    "effects": [
+      {
+        "kind": "file",
+        "summary_contains": "would remove published and clean retained worktrees"
+      }
+    ]
+  }
+}

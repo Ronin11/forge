@@ -1,0 +1,19 @@
+name = "gc-nightly"
+kind = "run"
+description = "nightly unattended `forge gc` at 04:00 UTC so retained worktrees stop accumulating (doctor's 'N retained worktrees, oldest Nd'). It removes only what gc already removes, worktrees that are published and clean; every worktree it keeps, and why, is in the job's output, so the doctor line shrinks to what genuinely needs a human. A failure asks the operator."
+
+steps = [
+  { action = "gc-nightly-run", effect = "file" },
+]
+
+[trigger]
+on = "schedule"
+cron = "0 4 * * *"
+
+[assert]
+reported = ["bash", "-c", "grep -q '^file' \"$FORGE_EFFECT_LOG\""]
+
+[limits]
+budget_usd = 0.0
+per_day = 1
+on_failure = "ask:operator"
