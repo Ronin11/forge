@@ -845,6 +845,26 @@ impl Shutdown {
     }
 }
 
+/// Tasks and jobs a dead worker left running go back in the queue.
+fn recover_orphans(f: &Forge) -> Result<()> {
+    for id in f.store.orphans(pid_alive)? {
+        f.store.requeue(id, "previous worker exited")?;
+        eprintln!("requeued task {id}: its previous worker exited");
+    }
+    for (id, owner) in f.store.orphan_jobs(pid_alive)? {
+        crate::job::recover_interrupted(f, id, owner)?;
+    }
+    Ok(())
+}
+
+/// `worker.pid`: the newest worker's pid and the path it was launched by.
+fn write_pid_file(paths: &Paths, pid: i64) {
+    let exe = crate::binary::launch_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let _ = std::fs::write(paths.home.join("worker.pid"), format!("{pid} {exe}\n"));
+}
+
 pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut shutdown = Shutdown::install();
     // SIGHUP: re-read `config.toml` before the next claim, whatever its
@@ -853,24 +873,9 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         .expect("SIGHUP handler");
     let mut reloader = crate::reload::Reloader::start(&f);
     let mut hup = false;
-    for id in f.store.orphans(pid_alive)? {
-        f.store.requeue(id, "previous worker exited")?;
-        eprintln!("requeued task {id}: its previous worker exited");
-    }
-    for (id, owner) in f.store.orphan_jobs(pid_alive)? {
-        crate::job::recover_interrupted(&f, id, owner)?;
-    }
+    recover_orphans(&f)?;
     let pid = std::process::id() as i64;
-    let pid_file = f.paths.home.join("worker.pid");
-    let _ = std::fs::write(
-        &pid_file,
-        format!(
-            "{pid} {}\n",
-            crate::binary::launch_path()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default()
-        ),
-    );
+    write_pid_file(&f.paths, pid);
     let mut succession = crate::successor::Succession::join(&f, &opts)?;
     let mut plugins = Some(crate::plugins::Supervisor::start(f.clone()));
     let jobs = opts.jobs.max(1);

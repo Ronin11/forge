@@ -305,7 +305,8 @@ src/render.rs       text rendering for documents: first sentence, path-like toke
 src/report.rs       typed events; the stderr printer is one consumer
 src/executor.rs     executor contract, backend selection, and guarantees
 src/sandbox.rs      bubblewrap
-src/store/          SQLite, forward-only migrations by user_version, one file per table family
+src/successor.rs     the successor worker: a staged release starts forge work on it, the old worker drains
+src/store/          SQLite, forward-only migrations by user_version, one file per table family (workers.rs: the registered workers and their releases)
   mod.rs            types, column lists, open, schema_version, the migration runner
   migrations.rs     MIGRATIONS: every forward-only schema migration, in order
   tasks.rs          tasks: claim, queue, dependents, lineage

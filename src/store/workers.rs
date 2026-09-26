@@ -59,9 +59,9 @@ impl Store {
         let rows = stmt
             .query_map([], |r| {
                 Ok(WorkerRow {
-                    id: r.get(0)?,
-                    pid: r.get(1)?,
-                    version: r.get(2)?,
+                    id: r.get("id")?,
+                    pid: r.get("pid")?,
+                    version: r.get("version")?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
