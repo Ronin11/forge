@@ -267,7 +267,8 @@ async fn dispatch_egressrelay(cmd: Cmd) -> Result<()> {
             socket,
             listen,
             ready,
-        } => crate::egress::relay(&socket, &listen, ready.as_deref()).await,
+            refused,
+        } => crate::egress::relay(&socket, &listen, ready.as_deref(), refused.as_deref()).await,
         _ => unreachable!("command routed to the wrong family"),
     }
 }

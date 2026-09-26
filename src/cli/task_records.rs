@@ -157,6 +157,10 @@ pub(super) fn trace(id: i64, json: bool) -> Result<()> {
         if let Some(r) = &outputs.verify_ref {
             out!("           verify_ref={r}");
         }
+        if !outputs.refused.is_empty() {
+            let hosts: Vec<String> = outputs.refused.iter().map(|r| r.to_string()).collect();
+            out!("refused    {}", hosts.join(", "));
+        }
         if !outputs.summary.is_empty() {
             out!(
                 "summary    {}",

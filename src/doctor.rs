@@ -260,6 +260,7 @@ fn check_egress(paths: &Paths, store: &Store) -> Vec<Check> {
             Err(e) => check("egress", Status::Fail, format!("running bwrap: {e}"), ""),
         }
     });
+    note_refused(store, out.last_mut());
     if let Ok(c) = config::load_home(&paths.home) {
         let model_only = [&c.trust.operator, &c.trust.contact, &c.trust.public]
             .iter()
@@ -324,6 +325,38 @@ fn check_egress(paths: &Paths, store: &Store) -> Vec<Check> {
         });
     }
     out
+}
+
+/// Add to the egress row what the proxy refused attempts in the last day,
+/// by host and repository (`host xN (repository)`), most refused first:
+/// what the `[environment]` table and a repository's `[sandbox] egress`
+/// are tuned from. Nothing is added when nothing was refused.
+fn note_refused(store: &Store, row: Option<&mut Check>) {
+    if let (Some(refused), Some(row)) = (refused_lately(store), row) {
+        row.detail
+            .push_str(&format!("; refused in the last 24h: {refused}"));
+    }
+}
+
+fn refused_lately(store: &Store) -> Option<String> {
+    let since = crate::unix_now() - 24 * 3600;
+    let mut counts: std::collections::BTreeMap<(String, String), u64> = Default::default();
+    for (repo, outputs) in store.attempt_outputs_since(since).ok()? {
+        let Ok(o) = serde_json::from_str::<crate::audit::Outputs>(&outputs) else {
+            continue;
+        };
+        for r in o.refused {
+            *counts.entry((r.host, repo.clone())).or_default() += r.count;
+        }
+    }
+    let mut rows: Vec<_> = counts.into_iter().collect();
+    rows.sort_by_key(|r| std::cmp::Reverse(r.1));
+    (!rows.is_empty()).then(|| {
+        rows.iter()
+            .map(|((host, repo), n)| format!("{host} x{n} ({repo})"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
 }
 
 /// Whether FORGE_HOME is writable, once it has already been resolved.

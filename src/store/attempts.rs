@@ -467,6 +467,21 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Each attempt started at or after `since` with its task's repository
+    /// and its outputs, for the egress refusals `forge doctor` sums.
+    pub fn attempt_outputs_since(&self, since: i64) -> Result<Vec<(String, String)>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT t.repo AS repo, a.outputs_json AS outputs_json
+             FROM attempts a JOIN tasks t ON t.id = a.task_id
+             WHERE a.started_at >= ?1 ORDER BY a.id",
+        )?;
+        let rows = stmt.query_map(params![since], |r| {
+            Ok((r.get("repo")?, r.get("outputs_json")?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// `forge stats --reprice` (docs/ECONOMIST.md, "Repricing a
     /// free-reporting provider"): sets `cost_usd` from recorded tokens at
     /// the provider's `prices` (the operator config's own numbers; the
