@@ -1577,3 +1577,84 @@ fn a_hostile_clone_still_lands_and_none_of_its_git_metadata_runs() {
         }
     }
 }
+
+fn run_public_no_land(e: &Env) {
+    let mut c = e.cmd("ok.sh");
+    for (role, fake) in [("REVIEW", "reviewer-ok.sh"), ("ASSESS", "assessor.sh")] {
+        c.env(
+            format!("FORGE_CLAUDE_BIN_{role}"),
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fakes")
+                .join(fake),
+        );
+    }
+    let o = c
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--trust",
+            "public",
+            "--workflow",
+            "reviewed",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    eprintln!("{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "unverified", "{reason}");
+    assert!(pushed);
+}
+
+fn land_1(e: &Env) -> std::process::Output {
+    let mut c = e.cmd("ok.sh");
+    c.env(
+        "FORGE_CLAUDE_BIN_ASSESS",
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/assessor.sh"),
+    );
+    c.args(["land", "1"]).output().unwrap()
+}
+
+fn worktree_of_1(e: &Env) -> String {
+    e.db()
+        .query_row("SELECT worktree FROM tasks WHERE id=1", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn a_pushed_task_whose_worktree_is_gone_lands_from_the_branch_on_origin() {
+    let e = Env::new();
+    run_public_no_land(&e);
+    let wt = worktree_of_1(&e);
+    std::fs::remove_dir_all(&wt).unwrap();
+    let o = land_1(&e);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (_, reason, _) = e.task(1);
+    assert!(reason.starts_with("landed main @ "), "{reason}");
+    assert_eq!(
+        origin_file(&e, "main", "answer.txt").as_deref(),
+        Some("42\n")
+    );
+}
+
+#[test]
+fn a_task_whose_branch_was_never_pushed_and_whose_worktree_is_gone_is_refused() {
+    let e = Env::new();
+    run_public_no_land(&e);
+    std::fs::remove_dir_all(worktree_of_1(&e)).unwrap();
+    git(
+        &e.origin,
+        &["update-ref", "-d", "refs/heads/forge/1-write-42"],
+    );
+    e.db()
+        .execute("UPDATE tasks SET pushed=0 WHERE id=1", [])
+        .unwrap();
+    let o = land_1(&e);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("worktree is gone"), "{err}");
+    assert!(err.contains("not on"), "{err}");
+    assert_eq!(origin_sha(&e, "main"), "");
+}

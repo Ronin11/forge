@@ -8,7 +8,8 @@ use super::*;
 /// it was never merged. A worktree also goes when it is clean and every
 /// commit it added is already reachable from a remote ref (or it added
 /// none). Everything else is kept with the reason and the command a human
-/// would run. Branches are never deleted.
+/// would run. Branches are never deleted, and a pushed branch lands without
+/// its worktree (`forge land` recreates it), so removing one loses nothing.
 pub(super) async fn gc(dry_run: bool, older_than: Option<i64>) -> Result<()> {
     let f = Forge::open(false, false)?;
     let (mut removed, mut kept) = (0, 0);
@@ -71,6 +72,9 @@ pub(super) async fn gc(dry_run: bool, older_than: Option<i64>) -> Result<()> {
                 kept += 1;
                 out!("task {:<4} kept ({reason})", t.id);
                 out!("           rm -rf {}", t.worktree);
+                out!(
+                    "           once its branch is pushed, forge land no longer needs this worktree"
+                );
             }
             Err(e) => {
                 kept += 1;
