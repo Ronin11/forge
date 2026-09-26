@@ -27,6 +27,7 @@ mod providers;
 mod provision;
 mod questions;
 mod refs;
+mod reload;
 mod resume;
 mod signal;
 mod statusline;
