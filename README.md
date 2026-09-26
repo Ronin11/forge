@@ -300,6 +300,7 @@ src/pricing.rs      pricing: a claude attempt priced at list from the CLI's toke
 src/profile.rs      a workflow's measured cost and success, from its runs
 src/prompts.rs      what each contract's agent is told, assembled from pieces
 src/queue.rs        how a task comes to exist; enqueue validates a TaskRequest
+src/reload.rs       config reloads between claims: re-read, re-validate, keep the old config on a bad edit
 src/render.rs       text rendering for documents: first sentence, path-like tokens stripped, word-boundary cuts
 src/report.rs       typed events; the stderr printer is one consumer
 src/executor.rs     executor contract, backend selection, and guarantees

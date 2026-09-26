@@ -43,6 +43,7 @@ mod profile;
 mod prompts;
 mod queue;
 mod release;
+mod reload;
 mod render;
 mod report;
 mod sandbox;

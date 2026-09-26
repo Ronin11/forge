@@ -845,8 +845,14 @@ impl Shutdown {
     }
 }
 
-pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
+pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut shutdown = Shutdown::install();
+    // SIGHUP: re-read `config.toml` before the next claim, whatever its
+    // mtime says (`crate::reload`).
+    let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+        .expect("SIGHUP handler");
+    let mut reloader = crate::reload::Reloader::start(&f);
+    let mut hup = false;
     for id in f.store.orphans(pid_alive)? {
         f.store.requeue(id, "previous worker exited")?;
         eprintln!("requeued task {id}: its previous worker exited");
@@ -879,6 +885,11 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut announced_holds: HashSet<i64> = HashSet::new();
 
     loop {
+        // Config reloads between claims: what is claimed from here on runs
+        // on the new config; what already runs keeps the `Forge` it holds.
+        if !stopping && let Some(next) = reloader.check(&f, std::mem::take(&mut hup)) {
+            f = next;
+        }
         let runs = tick_run_workflows(&f).await?;
         schedule_tick(&f, &runs).await?;
         event_tick(&f, &runs).await?;
@@ -965,12 +976,14 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     let wait = poll.map_or(wait, |p| wait.min(p));
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(wait)) => continue,
+                        _ = hangup.recv() => { hup = true; continue }
                         _ = shutdown.recv() => { eprintln!("stopping"); break }
                     }
                 }
                 (None, Some(secs)) if !stopping && env_error.is_none() && !exhausted => {
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(secs)) => continue,
+                        _ = hangup.recv() => { hup = true; continue }
                         _ = shutdown.recv() => { eprintln!("stopping"); break }
                     }
                 }
@@ -1015,6 +1028,7 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     }
                 }
             }
+            _ = hangup.recv() => { hup = true; }
             _ = shutdown.recv() => {
                 if !stopping {
                     stopping = true;

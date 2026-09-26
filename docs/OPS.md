@@ -58,9 +58,19 @@ who holds the pointer: **the store and every running binary agree.**
   `contract` and applied by the newest worker only once no older worker
   is alive. A test refuses a non-additive migration without the tag (81
   of the 83 `ALTER TABLE`s in the history are already `ADD COLUMN`).
-- **Config reloads between claims.** A `[providers]`, `[roles]` or
-  `[environment]` edit is picked up on a signal or the file's mtime,
-  never by a drain; only a binary change needs a successor.
+- **Config reloads between claims.** A `[providers]`, `[roles]`,
+  `[environment]`, `[budget]` or `[sandbox]` edit is picked up on a signal
+  or the file's mtime, never by a drain; only a binary change needs a
+  successor. Built (`src/reload.rs`): before each claim the worker
+  compares `config.toml`'s mtime and size with what it loaded (SIGHUP
+  forces the comparison), re-validates it exactly as `forge work` does at
+  start, and claims with the new config from then on; an attempt in
+  flight keeps the provider and prices it started with. An edit that
+  fails validation is logged once and the previous config stays in
+  force; `FORGE_HOME/worker.config.json` records what the worker loaded
+  and what it refused, and doctor's `config` row names the file as newer
+  than what the worker loaded. Adding a provider no longer needs the
+  worker restart (and its 40-minute drain) it took on 2026-09-25.
 - **Doctor tells the truth about it.** "runs a binary rebuilt since it
   started" becomes "release <id> staged; successor claiming; N attempts
   draining on <old id>".
