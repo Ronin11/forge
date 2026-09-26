@@ -236,6 +236,13 @@ async fn dispatch_init(cmd: Cmd) -> Result<()> {
     }
 }
 
+async fn dispatch_demo(cmd: Cmd) -> Result<()> {
+    match cmd {
+        Cmd::Demo { fake, reset } => super::demo::demo(fake, reset),
+        _ => unreachable!("command routed to the wrong family"),
+    }
+}
+
 async fn dispatch_doctor(cmd: Cmd) -> Result<()> {
     match cmd {
         Cmd::Doctor { json } => run_doctor(json),
@@ -367,6 +374,7 @@ pub(super) async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Gc { .. } => dispatch_gc(cmd).await,
         Cmd::Init { .. } => dispatch_init(cmd).await,
         Cmd::Doctor { .. } => dispatch_doctor(cmd).await,
+        Cmd::Demo { .. } => dispatch_demo(cmd).await,
         Cmd::Version => dispatch_version(cmd).await,
         Cmd::Upgrade { .. } => dispatch_upgrade(cmd).await,
         Cmd::EgressRelay { .. } => dispatch_egressrelay(cmd).await,
