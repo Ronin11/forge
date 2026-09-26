@@ -28,6 +28,7 @@ mod provision;
 mod questions;
 mod refs;
 mod resume;
+mod signal;
 mod statusline;
 mod supervisor;
 mod tdd;
