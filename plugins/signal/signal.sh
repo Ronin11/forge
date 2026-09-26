@@ -197,6 +197,7 @@ concierge_reply() {
     dest=$4
     record_message "$project" in "$name" "$body"
     errs=$(mktemp)
+    cr_task=
     if out=$("$FORGE_BIN" ask "$project" "$body" --from "$name" 2>"$errs"); then
         first=$(printf '%s\n' "$out" | head -n1)
         case "$first" in
@@ -205,6 +206,7 @@ concierge_reply() {
                 ;;
             "concierge: unclear;"*)
                 reply=$(printf '%s\n' "$first" | sed 's/^.*with a question\( for [^:]*\)\{0,1\}: //')
+                cr_task=$(printf '%s\n' "$first" | sed -n 's/^concierge: unclear; blocked task \([0-9][0-9]*\) with a question.*/\1/p')
                 ;;
             *)
                 reply=$first
@@ -216,7 +218,7 @@ concierge_reply() {
     fi
     rm -f "$errs"
     signal_send "$dest" "$reply"
-    record_message "$project" out "$name" "$reply"
+    record_message "$project" out "$name" "$reply" "$cr_task"
 }
 
 signal_send() {
