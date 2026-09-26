@@ -96,6 +96,31 @@ pub fn recognize(text: &str) -> Option<Need> {
         .or_else(|| lines.iter().find_map(|l| missing_binary(l)))
 }
 
+/// The recorded refusals a failure may be read from: only when a check
+/// failed (a download a setup or test needed is the shape a swallowed
+/// refusal explains), and never a host that attempts refused the same way
+/// went on to succeed with. On 2026-09-26 every failure of the night was
+/// turned into an operator question by the claude CLI's own telemetry
+/// (Datadog) and codex's content CDN, refused in passing on every attempt
+/// including the ones that landed; a review's demotion and an agent's exit
+/// were read as environment needs and never reached the rules that own
+/// them. `noise` is the set of hosts refused in succeeded attempts lately
+/// (`Store::hosts_refused_in_succeeded_attempts`).
+pub fn refusals_worth_reading(
+    state: crate::store::AttemptState,
+    refused: &[crate::egress::Refused],
+    noise: &std::collections::HashSet<String>,
+) -> Vec<crate::egress::Refused> {
+    if state != crate::store::AttemptState::ChecksFailed {
+        return Vec::new();
+    }
+    refused
+        .iter()
+        .filter(|r| !noise.contains(&r.host))
+        .cloned()
+        .collect()
+}
+
 /// The hosts the egress proxy refused an attempt (its outputs' `refused`),
 /// one line each in the proxy's own words, so `recognize` types a refusal
 /// a tool swallowed the same as one it printed.
@@ -447,6 +472,34 @@ pub fn record(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recorded_refusals_are_read_only_for_a_failed_check_and_never_for_noise() {
+        use crate::egress::Refused;
+        use crate::store::AttemptState as S;
+        let refused = vec![
+            Refused {
+                host: "registry.npmjs.org".into(),
+                port: 443,
+                count: 1,
+            },
+            Refused {
+                host: "http-intake.logs.us5.datadoghq.com".into(),
+                port: 443,
+                count: 5,
+            },
+        ];
+        let noise: std::collections::HashSet<String> =
+            ["http-intake.logs.us5.datadoghq.com".to_string()].into();
+        let worth = refusals_worth_reading(S::ChecksFailed, &refused, &noise);
+        assert_eq!(worth.len(), 1);
+        assert_eq!(worth[0].host, "registry.npmjs.org");
+        assert!(refusals_worth_reading(S::NeedsInput, &refused, &noise).is_empty());
+        assert!(refusals_worth_reading(S::AgentFailed, &refused, &noise).is_empty());
+        // What the recognizer then sees: the registry, never the telemetry host.
+        let n = recognize(&refusal_text(&worth)).expect("a need");
+        assert_eq!(n.target, "registry.npmjs.org");
+    }
 
     const PROXY: &str = "npm error code E403\nnpm error 403 403 Forbidden - GET https://registry.npmjs.org/left-pad\nforge egress: nodejs.org:443 is not allowed. This attempt may reach only: api.anthropic.com.\n";
 

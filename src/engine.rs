@@ -357,11 +357,39 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     finish(&f, &mut t, &end, compare, &wt).await
 }
 
+/// The environment path after a directive's attempt failed: a failed check
+/// or a question can name a need; an agent's own exit never does (its
+/// tools' output is not on the record as a cause). Hosts that succeeded
+/// attempts were also refused are dropped before reading.
+async fn environment_after(
+    f: &Forge,
+    t: &Task,
+    cfg: &config::Config,
+    a: &crate::store::Attempt,
+    verdict: &verify::Verdict,
+) -> Result<Environment, Fault> {
+    if !matches!(
+        a.state,
+        AttemptState::ChecksFailed | AttemptState::NeedsInput
+    ) {
+        return Ok(Environment::Left);
+    }
+    let noise = f
+        .store
+        .hosts_refused_in_succeeded_attempts(crate::unix_now() - 7 * 86_400)
+        .unwrap_or_default();
+    apply_environment(f, t, cfg, &environment_text(a, verdict, &noise)).await
+}
+
 /// The text an environment need is read from: the failing checks' tails,
 /// the attempt's reason and the question it asked, then each host the
 /// egress proxy refused it, in the proxy's words, so a refusal a tool
 /// swallowed is still a need.
-fn environment_text(a: &crate::store::Attempt, verdict: &verify::Verdict) -> String {
+fn environment_text(
+    a: &crate::store::Attempt,
+    verdict: &verify::Verdict,
+    noise: &std::collections::HashSet<String>,
+) -> String {
     let mut text = a.reason.clone();
     for c in verdict.checks.iter().filter(|c| !c.ok) {
         text.push('\n');
@@ -376,7 +404,8 @@ fn environment_text(a: &crate::store::Attempt, verdict: &verify::Verdict) -> Str
         text.push_str(&q.question);
     }
     let outputs: crate::audit::Outputs = serde_json::from_str(&a.outputs_json).unwrap_or_default();
-    text.push_str(&crate::environment::refusal_text(&outputs.refused));
+    let worth = crate::environment::refusals_worth_reading(a.state, &outputs.refused, noise);
+    text.push_str(&crate::environment::refusal_text(&worth));
     text
 }
 
@@ -986,18 +1015,13 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
         // refused, a host cache) is applied and the attempt runs again;
         // it does not count against the directive. What the table does
         // not cover falls through as it always has.
-        if matches!(
-            a.state,
-            AttemptState::ChecksFailed | AttemptState::AgentFailed | AttemptState::NeedsInput
-        ) {
-            match apply_environment(f, t, cfg, &environment_text(&a, &verdict)).await? {
-                Environment::Applied => {
-                    run.refund(seq);
-                    continue;
-                }
-                Environment::Ask(reason) => return Ok(blocked_on(reason)),
-                Environment::Left => {}
+        match environment_after(f, t, cfg, &a, &verdict).await? {
+            Environment::Applied => {
+                run.refund(seq);
+                continue;
             }
+            Environment::Ask(reason) => return Ok(blocked_on(reason)),
+            Environment::Left => {}
         }
         // A check that failed only inside the verification namespace
         // is the test author's failure, not the coder's: the coder
