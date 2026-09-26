@@ -1015,12 +1015,6 @@ pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<Strin
         );
     }
     let repo = PathBuf::from(&t.repo);
-    if !Path::new(&t.worktree).join(".git").exists() {
-        bail!(
-            "task {id}'s worktree is gone ({}); retry the task instead",
-            t.worktree
-        );
-    }
     let cfg = config::load_working(&repo).await?;
     let Some(remote) = cfg.push_remote.clone() else {
         bail!("{} has no push remote; nothing to land on", repo.display());
@@ -1028,6 +1022,55 @@ pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<Strin
     let Some(url) = git::remote_url(&repo, &remote).await else {
         bail!("remote {remote} has no URL in {}", repo.display());
     };
+    let mut recreated: Option<PathBuf> = None;
+    if !Path::new(&t.worktree).join(".git").exists() {
+        // The pushed branch is the truth: landing needs only that, not the
+        // worktree gc may have collected.
+        if !t.pushed || t.branch.is_empty() || !git::remote_branch_exists(&url, &t.branch).await {
+            bail!(
+                "task {id}'s worktree is gone ({}) and its branch {} is not on {remote}; retry the task instead",
+                t.worktree,
+                t.branch
+            );
+        }
+        let dir = f.paths.worktrees.join(id.to_string());
+        if dir.exists() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        let restored = async {
+            git::clone_task(&repo, &t.base_branch, &dir, &t.branch, None, None).await?;
+            git::fetch_ref(&dir, &url, &t.branch).await?;
+            git::reset_hard(&dir, "FETCH_HEAD").await
+        }
+        .await;
+        if let Err(e) = restored {
+            let _ = std::fs::remove_dir_all(&dir);
+            bail!(
+                "task {id}: could not recreate the worktree from {remote}/{}: {e:#}",
+                t.branch
+            );
+        }
+        t.worktree = dir.display().to_string();
+        recreated = Some(dir);
+    }
+    let result = land_integrated(f, id, by_hand, demoted, t, &url, &remote).await;
+    if let Some(dir) = recreated {
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::sandbox::discard_provider_state(&dir);
+    }
+    result
+}
+
+async fn land_integrated(
+    f: &Forge,
+    id: i64,
+    by_hand: bool,
+    demoted: bool,
+    mut t: Task,
+    url: &str,
+    remote: &str,
+) -> Result<String> {
+    let (url, remote) = (url.to_string(), remote.to_string());
     let mut seq = f.store.ops(id)?.len() as i64;
     let mut attempt_no = f.store.attempts(id)?.len() as i64;
     match crate::landing::integrate(f, &mut t, &url, &remote, &mut seq, &mut attempt_no)
