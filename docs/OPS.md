@@ -58,7 +58,28 @@ who holds the pointer: **the store and every running binary agree.**
   newer live worker, finishes what it holds, and exits. Claims go to the
   newest version only. Plugins and web restart under the successor. No
   drain wait for the fix to be live; no mixed versions touching an
-  attempt.
+  attempt. Built (`src/successor.rs`, `workers` table): a daemon worker
+  compares `bin/staged` with the release it runs (`FORGE_RELEASE`, else the
+  `releases/<id>` its executable sits in, else `current`) on every pass,
+  including while every slot is busy. A different, runnable release with
+  no live worker starts `releases/<id>/forge work` with the same
+  arguments and `FORGE_HOME`, in its own process group, and records it in
+  `workers` (pid, version, registration order). A worker with a newer
+  live worker of another version in that table claims nothing, stops its
+  plugins, finishes its tasks and jobs and exits; if the successor dies
+  before that, it claims again and does not restart the same release. The
+  successor flips `current` to its release (when a deploy has not already)
+  and runs `systemctl --user restart --no-block forge-web forge-portal`.
+  `forge work --once` does not take part.
+  **systemd:** `forge-worker.service` is `Type=notify` with
+  `NotifyAccess=all` (`forge init` writes it; re-run it once to adopt).
+  Every worker sends `READY=1` when registered; a successor sends
+  `MAINPID=<its pid>` too, so the unit's main pid moves to the worker that
+  claims and `systemctl --user status forge-worker` names it, with the
+  draining worker listed beside it in the unit's cgroup. Restarting the
+  unit instead would stop the old worker before the new one claimed, which
+  is the wait this removes. The moments both are alive, both run plugins
+  until the old one notices (one poll interval).
 - **Migrations are additive, or deferred.** Two versions share one
   SQLite while the old worker drains, so a release may only add tables,
   columns and indexes; a migration that drops or renames is tagged
@@ -78,9 +99,10 @@ who holds the pointer: **the store and every running binary agree.**
   and what it refused, and doctor's `config` row names the file as newer
   than what the worker loaded. Adding a provider no longer needs the
   worker restart (and its 40-minute drain) it took on 2026-09-25.
-- **Doctor tells the truth about it.** "runs a binary rebuilt since it
-  started" becomes "release <id> staged; successor claiming; N attempts
-  draining on <old id>".
+- **Doctor tells the truth about it.** Built: the worker row reads
+  "release <id> staged; successor pid N claiming; M attempts draining on
+  <old id>" while two versions are live, instead of "runs a binary rebuilt
+  since it started" (still shown for a worker that has no successor).
 
 Not a daemon, and not containers: the binary has nothing to isolate
 (SQLite and TLS are bundled) and everything a container would separate

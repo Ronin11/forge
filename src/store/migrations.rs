@@ -652,4 +652,16 @@ CREATE TABLE job_trust (
     // The node id of the step (`<index>-<action>`), stable across a run
     // that loops; `seq` counts executions (docs/EXECUTION.md).
     "ALTER TABLE job_steps ADD COLUMN node TEXT NOT NULL DEFAULT '';",
+    // The daemon workers and the release each runs (docs/OPS.md, "The
+    // running binary"): a successor registers here, and an older version
+    // stops claiming once a newer one is live.
+    "
+CREATE TABLE workers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  pid INTEGER NOT NULL,
+  version TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  stopped_at INTEGER
+);
+",
 ];

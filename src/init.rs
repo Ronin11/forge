@@ -78,7 +78,8 @@ Description=Forge worker\n\
 After=network-online.target\n\
 \n\
 [Service]\n\
-Type=simple\n\
+Type=notify\n\
+NotifyAccess=all\n\
 Environment=FORGE_HOME={home}\n\
 Environment=PATH={bin_dir}:/usr/local/bin:/usr/bin:/bin\n\
 ExecStart={forge_bin} work --jobs 4\n\

@@ -664,8 +664,38 @@ fn check_learning(paths: &Paths, store: &Store) -> Vec<Check> {
     }]
 }
 
+/// A successor claiming while an older worker drains: the release staged,
+/// the successor's pid, and what the old one still holds.
+fn check_succession(paths: &Paths, store: &Store) -> Option<Check> {
+    let live = store.live_workers(worker::pid_alive).ok()?;
+    let newest = live.last()?;
+    let old: Vec<_> = live
+        .iter()
+        .filter(|w| w.version != newest.version)
+        .collect();
+    let first = old.first()?;
+    let draining: i64 = old
+        .iter()
+        .filter_map(|w| store.held_by_worker(w.pid).ok())
+        .sum();
+    let staged = crate::release::pointed_at(&crate::release::root(&paths.home), "staged")
+        .unwrap_or_else(|| newest.version.clone());
+    Some(check(
+        "worker",
+        Status::Ok,
+        format!(
+            "release {staged} staged; successor pid {} claiming; {draining} attempts draining on {}",
+            newest.pid, first.version
+        ),
+        "",
+    ))
+}
+
 /// The worker, by its pid file: alive, and on the binary that is on disk.
-fn check_worker(paths: &Paths) -> Vec<Check> {
+fn check_worker(paths: &Paths, store: &Store) -> Vec<Check> {
+    if let Some(c) = check_succession(paths, store) {
+        return vec![c];
+    }
     let Some(w) = worker::worker_status(paths) else {
         return Vec::new();
     };
@@ -1244,7 +1274,7 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     out.extend(check_workflows(&paths));
     out.extend(check_plugins(&paths, &store));
     out.extend(check_learning(&paths, &store));
-    out.extend(check_worker(&paths));
+    out.extend(check_worker(&paths, &store));
     out.extend(check_queue(&store));
     out.extend(check_deliveries(&store, unix_now()));
     out.extend(check_worktrees(&store));

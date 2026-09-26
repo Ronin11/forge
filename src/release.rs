@@ -34,6 +34,26 @@ pub fn pointed_at(root: &Path, pointer: &str) -> Option<String> {
     target.file_name()?.to_str().map(str::to_string)
 }
 
+/// The release this process runs: what its launcher said (`FORGE_RELEASE`),
+/// else the `releases/<id>` its executable sits in, else what `current`
+/// names, else "" for a binary that lives outside the layout.
+pub fn running(root: &Path) -> String {
+    if let Some(id) = std::env::var("FORGE_RELEASE")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        return id;
+    }
+    let from_exe = std::env::current_exe().ok().and_then(|exe| {
+        let release = exe.parent()?;
+        (release.parent()?.file_name()? == "releases")
+            .then(|| release.file_name()?.to_str().map(str::to_string))?
+    });
+    from_exe
+        .or_else(|| pointed_at(root, "current"))
+        .unwrap_or_default()
+}
+
 /// Copy the binaries that exist in `src` into `releases/<id>/` (through a
 /// temporary directory renamed into place), executable. `forge` itself is
 /// required. Returns whether the release was created; an existing one is

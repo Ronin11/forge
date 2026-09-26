@@ -24,6 +24,7 @@ mod record;
 mod stats;
 mod tasks;
 mod webhooks;
+mod workers;
 
 pub use attempts::{Attempt, AttemptState, FinishAttempt, Op, RateLimitSample};
 pub use daily::DailyStat;
@@ -44,6 +45,7 @@ pub use stats::{
     TaskTtl, WorkflowStat,
 };
 pub use tasks::{RoleRouting, Routed, Task, TaskState, TaskUpdate, Trust};
+pub use workers::WorkerRow;
 
 /// Forward-only. Index = version - 1. Never edit a shipped entry; append.
 pub use migrations::MIGRATIONS;

@@ -48,6 +48,7 @@ mod render;
 mod report;
 mod sandbox;
 mod store;
+mod successor;
 mod supervisor;
 mod tools;
 mod upgrade;

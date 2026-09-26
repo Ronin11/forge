@@ -871,7 +871,8 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 .unwrap_or_default()
         ),
     );
-    let plugins = crate::plugins::Supervisor::start(f.clone());
+    let mut succession = crate::successor::Succession::join(&f, &opts)?;
+    let mut plugins = Some(crate::plugins::Supervisor::start(f.clone()));
     let jobs = opts.jobs.max(1);
     let mut running: JoinSet<WorkResult> = JoinSet::new();
     let mut ids: Vec<i64> = Vec::new();
@@ -893,9 +894,14 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         let runs = tick_run_workflows(&f).await?;
         schedule_tick(&f, &runs).await?;
         event_tick(&f, &runs).await?;
+        let superseded = succession.superseded(&f)?;
+        if superseded && let Some(p) = plugins.take() {
+            p.stop().await;
+        }
 
         // Fill free slots.
         while !stopping
+            && !superseded
             && env_error.is_none()
             && running.len() < jobs
             && opts.max_tasks.is_none_or(|m| claimed < m)
@@ -961,6 +967,10 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         }
 
         if running.is_empty() {
+            if superseded {
+                eprintln!("a newer release claims; nothing left to finish, exiting");
+                break;
+            }
             let exhausted = opts.max_tasks.is_some_and(|m| claimed >= m);
             // A held window with work waiting: sleep until the reset (or the
             // poll interval), even in --once mode, which means "drain".
@@ -998,7 +1008,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
             // finishes. Before this branch the loop woke only on a join or
             // a signal: on 2026-09-19 two tasks sat queued beside one
             // running attempt and two free slots for an hour.
-            _ = tokio::time::sleep(Duration::from_secs(opts.poll.unwrap_or(10))), if running.len() < jobs => {}
+            _ = tokio::time::sleep(Duration::from_secs(opts.poll.unwrap_or(10))), if running.len() < jobs || opts.poll.is_some() => {}
             Some(joined) = running.join_next() => {
                 match joined {
                     Ok(WorkResult::Task(id, Ok(state))) => {
@@ -1049,7 +1059,10 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         }
     }
 
-    plugins.stop().await;
+    if let Some(p) = plugins {
+        p.stop().await;
+    }
+    succession.leave(&f);
     eprintln!("worked {done} task(s): {ok} succeeded, {} not", done - ok);
     if jobs_done > 0 {
         eprintln!(

@@ -31,6 +31,7 @@ mod reload;
 mod resume;
 mod signal;
 mod statusline;
+mod successor;
 mod supervisor;
 mod tdd;
 mod trust;
