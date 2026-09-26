@@ -87,6 +87,10 @@ pub struct Outputs {
     /// each with calls and time.
     #[serde(default)]
     pub tools: Option<crate::tools::Tools>,
+    /// The hosts the egress proxy refused this attempt, each with how many
+    /// times: recorded by the sandbox's relay whether or not a tool said so.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<crate::egress::Refused>,
 }
 
 /// A diagnosis line: what happened, and what the operator can do.

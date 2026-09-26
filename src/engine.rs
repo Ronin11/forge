@@ -358,7 +358,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
 }
 
 /// The text an environment need is read from: the failing checks' tails,
-/// the attempt's reason and the question it asked.
+/// the attempt's reason and the question it asked, then each host the
+/// egress proxy refused it, in the proxy's words, so a refusal a tool
+/// swallowed is still a need.
 fn environment_text(a: &crate::store::Attempt, verdict: &verify::Verdict) -> String {
     let mut text = a.reason.clone();
     for c in verdict.checks.iter().filter(|c| !c.ok) {
@@ -372,6 +374,13 @@ fn environment_text(a: &crate::store::Attempt, verdict: &verify::Verdict) -> Str
     {
         text.push('\n');
         text.push_str(&q.question);
+    }
+    let outputs: crate::audit::Outputs = serde_json::from_str(&a.outputs_json).unwrap_or_default();
+    for r in outputs.refused {
+        text.push_str(&format!(
+            "\nforge egress: {}:{} is not allowed (refused {} time(s) this attempt)",
+            r.host, r.port, r.count
+        ));
     }
     text
 }

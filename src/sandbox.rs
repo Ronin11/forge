@@ -396,7 +396,7 @@ impl Sandbox {
         self.command(worktree, argv, env, &self.policy_for(worktree))
     }
 
-    fn wrapper_script(&self, relay_enabled: bool) -> String {
+    fn wrapper_script(&self, relay_enabled: bool, refused: Option<&Path>) -> String {
         // The claude CLI's own config file, not the credential-bearing
         // config directory: seed it into the tmpfs $HOME as a real, private
         // file before exec, so the CLI's rename-over-a-lockfile update
@@ -408,9 +408,14 @@ impl Sandbox {
         // Then the egress relay, in the background: it dies with the
         // namespace when the command ends. Its ready file is what the
         // command waits for, so its first request never beats the listener.
+        // Refusals are recorded where the attempt that ran into them reads
+        // them back (`egress::refused_path`).
+        let record = refused.map_or(String::new(), |p| {
+            format!(" --refused {}", shell_quote(&p.to_string_lossy()))
+        });
         let relay = if relay_enabled {
             format!(
-                "{} egress-relay --ready {RELAY_READY} >/dev/null 2>&1 & \
+                "{} egress-relay --ready {RELAY_READY}{record} >/dev/null 2>&1 & \
                  i=0; while [ ! -e {RELAY_READY} ] && [ $i -lt 500 ]; do i=$((i+1)); sleep 0.01; done; ",
                 shell_quote(&self.relay_exe.to_string_lossy())
             )
@@ -564,7 +569,8 @@ impl Sandbox {
             cmd.arg("--bind-try").arg(&dir).arg(&dir);
         }
         cmd.arg("--chdir").arg(worktree).arg("--");
-        let script = self.wrapper_script(socket.is_some());
+        let script =
+            self.wrapper_script(socket.is_some(), egress::refused_path(worktree).as_deref());
         cmd.args(["/bin/sh", "-c"]).arg(script).arg("sh");
         cmd.args(argv);
         cmd.env_clear();

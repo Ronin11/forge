@@ -284,6 +284,7 @@ pub async fn run_attempt(
         provider,
     })
     .await?;
+    crate::egress::clear_refused(&spec.dir);
     let outcome = launch(AttemptLaunch {
         f,
         t,
@@ -617,6 +618,7 @@ pub async fn record(
         first_edit_call: first_edit_call(Path::new(&a.log_path)),
         tools: crate::tools::summarize(Path::new(&a.log_path), dir.to_str().unwrap_or("")),
         checks_run: verdict.envelope.as_ref().map_or(0, |e| e.checks_run.len()),
+        refused: crate::egress::read_refused(dir),
     };
     if let Some(tools) = &mut outputs.tools {
         let mut edited = outputs.changed_files.clone();
