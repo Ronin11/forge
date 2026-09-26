@@ -125,9 +125,10 @@ fn run_task(repo: &Path, dir: &Path, fake: bool) -> Result<bool> {
         // own provider beats the roles tables, and no other binary override
         // (per-role claude, codex, copilot) may reach the child.
         for (k, _) in std::env::vars() {
-            if ["CLAUDE_BIN_", "CODEX_BIN", "COPILOT_BIN"].iter().any(|p| {
-                k.starts_with(&format!("FORGE_{p}")) || k.starts_with(&format!("FORGE2_{p}"))
-            }) {
+            if ["FORGE_CLAUDE_BIN_", "FORGE_CODEX_BIN", "FORGE_COPILOT_BIN"]
+                .iter()
+                .any(|p| k.starts_with(p))
+            {
                 cmd.env_remove(k);
             }
         }
