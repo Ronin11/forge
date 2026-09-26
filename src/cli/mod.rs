@@ -314,6 +314,12 @@ enum Cmd {
         /// XDG_DATA_HOME/forge, or ~/.local/share/forge)
         #[arg(long)]
         home: Option<PathBuf>,
+        /// Move an existing install onto the release layout: copy the
+        /// running binaries into FORGE_HOME/bin/releases/<commit>/, point
+        /// FORGE_HOME/bin/current at it, and rewrite the ~/.local/bin
+        /// symlinks and the units through it. Idempotent.
+        #[arg(long)]
+        relink: bool,
     },
     /// Check this machine can run attempts and nothing is stuck
     Doctor {

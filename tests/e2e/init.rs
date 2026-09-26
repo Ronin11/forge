@@ -204,3 +204,63 @@ fn forge_init_enables_units_when_a_systemd_session_is_reachable() {
         "{calls:?}"
     );
 }
+
+#[test]
+fn forge_init_relink_moves_an_existing_install_onto_the_release_layout() {
+    let e = Env::new();
+    // The old layout: ~/.local/bin/forge -> a build directory's binary.
+    let home_dir = e._dir.path().join("userhome");
+    let build = e._dir.path().join("target-release");
+    std::fs::create_dir_all(&build).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_forge"), build.join("forge")).unwrap();
+    write_fake(&build.join("forge-web"), "#!/bin/sh\nexit 0\n");
+    let local_bin = home_dir.join(".local/bin");
+    std::fs::create_dir_all(&local_bin).unwrap();
+    std::os::unix::fs::symlink(build.join("forge"), local_bin.join("forge")).unwrap();
+
+    let relink = || {
+        // Run through the old symlink, as the operator's shell would.
+        let o = std::process::Command::new(local_bin.join("forge"))
+            .env("FORGE_HOME", &e.home)
+            .env("XDG_CONFIG_HOME", &e.xdg_config)
+            .env("HOME", &home_dir)
+            .env("FORGE_SUPERVISOR", "0")
+            .env_remove("XDG_RUNTIME_DIR")
+            .env_remove("DBUS_SESSION_BUS_ADDRESS")
+            .args(["init", "--relink"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr)
+    };
+
+    let out = relink();
+    let bin = e.home.join("bin");
+    let target = std::fs::read_link(bin.join("current")).unwrap();
+    let id = target.file_name().unwrap().to_str().unwrap().to_string();
+    assert!(
+        bin.join("releases").join(&id).join("forge").is_file(),
+        "{out}"
+    );
+    assert!(
+        bin.join("releases").join(&id).join("forge-web").is_file(),
+        "{out}"
+    );
+    assert_eq!(
+        std::fs::read_link(local_bin.join("forge")).unwrap(),
+        bin.join("current/forge")
+    );
+    let unit =
+        std::fs::read_to_string(e.xdg_config.join("systemd/user/forge-worker.service")).unwrap();
+    assert!(
+        unit.contains(&format!("ExecStart={}/current/forge work", bin.display())),
+        "{unit}"
+    );
+    assert!(out.contains("done release"), "{out}");
+
+    let out = relink();
+    assert!(
+        out.contains("already initialized; nothing changed"),
+        "{out}"
+    );
+    assert_eq!(std::fs::read_link(bin.join("current")).unwrap(), target);
+}

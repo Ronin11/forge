@@ -2,8 +2,8 @@
 //! release tarball built from this suite's own `forge` binary (so its
 //! `doctor --json` schema check runs for real) plus dummy placeholders for
 //! the other four release binaries, `systemctl` and `curl` faked on
-//! `PATH`, and `FORGE_UPGRADE_BIN_DIR` pointed at a throwaway "install"
-//! directory instead of the real `target/debug` this test runs from.
+//! `PATH`, and an "old" release under `FORGE_HOME/bin/releases/old` that
+//! `FORGE_HOME/bin/current` points at.
 
 use crate::support::*;
 use std::path::{Path, PathBuf};
@@ -79,12 +79,13 @@ fn build_tarball(dir: &Path, version: &str) -> PathBuf {
     tarball
 }
 
-/// A throwaway "install directory" holding dummy binaries stamped "old",
-/// for `FORGE_UPGRADE_BIN_DIR` to point `forge upgrade` at instead of the
-/// real `target/debug` this test binary runs from.
-fn old_bin_dir(dir: &Path) -> PathBuf {
-    let bins = dir.join("oldbin");
-    std::fs::create_dir_all(&bins).unwrap();
+/// `FORGE_HOME/bin` holding one release, `old`, of dummy binaries, live
+/// through `current`.
+fn old_bin_dir(home: &Path) -> PathBuf {
+    let bins = home.join("bin");
+    let old = bins.join("releases/old");
+    std::fs::create_dir_all(&old).unwrap();
+    std::os::unix::fs::symlink("releases/old", bins.join("current")).unwrap();
     for b in [
         "forge",
         "forge-web",
@@ -93,7 +94,7 @@ fn old_bin_dir(dir: &Path) -> PathBuf {
         "forge-test",
         "forge-tui",
     ] {
-        write_fake(&bins.join(b), "#!/bin/sh\n# old\nexit 0\n");
+        write_fake(&old.join(b), "#!/bin/sh\n# old\nexit 0\n");
     }
     bins
 }
@@ -119,7 +120,7 @@ impl Upgrade {
 
         let scratch = e._dir.path().join("release");
         std::fs::create_dir_all(&scratch).unwrap();
-        let bins = old_bin_dir(e._dir.path());
+        let bins = old_bin_dir(&e.home);
 
         let unit_dir = e.xdg_config.join("systemd/user");
         std::fs::create_dir_all(&unit_dir).unwrap();
@@ -155,7 +156,6 @@ impl Upgrade {
         self.e
             .cmd("ok.sh")
             .env("PATH", &self.path)
-            .env("FORGE_UPGRADE_BIN_DIR", &self.bins)
             .env("UPGRADE_CALLS_LOG", &self.calls_log)
             .args(["upgrade"])
             .args(args)
@@ -171,8 +171,14 @@ impl Upgrade {
             .collect()
     }
 
+    fn link(&self, name: &str) -> String {
+        std::fs::read_link(self.bins.join(name))
+            .map(|p| p.display().to_string())
+            .unwrap_or_default()
+    }
+
     fn binary(&self, name: &str) -> String {
-        std::fs::read_to_string(self.bins.join(name)).unwrap_or_default()
+        std::fs::read_to_string(self.bins.join("current").join(name)).unwrap_or_default()
     }
 }
 
@@ -189,10 +195,17 @@ fn forge_upgrade_installs_migrates_and_restarts_web_portal_then_worker_last() {
     );
     assert!(o.status.success(), "{out}");
 
-    // The new (real) forge binary is in place; the old one is kept.
+    // The new (real) forge binary is live through current; the old
+    // release is untouched and previous points at it.
     let real = std::fs::read(env!("CARGO_BIN_EXE_forge")).unwrap();
-    assert_eq!(std::fs::read(u.bins.join("forge")).unwrap(), real);
-    assert!(u.binary("previous/forge").contains("old"));
+    assert_eq!(std::fs::read(u.bins.join("current/forge")).unwrap(), real);
+    assert_eq!(u.link("current"), "releases/9.9.9");
+    assert_eq!(u.link("previous"), "releases/old");
+    assert!(
+        std::fs::read_to_string(u.bins.join("previous/forge"))
+            .unwrap()
+            .contains("old")
+    );
     for b in [
         "forge-web",
         "forge-portal",
@@ -201,7 +214,12 @@ fn forge_upgrade_installs_migrates_and_restarts_web_portal_then_worker_last() {
         "forge-tui",
     ] {
         assert!(u.binary(b).contains("new"), "{b}: {}", u.binary(b));
-        assert!(u.binary(&format!("previous/{b}")).contains("old"), "{b}");
+        assert!(
+            std::fs::read_to_string(u.bins.join(format!("releases/old/{b}")))
+                .unwrap()
+                .contains("old"),
+            "{b}"
+        );
     }
 
     // Schema reported before and after, web+portal restarted before the
@@ -275,6 +293,9 @@ fn forge_upgrade_check_only_verifies_and_changes_nothing() {
 
     assert_eq!(u.binary("forge"), "#!/bin/sh\n# old\nexit 0\n");
     assert!(!u.bins.join("previous").exists());
+    assert_eq!(u.link("current"), "releases/old");
+    assert!(!u.bins.join("releases/9.9.9").exists());
+    assert!(out.contains("Would flip"), "{out}");
     assert!(u.calls().is_empty(), "{:?}", u.calls());
 }
 
@@ -304,7 +325,28 @@ fn forge_upgrade_force_installs_a_tarball_older_than_the_running_version() {
     let o = u.run(&[tarball.to_str().unwrap(), "--force"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let real = std::fs::read(env!("CARGO_BIN_EXE_forge")).unwrap();
-    assert_eq!(std::fs::read(u.bins.join("forge")).unwrap(), real);
+    assert_eq!(std::fs::read(u.bins.join("current/forge")).unwrap(), real);
+}
+
+#[test]
+fn forge_upgrade_refuses_an_older_tarball_than_the_live_release_without_force() {
+    let u = Upgrade::new(&[], FAKE_CURL_OK);
+    let newer = u.tarball("9.9.9");
+    let o = u.run(&[newer.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let older = u.tarball("9.9.8");
+    let o = u.run(&[older.to_str().unwrap()]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("older") && err.contains("--force"), "{err}");
+    assert_eq!(u.link("current"), "releases/9.9.9");
+    assert_eq!(u.link("previous"), "releases/old");
+
+    let o = u.run(&[older.to_str().unwrap(), "--force"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(u.link("current"), "releases/9.9.8");
+    assert_eq!(u.link("previous"), "releases/9.9.9");
 }
 
 #[test]
@@ -318,9 +360,11 @@ fn forge_upgrade_restores_the_previous_binaries_when_the_web_check_fails() {
     let o = u.run(&[tarball.to_str().unwrap()]);
     assert!(!o.status.success());
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.contains("restored the previous binaries"), "{err}");
+    assert!(err.contains("restored the previous release"), "{err}");
 
-    // What runs is what ran before: the old binaries are back in place.
+    // What runs is what ran before: current points at the old release again.
+    assert_eq!(u.link("current"), "releases/old");
+    assert!(!u.bins.join("releases/9.9.9").exists());
     for b in [
         "forge",
         "forge-web",

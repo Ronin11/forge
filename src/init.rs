@@ -7,8 +7,8 @@
 //! worker and web client by hand. Idempotent: run again and every step
 //! reports nothing changed.
 
-use crate::{config, ctx::Paths, git, workflows};
-use anyhow::Result;
+use crate::{config, ctx::Paths, git, release, workflows};
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 /// One step `forge init` took (or found already done).
@@ -158,7 +158,12 @@ fn by_hand(home: &Path, forge_bin: &Path, web_bin: &Path) -> StepResult {
 /// is), and the commands the operator would run by hand are printed in
 /// the returned detail instead of being run.
 fn install_units(home: &Path) -> Result<StepResult> {
-    let forge_bin = crate::binary::without_deleted_suffix(&std::env::current_exe()?);
+    let current = release::root(home).join("current");
+    let forge_bin = if current.join("forge").is_file() {
+        current.join("forge")
+    } else {
+        crate::binary::without_deleted_suffix(&std::env::current_exe()?)
+    };
     let bin_dir = forge_bin
         .parent()
         .map(Path::to_path_buf)
@@ -248,9 +253,77 @@ fn install_units(home: &Path) -> Result<StepResult> {
     ))
 }
 
+/// `$HOME/.local/bin`, where the operator's own PATH finds `forge`.
+fn local_bin_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/bin"))
+}
+
+/// `--relink`: move the running install onto the release layout — copy the
+/// running binaries into `releases/<commit>/` and point `current` at it,
+/// unless `current` already exists. Never touches a live release.
+fn adopt_running_binaries(home: &Path) -> Result<Vec<StepResult>> {
+    let root = release::root(home);
+    let exe = crate::binary::without_deleted_suffix(&std::env::current_exe()?);
+    let src = exe
+        .parent()
+        .context("the running binary has no directory")?;
+    let sha = env!("FORGE_GIT_SHA");
+    let id = if sha.is_empty() {
+        env!("CARGO_PKG_VERSION")
+    } else {
+        sha
+    };
+    let mut steps = Vec::new();
+    match release::pointed_at(&root, "current") {
+        Some(live) => steps.push(step("release", false, format!("current is already {live}"))),
+        None => {
+            let made = release::install(&root, src, id)?;
+            release::flip(&root, id)?;
+            let detail = format!(
+                "copied {} into {} and pointed {} at it{}",
+                src.display(),
+                release::release_dir(&root, id).display(),
+                root.join("current").display(),
+                if made {
+                    ""
+                } else {
+                    " (release already present)"
+                }
+            );
+            steps.push(step("release", true, detail));
+        }
+    }
+    Ok(steps)
+}
+
+/// `~/.local/bin/<name>` -> `FORGE_HOME/bin/current/<name>` for every
+/// binary the live release holds. Runs only once `current` exists.
+fn link_local_bin(home: &Path) -> Result<Option<StepResult>> {
+    let current = release::root(home).join("current");
+    let Some(dir) = local_bin_dir().filter(|_| current.is_dir()) else {
+        return Ok(None);
+    };
+    let mut changed = Vec::new();
+    for b in release::BINS {
+        if current.join(b).is_file() && release::relink(&dir.join(b), &current.join(b))? {
+            changed.push(dir.join(b).display().to_string());
+        }
+    }
+    let detail = if changed.is_empty() {
+        format!("{} already through {}", dir.display(), current.display())
+    } else {
+        format!(
+            "linked {} through {}",
+            changed.join(", "),
+            current.display()
+        )
+    };
+    Ok(Some(step("links", !changed.is_empty(), detail)))
+}
+
 /// Everything `forge init` does, in order. `home_override` is `--home`;
 /// `None` uses the usual resolution (`Paths::compute_home`).
-pub async fn run(home_override: Option<PathBuf>) -> Result<Report> {
+pub async fn run(home_override: Option<PathBuf>, relink: bool) -> Result<Report> {
     let home = match home_override {
         Some(h) => h,
         None => Paths::compute_home()?,
@@ -294,6 +367,10 @@ pub async fn run(home_override: Option<PathBuf>) -> Result<Report> {
         token_path.display().to_string(),
     ));
 
+    if relink {
+        steps.extend(adopt_running_binaries(&home)?);
+    }
+    steps.extend(link_local_bin(&home)?);
     steps.push(install_units(&home)?);
 
     Ok(Report { home, steps })

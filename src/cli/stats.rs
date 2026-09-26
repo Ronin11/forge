@@ -41,8 +41,8 @@ fn version() -> Result<()> {
 }
 
 /// `forge init [--home DIR]`: see `Cmd::Init`.
-async fn cmd_init(home: Option<PathBuf>) -> Result<()> {
-    let report = crate::init::run(home).await?;
+async fn cmd_init(home: Option<PathBuf>, relink: bool) -> Result<()> {
+    let report = crate::init::run(home, relink).await?;
     for s in &report.steps {
         let tag = if s.changed { "done" } else { "ok  " };
         out!("{tag} {:<10} {}", s.name, s.detail);
@@ -231,7 +231,7 @@ async fn dispatch_gc(cmd: Cmd) -> Result<()> {
 
 async fn dispatch_init(cmd: Cmd) -> Result<()> {
     match cmd {
-        Cmd::Init { home } => cmd_init(home).await,
+        Cmd::Init { home, relink } => cmd_init(home, relink).await,
         _ => unreachable!("command routed to the wrong family"),
     }
 }

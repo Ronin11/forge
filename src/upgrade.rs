@@ -1,6 +1,10 @@
-//! `forge upgrade [<path-or-url>] [--check-only] [--force]`: install a
-//! release tarball over the running binaries (see docs/OPS.md,
-//! "Upgrading"). Verifies the tarball against its own `SHA256SUMS`,
+//! `forge upgrade [<path-or-url>] [--check-only] [--force]`: unpack a
+//! release tarball into `FORGE_HOME/bin/releases/<version>/` and flip
+//! `FORGE_HOME/bin/current` to it (see docs/OPS.md, "The running binary"
+//! and "Upgrading"; `src/release.rs` holds the pointer). Where the text
+//! below says "keeps the current binaries under `previous/`" or
+//! "restores the previous ones", read the `previous` pointer and a flip
+//! back. Verifies the tarball against its own `SHA256SUMS`,
 //! refuses one whose version is older than the running binary's unless
 //! `--force` (migrations are forward-only), backs the store up with
 //! sqlite's `.backup`, keeps the current binaries under `<bin
@@ -29,23 +33,12 @@
 //! rather than by literally sharing one file.
 
 use crate::ctx::Paths;
+use crate::release;
 use crate::store::Store;
 use anyhow::{Context, Result, bail};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
-
-/// The workspace's own release binaries, in the order `scripts/release.sh`
-/// packs them (see `tests/release.rs`).
-const BINS: &[&str] = &[
-    "forge",
-    "forge-web",
-    "forge-portal",
-    "forge-repomap",
-    "forge-test",
-    "forge-tui",
-];
 
 /// The units `forge upgrade` restarts when their unit files exist;
 /// `forge-worker` is asked to restart separately, last.
@@ -56,20 +49,6 @@ const TRIES: u32 = 40;
 
 fn scratch_dir(paths: &Paths) -> PathBuf {
     paths.worktrees.join("upgrade")
-}
-
-/// Where the running binaries live: `FORGE_UPGRADE_BIN_DIR` when set (so
-/// the e2e suite can point this at a throwaway directory rather than the
-/// real `target/debug` its own test binary runs from — the same shape as
-/// `FORGE_CLAUDE_BIN`), else the currently running binary's own directory.
-fn bin_dir() -> Result<PathBuf> {
-    if let Ok(p) = std::env::var("FORGE_UPGRADE_BIN_DIR") {
-        return Ok(PathBuf::from(p));
-    }
-    std::env::current_exe()?
-        .parent()
-        .map(Path::to_path_buf)
-        .context("the running binary has no parent directory")
 }
 
 /// A path or URL fetched with curl into a temp dir (see the module doc);
@@ -226,68 +205,17 @@ fn backup_store(home: &Path, version: &str) -> Result<PathBuf> {
     Ok(dest)
 }
 
-/// Copy the bin dir's current binaries (those that exist) into
-/// `previous.new/`, then swap it in as `previous/` — atomic from the
-/// directory entry's point of view, the same copy-then-rename shape
-/// `deploy-self.toml` uses. Returns whether there was anything to keep.
-fn snapshot_previous(bin_dir: &Path) -> Result<bool> {
-    let prev_new = bin_dir.join("previous.new");
-    let prev = bin_dir.join("previous");
-    let _ = std::fs::remove_dir_all(&prev_new);
-    std::fs::create_dir_all(&prev_new)?;
-    let mut have_prev = false;
-    for b in BINS {
-        let src = bin_dir.join(b);
-        if src.is_file() {
-            std::fs::copy(&src, prev_new.join(b))
-                .with_context(|| format!("keeping the previous {b}"))?;
-            have_prev = true;
-        }
-    }
-    let _ = std::fs::remove_dir_all(&prev);
-    std::fs::rename(&prev_new, &prev)?;
-    Ok(have_prev)
-}
-
-/// Copy `extracted`'s binaries into `bin_dir`, executable, via a
-/// copy-then-rename so a binary already running is never written to.
-fn install_binaries(bin_dir: &Path, extracted: &Path) -> Result<()> {
-    for b in BINS {
-        let src = extracted.join(b);
-        anyhow::ensure!(src.is_file(), "the tarball has no {b}");
-        let tmp = bin_dir.join(format!("{b}.new"));
-        std::fs::copy(&src, &tmp).with_context(|| format!("installing {b}"))?;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-        std::fs::rename(&tmp, bin_dir.join(b))?;
-    }
-    Ok(())
-}
-
-/// Restore `previous/` over `bin_dir`'s binaries and restart whatever web
-/// or portal units exist, best-effort — never the worker, so a rollback
-/// leaves it running the binary it already trusted (see
+/// Flip back to the pointers `release::flip` found and restart whatever
+/// web or portal units exist, best-effort — never the worker, so a
+/// rollback leaves it running the binary it already trusted (see
 /// docs/DEPLOY.md, "Rollback").
-fn restore_previous(bin_dir: &Path, have_prev: bool) {
-    if !have_prev {
-        println!("upgrade: no previous binaries to restore");
-        return;
-    }
+fn roll_back(root: &Path, was: &(Option<String>, Option<String>), new_id: &str) {
     println!(
-        "upgrade: restoring the previous binaries from {}",
-        bin_dir.join("previous").display()
+        "upgrade: flipping current back to {}",
+        was.0.as_deref().unwrap_or("nothing")
     );
-    let prev = bin_dir.join("previous");
-    for b in BINS {
-        let src = prev.join(b);
-        if !src.is_file() {
-            continue;
-        }
-        let tmp = bin_dir.join(format!("{b}.restore"));
-        if std::fs::copy(&src, &tmp).is_ok() {
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
-            let _ = std::fs::rename(&tmp, bin_dir.join(b));
-        }
-    }
+    let _ = release::restore(root, was);
+    let _ = std::fs::remove_dir_all(release::release_dir(root, new_id));
     let units = existing_units();
     let _ = restart_units_and_wait(&units, TRIES);
 }
@@ -385,8 +313,8 @@ fn restart_worker() -> Result<()> {
 /// Open the store once through the newly installed `forge doctor --json`
 /// — so it is the new binary's own migrations that run, forward-only —
 /// and return the schema version its `schema` check reports.
-fn migrate_via_new_binary(bin_dir: &Path, home: &Path) -> Result<i64> {
-    let out = Command::new(bin_dir.join("forge"))
+fn migrate_via_new_binary(forge: &Path, home: &Path) -> Result<i64> {
+    let out = Command::new(forge)
         .args(["doctor", "--json"])
         .env("FORGE_HOME", home)
         .output()
@@ -416,8 +344,8 @@ fn migrate_via_new_binary(bin_dir: &Path, home: &Path) -> Result<i64> {
 /// Everything after the binaries are on disk: migrate, restart web and
 /// portal (when their units exist) and check, then ask the worker to
 /// restart last. Returns the post-migration schema version.
-fn bring_up(bin_dir: &Path, home: &Path) -> Result<i64> {
-    let after = migrate_via_new_binary(bin_dir, home)?;
+fn bring_up(root: &Path, home: &Path) -> Result<i64> {
+    let after = migrate_via_new_binary(&root.join("current/forge"), home)?;
     println!("schema after:  version {after}");
 
     let units = existing_units();
@@ -439,34 +367,52 @@ fn bring_up(bin_dir: &Path, home: &Path) -> Result<i64> {
     Ok(after)
 }
 
+/// The version an upgrade is compared against: the live release's id when
+/// it is a version, else the running binary's own.
+fn live_version(root: &Path) -> String {
+    release::pointed_at(root, "current")
+        .filter(|id| semver(id).is_ok())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+}
+
 pub fn run(source: Option<String>, check_only: bool, force: bool) -> Result<()> {
     let source = source.context("forge upgrade needs a path or URL to a release tarball")?;
     let paths = Paths::resolve()?;
     let scratch = scratch_dir(&paths);
+    let root = release::root(&paths.home);
 
     let (tarball, sums) = obtain(&source, &scratch)?;
     verify_sha256(&tarball, &sums)?;
     println!("verified {} against {}", tarball.display(), sums.display());
 
     let new_version = tarball_version(&tarball)?;
-    let old_version = env!("CARGO_PKG_VERSION");
-    if !force && semver(&new_version)? < semver(old_version)? {
+    let old_version = live_version(&root);
+    if !force && semver(&new_version)? < semver(&old_version)? {
         bail!(
             "{new_version} is older than the running {old_version}; migrations do not run \
              backwards, so this tarball is refused. Pass --force to install it anyway."
         );
     }
+    anyhow::ensure!(
+        !release::release_dir(&root, &new_version).exists(),
+        "release {new_version} is already unpacked under {}; a release is never overwritten",
+        root.join("releases").display()
+    );
 
     if check_only {
+        let live = release::pointed_at(&root, "current");
         println!(
-            "{new_version} verified; the running binary is {old_version}. Nothing installed \
-             (--check-only)."
+            "{new_version} verified; the running binary is {old_version}. Would flip {} from {} \
+             to releases/{new_version} and keep {} as previous. Nothing installed (--check-only).",
+            root.join("current").display(),
+            live.as_deref().unwrap_or("nothing"),
+            live.as_deref().unwrap_or("nothing"),
         );
         return Ok(());
     }
 
     let extracted = extract(&tarball, &scratch)?;
-    for b in BINS {
+    for b in release::BINS {
         anyhow::ensure!(extracted.join(b).is_file(), "the tarball has no {b}");
     }
 
@@ -476,14 +422,18 @@ pub fn run(source: Option<String>, check_only: bool, force: bool) -> Result<()> 
     let backup = backup_store(&paths.home, &new_version)?;
     println!("backed up the store to {}", backup.display());
 
-    let bin_dir = bin_dir()?;
-
-    let have_prev = snapshot_previous(&bin_dir)?;
-    if let Err(e) =
-        install_binaries(&bin_dir, &extracted).and_then(|()| bring_up(&bin_dir, &paths.home))
-    {
-        restore_previous(&bin_dir, have_prev);
-        return Err(e.context("forge upgrade failed; restored the previous binaries"));
+    release::install(&root, &extracted, &new_version)?;
+    let was = release::flip(&root, &new_version)?;
+    println!(
+        "flipped {} to releases/{new_version}; previous is {}",
+        root.join("current").display(),
+        release::pointed_at(&root, "previous")
+            .as_deref()
+            .unwrap_or("nothing")
+    );
+    if let Err(e) = bring_up(&root, &paths.home) {
+        roll_back(&root, &was, &new_version);
+        return Err(e.context("forge upgrade failed; restored the previous release"));
     }
 
     println!("upgraded {old_version} -> {new_version}");
