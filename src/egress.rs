@@ -665,6 +665,31 @@ pub fn read_refused(dir: &Path) -> Vec<Refused> {
     out
 }
 
+/// Write `refused` back into `dir`'s record: what the agent was refused,
+/// carried across the verification checkout that replaces its `.git`, so
+/// the checks' own refusals add to it.
+pub fn restore_refused(dir: &Path, refused: &[Refused]) {
+    use std::io::Write;
+    let Some(path) = refused_path(dir) else {
+        return;
+    };
+    if refused.is_empty() {
+        return;
+    }
+    let text: String = refused
+        .iter()
+        .filter_map(|r| serde_json::to_string(r).ok())
+        .map(|l| format!("{l}\n"))
+        .collect();
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = f.write_all(text.as_bytes());
+    }
+}
+
 /// Forget what earlier attempts in `dir` were refused, so what is read at
 /// the end of this one is its own.
 pub fn clear_refused(dir: &Path) {

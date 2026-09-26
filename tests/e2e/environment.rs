@@ -138,3 +138,37 @@ fn the_repository_can_deny_a_host_the_supervisor_would_approve() {
     let text = e.requests_json().to_string();
     assert!(text.contains("deny"), "{text}");
 }
+
+#[test]
+fn a_refusal_the_tool_swallowed_is_in_the_attempts_outputs_trace_and_doctor() {
+    let e = Env::new();
+    if e.sandbox_disabled() || !crate::worker::can_unshare_net() {
+        eprintln!("no bwrap network namespace here: skipping");
+        return;
+    }
+    let o = e.run("egress-swallow.sh", &["--retries", "0"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let doc = e.trace_json(1);
+    let refused = &doc["attempts"][0]["outputs"]["refused"];
+    assert_eq!(refused[0]["host"], "telemetry.example.net", "{doc}");
+    assert_eq!(refused[0]["port"], 443, "{doc}");
+    assert_eq!(refused[0]["count"], 1, "{doc}");
+
+    let trace = e.forge("ok.sh", &["trace", "1"]);
+    let out = String::from_utf8_lossy(&trace.stdout);
+    assert!(
+        out.contains("refused    telemetry.example.net:443 x1"),
+        "{out}"
+    );
+
+    let doctor = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&doctor.stdout);
+    let row = format!(
+        "refused in the last 24h: telemetry.example.net x1 ({})",
+        e.repo.display()
+    );
+    assert!(out.contains(&row), "{out}");
+    // Recorded, never granted.
+    assert_eq!(e.decisions_json().as_array().unwrap().len(), 0);
+}

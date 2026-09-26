@@ -300,6 +300,7 @@ pub async fn run_attempt(
         provider,
     })
     .await?;
+    let refused = crate::egress::read_refused(&spec.dir);
     git::verification_checkout(
         &f.paths.home,
         repo,
@@ -309,6 +310,7 @@ pub async fn run_attempt(
     )
     .await
     .task()?;
+    crate::egress::restore_refused(&spec.dir, &refused);
     // A branch that merged the moved base is measured from there.
     let pending_main = match contract {
         Contract::Code => git::rev_parse(&spec.dir, &format!("refs/heads/forge/{}", t.base_branch))
