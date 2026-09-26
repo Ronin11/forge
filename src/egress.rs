@@ -522,6 +522,17 @@ pub async fn relay(
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("listening on {listen}"))?;
+    relay_on(listener, socket, ready, refused).await
+}
+
+/// `relay` on a listener already bound, so a caller can take an ephemeral
+/// port without a window between choosing it and listening on it.
+async fn relay_on(
+    listener: TcpListener,
+    socket: &Path,
+    ready: Option<&Path>,
+    refused: Option<&Path>,
+) -> Result<()> {
     if let Some(r) = ready {
         std::fs::write(r, b"").with_context(|| format!("writing {}", r.display()))?;
     }
@@ -962,12 +973,12 @@ mod tests {
     #[tokio::test]
     async fn the_relay_pipes_loopback_to_the_proxy_socket() {
         let (dir, sock, task) = start(&["registry.npmjs.org"]);
-        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = free.local_addr().unwrap().to_string();
-        drop(free);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
         let ready = dir.path().join("ready");
-        let (a, r) = (addr.clone(), ready.clone());
-        let relay_task = tokio::spawn(async move { relay(&sock, &a, Some(&r), None).await });
+        let r = ready.clone();
+        let relay_task =
+            tokio::spawn(async move { relay_on(listener, &sock, Some(&r), None).await });
         for _ in 0..100 {
             if ready.exists() {
                 break;
@@ -995,12 +1006,12 @@ mod tests {
         let clone = dir.path().join("clone");
         std::fs::create_dir_all(clone.join(".git")).unwrap();
         let record = refused_path(&clone).unwrap();
-        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = free.local_addr().unwrap().to_string();
-        drop(free);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
         let ready = dir.path().join("ready");
-        let (a, r, rec) = (addr.clone(), ready.clone(), record.clone());
-        let relay_task = tokio::spawn(async move { relay(&sock, &a, Some(&r), Some(&rec)).await });
+        let (r, rec) = (ready.clone(), record.clone());
+        let relay_task =
+            tokio::spawn(async move { relay_on(listener, &sock, Some(&r), Some(&rec)).await });
         for _ in 0..100 {
             if ready.exists() {
                 break;
