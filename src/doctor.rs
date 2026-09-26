@@ -500,7 +500,10 @@ fn check_config(paths: &Paths) -> Vec<Check> {
         Err(e) => check(
             "config",
             Status::Fail,
-            format!("{e:#}"),
+            match crate::reload::rejected_by_worker(paths) {
+                Some(worker) => format!("{e:#}; {worker}"),
+                None => format!("{e:#}"),
+            },
             format!("fix {}", paths.home.join("config.toml").display()),
         ),
     }]

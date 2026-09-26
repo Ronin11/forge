@@ -356,6 +356,11 @@ impl Reporter {
         }
     }
 
+    /// Whether each line is tagged with its task id.
+    pub fn prefixed(&self) -> bool {
+        self.prefix
+    }
+
     /// Prints and logs nothing: for a run whose output is a report of its
     /// own (`forge job test`).
     pub fn quiet() -> Reporter {

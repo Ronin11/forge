@@ -74,6 +74,7 @@ pub fn resolve_provider_routed<'a>(
     Ok((provider, source))
 }
 
+#[derive(Clone)]
 pub struct Paths {
     pub home: PathBuf,
     pub worktrees: PathBuf,
@@ -176,6 +177,13 @@ impl Forge {
         let paths = Paths::resolve()?;
         let store = Store::open(&paths.home.join("forge.db"))?;
         config::ensure_home_config(&paths.home)?;
+        Forge::build(paths, store, need_agent, prefix)
+    }
+
+    /// `FORGE_HOME/config.toml` loaded and validated, and the sandbox
+    /// resolved against it when `need_agent`: everything `open` does once
+    /// the paths and store are in hand.
+    fn build(paths: Paths, store: Store, need_agent: bool, prefix: bool) -> Result<Forge> {
         let home = config::load_home(&paths.home)?;
         let sandbox = if need_agent {
             // Forge's own tools (forge-repomap) live beside the binary.
@@ -212,6 +220,20 @@ impl Forge {
             sandbox,
             report,
         })
+    }
+
+    /// A fresh `Forge` over the same home, with `config.toml` re-read and
+    /// re-validated exactly as `open` does at start (the worker's reload
+    /// between claims, `crate::reload`). Its own store connection, so the
+    /// `Forge` an attempt in flight holds is never touched.
+    pub fn reopen(&self) -> Result<Forge> {
+        let store = Store::open(&self.paths.home.join("forge.db"))?;
+        Forge::build(
+            self.paths.clone(),
+            store,
+            self.sandbox.is_some(),
+            self.report.prefixed(),
+        )
     }
 
     /// For commands that already hold the paths and store (doctor).

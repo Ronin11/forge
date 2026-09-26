@@ -42,6 +42,7 @@ mod pricing;
 mod profile;
 mod prompts;
 mod queue;
+mod reload;
 mod render;
 mod report;
 mod sandbox;
