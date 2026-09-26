@@ -8,7 +8,12 @@ target="$home/worktrees"
 
 if [ "${FORGE_DRY_RUN:-}" = "1" ]; then
   out=$(forge gc --dry-run 2>&1)
+  status=$?
   echo "$out"
+  if [ "$status" -ne 0 ]; then
+    echo "gc-nightly-run: forge gc --dry-run exited $status" >&2
+    exit 1
+  fi
   printf "file\t%s\twould remove published and clean retained worktrees (dry run): %s\n" \
     "$target" "$(echo "$out" | tail -n1)" >> "$FORGE_EFFECT_LOG"
   exit 0
