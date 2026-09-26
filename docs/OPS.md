@@ -43,7 +43,14 @@ who holds the pointer: **the store and every running binary agree.**
 - **Origin is the truth.** `forge deploy forge self` deploys origin's
   tip, refuses an id older than `current` without `--force`, and the
   checkout under ~/Projects/forge is a place to read and hand-edit,
-  never the source of what runs.
+  never the source of what runs. Built (`deploy::origin_truth`,
+  `deploy-self.toml`): the commit is resolved in the kernel repository's
+  fetch of origin's base, the release is built into
+  `FORGE_HOME/bin/releases/<sha>/`, checked by its own doctor against a
+  scratch home and written to `FORGE_HOME/bin/staged`; until the worker
+  acts on `staged`, deploy-self also flips `current` and restarts web,
+  portal and the worker as before (docs/DEPLOY.md, "Deploying Forge
+  itself").
 - **A staged release starts a successor worker; the old one drains.**
   Deploy only stages: build, run the new binary's doctor-lite against a
   scratch home, write `staged`. The worker starts a successor on the new

@@ -242,41 +242,64 @@ equitizr deploys equitizr: nobody rebuilds by hand, nobody restarts a
 unit. It is one target on the `forge` project, declared once:
 
 ```
-forge project deploy add forge self --repo ~/Projects/forge --method deploy-self --arg dest=$HOME/Projects/forge --on-landing
+forge project deploy add forge self --repo ~/Projects/forge --method deploy-self --on-landing
 ```
 
-`--repo` is the repository the deploy is triggered by and whose commit is
-built; `dest` is the checkout Forge runs from, the one `~/.local/bin`'s
-symlinks and `deploy/forge-worker.service` point at. They are usually the
-same directory. No `--check` is needed: `deploy-self` supplies its own.
+`--repo` is the repository the deploy is triggered by. Its `origin` (the
+remote `[defaults] remote` names) is where the commit comes from: origin
+is the truth (docs/OPS.md, "The running binary"), and the registered
+checkout is a place to read and hand-edit, never the source of what
+runs. No `--check` is needed: `deploy-self` supplies its own. An older
+target's `--arg dest=...` is ignored.
 
-`deploy-self` (`src/builtins/operations/deploy-self.toml`) runs, in the
-landed tree's scratch archive, under a lock so two landings never build
-over each other:
+Before the method runs, `forge deploy` fetches origin's base branch into
+the kernel-owned repository and resolves the commit there: with no
+`--sha`, origin's tip; a `--sha` origin's base does not contain is
+refused. A commit that is an ancestor of the live release (the one
+`FORGE_HOME/bin/current` names) is refused too, naming both, unless
+`--force`: migrations do not run backwards. Refused means nothing was
+built and no deploy row was written. The tree the method runs in is
+archived from that fetched commit, never the checkout's working tree.
 
-1. Copy the five release binaries in `dest/target/release` (`forge`,
-   `forge-web`, `forge-portal`, `forge-repomap`, `forge-tui`) to
-   `dest/target/release/previous/`. That directory always holds what ran
-   before the current deploy.
-2. `cargo build --release --workspace` with `CARGO_TARGET_DIR` set to
-   `dest/target`, not the scratch archive, so the build cache is used and
-   the binaries land where the symlinks and the units point. The archive
-   has no `.git`, so the commit is handed to `build.rs` as
-   `FORGE_BUILD_SHA` and `forge version` still names it.
-3. `systemctl --user restart forge-web forge-portal`, then wait, bounded,
+`deploy-self` (`src/builtins/operations/deploy-self.toml`) runs, in that
+scratch archive, under a lock (`FORGE_HOME/bin/.deploy-self.lock`) so
+two landings never build over each other:
+
+1. Unless `FORGE_HOME/bin/releases/<sha>/` already exists (a rollback to
+   a commit built before), `cargo build --release --workspace` with
+   `CARGO_TARGET_DIR` set to `FORGE_HOME/bin/target`, the build cache;
+   then copy the release binaries (`forge`, `forge-web`, `forge-portal`,
+   `forge-repomap`, `forge-tui`, and `forge-test` when built) into a
+   temporary directory renamed to `releases/<sha>/`. The archive has no
+   `.git`, so the commit is handed to `build.rs` as `FORGE_BUILD_SHA`
+   and `forge version` still names it.
+2. Run that release's own `forge doctor --json` against a scratch
+   `FORGE_HOME`, so its migration ladder runs on an empty store rather
+   than the live one, and require its `schema` check to be `ok` (a bare
+   home fails other rows, such as the agent login, which do not count).
+3. Write `FORGE_HOME/bin/staged -> releases/<sha>` (a symlink renamed
+   into place). This is all a deploy will do once the worker starts a
+   successor on `staged` itself; until then, the method goes on to put
+   the release live exactly as before:
+4. Flip `FORGE_HOME/bin/current` to `releases/<sha>`, with `previous`
+   naming the release it replaced. `~/.local/bin` and the units must
+   point through `current` (`forge init --relink`, once); the method
+   warns when `~/.local/bin/forge` does not.
+5. `systemctl --user restart forge-web forge-portal`, then wait, bounded,
    for both to report active.
-4. Run the check, retried while it fails, up to a bound. The default asks
+6. Run the check, retried while it fails, up to a bound. The default asks
    the web client the same thing an operator's browser does: `GET
    http://127.0.0.1:7788/tasks` with `Authorization: Bearer` and the token
    in `FORGE_HOME/web.token`, expecting 200. A target's own `--check`
    replaces it.
-5. Only when the check passed, and last, `systemctl --user restart
+7. Only when the check passed, and last, `systemctl --user restart
    --no-block forge-worker`.
 
-Args: `dest` (required), `url`, `units` (default `forge-web
-forge-portal`), `worker` (default `forge-worker`) and `tries` (default 40,
-half a second apart, for each wait). The method gets `FORGE_DEPLOY_SHA`
-and `FORGE_HOME` from `forge deploy` like the rest of its environment.
+The deploy row records the commit staged, and its output says `staged
+<sha>`. Args: `url`, `units` (default `forge-web forge-portal`), `worker`
+(default `forge-worker`) and `tries` (default 40, half a second apart,
+for each wait). The method gets `FORGE_DEPLOY_SHA` and `FORGE_HOME` from
+`forge deploy` like the rest of its environment.
 
 **How a deploy survives its own worker restart.** An on-landing deploy is
 not a separate process: the worker that landed the task calls
@@ -297,17 +320,19 @@ new binary. Nothing here signals the worker twice (a second SIGTERM
 aborts running attempts), and a deploy that rolls back restarts it at
 most once, from the rollback's own passing run.
 
-**Rollback.** A build or check that fails restores the binaries in
-`previous/` over the new ones (copy then rename, so a running binary is
-never written to), restarts web and portal onto them, leaves the worker
-alone and exits non-zero. The generic rollback below then redeploys the
-last passing commit through the same method, and the project gets its
-question. A first-ever deploy has no `previous/` to restore and no passing
-commit to roll back to; the record says so.
+**Rollback.** A build, doctor or check that fails puts `current`,
+`previous` and `staged` back as the method found them, removes the
+release directory this run created (never one that was live), restarts
+web and portal onto the old release when there was one, leaves the
+worker alone and exits non-zero. Nothing is ever written over a binary a
+process is executing. The generic rollback below then redeploys the last
+passing commit through the same method (its release is still on disk, so
+without a rebuild), and the project gets its question. A first-ever
+deploy has no passing commit to roll back to; the record says so.
 
 The whole method has to finish inside the repository's
 `check_timeout_secs`, a cold `cargo build` included; the build cache in
-`dest/target` is what makes a warm one fit.
+`FORGE_HOME/bin/target` is what makes a warm one fit.
 
 ## Rollback and the human rung
 

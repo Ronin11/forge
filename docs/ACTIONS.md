@@ -364,13 +364,15 @@ both over ssh unless the host is `local`; see docs/DEPLOY.md),
 systemd unit on the host with `systemctl --user restart <unit>` and
 waiting, bounded, for `systemctl --user is-active <unit>` to report
 active, before the check; see docs/DEPLOY.md), `deploy-self` (Forge on
-this machine: builds the landed tree with `cargo build --release
---workspace` into the registered checkout's target directory, keeping the
-previous binaries in `target/release/previous`, restarts `forge-web` and
-`forge-portal`, runs the check, by default a token-authenticated GET of
-the web client's `/tasks` expecting 200, and last asks `forge-worker` to
-restart with `--no-block` so it drains first; a failed build or check
-restores the previous binaries and leaves the worker alone; see
+this machine: builds the landed commit, fetched from origin rather than
+the registered checkout, with `cargo build --release --workspace` into
+`FORGE_HOME/bin/releases/<sha>/`, runs that release's own doctor against
+a scratch home, writes `FORGE_HOME/bin/staged`, flips `current` to it,
+restarts `forge-web` and `forge-portal`, runs the check, by default a
+token-authenticated GET of the web client's `/tasks` expecting 200, and
+last asks `forge-worker` to restart with `--no-block` so it drains first;
+a failed build, doctor or check puts the pointers back and leaves the
+worker alone; see
 docs/DEPLOY.md, "Deploying Forge itself"), and `deploy-static`
 (rsyncs a built directory to a target's host and dest, then the check:
 the target's own check command if it declared one, else this method's
