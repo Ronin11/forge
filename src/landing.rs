@@ -659,8 +659,15 @@ async fn deploy_on_landing(f: &Forge, t: &Task, sha: &str) {
         .into_iter()
         .filter(|d| d.on_landing && d.repo == t.repo)
     {
-        let _ =
-            crate::deploy::run(f, &project, &target.name, Some(sha.to_string()), Some(t.id)).await;
+        let _ = crate::deploy::run(
+            f,
+            &project,
+            &target.name,
+            Some(sha.to_string()),
+            Some(t.id),
+            false,
+        )
+        .await;
     }
 }
 

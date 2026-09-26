@@ -21,9 +21,14 @@ pub struct DeployArgs {
     project: Option<String>,
     /// The target to deploy (omit only with `log`)
     name: Option<String>,
-    /// The commit to deploy (default: the project repository's current HEAD)
+    /// The commit to deploy (default: the tip of the repository's base
+    /// branch; for a deploy-self target, origin's tip)
     #[arg(long)]
     sha: Option<String>,
+    /// For a deploy-self target: deploy a commit older than the live
+    /// release anyway
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Subcommand)]
@@ -88,13 +93,14 @@ async fn deploy_run(
     project: Option<String>,
     name: Option<String>,
     sha: Option<String>,
+    force: bool,
 ) -> Result<()> {
     let (project, name) = match (project, name) {
         (Some(p), Some(n)) => (p, n),
-        _ => bail!("usage: forge deploy <project> <name> [--sha <commit>]"),
+        _ => bail!("usage: forge deploy <project> <name> [--sha <commit>] [--force]"),
     };
     let f = Forge::open(false, false)?;
-    if !crate::deploy::run(&f, &project, &name, sha, None).await? {
+    if !crate::deploy::run(&f, &project, &name, sha, None, force).await? {
         std::process::exit(1);
     }
     Ok(())
@@ -398,7 +404,7 @@ async fn dispatch_deploy(cmd: Cmd) -> Result<()> {
                 name,
                 json,
             }) => deploy_log(project, name, json),
-            None => deploy_run(a.project, a.name, a.sha).await,
+            None => deploy_run(a.project, a.name, a.sha, a.force).await,
         },
         _ => unreachable!("command routed to the wrong family"),
     }

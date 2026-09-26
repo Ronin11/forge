@@ -1,15 +1,15 @@
 name = "deploy-self"
 kind = "operation"
-description = "deploy Forge itself on this machine: under a lock, keeps the registered checkout's current release binaries in target/release/previous, builds the landed tree with `cargo build --release --workspace` into that checkout's target directory (arg dest, so the build cache is used and the symlinks under ~/.local/bin keep pointing at it), restarts the web and portal units (arg units, default 'forge-web forge-portal') and waits for them to be active, runs the target's check with bounded retries (default: curl the web client's /tasks, arg url, with the token from FORGE_HOME/web.token, expecting 200), and only then asks the worker unit (arg worker, default forge-worker) to restart with `systemctl --user restart --no-block`, last, so the worker drains its running attempts, this landing included, and comes back on the new binary. A failed build or check restores the previous binaries, restarts the units on them, leaves the worker alone and exits non-zero. Optional arg tries (default 40) bounds each wait, half a second apart. Reads its args and the check command from the environment, injected there by `forge deploy` from the target's own record, and the commit as FORGE_DEPLOY_SHA (see docs/DEPLOY.md, 'Deploying Forge itself')."
+description = "deploy Forge itself on this machine through the release layout (docs/OPS.md, 'The running binary'): under a lock, builds the landed tree (archived by `forge deploy` from origin, never the registered checkout) with `cargo build --release --workspace` into the build cache FORGE_HOME/bin/target, copies its binaries into FORGE_HOME/bin/releases/<sha>/ (skipped when that release already exists), runs that release's own `forge doctor --json` against a scratch FORGE_HOME and requires its schema check to pass, then writes FORGE_HOME/bin/staged -> releases/<sha>. Until the worker starts a successor on staged itself, it then flips FORGE_HOME/bin/current to the release (previous keeps the old one), restarts the web and portal units (arg units, default 'forge-web forge-portal') and waits for them to be active, runs the target's check with bounded retries (default: curl the web client's /tasks, arg url, with the token from FORGE_HOME/web.token, expecting 200), and only then asks the worker unit (arg worker, default forge-worker) to restart with `systemctl --user restart --no-block`, last. A failed build, doctor or check puts current, previous and staged back, removes a release this run created, restarts the units on the old release, leaves the worker alone and exits non-zero. Optional arg tries (default 40) bounds each wait, half a second apart. Reads its args and the check command from the environment, injected there by `forge deploy` from the target's own record, and the commit as FORGE_DEPLOY_SHA (see docs/DEPLOY.md, 'Deploying Forge itself')."
 run = ["bash", "-c", '''
 set -euo pipefail
-dest="${FORGE_ARG_DEST:-}"
-if [ -z "$dest" ]; then
-  echo "deploy-self: no dest arg (the registered checkout to build into)" >&2
+sha="${FORGE_DEPLOY_SHA:-}"
+if [ -z "$sha" ]; then
+  echo "deploy-self: no FORGE_DEPLOY_SHA (the landed commit to build)" >&2
   exit 1
 fi
-if [ ! -f "$dest/Cargo.toml" ]; then
-  echo "deploy-self: $dest is not a cargo checkout" >&2
+if [ ! -f Cargo.toml ]; then
+  echo "deploy-self: the tree of ${sha:0:8} is not a cargo workspace" >&2
   exit 1
 fi
 units="${FORGE_ARG_UNITS:-forge-web forge-portal}"
@@ -28,50 +28,51 @@ fi
 # An operation's environment is cleared; `systemctl --user` needs this to
 # find the user manager.
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-bins="forge forge-web forge-portal forge-repomap forge-tui"
-target="$dest/target"
-rel="$target/release"
-prev="$rel/previous"
-mkdir -p "$rel"
+required="forge forge-web forge-portal forge-repomap forge-tui"
+bins="$required forge-test"
+root="$home/bin"
+target="$root/target"
+release="$root/releases/$sha"
+mkdir -p "$root/releases"
 
 # One self-deploy at a time: two landings finishing together must not
-# build into, or restore over, the same binaries.
-exec 9>"$target/.deploy-self.lock"
+# build into the same cache or flip the same pointers.
+exec 9>"$root/.deploy-self.lock"
 if ! flock -w 600 9; then
-  echo "deploy-self: another self-deploy held $target/.deploy-self.lock for ten minutes" >&2
+  echo "deploy-self: another self-deploy held $root/.deploy-self.lock for ten minutes" >&2
   exit 1
 fi
 
-# Keep what runs now beside what is about to replace it.
-rm -rf "$prev.new"
-mkdir -p "$prev.new"
-have_prev=0
-for b in $bins; do
-  if [ -f "$rel/$b" ]; then
-    cp -p "$rel/$b" "$prev.new/$b"
-    have_prev=1
+# The pointers as they are, to put back on failure.
+was_current="$(readlink "$root/current" 2>/dev/null || true)"
+was_previous="$(readlink "$root/previous" 2>/dev/null || true)"
+was_staged="$(readlink "$root/staged" 2>/dev/null || true)"
+point() { # <name> <link target or empty>
+  if [ -z "$2" ]; then
+    rm -f "$root/$1"
+    return
   fi
-done
-rm -rf "$prev"
-mv "$prev.new" "$prev"
-
+  ln -sfn "$2" "$root/.$1.new"
+  mv -T "$root/.$1.new" "$root/$1"
+}
+created=0
+doctor_home=""
 restore() {
-  if [ "$have_prev" != 1 ]; then
-    echo "deploy-self: no previous build to restore" >&2
-    return 0
+  echo "deploy-self: putting current back to ${was_current:-nothing}" >&2
+  point current "$was_current"
+  point previous "$was_previous"
+  point staged "$was_staged"
+  if [ "$created" = 1 ] && [ "releases/$sha" != "$was_current" ]; then
+    rm -rf "$release"
   fi
-  echo "deploy-self: restoring the previous build from $prev" >&2
-  for b in $bins; do
-    if [ -f "$prev/$b" ]; then
-      cp -p "$prev/$b" "$rel/$b.restore"
-      mv -f "$rel/$b.restore" "$rel/$b"
-    fi
-  done
-  systemctl --user restart $units || true
+  if [ -n "$was_current" ]; then
+    systemctl --user restart $units || true
+  fi
 }
 armed=1
 on_exit() {
   rc=$?
+  if [ -n "$doctor_home" ]; then rm -rf "$doctor_home"; fi
   if [ "$rc" -ne 0 ] && [ "$armed" = 1 ]; then
     restore || true
   fi
@@ -79,16 +80,60 @@ on_exit() {
 }
 trap on_exit EXIT
 
-# The archive has no .git; build.rs takes the commit from here.
-export FORGE_BUILD_SHA="${FORGE_DEPLOY_SHA:0:7}"
-CARGO_TARGET_DIR="$target" cargo build --release --workspace
-for b in $bins; do
-  if [ ! -x "$rel/$b" ]; then
-    echo "deploy-self: the build produced no $rel/$b" >&2
-    exit 1
-  fi
-done
-echo "built ${FORGE_DEPLOY_SHA:0:8} into $target"
+if [ -x "$release/forge" ]; then
+  echo "release ${sha:0:8} is already built at $release"
+else
+  # The archive has no .git; build.rs takes the commit from here.
+  export FORGE_BUILD_SHA="${sha:0:7}"
+  CARGO_TARGET_DIR="$target" cargo build --release --workspace
+  for b in $required; do
+    if [ ! -x "$target/release/$b" ]; then
+      echo "deploy-self: the build produced no $target/release/$b" >&2
+      exit 1
+    fi
+  done
+  # A release is never overwritten and never half-written: copy into a
+  # temporary directory, then rename it into place.
+  tmp="$root/releases/.$sha.tmp"
+  rm -rf "$tmp"
+  mkdir -p "$tmp"
+  for b in $bins; do
+    if [ -x "$target/release/$b" ]; then cp -p "$target/release/$b" "$tmp/$b"; fi
+  done
+  mv -T "$tmp" "$release"
+  created=1
+  echo "built ${sha:0:8} into $release"
+fi
+
+# The new binary's own doctor, against a scratch home: its migration
+# ladder runs on an empty store, never on the live one. Doctor exits
+# non-zero for any FAIL a bare home has (no agent login, say); what must
+# pass is the schema check.
+doctor_home="$(mktemp -d "$root/.doctor.XXXXXX")"
+doctor_out="$(FORGE_HOME="$doctor_home" "$release/forge" doctor --json 2>&1 || true)"
+if ! printf '%s' "$doctor_out" | tr -d ' \n' | grep -q '"name":"schema","status":"ok"'; then
+  echo "deploy-self: ${sha:0:8}'s own doctor did not pass its schema check against a scratch home:" >&2
+  printf '%s\n' "$doctor_out" | tail -c 2000 >&2
+  exit 1
+fi
+echo "doctor of ${sha:0:8}: schema ok against a scratch home"
+
+point staged "releases/$sha"
+echo "staged ${sha:0:8}: $root/staged -> releases/$sha"
+
+# Until the worker starts a successor on staged itself, go live the way
+# every deploy has: flip current, restart web and portal, check, then the
+# worker last.
+if [ "$was_current" != "releases/$sha" ]; then
+  if [ -n "$was_current" ]; then point previous "$was_current"; fi
+  point current "releases/$sha"
+fi
+echo "current -> releases/$sha (previous: $(readlink "$root/previous" 2>/dev/null || echo none))"
+live="$(readlink -f "$HOME/.local/bin/forge" 2>/dev/null || true)"
+case "$live" in
+  "$root"/releases/*|"") ;;
+  *) echo "deploy-self: warning: $HOME/.local/bin/forge is $live, not through $root/current; run forge init --relink once" >&2 ;;
+esac
 
 systemctl --user restart $units
 for u in $units; do

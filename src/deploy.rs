@@ -40,6 +40,75 @@ async fn deploy_at(
     r
 }
 
+/// The method that deploys Forge itself through the release layout.
+const SELF_METHOD: &str = "deploy-self";
+
+/// What a `deploy-self` target deploys, and where its tree comes from:
+/// origin's base branch fetched into the kernel repository (never the
+/// registered checkout's refs or working tree), and `sha` resolved there —
+/// origin's tip when none is given. A commit origin's base does not
+/// contain is refused, and so, without `force`, is one that is an
+/// ancestor of the live release (`FORGE_HOME/bin/current`): migrations do
+/// not run backwards.
+async fn origin_truth(
+    f: &Forge,
+    repo: &Path,
+    cfg: &config::Config,
+    sha: Option<String>,
+    force: bool,
+) -> Result<(PathBuf, String)> {
+    let remote = cfg.push_remote.as_deref().unwrap_or("origin");
+    let url = git::remote_url(repo, remote).await.with_context(|| {
+        format!(
+            "{SELF_METHOD} builds from origin, and {} has no remote {remote}",
+            repo.display()
+        )
+    })?;
+    let home = &f.paths.home;
+    let base = &cfg.base_branch;
+    let tip = git::stage(
+        home,
+        repo,
+        Path::new(&url),
+        &format!("refs/heads/{base}"),
+        &format!("refs/forge/origin/{base}"),
+    )
+    .await
+    .with_context(|| format!("fetching {base} from {url}"))?;
+    let kernel = git::kernel_repository(home, repo).await?;
+    let sha = match sha {
+        None => tip,
+        Some(s) => {
+            let full = git::rev_parse(&kernel, &format!("{s}^{{commit}}"))
+                .await
+                .with_context(|| format!("--sha {s}: not a commit on {url}"))?;
+            if !git::is_ancestor(&kernel, &full, &tip).await {
+                bail!(
+                    "--sha {s}: {} is not on {url}'s {base} (at {}); {SELF_METHOD} deploys only what origin holds",
+                    short(&full),
+                    short(&tip)
+                );
+            }
+            full
+        }
+    };
+    let live = crate::release::pointed_at(&crate::release::root(home), "current");
+    if let Some(live) = live
+        && !force
+        && let Ok(live_sha) = git::rev_parse(&kernel, &format!("{live}^{{commit}}")).await
+        && live_sha != sha
+        && git::is_ancestor(&kernel, &sha, &live_sha).await
+    {
+        bail!(
+            "{} is older than the live release {} (an ancestor of it); migrations do not run \
+             backwards, so it is refused. Pass --force to deploy it anyway.",
+            short(&sha),
+            short(&live_sha)
+        );
+    }
+    Ok((kernel, sha))
+}
+
 /// Mark the project's most recent terminal task for `repo` as blocked
 /// with `reason`, or file a new no-work task in that state when there is
 /// none: the human rung docs/DEPLOY.md ends every failed deploy at.
@@ -96,6 +165,9 @@ fn ask(f: &Forge, project: &str, repo: &str, reason: String) -> Result<()> {
 /// and triggered it (an on-landing target); `None` for an operator-invoked
 /// `forge deploy`.
 ///
+/// `force` lets a `deploy-self` target deploy a commit older than the
+/// live release (see [`origin_truth`]).
+///
 /// Returns whether the deploy's own check passed: `false` covers both
 /// failure branches (rolled back, or nothing to roll back to), which is
 /// all the exit code the CLI needs.
@@ -105,6 +177,7 @@ pub async fn run(
     name: &str,
     sha: Option<String>,
     task_id: Option<i64>,
+    force: bool,
 ) -> Result<bool> {
     let event_task = task_id.unwrap_or(0);
     let target = f
@@ -119,13 +192,21 @@ pub async fn run(
         .transpose()?;
     let repo = PathBuf::from(&target.repo);
     let cfg = config::load_working(&repo).await?;
-    let sha = match sha {
-        Some(s) => git::rev_parse(&repo, &s)
-            .await
-            .with_context(|| format!("--sha {s}"))?,
-        None => git::rev_parse(&repo, &format!("refs/heads/{}", cfg.base_branch))
-            .await
-            .with_context(|| format!("resolving {} on {}", cfg.base_branch, repo.display()))?,
+    // deploy-self builds origin's truth, never the registered checkout
+    // (docs/OPS.md, "The running binary"): the commit and the tree to
+    // archive both come from the kernel repository's copy of origin.
+    let (src, sha) = if target.method == SELF_METHOD {
+        origin_truth(f, &repo, &cfg, sha, force).await?
+    } else {
+        let sha = match sha {
+            Some(s) => git::rev_parse(&repo, &s)
+                .await
+                .with_context(|| format!("--sha {s}"))?,
+            None => git::rev_parse(&repo, &format!("refs/heads/{}", cfg.base_branch))
+                .await
+                .with_context(|| format!("resolving {} on {}", cfg.base_branch, repo.display()))?,
+        };
+        (repo.clone(), sha)
     };
     let timeout = Duration::from_secs(cfg.check_timeout_secs);
 
@@ -144,7 +225,7 @@ pub async fn run(
     let mut r = deploy_at(
         &action,
         &target,
-        &repo,
+        &src,
         &sha,
         &f.paths.home,
         timeout,
@@ -287,7 +368,7 @@ pub async fn run(
     let rb = deploy_at(
         &action,
         &target,
-        &repo,
+        &src,
         &previous.sha,
         &f.paths.home,
         timeout,
