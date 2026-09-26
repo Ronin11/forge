@@ -1,0 +1,26 @@
+name = "gc-nightly-run"
+kind = "operation"
+description = "runs `forge gc` with no age limit, so it removes only what gc already removes (a retained worktree that is clean and whose commits are published or superseded) and never pushes or removes unpublished work. Prints gc's own report to the job's output, so every worktree kept and the reason it was kept is visible there, and logs one file effect for FORGE_HOME/worktrees carrying gc's summary line. In a dry run it runs `forge gc --dry-run` and logs what it would remove."
+run = ["bash", "-c", '''
+set +e
+home="${FORGE_HOME:-$HOME/.local/share/forge}"
+target="$home/worktrees"
+
+if [ "${FORGE_DRY_RUN:-}" = "1" ]; then
+  out=$(forge gc --dry-run 2>&1)
+  echo "$out"
+  printf "file\t%s\twould remove published and clean retained worktrees (dry run): %s\n" \
+    "$target" "$(echo "$out" | tail -n1)" >> "$FORGE_EFFECT_LOG"
+  exit 0
+fi
+
+out=$(forge gc 2>&1)
+status=$?
+echo "$out"
+if [ "$status" -ne 0 ]; then
+  echo "gc-nightly-run: forge gc exited $status" >&2
+  exit 1
+fi
+printf "file\t%s\t%s\n" "$target" "$(echo "$out" | tail -n1)" >> "$FORGE_EFFECT_LOG"
+exit 0
+''']
