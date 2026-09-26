@@ -96,6 +96,21 @@ pub fn recognize(text: &str) -> Option<Need> {
         .or_else(|| lines.iter().find_map(|l| missing_binary(l)))
 }
 
+/// The hosts the egress proxy refused an attempt (its outputs' `refused`),
+/// one line each in the proxy's own words, so `recognize` types a refusal
+/// a tool swallowed the same as one it printed.
+pub fn refusal_text(refused: &[crate::egress::Refused]) -> String {
+    refused
+        .iter()
+        .map(|r| {
+            format!(
+                "\nforge egress: {}:{} is not allowed (refused {} time(s) this attempt)",
+                r.host, r.port, r.count
+            )
+        })
+        .collect()
+}
+
 fn need(kind: NeedKind, target: &str, line: &str) -> Need {
     Need {
         kind,
@@ -607,6 +622,20 @@ mod tests {
         assert!(within_ceiling(&outside, &[], &[]).is_err());
         let up = ceiling_need(NeedKind::Cache, home.join("../.ssh/id").to_str().unwrap());
         assert!(within_ceiling(&up, &[], &[]).is_err());
+    }
+
+    #[test]
+    fn a_refusal_no_output_mentions_is_still_a_host_need() {
+        let refused = [crate::egress::Refused {
+            host: "registry.npmjs.org".into(),
+            port: 443,
+            count: 3,
+        }];
+        let text = format!("checks failed: setup{}", refusal_text(&refused));
+        let n = recognize(&text).unwrap();
+        assert_eq!(n.kind, NeedKind::Host);
+        assert_eq!(n.target, "registry.npmjs.org");
+        assert!(refusal_text(&[]).is_empty());
     }
 
     #[test]

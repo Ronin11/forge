@@ -376,12 +376,7 @@ fn environment_text(a: &crate::store::Attempt, verdict: &verify::Verdict) -> Str
         text.push_str(&q.question);
     }
     let outputs: crate::audit::Outputs = serde_json::from_str(&a.outputs_json).unwrap_or_default();
-    for r in outputs.refused {
-        text.push_str(&format!(
-            "\nforge egress: {}:{} is not allowed (refused {} time(s) this attempt)",
-            r.host, r.port, r.count
-        ));
-    }
+    text.push_str(&crate::environment::refusal_text(&outputs.refused));
     text
 }
 
