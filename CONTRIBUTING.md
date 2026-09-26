@@ -99,3 +99,17 @@ reason), each ceiling being the function's length when the rule was added plus
 exceptions or raise ceilings. Delete an entry when its function shrinks to 120
 lines or fewer or is removed; stale entries fail the test, and an offender is
 reported with its length and ceiling.
+
+## Layers
+
+The kernel's top-level modules sit in layers, bottom up, and each imports only
+what is below it: **foundation** (git, egress, sandbox, executor, pricing,
+envelope, checks, config), **store**, **agent**, **kernel** (attempt, verify,
+operation, landing, engine, queue, worker, job, supervisor, environment,
+handoff, journal), **analysis** (audit, experiment, profile, render, stats),
+**view**, and **cli** (cli, init). `tests/layers.rs` derives each module's
+imports from its `crate::` references (including multi-line and nested `use`
+groups) and fails any edge that points up a layer or closes a cycle within one.
+The failure names the edge, both layers, and the file. Existing violations sit
+on the test's `ALLOWLIST` of (from, to, reason); it may only shrink. Do not add
+entries. Delete an entry when its edge is fixed; stale entries fail the test.
