@@ -703,8 +703,9 @@ pub fn seed_used(
 ) -> std::collections::HashMap<i64, i64> {
     let mut used = std::collections::HashMap::new();
     for a in prior {
-        let requeued =
-            a.state == AttemptState::AgentFailed && REQUEUE_REASONS.contains(&a.reason.as_str());
+        let requeued = a.state == AttemptState::AgentFailed
+            && (REQUEUE_REASONS.contains(&a.reason.as_str())
+                || a.reason.starts_with("worker environment error: "));
         if !requeued && !refunded.contains(&a.id) {
             *used.entry(a.step_seq).or_insert(0) += 1;
         }
@@ -732,6 +733,12 @@ mod tests {
             at(4, 2, AttemptState::Succeeded, ""),
             at(5, 1, AttemptState::AgentFailed, REQUEUE_ORPHAN),
             at(6, 3, AttemptState::AgentFailed, REQUEUE_ENV),
+            at(
+                7,
+                3,
+                AttemptState::AgentFailed,
+                "worker environment error: egress proxy socket /tmp/p0.sock is missing",
+            ),
         ];
         let used = seed_used(&prior, &std::collections::HashSet::from([3]));
         assert_eq!(used.get(&1), Some(&2));

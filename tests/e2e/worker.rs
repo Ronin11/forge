@@ -527,7 +527,7 @@ fn an_environment_fault_requeues_and_stops_the_worker() {
         "queued",
         "the worker must stop, not fail the rest"
     );
-    assert_eq!(e.attempts(1)[0].2, "worker environment error");
+    assert!(e.attempts(1)[0].2.starts_with("worker environment error"));
 }
 
 #[test]

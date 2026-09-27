@@ -892,6 +892,25 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn a_missing_proxy_socket_is_an_environment_fault_naming_the_socket() {
+        use crate::engine::{Classify, Fault};
+
+        let sb = test_sandbox("api.example.com");
+        let root = tempfile::tempdir().unwrap();
+        let worktree = root.path();
+        let socket = sb.proxies.socket_for(&sb.policy_for(worktree)).unwrap();
+        sb.check_socket(worktree).unwrap();
+        std::fs::remove_file(&socket).unwrap();
+        let Err(Fault::Env(error)) = sb.check_socket(worktree).env() else {
+            panic!("a missing proxy socket must be an environment fault");
+        };
+        assert_eq!(
+            error.to_string(),
+            format!("egress proxy socket {} is missing", socket.display())
+        );
+    }
+
     fn args_of(cmd: &Command) -> Vec<String> {
         cmd.get_args()
             .map(|a| a.to_string_lossy().into_owned())

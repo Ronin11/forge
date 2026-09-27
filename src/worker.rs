@@ -152,7 +152,8 @@ pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
             Ok(TaskState::Failed)
         }
         Err(Fault::Env(e)) => {
-            f.store.requeue(id, crate::store::REQUEUE_ENV)?;
+            f.store
+                .requeue(id, &format!("worker environment error: {e:#}"))?;
             Err(e.context(format!(
                 "worker cannot run task {id}; it is back in the queue"
             )))
