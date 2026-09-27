@@ -42,10 +42,11 @@ log() {
 
 state_file="$FORGE_PLUGIN_STATE/state"
 
-# Applies `$1` (active|idle|none) as the unit's live CPUWeight (and
-# CPUQuota, if that state's is set), then records it: this is the one
-# place a transition becomes real, both on the machine and in the state
-# file `forge doctor`'s presence row reads back.
+# Applies `$1` (active|idle|none) as the unit's live CPUWeight and
+# CPUQuota (the latter reset to unlimited when that state has none
+# configured, so an earlier state's quota never lingers), then records
+# it: this is the one place a transition becomes real, both on the
+# machine and in the state file `forge doctor`'s presence row reads back.
 apply() {
     case "$1" in
         active) weight=$ACTIVE_WEIGHT; quota=$ACTIVE_QUOTA ;;
@@ -58,9 +59,12 @@ apply() {
     systemctl --user set-property --runtime "$UNIT" "CPUWeight=$weight" ||
         log "systemctl set-property CPUWeight=$weight failed"
     if [ -n "$quota" ]; then
-        systemctl --user set-property --runtime "$UNIT" "CPUQuota=${quota}%" ||
-            log "systemctl set-property CPUQuota=${quota}% failed"
+        quota_prop="CPUQuota=${quota}%"
+    else
+        quota_prop="CPUQuota=infinity"
     fi
+    systemctl --user set-property --runtime "$UNIT" "$quota_prop" ||
+        log "systemctl set-property $quota_prop failed"
     tmp="$FORGE_PLUGIN_STATE/.state.tmp.$$"
     printf 'state=%s\nsince=%s\nweight=%s\n' "$1" "$(date +%s)" "$weight" >"$tmp"
     mv -f "$tmp" "$state_file"

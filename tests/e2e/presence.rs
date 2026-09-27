@@ -120,17 +120,17 @@ fn a_fake_source_commands_transitions_move_the_recorded_state_and_call_a_fake_sy
         std::fs::read_to_string(&calls_log)
     );
     let calls = std::fs::read_to_string(&calls_log).unwrap();
-    let lines: Vec<&str> = calls.lines().collect();
+    let weight_lines: Vec<&str> = calls.lines().filter(|l| l.contains("CPUWeight=")).collect();
     assert!(
-        lines[0].contains("set-property --runtime forge-worker CPUWeight=40"),
+        weight_lines[0].contains("set-property --runtime forge-worker CPUWeight=40"),
         "{calls}"
     );
     assert!(
-        lines[1].contains("set-property --runtime forge-worker CPUWeight=100"),
+        weight_lines[1].contains("set-property --runtime forge-worker CPUWeight=100"),
         "{calls}"
     );
     assert!(
-        lines[2].contains("set-property --runtime forge-worker CPUWeight=40"),
+        weight_lines[2].contains("set-property --runtime forge-worker CPUWeight=40"),
         "{calls}"
     );
 
@@ -200,4 +200,47 @@ fn doctor_reports_the_presence_row_once_a_state_is_written() {
     );
 
     worker.stop();
+}
+
+/// The two callbacks swayidle itself invokes (`apply-active`/`apply-idle`),
+/// run directly rather than through a worker: an `ACTIVE_QUOTA` with no
+/// `IDLE_QUOTA` must not linger once the transition to idle happens.
+#[test]
+fn apply_idle_clears_a_quota_that_only_the_active_state_configures() {
+    let plugin_dir = tempfile::tempdir().unwrap();
+    std::fs::write(plugin_dir.path().join("config"), "ACTIVE_QUOTA=200\n").unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let bin = tempfile::tempdir().unwrap();
+    write_exec(&bin.path().join("systemctl"), FAKE_SYSTEMCTL);
+    let path = format!(
+        "{}:{}",
+        bin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let fake_home = tempfile::tempdir().unwrap();
+    let calls_log = fake_home.path().join("systemctl-calls.log");
+
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/presence/presence.sh");
+    let run = |arg: &str| {
+        std::process::Command::new("sh")
+            .arg(&script)
+            .arg(arg)
+            .env("HOME", fake_home.path())
+            .env("PATH", &path)
+            .env("FORGE_PLUGIN_DIR", plugin_dir.path())
+            .env("FORGE_PLUGIN_STATE", state_dir.path())
+            .status()
+            .unwrap()
+    };
+
+    assert!(run("apply-active").success());
+    assert!(run("apply-idle").success());
+
+    let calls = std::fs::read_to_string(&calls_log).unwrap();
+    assert!(calls.contains("CPUQuota=200%"), "{calls}");
+    assert!(
+        calls.contains("CPUQuota=infinity"),
+        "expected apply-idle to reset the quota rather than leave the active one in place: {calls}"
+    );
 }
