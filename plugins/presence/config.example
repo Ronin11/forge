@@ -1,0 +1,38 @@
+# Copy to $FORGE_PLUGIN_DIR/config (KEY=value, one per line, '#' comments
+# and blank lines ignored). Nothing here is parsed as shell.
+
+# Where the idle/active signal comes from:
+#   omarchy   follow the omarchy shell's own idle service (Quickshell
+#             IdleMonitor, inhibitor-aware): no polling, no extra package.
+#   swayidle  run `swayidle -w`, driven by IDLE_AFTER below.
+#   command   run COMMAND and read its stdout, one of "idle" or "active"
+#             per line, on each transition; anything else can meet this
+#             contract, including another desktop's idle daemon behind a
+#             small wrapper or a screensaver hook.
+#   none      no source: the plugin sets CPUWeight once, to IDLE_WEIGHT,
+#             and leaves it there. `forge doctor` says so plainly.
+# Left unset, it picks the first of these it can: omarchy if
+# omarchy-shell is on PATH, else swayidle if swayidle is, else none.
+#SOURCE=omarchy
+
+# swayidle only: seconds of no input before the desktop counts as idle.
+IDLE_AFTER=180
+
+# command only: the program presence.sh runs and reads idle/active lines
+# from. Run through the shell, so it may include arguments.
+#COMMAND=/path/to/idle-watcher
+
+# The forge-worker unit (or whichever unit's cgroup Forge actually runs
+# in; only worth changing if you renamed the systemd unit).
+UNIT=forge-worker
+
+# CPUWeight applied on `active` (the operator is here) and `idle` (they
+# are away). A share only matters under contention: the default here,
+# systemd's own default weight, changes nothing on an otherwise idle box.
+ACTIVE_WEIGHT=40
+IDLE_WEIGHT=100
+
+# Optional hard ceilings, as CPUQuota percentages (e.g. 200 for two
+# cores' worth). Unset applies no quota at all, just the weight above.
+#ACTIVE_QUOTA=200
+#IDLE_QUOTA=

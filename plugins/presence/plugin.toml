@@ -1,0 +1,5 @@
+name = "presence"
+description = "moves the forge-worker unit's CPU share with whether the operator is at the desktop"
+run = ["./presence.sh"]
+capabilities = ["system"]
+restart = "on-failure"

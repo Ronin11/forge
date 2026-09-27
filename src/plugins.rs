@@ -24,6 +24,7 @@ pub enum Capability {
     Intake,
     Annotate,
     Message,
+    System,
 }
 
 impl Capability {
@@ -33,6 +34,7 @@ impl Capability {
             Capability::Intake => "intake",
             Capability::Annotate => "annotate",
             Capability::Message => "message",
+            Capability::System => "system",
         }
     }
 }

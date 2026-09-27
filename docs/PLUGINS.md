@@ -20,7 +20,7 @@ name = "notify"
 description = "posts a desktop notification when a task needs a human"
 run = ["./notify.sh"]                    # argv, resolved against the plugin dir
 build = ["cargo", "build", "--release"]  # optional; run once at install
-capabilities = ["events"]                # events | intake | annotate
+capabilities = ["events"]                # events | intake | annotate | message | system
 restart = "on-failure"                   # always | on-failure | never
 ```
 
@@ -105,6 +105,12 @@ such row as `delivered_at` (`null` when there is none), and `forge
 doctor` warns for every such question with no delivery recorded within
 ten minutes of blocking, naming the task and contact, so an unsent
 question is never mistaken for a sent one or the other way round.
+
+**system.** The plugin manages something about the machine Forge runs
+on, not through the CLI at all: the presence plugin moves the
+`forge-worker` unit's own CPU share. As with the other capabilities,
+this is a promise the operator reads, not a permission the kernel
+enforces.
 
 A plugin may declare more than one, and most useful ones do: watch for
 a blocked task, ask a person, file the answer with `forge answer`.
@@ -211,7 +217,7 @@ anything else.
 
 ## The plugins in this repository
 
-Five plugins ship here, each `forge plugin install`-able straight from a
+Six plugins ship here, each `forge plugin install`-able straight from a
 checkout, and each a different shape a plugin can take.
 
 **notify** (`events`) is the reference plugin, and the one to copy. It is
@@ -296,6 +302,41 @@ running tasks, queued and blocked counts, and the open question count.
 Its configuration is `plugins/statusline/config` (see `config.example`),
 which can set the forge-web URL to include in the document. Install with
 `forge plugin install plugins/statusline`.
+
+**presence** (`system`) moves the `forge-worker` unit's own CPU share
+with whether the operator is at the desktop (2026-09-26; replaces the
+old `deploy/forge-idle` script and user unit, one desktop's worth of
+integration promoted to a plugin any desktop can supply a source for).
+Everything Forge runs, sandboxed builds included, lives in that unit's
+cgroup, so one cgroup share governs all of it. The operator wants the
+whole box when away and an untouched desktop when present, and
+"present" is not "under load": a video is not idle, a background build
+the operator started is not Forge's business — so the share follows
+the desktop's own idle state rather than a fixed weight, applied live
+with `systemctl --user set-property --runtime` (no restart, no drain).
+A share only matters under contention, so neither state slows Forge on
+an otherwise idle box; a hard ceiling is `ACTIVE_QUOTA`/`IDLE_QUOTA`, a
+`CPUQuota` percentage, on top of the weight. Its configuration is
+`plugins/presence/config` (see `config.example`): `SOURCE` — `omarchy`
+follows the shell's own idle service exactly as `deploy/forge-idle`
+did (Quickshell IdleMonitor, inhibitor-aware, so a playing video is
+not idle; the state at start comes from `omarchy-shell idle status`,
+read once, so a restart never leaves the wrong weight in place until
+the next transition happens to come along), no polling, no extra
+package; `swayidle` runs `swayidle -w`, timed by `IDLE_AFTER`; `command`
+runs a configured `COMMAND` and reads `idle`/`active` lines from its
+stdout, the contract another desktop's idle daemon or a screensaver
+hook can meet behind a small wrapper; `none` sets `CPUWeight` once, to
+`IDLE_WEIGHT`, and leaves it there — left unset, `SOURCE` picks the
+first of `omarchy`/`swayidle`/`none` it can, by what is on `PATH`. On
+every transition it writes the state and when it started into
+`$FORGE_PLUGIN_STATE`, and logs the transition; `forge doctor`'s
+`presence` row reads that file back (`active since 19:02, weight 40`,
+or `no presence source: Forge always runs at weight 100` for `SOURCE
+= none`), so it is visible why Forge is running slow or fast. Install
+with `forge plugin install plugins/presence`; an operator upgrading
+from the old script removes its unit first (`systemctl --user disable
+--now forge-idle`) since the plugin now owns the same `CPUWeight`.
 
 **twilio** (`intake`, `message`) searches for, buys and releases Forge's
 own Twilio phone numbers, and is an SMS channel over them, the way the
