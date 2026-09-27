@@ -99,6 +99,23 @@ fn envelope(action: &crate::workflows::ActionDef, answers: &Value) -> Result<Val
     Ok(env)
 }
 
+/// Why a judgment's envelope is unusable, if it is: its outcome must be one
+/// of the action's.
+pub fn check_judgment(action: &crate::workflows::ActionDef, envelope: &Value) -> Option<String> {
+    let outcome = envelope["outcome"].as_str().unwrap_or_default();
+    (!action.outcomes.iter().any(|o| o == outcome))
+        .then(|| format!("the judgment's outcome {outcome:?} is not one of the action's outcomes"))
+}
+
+/// The probabilities of a judgment's envelope as JSON; empty for a step
+/// no jev provider judged.
+pub fn probabilities(runner: super::Runner, envelope: &Value) -> String {
+    match runner {
+        super::Runner::Jev => envelope["probabilities"].to_string(),
+        _ => String::new(),
+    }
+}
+
 /// A job's directive step judged by Jev (docs/EXECUTION.md, "The judgment
 /// tier"): one POST, no tools, typed answers back. `run` has already
 /// refused anything but a directive whose action declares outcomes.

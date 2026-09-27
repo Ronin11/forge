@@ -1135,11 +1135,7 @@ pub(crate) fn parse_action(path: &Path, text: &str, hash: String) -> Result<Acti
             .with_context(|| format!("{}: `schema` is not a valid JSON Schema", path.display()))?;
     }
     library::check_prompt_file(path, raw.prompt.is_some(), raw.prompt_file.as_deref())?;
-    let judgment::Parsed {
-        outcomes,
-        outcome_criteria,
-        confidence_below,
-    } = judgment::parse(
+    let judged = judgment::parse(
         path,
         raw.kind == Kind::Operation,
         &raw.outcomes,
@@ -1217,10 +1213,10 @@ pub(crate) fn parse_action(path: &Path, text: &str, hash: String) -> Result<Acti
         prompt_file: raw.prompt_file,
         includes: Vec::new(),
         schema: raw.schema,
-        outcomes,
-        outcome_criteria,
+        outcomes: judged.outcomes,
+        outcome_criteria: judged.outcome_criteria,
         questions: raw.questions,
-        confidence_below,
+        confidence_below: judged.confidence_below,
         file_into_initiative: raw.file_into_initiative,
         overlay: raw.overlay,
         verifies: raw.verifies,

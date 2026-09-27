@@ -328,7 +328,6 @@ async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOutcome> {
     let max_turns = step.max_turns.unwrap_or(1);
     let timeout = Duration::from_secs(step.timeout_secs.unwrap_or(120) as u64);
     let system = directive_instructions(action);
-    let state = directive_inputs(input_text, step_outputs, input_bytes);
     let prompt = directive_prompt(action, input_text, step_outputs, input_bytes);
     // Like an attempt's own log (`attempt::run_attempt`): the event stream
     // and stderr on disk under `FORGE_HOME/logs`, named so `forge job show`
@@ -360,7 +359,7 @@ async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOutcome> {
             no_tools: true,
             judgment: Some(crate::agent::Judgment {
                 action,
-                state: &state,
+                state: &directive_inputs(input_text, step_outputs, input_bytes),
             }),
         },
     )
@@ -421,17 +420,16 @@ async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOutcome> {
     };
     // A judgment is Jev's typed answer, not a model's attempt at the schema:
     // it is held to the action's outcomes instead.
-    if provider.runner == crate::agent::Runner::Jev {
-        if !action.outcomes.contains(&outcome_of(&instance)) {
-            return Ok(fail(format!(
-                "the judgment's outcome {:?} is not one of the action's outcomes",
-                outcome_of(&instance)
-            )));
-        }
-    } else if let Err(e) = jsonschema::validate(&schema_value, &instance) {
-        return Ok(fail(format!(
-            "the structured output does not match the schema: {e}"
-        )));
+    let judged = provider.runner == crate::agent::Runner::Jev;
+    let invalid = if judged {
+        crate::agent::check_judgment(action, &instance)
+    } else {
+        jsonschema::validate(&schema_value, &instance)
+            .err()
+            .map(|e| format!("the structured output does not match the schema: {e}"))
+    };
+    if let Some(why) = invalid {
+        return Ok(fail(why));
     }
 
     Ok(DirectiveOutcome {
@@ -447,11 +445,7 @@ async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOutcome> {
         output_text: structured.clone(),
         output_ref,
         outcome: outcome_of(&instance),
-        probabilities: if provider.runner == crate::agent::Runner::Jev {
-            instance["probabilities"].to_string()
-        } else {
-            String::new()
-        },
+        probabilities: crate::agent::probabilities(provider.runner, &instance),
     })
 }
 
