@@ -20,6 +20,7 @@ mod jev;
 mod jobs;
 mod knownfixes;
 mod landing;
+mod landing_assess;
 mod listing;
 mod messages;
 mod ops;

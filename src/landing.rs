@@ -662,7 +662,7 @@ pub async fn integrate(
             },
         );
         deploy_on_landing(f, t, &sha).await;
-        crate::assess::run_on_landing(f, t, &sha).await;
+        crate::assess::run_on_landing(f, t, &base_sha, &sha).await;
         return Ok(Integrate::Landed(sha));
     }
     unreachable!("the landing loop returns")

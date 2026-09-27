@@ -54,8 +54,8 @@ fn prompt(t: &Task, diff: &str) -> String {
 /// store the row. Never returns an error to the caller: every failure is
 /// reported as a note and swallowed, exactly as a deploy target's own
 /// failure never touches the task (see `landing::deploy_on_landing`).
-pub async fn run_on_landing(f: &Forge, t: &mut Task, landed_sha: &str) {
-    match try_run(f, t, landed_sha).await {
+pub async fn run_on_landing(f: &Forge, t: &mut Task, base_sha: &str, landed_sha: &str) {
+    match try_run(f, t, base_sha, landed_sha).await {
         Ok(Some(r)) => {
             f.report.emit(
                 t.id,
@@ -105,7 +105,12 @@ fn check_severity(findings: &[Finding]) -> Result<()> {
 
 /// `Ok(None)` when the task's workflow does not opt in; `Ok(Some(_))` with
 /// the row it stored otherwise.
-async fn try_run(f: &Forge, t: &mut Task, landed_sha: &str) -> Result<Option<Ruling>> {
+async fn try_run(
+    f: &Forge,
+    t: &mut Task,
+    base_sha: &str,
+    landed_sha: &str,
+) -> Result<Option<Ruling>> {
     let Some(wf) = workflows::get(&f.paths.home, &t.workflow)? else {
         return Ok(None);
     };
@@ -117,7 +122,8 @@ async fn try_run(f: &Forge, t: &mut Task, landed_sha: &str) -> Result<Option<Rul
         .get("assess")
         .context("no built-in `assess` action")?;
     let wt = Path::new(&t.worktree);
-    let diff = git::diff_text(wt, &t.base_sha, landed_sha).await?;
+    let kernel = git::kernel_repository(&f.paths.home, Path::new(&t.repo)).await?;
+    let diff = git::diff_text(&kernel, base_sha, landed_sha).await?;
     let prompt_text = prompt(t, &diff);
     let (provider, provider_source) = f.effective_provider_routed(t, "assess")?;
     let model = action.model.clone().unwrap_or_else(|| t.model.clone());
