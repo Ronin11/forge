@@ -49,11 +49,70 @@ pub fn request(model: &str, action: &crate::workflows::ActionDef, state: &str) -
     for q in &action.questions {
         let mut v = serde_json::json!({"type": q.kind, "instructions": q.instructions});
         if let Some(c) = &q.criteria {
-            v["criteria"] = c.clone();
+            v["criteria"] = match c {
+                // Jev takes a score's criteria as its level names in order.
+                Value::Object(levels) if q.kind == "score" => {
+                    levels.keys().cloned().collect::<Vec<_>>().into()
+                }
+                _ => c.clone(),
+            };
         }
         questions.insert(q.name.clone(), v);
     }
     serde_json::json!({"model": model, "input": {"state": state, "questions": questions}})
+}
+
+/// One of Jev's typed answers read into a label, a confidence and the
+/// probability of each label.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Answer {
+    pub label: String,
+    pub confidence: f64,
+    /// Label to probability, as a JSON object.
+    pub probabilities: Value,
+}
+
+/// Reads one answer of any of Jev's three shapes: a `choice` names its
+/// label; a `noul` is a bare `noul` in [0, 1] whose label is `true` at 0.5
+/// or above, with confidence `|noul - 0.5| * 2`; a `score` is the most
+/// probable level of its `probabilities`, named through its `legend`. A
+/// missing `confidence` is the label's probability.
+pub fn read_answer(a: &Value) -> Option<Answer> {
+    if let Some(n) = a["noul"].as_f64() {
+        return Some(Answer {
+            label: (n >= 0.5).to_string(),
+            confidence: (n - 0.5).abs() * 2.0,
+            probabilities: serde_json::json!({"true": n, "false": 1.0 - n}),
+        });
+    }
+    let legend = |k: &str| {
+        a["legend"][k]
+            .as_str()
+            .map_or_else(|| k.to_string(), str::to_string)
+    };
+    let probabilities: serde_json::Map<String, Value> = a["probabilities"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(k, v)| (legend(k), v.clone()))
+        .collect();
+    let top = probabilities
+        .iter()
+        .filter_map(|(k, v)| Some((k.clone(), v.as_f64()?)))
+        .max_by(|x, y| x.1.total_cmp(&y.1));
+    let label = match &a["choice"] {
+        Value::String(s) => s.clone(),
+        _ => top.as_ref()?.0.clone(),
+    };
+    let confidence = a["confidence"]
+        .as_f64()
+        .or_else(|| probabilities.get(&label).and_then(Value::as_f64))
+        .unwrap_or(0.0);
+    Some(Answer {
+        label,
+        confidence,
+        probabilities: Value::Object(probabilities),
+    })
 }
 
 /// The outcome a judgment of this confidence routes on: the lowest
@@ -70,18 +129,15 @@ pub fn confidence_floor(floors: &[(f64, String)], confidence: f64, choice: &str)
 /// (floored), `confidence`, the outcome question's `probabilities`, and the
 /// other questions' answers under `answers`.
 fn envelope(action: &crate::workflows::ActionDef, answers: &Value) -> Result<Value> {
-    let main = &answers[crate::workflows::OUTCOME_QUESTION];
-    let choice = main["choice"]
-        .as_str()
-        .context("jev returned no choice for the outcomes question")?;
-    let confidence = main["confidence"]
-        .as_f64()
-        .context("jev returned no confidence for the outcomes question")?;
+    let main = read_answer(&answers[crate::workflows::OUTCOME_QUESTION])
+        .context("jev returned no answer for the outcomes question")?;
+    let choice = main.label.as_str();
+    let confidence = main.confidence;
     let outcome = confidence_floor(&action.confidence_below, confidence, choice);
     let mut env = serde_json::json!({
         "outcome": outcome,
         "confidence": confidence,
-        "probabilities": main["probabilities"],
+        "probabilities": main.probabilities,
     });
     if outcome != choice {
         env["choice"] = choice.into();
@@ -340,5 +396,49 @@ mod tests {
         assert_eq!(env["probabilities"]["ignore"], 0.3);
         assert_eq!(env["answers"]["urgency"]["score"], 3);
         assert!(envelope(&a, &serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn each_of_jevs_three_answer_shapes_is_read() {
+        let choice = serde_json::json!({"type": "choice", "choice": "reply",
+            "probabilities": {"reply": 0.9, "ignore": 0.1}, "confidence": 1});
+        let a = read_answer(&choice).unwrap();
+        assert_eq!(a.label, "reply");
+        assert_eq!(a.confidence, 1.0);
+        assert_eq!(a.probabilities["ignore"], 0.1);
+
+        let a = read_answer(&serde_json::json!({"type": "noul", "noul": 0.22})).unwrap();
+        assert_eq!(a.label, "false");
+        assert!((a.confidence - 0.56).abs() < 1e-9, "{}", a.confidence);
+        assert_eq!(a.probabilities["true"], 0.22);
+        assert!((a.probabilities["false"].as_f64().unwrap() - 0.78).abs() < 1e-9);
+        let a = read_answer(&serde_json::json!({"type": "noul", "noul": 0.5})).unwrap();
+        assert_eq!((a.label.as_str(), a.confidence), ("true", 0.0));
+
+        let score = serde_json::json!({"type": "score", "score": 1.21,
+            "legend": {"0": "small", "1": "medium", "2": "large"},
+            "probabilities": {"0": 0, "1": 0.78, "2": 0.22}, "confidence": 0.67});
+        let a = read_answer(&score).unwrap();
+        assert_eq!(a.label, "medium");
+        assert_eq!(a.confidence, 0.67);
+        assert_eq!(a.probabilities["large"], 0.22);
+
+        assert!(read_answer(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn a_score_questions_criteria_go_as_its_level_names() {
+        let mut a = action();
+        a.questions.push(Question {
+            name: "size".into(),
+            kind: "score".into(),
+            instructions: "How big?".into(),
+            criteria: Some(serde_json::json!({"a-small": "few lines", "b-large": "many"})),
+        });
+        let req = request("typesafe/jev", &a, "s");
+        assert_eq!(
+            req["input"]["questions"]["size"]["criteria"],
+            serde_json::json!(["a-small", "b-large"])
+        );
     }
 }

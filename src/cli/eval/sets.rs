@@ -84,28 +84,65 @@ fn message_of(t: &crate::store::Task, kind: &str) -> String {
     }
 }
 
+/// The kind a recorded concierge decision names.
+fn kind_of(raw: &str) -> Option<String> {
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|v| v["kind"].as_str().map(str::to_string))
+}
+
+/// Every message the concierge decided, labeled by the kind it recorded,
+/// oldest first: each of its own runs (whose plan is the decision), each
+/// `decisions` row it answered, and each task filed through it, the latter
+/// two only where no run already stands for them.
 fn concierge(f: &Forge) -> Result<Vec<Item>> {
-    let mut items = Vec::new();
-    for t in f.store.concierge_tasks()? {
-        let raw = t.concierge_json.as_deref().unwrap_or_default();
-        let Some(kind) = serde_json::from_str::<Value>(raw)
-            .ok()
-            .and_then(|v| v["kind"].as_str().map(str::to_string))
-        else {
+    let mut items: Vec<(i64, Item)> = Vec::new();
+    let mut runs = std::collections::HashSet::new();
+    let mut plans = std::collections::HashSet::new();
+    for t in f.store.concierge_runs()? {
+        let Some(kind) = kind_of(&t.plan) else {
             continue;
         };
-        items.push(Item {
-            state: message_of(&t, &kind),
-            label: kind,
-        });
+        runs.insert(t.id);
+        plans.insert(t.plan.clone());
+        items.push((
+            t.id,
+            Item {
+                state: t.task.clone(),
+                label: kind,
+            },
+        ));
     }
     for d in f.store.decisions_answered_by("concierge")? {
-        items.push(Item {
-            state: d.question,
-            label: "question".into(),
-        });
+        if d.task_id.is_some_and(|id| runs.contains(&id)) {
+            continue;
+        }
+        items.push((
+            d.task_id.unwrap_or(i64::MAX),
+            Item {
+                state: d.question,
+                label: "question".into(),
+            },
+        ));
     }
-    Ok(items)
+    for t in f.store.concierge_tasks()? {
+        let raw = t.concierge_json.as_deref().unwrap_or_default();
+        if plans.contains(raw) {
+            continue;
+        }
+        let Some(kind) = kind_of(raw) else {
+            continue;
+        };
+        items.push((
+            t.id,
+            Item {
+                state: message_of(&t, &kind),
+                label: kind,
+            },
+        ));
+    }
+    items.sort_by_key(|(id, _)| *id);
+    Ok(items.into_iter().map(|(_, item)| item).collect())
 }
 
 /// Each review demotion, `yes` when the record shows it filed as a task
@@ -225,6 +262,91 @@ mod tests {
         Attempt, AttemptState, FinishAttempt, InsertDecisionBy, Store, Task, TaskState,
     };
 
+    fn forge_on(dir: &tempfile::TempDir, store: Store) -> Forge {
+        Forge::open_with(
+            Paths {
+                home: dir.path().to_path_buf(),
+                worktrees: dir.path().join("worktrees"),
+                logs: dir.path().join("logs"),
+            },
+            store,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_concierge_set_is_every_run_decision_and_filed_task_labeled_by_its_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("forge.db")).unwrap();
+        // As `concierge::ask` does: insert, then record the decision.
+        let file = |t: Task| {
+            let id = store.insert_task(&t).unwrap();
+            store.update_task(&Task { id, ..t }).unwrap();
+            id
+        };
+        let run = |message: &str, plan: &str| {
+            file(Task {
+                repo: "r".into(),
+                task: message.into(),
+                workflow: "concierge".into(),
+                plan: plan.into(),
+                state: TaskState::Succeeded,
+                ..Default::default()
+            })
+        };
+        let request = r#"{"kind":"request","task":"change the quote text"}"#;
+        run("make the quote say usually same day", request);
+        file(Task {
+            repo: "r".into(),
+            task: "change the quote text".into(),
+            title: Some("make the quote say usually same day".into()),
+            concierge_json: Some(request.into()),
+            ..Default::default()
+        });
+        let asked = run(
+            "did the reminder go out?",
+            r#"{"kind":"question","answer":"yes"}"#,
+        );
+        let answer = |task_id: i64, question: &str| {
+            store
+                .insert_decision_by(InsertDecisionBy {
+                    task_id,
+                    repo: "r",
+                    question,
+                    answer: "yes",
+                    answered_by: "concierge",
+                    citations: "",
+                    answered_for: None,
+                })
+                .unwrap();
+        };
+        answer(asked, "did the reminder go out?");
+        run("I keep losing track of quotes", r#"{"kind":"need"}"#);
+        // A task filed before its run was kept, and an answer whose run is gone.
+        let old = file(Task {
+            repo: "r".into(),
+            task: "what is this? Contact: Ann.".into(),
+            concierge_json: Some(r#"{"kind":"unclear","question":"which?"}"#.into()),
+            ..Default::default()
+        });
+        answer(old, "is it booked?");
+        let items = concierge(&forge_on(&dir, store)).unwrap();
+        let got: Vec<(&str, &str)> = items
+            .iter()
+            .map(|i| (i.state.as_str(), i.label.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("make the quote say usually same day", "request"),
+                ("did the reminder go out?", "question"),
+                ("I keep losing track of quotes", "need"),
+                ("is it booked?", "question"),
+                ("what is this? Contact: Ann.", "unclear"),
+            ]
+        );
+    }
+
     #[test]
     fn demotion_labels_match_the_task_that_filed_the_follow_up() {
         for prefix in ["", "review demoted: "] {
@@ -275,16 +397,7 @@ mod tests {
                         .unwrap();
                 }
             }
-            let f = Forge::open_with(
-                Paths {
-                    home: dir.path().to_path_buf(),
-                    worktrees: dir.path().join("worktrees"),
-                    logs: dir.path().join("logs"),
-                },
-                store,
-            )
-            .unwrap();
-            let items = demotions(&f).unwrap();
+            let items = demotions(&forge_on(&dir, store)).unwrap();
             assert_eq!(
                 items
                     .iter()
