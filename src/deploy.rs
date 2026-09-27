@@ -24,18 +24,30 @@ fn scratch_dir(f: &Forge, deploy_id: i64, suffix: &str) -> PathBuf {
 }
 
 /// Check out `sha` into a scratch directory and run the target's method
-/// there, cleaning the directory up either way.
+/// there, cleaning the directory up either way. `deploy-self` is also told
+/// whether the running worker starts successors
+/// (`FORGE_WORKER_SUCCESSORS=1`), so it only stages and leaves the worker
+/// unit alone.
 async fn deploy_at(
     action: &operation::RunAction,
     target: &DeployTarget,
     repo: &Path,
     sha: &str,
-    home: &Path,
+    f: &Forge,
     timeout: Duration,
     scratch: &Path,
 ) -> Result<crate::checks::CheckResult> {
     git::fresh_archive(repo, sha, scratch).await?;
-    let r = operation::run_deploy_method(action, target, sha, home, scratch, timeout).await;
+    let home = &f.paths.home;
+    let mut extra = Vec::new();
+    if target.method == SELF_METHOD {
+        let successors = crate::successor::capable(home, &f.store);
+        extra.push((
+            "FORGE_WORKER_SUCCESSORS".to_string(),
+            if successors { "1" } else { "0" }.to_string(),
+        ));
+    }
+    let r = operation::run_deploy_method(action, target, sha, home, scratch, timeout, &extra).await;
     let _ = std::fs::remove_dir_all(scratch);
     r
 }
@@ -227,7 +239,7 @@ pub async fn run(
         &target,
         &src,
         &sha,
-        &f.paths.home,
+        f,
         timeout,
         &scratch_dir(f, deploy_id, ""),
     )
@@ -370,7 +382,7 @@ pub async fn run(
         &target,
         &src,
         &previous.sha,
-        &f.paths.home,
+        f,
         timeout,
         &scratch_dir(f, deploy_id, "-rollback"),
     )

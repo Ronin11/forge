@@ -159,3 +159,125 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
         .unwrap();
     assert_eq!(claimed, 2);
 }
+
+/// A fake `systemctl` whose `is-active` answers what `$SUCC_UNIT_STATE`
+/// (a file) says, and which records every call.
+fn fake_systemctl(e: &Env) -> (String, std::path::PathBuf) {
+    let fakes = e.home.join("fakebin");
+    std::fs::create_dir_all(&fakes).unwrap();
+    let state = e.home.join("unit-state");
+    std::fs::write(&state, "active\n").unwrap();
+    let systemctl = fakes.join("systemctl");
+    std::fs::write(
+        &systemctl,
+        format!(
+            "#!/bin/bash\necho \"systemctl $*\" >> \"{}\"\nif [ \"$2\" = is-active ]; then cat \"{}\"; fi\nexit 0\n",
+            e.home.join("calls.log").display(),
+            state.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &systemctl,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let path = format!(
+        "{}:{}",
+        fakes.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    (path, state)
+}
+
+#[test]
+fn a_successor_takes_the_unit_over_and_honours_a_stop_job_that_arrives_while_it_claims() {
+    let e = Env::new();
+    let (path, state) = fake_systemctl(&e);
+    let sock_path = e.home.join("notify.sock");
+    let sock = std::os::unix::net::UnixDatagram::bind(&sock_path).unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+
+    let mut cmd = e.cmd("slow-ok.sh");
+    cmd.env("PATH", &path)
+        .env("NOTIFY_SOCKET", &sock_path)
+        .env("FORGE_SUCCESSOR_OF", "1")
+        .args(["work", "--poll", "1"]);
+    let mut w = Worker::spawn(&mut cmd);
+    let _reap = Reap(e.home.clone());
+
+    // It tells systemd it is the unit's main pid and ready, and only then
+    // names itself in the capability file the old worker waits on.
+    let mut buf = [0u8; 256];
+    let n = sock.recv(&mut buf).unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&buf[..n]),
+        format!("MAINPID={}\nREADY=1", w.id())
+    );
+    assert!(
+        wait_until(
+            || std::fs::read_to_string(e.home.join("bin/successor-capable"))
+                .is_ok_and(|s| s.trim() == w.id().to_string()),
+            Duration::from_secs(30)
+        ),
+        "the successor never wrote the capability file"
+    );
+
+    let first = e.add(&["--retries", "0"]);
+    assert!(
+        wait_until(|| running_pid(&e, first).is_some(), Duration::from_secs(30)),
+        "the successor never claimed task {first}"
+    );
+
+    // An operator's restart: the unit is deactivating, and systemd's
+    // SIGTERM went to a pid that is gone. The successor drains and exits.
+    std::fs::write(&state, "deactivating\n").unwrap();
+    let second = e.add(&["--retries", "0"]);
+    assert!(w.wait().success(), "the successor did not exit cleanly");
+    assert_ne!(e.task(first).0, "running");
+    assert_ne!(e.task(first).0, "queued");
+    assert_eq!(e.task(second).0, "queued", "claimed under a stop job");
+}
+
+#[test]
+fn doctor_fails_the_worker_row_when_the_unit_is_deactivating_with_a_claiming_worker() {
+    let e = Env::new();
+    let (path, state) = fake_systemctl(&e);
+    assert!(e.forge("ok.sh", &["doctor"]).status.code().is_some());
+    e.db()
+        .execute(
+            "INSERT INTO workers (pid, version, started_at) VALUES (?1, 'new', 0)",
+            [i64::from(std::process::id())],
+        )
+        .unwrap();
+    std::fs::write(&state, "deactivating\n").unwrap();
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", &path)
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
+    let checks: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let row = checks
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "worker")
+        .unwrap();
+    assert_eq!(row["status"], "fail", "{row}");
+    assert!(
+        row["detail"]
+            .as_str()
+            .unwrap()
+            .contains("unit forge-worker deactivating with a claiming worker"),
+        "{row}"
+    );
+    assert!(
+        row["hint"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("kill -TERM {}", std::process::id())),
+        "{row}"
+    );
+}

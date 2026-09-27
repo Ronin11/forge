@@ -903,6 +903,13 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         schedule_tick(&f, &runs).await?;
         event_tick(&f, &runs).await?;
         let superseded = succession.superseded(&f)?;
+        if !stopping && succession.stop_requested() {
+            stopping = true;
+            eprintln!(
+                "stopping: the unit has a stop job; {} running attempt(s) will finish",
+                running.len()
+            );
+        }
         if superseded && let Some(p) = plugins.take() {
             p.stop().await;
         }

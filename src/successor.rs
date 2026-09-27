@@ -25,6 +25,18 @@ const UNITS: &[&str] = &["forge-web", "forge-portal"];
 /// Set on a successor: the pid of the worker that started it.
 const SUCCESSOR_OF: &str = "FORGE_SUCCESSOR_OF";
 
+/// `FORGE_HOME/bin/<CAPABILITY>`: the pid of the daemon worker that claims,
+/// written once it has told systemd so. A live pid there is a worker that
+/// starts a successor on a staged release, so `deploy-self` only stages;
+/// the old worker waits for its successor's pid here before it exits.
+pub const CAPABILITY: &str = "successor-capable";
+
+/// The unit a worker runs under when systemd does not say otherwise.
+pub const WORKER_UNIT: &str = "forge-worker";
+
+/// How long a drained worker waits for its successor to take the unit over.
+const HANDOVER_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
 pub struct Succession {
     /// Only a daemon worker takes part; `forge work --once` neither yields
     /// nor supersedes.
@@ -58,6 +70,7 @@ impl Succession {
                 take_over(&root, &version);
             }
             notify(&format!("MAINPID={pid}\nREADY=1"));
+            write_capability(&root, pid);
             match f.store.apply_contracts(&version, crate::worker::pid_alive) {
                 Ok(0) => {}
                 Ok(n) => eprintln!("applied {n} contract migration step(s)"),
@@ -152,11 +165,96 @@ impl Succession {
             .with_context(|| format!("starting {}", bin.display()))
     }
 
-    pub fn leave(&self, f: &Forge) {
-        if self.daemon {
-            let _ = f.store.stop_worker(self.id);
+    /// A successor under systemd whose unit has a stop job: an operator's
+    /// own `systemctl --user stop` or `restart` queued while the old worker
+    /// was the main pid, whose SIGTERM systemd never re-sends to the pid
+    /// that took the unit over. The worker drains and exits as on SIGTERM.
+    pub fn stop_requested(&self) -> bool {
+        if !self.daemon
+            || std::env::var_os(SUCCESSOR_OF).is_none()
+            || std::env::var_os("NOTIFY_SOCKET").is_none()
+        {
+            return false;
         }
+        unit_state(&own_unit()).as_deref() == Some("deactivating")
     }
+
+    /// Deregister; a worker that started a successor first waits (bounded)
+    /// until the successor has taken the unit over, so systemd never sees
+    /// the main pid exit before `MAINPID=` moved it.
+    pub fn leave(&mut self, f: &Forge) {
+        if !self.daemon {
+            return;
+        }
+        if let Some((child, _)) = &mut self.child {
+            let root = release::root(&f.paths.home);
+            let want = i64::from(child.id());
+            let start = std::time::Instant::now();
+            while read_capability(&root) != Some(want)
+                && matches!(child.try_wait(), Ok(None))
+                && start.elapsed() < HANDOVER_WAIT
+            {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+        let _ = f.store.stop_worker(self.id);
+    }
+}
+
+/// Whether the worker that would run a deploy of Forge starts successors:
+/// a live worker registered in the workers table (only a release that
+/// starts successors registers there), or a live pid in the capability
+/// file.
+pub fn capable(home: &std::path::Path, store: &crate::store::Store) -> bool {
+    store
+        .live_workers(pid_alive)
+        .is_ok_and(|live| !live.is_empty())
+        || read_capability(&release::root(home)).is_some_and(pid_alive)
+}
+
+fn read_capability(root: &std::path::Path) -> Option<i64> {
+    std::fs::read_to_string(root.join(CAPABILITY))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+fn write_capability(root: &std::path::Path, pid: i64) {
+    let tmp = root.join(format!(".{CAPABILITY}.{pid}"));
+    let written = std::fs::create_dir_all(root)
+        .and_then(|()| std::fs::write(&tmp, format!("{pid}\n")))
+        .and_then(|()| std::fs::rename(&tmp, root.join(CAPABILITY)));
+    if let Err(e) = written {
+        eprintln!("could not write {}: {e}", root.join(CAPABILITY).display());
+    }
+}
+
+/// The systemd unit this process runs in, from its cgroup; the worker unit
+/// when that says nothing.
+fn own_unit() -> String {
+    std::fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .and_then(|c| {
+            c.lines()
+                .flat_map(|l| l.rsplit('/'))
+                .find(|seg| seg.ends_with(".service"))
+                .map(|seg| seg.trim_end_matches(".service").to_string())
+        })
+        .unwrap_or_else(|| WORKER_UNIT.to_string())
+}
+
+/// `systemctl --user is-active <unit>`'s word for it: active,
+/// deactivating, inactive...; None when systemctl cannot be run.
+pub fn unit_state(unit: &str) -> Option<String> {
+    let out = Command::new("systemctl")
+        .args(["--user", "is-active", unit])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let word = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!word.is_empty()).then_some(word)
 }
 
 /// The successor is live: `current` moves to its release and the units

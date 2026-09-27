@@ -613,8 +613,36 @@ fn check_succession(paths: &Paths, store: &Store) -> Option<Check> {
     ))
 }
 
+/// The worker unit sitting in a stop job while a worker still claims: the
+/// stop's SIGTERM went to a pid that has since handed the unit to a
+/// successor, and systemd waits out `TimeoutStopSec` without signalling
+/// the one that claims.
+fn check_stuck_stop(store: &Store) -> Option<Check> {
+    let live = store.live_workers(worker::pid_alive).ok()?;
+    let claiming = live.last()?;
+    let unit = crate::successor::WORKER_UNIT;
+    if crate::successor::unit_state(unit)? != "deactivating" {
+        return None;
+    }
+    Some(check(
+        "worker",
+        Status::Fail,
+        format!(
+            "unit {unit} deactivating with a claiming worker (pid {}, release {})",
+            claiming.pid, claiming.version
+        ),
+        format!(
+            "kill -TERM {} (it drains and exits, and the stop job completes), then systemctl --user start {unit} if it stays inactive",
+            claiming.pid
+        ),
+    ))
+}
+
 /// The worker, by its pid file: alive, and on the binary that is on disk.
 fn check_worker(paths: &Paths, store: &Store) -> Vec<Check> {
+    if let Some(c) = check_stuck_stop(store) {
+        return vec![c];
+    }
     if let Some(c) = check_succession(paths, store) {
         return vec![c];
     }
