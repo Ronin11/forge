@@ -30,7 +30,7 @@ if [ -f "$cursor" ]; then
 else
     # No cursor yet: start from the snapshot's offset, not from zero, so a
     # first run never replays history.
-    offset=$("$FORGE_BIN" snapshot | sed -n 's/.*"events_offset": *\([0-9]*\).*/\1/p')
+    offset=$("$FORGE_BIN" snapshot | sed -n 's/.*"events_offset": *"\([0-9]*:[0-9]*\)".*/\1/p')
 fi
 
 # A JSON string field's value, escapes and all, from a compact
@@ -40,10 +40,7 @@ json_str() {
 }
 
 "$FORGE_BIN" events --since "$offset" --follow | while IFS= read -r line; do
-    # `forge events` prints each events.jsonl line verbatim (minus its
-    # newline), so the byte length read back plus one is exactly the
-    # offset advance a fresh `--since` would need.
-    offset=$((offset + $(printf '%s' "$line" | wc -c) + 1))
+    offset=$(printf '%s\n' "$line" | sed -n 's/.*"cursor":"\([0-9]*:[0-9]*\)".*/\1/p')
     type=$(printf '%s\n' "$line" | sed -n 's/.*"type":"\([^"]*\)".*/\1/p')
     if [ "$type" = task_done ]; then
         task=$(printf '%s\n' "$line" | sed -n 's/.*"task":\([0-9]*\).*/\1/p')

@@ -799,7 +799,7 @@ verified.
 | `workflow_hash` | string | Content hash of the workflow file this job ran under. |
 | `landed_sha` | string | The project's landed commit this job ran the workflow's automation files at; empty if the project has never landed anything. |
 | `trigger_kind` | string | `manual`, `schedule`, `message`, `webhook`, or `event`. |
-| `trigger_ref` | string | What one firing was for: a schedule's due slot as a unix second, a message's id, a webhook delivery's key (the caller's `--ref`, else a SHA-256 of the body), an event's byte offset in `events.jsonl`; empty for a manual trigger. |
+| `trigger_ref` | string | What one firing was for: a schedule's due slot as a unix second, a message's id, a webhook delivery's key (the caller's `--ref`, else a SHA-256 of the body), an event's `generation:offset` in `events.jsonl`; empty for a manual trigger. |
 | `state` | string | `queued`, `running`, `ok`, `failed`, `needs_human` (a blocked question addressed to the contact or the operator — see docs/JOBS.md, "The human rung"), or `dropped`. |
 | `dry_run` | bool | True when effects were only recorded, not performed (e.g. `forge job test`'s fixture replay). |
 | `started_at` | integer | Unix seconds. |
@@ -1283,21 +1283,30 @@ The document `forge snapshot` prints:
   "tasks": [ TaskRow, ... ],
   "requests": [ RequestRow, ... ],
   "worker": { "running": bool, "pid": integer, "exe": string, "stale_binary": bool },
-  "events_offset": integer
+  "events_offset": "generation:offset"
 }
 ```
 
 `tasks` is the newest 200 tasks (as `forge log --json` would show with
 no filter); `requests` is every blocked task (as `forge requests --json`
 would show with no filter). `worker` is `{"running": false}` when no
-worker pid file exists. `events_offset` is the byte length of
+worker pid file exists. `events_offset` identifies the generation and byte length of
 `events.jsonl` at the instant the snapshot was taken — see
 [Snapshot, then subscribe](#snapshot-then-subscribe).
 
 ## Events
 
+Every emitted event carries a `cursor` string, the `generation:offset`
+immediately after that event. Persist this cursor rather than counting output
+bytes. Rotation drains the unread tail of `events.jsonl.1` when exactly one
+generation elapsed. If that tail is unavailable, the CLI prints a `resync`
+event with a cursor at the retained log's start, then streams that log.
+Consumers should refresh their snapshot on `resync`; lost history cannot be
+reconstructed. The generation header is internal and is never streamed.
+
+
 `forge events` streams `events.jsonl` lines, filtered by `--since`
-(byte offset), `--follow` (keep the process alive and print new lines
+(`generation:offset`; legacy integers mean generation zero), `--follow` (keep the process alive and print new lines
 as they're appended), and `--task` (only that task's events). Each line
 is one JSON object: the fields of one `Event` variant, tagged by
 `"type"` (snake_case of the Rust variant name, e.g. `task_started`,
@@ -1390,7 +1399,8 @@ A client never polls. The protocol is:
    stream — see `GET /api/events?since=`). Every line from here on is
    an event that happened *after* the snapshot was taken; nothing is
    missed and nothing is replayed twice, because `events_offset` is the
-   exact byte length of the log at the instant the snapshot read it.
+   generation and byte length of the log at the instant the snapshot read it.
+   A `resync` event explicitly reports when rotations have lost history.
 3. Apply each event as it arrives: append it to any live per-task feed,
    and re-read the documents named in
    [What to re-read on which event](#what-to-re-read-on-which-event).

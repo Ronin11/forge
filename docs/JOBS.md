@@ -255,15 +255,15 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (honour
   schedule tick resolves them):
 
   1. **Reads on from its own offset.** `event_cursors`, one row per
-     project and workflow (`store::event_cursor`), holds the byte offset in
+     project and workflow (`store::event_cursor`), holds the `generation:offset` cursor in
      `events.jsonl` up to which the workflow has examined events. The tick
      reads the complete lines past it, at most 8 MiB per tick — a worker
      that was down for a long while catches up over several — and moves the
      offset past everything it read, whatever its type. A workflow the
      tick sees for the first time starts at the end of the log, so a new
-     automation is never backfilled with history; a log shorter than the
-     offset has rolled (it keeps two generations), and is read again from
-     its start.
+     automation is never backfilled with history. After one rotation it drains
+     the preceding file's unread tail; if history was lost, it resumes at
+     the current generation's start.
   2. **Keeps the events that are this project's.** An event belongs to the
      project it names (`deploy_started`, `deploy_finished`, `job_started`,
      `job_finished`, `project_created` carry a `project`), else to its
@@ -277,7 +277,7 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (honour
      workflows' `per_day` caps are what bound that.
   4. **Starts the job** (`job::start_event`): queued for the worker, never
      run inline, with `trigger_kind = "event"`, `trigger_ref` the event's
-     byte offset in the log, and the event's own JSON line as its
+     `generation:offset` in the log, and the event's own JSON line as its
      `input.json` — its top-level string fields become `FORGE_INPUT_*`, so
      a `task_done` job sees `FORGE_INPUT_STATE` (`succeeded`, `failed`,
      ...), `FORGE_INPUT_BRANCH` and `FORGE_INPUT_REASON`, and reads the

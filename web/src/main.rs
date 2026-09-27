@@ -251,7 +251,7 @@ fn json_or_error(r: Result<Value>) -> Response<std::io::Cursor<Vec<u8>>> {
 }
 
 /// Proxy events with idle heartbeats so disconnects also close quiet followers.
-fn events(req: Request, forge: &Forge, since: u64) {
+fn events(req: Request, forge: &Forge, since: String) {
     let mut subscription = match forge.subscribe(since) {
         Ok(subscription) => subscription,
         Err(e) => {
@@ -1537,9 +1537,7 @@ fn handle(req: Request, forge: &Forge, secret: &str, tailscale_login: Option<&st
             }
         }
         "/api/events" => {
-            let since = query_param(&query, "since")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
+            let since = query_param(&query, "since").unwrap_or_else(|| "0".into());
             events(req, forge, since);
             return;
         }

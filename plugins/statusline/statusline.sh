@@ -99,10 +99,7 @@ events_pid=$!
 
 (
     while IFS= read -r line; do
-        # `forge events` prints each events.jsonl line verbatim (minus its
-        # newline), so the byte length read back plus one is exactly the
-        # offset advance a fresh `--since` would need.
-        offset=$((offset + $(printf '%s' "$line" | wc -c) + 1))
+        offset=$(printf '%s\n' "$line" | sed -n 's/.*"cursor":"\([0-9]*:[0-9]*\)".*/\1/p')
         printf '%s\n' "$offset" >"$cursor"
         write_status
     done <"$fifo"

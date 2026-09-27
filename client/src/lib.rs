@@ -14,6 +14,8 @@
 //!   with an error naming the field and the verb, rather than silently
 //!   handing back a zero, an empty string, or `false`.
 
+mod cursor;
+
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -471,7 +473,7 @@ impl Forge {
     /// `forge events --since <offset> --follow`, as an iterator of typed
     /// events. The subordinate process is killed when the iterator is
     /// dropped.
-    pub fn subscribe(&self, offset: u64) -> Result<Subscription> {
+    pub fn subscribe(&self, offset: impl std::fmt::Display) -> Result<Subscription> {
         let mut command = Command::new(&self.bin);
         command
             .args(["events", "--since", &offset.to_string(), "--follow"])
@@ -609,7 +611,8 @@ pub struct Snapshot {
     pub tasks: Vec<TaskRow>,
     pub requests: Vec<RequestRow>,
     pub worker: Worker,
-    pub events_offset: u64,
+    #[serde(deserialize_with = "cursor::deserialize")]
+    pub events_offset: String,
 }
 
 /// One row of `forge doctor --json`: `{name, status, detail, hint}`, plus

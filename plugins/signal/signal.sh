@@ -325,11 +325,11 @@ outbound() {
     else
         # No cursor yet: start from the snapshot's offset, not from
         # zero, so a first run never replays history.
-        offset=$("$FORGE_BIN" snapshot | sed -n 's/.*"events_offset": *\([0-9]*\).*/\1/p')
+        offset=$("$FORGE_BIN" snapshot | sed -n 's/.*"events_offset": *"\([0-9]*:[0-9]*\)".*/\1/p')
     fi
 
     "$FORGE_BIN" events --since "$offset" --follow | while IFS= read -r line; do
-        offset=$((offset + $(printf '%s' "$line" | wc -c) + 1))
+        offset=$(printf '%s\n' "$line" | sed -n 's/.*"cursor":"\([0-9]*:[0-9]*\)".*/\1/p')
         printf '%s\n' "$offset" >"$cursor"
 
         type=$(printf '%s\n' "$line" | json_str type)

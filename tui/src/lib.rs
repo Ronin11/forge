@@ -755,7 +755,7 @@ impl App {
 /// read it without blocking; the `Killer` lets the App tear the
 /// subordinate process down promptly even while that thread is blocked
 /// waiting on the next line.
-fn subscribe(forge: &Forge, offset: u64) -> Result<(Killer, Receiver<Event>)> {
+fn subscribe(forge: &Forge, offset: String) -> Result<(Killer, Receiver<Event>)> {
     let sub = forge.subscribe(offset)?;
     let killer = sub.killer();
     let (tx, rx) = channel();

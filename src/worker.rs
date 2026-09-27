@@ -1782,6 +1782,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn event_generations_drain_the_tail_and_deduplicate_only_within_a_generation() {
+        let (_dir, f) = message_fixture(&[("on-done", "on = \"event\"\ntype = \"task_done\"")]);
+        tick_events(&f).await;
+        let path = f.paths.home.join("events.jsonl");
+        let line = "{\"type\":\"task_done\",\"project\":\"demo\",\"ts\":1}\n";
+        crate::report::log::append(&path, "{}\n", u64::MAX).unwrap();
+        crate::report::log::append(&path, line, 0).unwrap();
+        let saved = f.store.event_cursor("demo", "on-done").unwrap().unwrap();
+        tick_events(&f).await;
+        assert_eq!(event_jobs(&f).len(), 1);
+        f.store.set_event_cursor("demo", "on-done", &saved).unwrap();
+        crate::report::log::append(&path, line, 0).unwrap();
+        tick_events(&f).await;
+        let jobs = event_jobs(&f);
+        assert_eq!(jobs.len(), 2);
+        let refs: Vec<_> = jobs
+            .iter()
+            .map(|j| j.trigger_ref.split_once(':').unwrap())
+            .collect();
+        assert_ne!(refs[0].0, refs[1].0);
+        assert_eq!(refs[0].1, refs[1].1);
+        tick_events(&f).await;
+        assert_eq!(event_jobs(&f).len(), 2);
+    }
+
+    #[tokio::test]
     async fn a_log_that_rolled_is_read_again_from_its_start() {
         let (_dir, f) = message_fixture(&[("on-done", "on = \"event\"\ntype = \"task_done\"")]);
         tick_events(&f).await;

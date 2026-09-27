@@ -1324,9 +1324,9 @@ fn events_are_a_json_log_and_a_snapshot_names_where_to_subscribe_from() {
     assert_eq!(done["state"], "succeeded");
     let snap: serde_json::Value =
         serde_json::from_slice(&e.forge("ok.sh", &["snapshot"]).stdout).unwrap();
-    let offset = snap["events_offset"].as_u64().unwrap();
+    let offset = snap["events_offset"].as_str().unwrap();
     assert_eq!(
-        offset,
+        offset.split_once(':').unwrap().1.parse::<u64>().unwrap(),
         std::fs::metadata(e.home.join("events.jsonl"))
             .unwrap()
             .len()
