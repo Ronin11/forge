@@ -114,10 +114,14 @@ fn an_identical_seed_is_a_stale_seed_and_refresh_deletes_it() {
     assert!(!cat.join("actions/fmt.toml").exists());
 }
 
-/// A `git diff --no-index` that dies (here, of `SIGBUS`, the failure that
-/// motivated `diff_of`'s unique-per-call temp file) must make the doctor's
-/// shadowing row state the failure, not `0 diff line(s)` — indistinguishable
-/// from "no differences", the exact silent symptom this guards against.
+/// A `git diff --no-index` that dies (here, of a signal — the same shape of
+/// failure, killed rather than exiting, that motivated `diff_of`'s
+/// unique-per-call temp file after a real `git` died of `SIGBUS`) must make
+/// the doctor's shadowing row state the failure, not `0 diff line(s)` —
+/// indistinguishable from "no differences", the exact silent symptom this
+/// guards against. The fake signals itself with `SIGTERM`, not `SIGBUS`:
+/// both are reported by `diff_of` as "killed by signal", but `SIGBUS` is a
+/// core-dump signal, and a passing suite should leave no core dumps behind.
 #[test]
 fn a_git_diff_that_dies_reports_the_failure_not_zero_diff_lines() {
     let e = Env::new();
@@ -130,7 +134,7 @@ fn a_git_diff_that_dies_reports_the_failure_not_zero_diff_lines() {
     let git_path = fakebin.join("git");
     std::fs::write(
         &git_path,
-        "#!/bin/bash\nif [ \"$1\" = diff ] && [ \"$2\" = --no-index ]; then\n  kill -BUS $$\nfi\nexec /usr/bin/git \"$@\"\n",
+        "#!/bin/bash\nif [ \"$1\" = diff ] && [ \"$2\" = --no-index ]; then\n  kill -TERM $$\nfi\nexec /usr/bin/git \"$@\"\n",
     )
     .unwrap();
     let mut perm = std::fs::metadata(&git_path).unwrap().permissions();
