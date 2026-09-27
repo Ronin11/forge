@@ -47,8 +47,8 @@ pub use stats::{
     TaskTtl, WorkflowStat,
 };
 pub use tasks::{
-    REQUEUE_ABORT, REQUEUE_ENV, REQUEUE_ORPHAN, REQUEUE_REASONS, RoleRouting, Routed, Task,
-    TaskState, TaskUpdate, Trust,
+    REQUEUE_ABORT, REQUEUE_ORPHAN, REQUEUE_REASONS, RoleRouting, Routed, Task, TaskState,
+    TaskUpdate, Trust,
 };
 pub use workers::WorkerRow;
 

@@ -716,6 +716,7 @@ pub fn seed_used(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::tasks::REQUEUE_ENV;
 
     #[test]
     fn seeded_attempts_skip_requeued_and_refunded_ones() {
