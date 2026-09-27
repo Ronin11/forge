@@ -1164,7 +1164,7 @@ fn check_executors(store: &Store, paths: &Paths) -> Vec<Check> {
                                     agent::Runner::ClaudeCli => "claude",
                                     agent::Runner::CodexCli => "codex",
                                     agent::Runner::CopilotCli => "copilot",
-                                    agent::Runner::Chat => continue,
+                                    agent::Runner::Chat | agent::Runner::Jev => continue,
                                 };
                                 let result = std::process::Command::new("ssh")
                                     .args([

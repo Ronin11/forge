@@ -152,6 +152,11 @@ pub struct JobStep {
     /// empty when its action declares none.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub outcome: String,
+    /// A jev judgment's probabilities over the outcomes, as JSON, beside the
+    /// `outcome` they led to (docs/EXECUTION.md, "The judgment tier"); empty
+    /// for any other step.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub probabilities: String,
     /// The step's node id, `<index>-<action>`; `seq` counts executions, so
     /// a loop shows one node at several seqs. Empty for the setup row.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -232,6 +237,7 @@ pub(super) const JOB_STEP_COLUMNS: &[&str] = &[
     "tail",
     "outcome",
     "node",
+    "probabilities",
 ];
 
 pub(super) const JOB_EFFECT_COLUMNS: &[&str] = &[
@@ -280,6 +286,7 @@ fn job_step_from_row(r: &Row) -> rusqlite::Result<JobStep> {
         tail: r.get("tail")?,
         outcome: r.get("outcome")?,
         node: r.get("node")?,
+        probabilities: r.get("probabilities")?,
     })
 }
 
@@ -374,8 +381,8 @@ impl Store {
     pub fn append_job_step(&self, s: &JobStep) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO job_steps (job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref, tail, outcome, node)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT INTO job_steps (job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref, tail, outcome, node, probabilities)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 s.job_id,
                 s.seq,
@@ -391,6 +398,7 @@ impl Store {
                 s.tail,
                 s.outcome,
                 s.node,
+                s.probabilities,
             ],
         )?;
         Ok(c.last_insert_rowid())
@@ -1058,6 +1066,7 @@ mod tests {
             output_ref: "step-0.json".into(),
             tail: String::new(),
             outcome: String::new(),
+            probabilities: String::new(),
             node: String::new(),
         };
         let effect = JobEffect {

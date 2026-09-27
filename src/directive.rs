@@ -39,6 +39,8 @@ pub struct Spec<'a> {
     pub start_sha: &'a str,
     pub resume: Option<&'a str>,
     pub no_tools: bool,
+    /// What a `Runner::Jev` judges; see `agent::Launch::judgment`.
+    pub judgment: Option<agent::Judgment<'a>>,
 }
 
 pub async fn launch(f: &Forge, s: Spec<'_>) -> Result<Outcome> {
@@ -65,6 +67,7 @@ pub async fn launch(f: &Forge, s: Spec<'_>) -> Result<Outcome> {
         schema: s.schema,
         early_ending: f.early_ending,
         no_tools: s.no_tools,
+        judgment: s.judgment,
     })
     .await
 }

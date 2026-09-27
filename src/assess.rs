@@ -174,6 +174,7 @@ async fn try_run(f: &Forge, t: &mut Task, landed_sha: &str) -> Result<Option<Rul
             start_sha: landed_sha,
             resume: None,
             no_tools: false,
+            judgment: None,
         },
     )
     .await?;

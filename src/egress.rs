@@ -175,6 +175,8 @@ pub fn model_rules(providers: &BTreeMap<String, crate::agent::Provider>) -> Vec<
             // endpoint and would be a route out for anything.
             Runner::CopilotCli => &["*.githubcopilot.com", "api.github.com"],
             Runner::Chat => &[],
+            // Cloudflare Workers AI, whatever `base_url` says besides.
+            Runner::Jev => &["api.cloudflare.com"],
         };
         rules.extend(own.iter().filter_map(|h| Rule::parse(h).ok()));
         rules.extend(p.base_url.as_deref().and_then(rule_for_url));

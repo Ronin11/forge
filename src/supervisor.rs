@@ -570,6 +570,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
             start_sha: &a.start_sha,
             resume: None,
             no_tools: false,
+            judgment: None,
         },
     )
     .await?;
