@@ -106,8 +106,28 @@ fn recovering_a_landing_already_on_the_remote_skips_side_effects() {
     let e = Env::new();
     let calls = e._dir.path().join("deploy-calls");
     setup_deploy(&e, &format!("echo deploy >> '{}'", calls.display()));
-    assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
-    let out = e.forge("ok.sh", &["land", "1"]);
+    let out = e
+        .with_role("ok.sh", "REVIEW", "reviewer-ok.sh")
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "first",
+            "--no-land",
+            "--workflow",
+            "reviewed",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let land = || {
+        e.with_role("ok.sh", "ASSESS", "assessor.sh")
+            .args(["land", "1"])
+            .output()
+            .unwrap()
+    };
+    let out = land();
     assert!(out.status.success(), "{out:?}");
     assert_eq!(std::fs::read_to_string(&calls).unwrap(), "deploy\n");
     // Simulate interruption after the base push but before the task update.
@@ -118,9 +138,18 @@ fn recovering_a_landing_already_on_the_remote_skips_side_effects() {
         )
         .unwrap();
     let before = op_names(&e, 1);
-    let out = e.forge("ok.sh", &["land", "1"]);
+    let out = land();
     assert!(out.status.success(), "{out:?}");
     assert!(landed(&e, 1));
     assert_eq!(std::fs::read_to_string(calls).unwrap(), "deploy\n");
     assert_eq!(op_names(&e, 1), before, "recovery does not land twice");
+    let assessments: i64 = e
+        .db()
+        .query_row(
+            "SELECT count(*) FROM assessments WHERE task_id=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(assessments, 1, "recovery does not assess twice");
 }
