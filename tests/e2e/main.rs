@@ -12,6 +12,7 @@ mod environment;
 mod execution;
 mod executors;
 mod fixtures;
+mod fold;
 mod graph;
 mod init;
 mod initiatives;
