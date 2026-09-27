@@ -16,22 +16,38 @@ pub(super) enum BasePush {
     Failed(String),
 }
 
-/// `git::push_sha` of the base branch failed with `e`. Tell a base that
-/// actually moved (worth another round) apart from every other rejection,
-/// which is the environment's problem, not the task's: verifying again
-/// cannot change a dirty checkout behind `updateInstead`, a hook, or a
-/// permission.
+/// The fields `on_base_push_failure` needs: the round it happened in, the
+/// remote it happened on, the op row it records, and the base it was
+/// rejected against.
+pub(super) struct BasePushFailure<'a> {
+    pub(super) t: &'a Task,
+    pub(super) url: &'a str,
+    pub(super) main_sha: &'a str,
+    pub(super) seq: i64,
+    pub(super) timer: &'a Timer,
+    pub(super) round: i32,
+    pub(super) error: anyhow::Error,
+}
+
+/// `git::push_sha` of the base branch failed with `args.error`. Tell a base
+/// that actually moved (worth another round) apart from every other
+/// rejection, which is the environment's problem, not the task's: verifying
+/// again cannot change a dirty checkout behind `updateInstead`, a hook, or
+/// a permission.
 pub(super) async fn on_base_push_failure(
     f: &Forge,
-    t: &Task,
-    url: &str,
-    main_sha: &str,
-    seq: i64,
-    timer: &Timer,
-    round: i32,
-    e: anyhow::Error,
+    args: BasePushFailure<'_>,
 ) -> Result<BasePush, Fault> {
-    let d = format!("fast-forward of {} rejected: {e:#}", t.base_branch);
+    let BasePushFailure {
+        t,
+        url,
+        main_sha,
+        seq,
+        timer,
+        round,
+        error,
+    } = args;
+    let d = format!("fast-forward of {} rejected: {error:#}", t.base_branch);
     op(
         f,
         t.id,

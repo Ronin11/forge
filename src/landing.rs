@@ -577,9 +577,16 @@ pub async fn integrate(
         let land_seq = *seq;
         let timer = Timer::now();
         if let Err(e) = git::push_sha(home, repo, &candidate, url, &t.base_branch).await {
-            match round::on_base_push_failure(f, t, url, &main_sha, land_seq, &timer, round, e)
-                .await?
-            {
+            let args = round::BasePushFailure {
+                t,
+                url,
+                main_sha: &main_sha,
+                seq: land_seq,
+                timer: &timer,
+                round,
+                error: e,
+            };
+            match round::on_base_push_failure(f, args).await? {
                 BasePush::Retry => continue,
                 BasePush::Failed(d) => return Ok(Integrate::Failed(d)),
             }
