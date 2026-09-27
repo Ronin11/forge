@@ -4,6 +4,8 @@
 //! under a per-repository lock; a conflict or a failing check goes back to
 //! the coder as a rewind. `forge land` runs the same function by hand.
 
+mod round;
+
 use crate::audit::{Inputs, Outputs};
 use crate::ctx::Forge;
 use crate::engine::{Classify, Fault, OpRow, Timer, op};
@@ -12,6 +14,7 @@ use crate::store::{Attempt, AttemptState, FinishAttempt, Task, TaskState};
 use crate::verify::{self, Subject, Verdict};
 use crate::{checks, config, git, unix_now};
 use anyhow::{Context, Result, bail};
+use round::BasePush;
 use std::path::{Path, PathBuf};
 
 /// Record the integrator's own check run as an attempts row, the way a
@@ -231,11 +234,33 @@ async fn verify_merged_tree(f: &Forge, args: MergeVerifyArgs<'_>) -> Result<Verd
         pending_main: None,
         sandbox: f.sandbox.as_ref(),
         report: &f.report,
+        logs_dir: &f.paths.logs,
         scratch: None,
         plan_rows: true,
     })
     .await
     .task()
+}
+
+/// Records a failed "integrate" op for `detail` and turns it into a
+/// `Fault::Env`: a remote the worker cannot ask is its environment, not the
+/// branch being landed, so this stops the attempt rather than failing the
+/// task.
+fn integrate_env_fault(f: &Forge, id: i64, timer: &Timer, seq: i64, detail: String) -> Fault {
+    let row = OpRow {
+        seq,
+        name: "integrate",
+        kernel: true,
+        ok: false,
+        exit: None,
+        detail: &detail,
+        attempt_id: None,
+        output: "",
+    };
+    if let Err(e) = op(f, id, timer, row) {
+        return e;
+    }
+    Fault::Env(anyhow::anyhow!(detail))
 }
 
 /// Land the verified branch on the base branch: bring the base in, verify
@@ -314,45 +339,37 @@ pub async fn integrate(
         // The base as the remote has it, fetched straight into the kernel
         // repository under its own lock; a remote that has no base branch
         // yet gets it from this landing, starting from the local one.
-        let main_sha = if git::remote_branch_exists(url, &t.base_branch).await {
-            let dest_ref = format!("refs/forge/origin/{}", t.base_branch);
-            match fetch_base_for_landing(home, repo, url, &t.base_branch, &dest_ref).await {
-                Ok(s) => {
-                    // Best-effort only, for the operator: landing itself
-                    // never depends on the registered checkout's tracking
-                    // ref being current.
-                    let _ = git::fetch_branch(repo, remote, &t.base_branch).await;
-                    s
-                }
-                Err(e) => {
-                    let d = format!("fetch of {} from {url} failed: {e:#}", t.base_branch);
-                    op(
-                        f,
-                        t.id,
-                        &timer,
-                        OpRow {
-                            seq: *seq,
-                            name: "integrate",
-                            kernel: true,
-                            ok: false,
-                            exit: None,
-                            detail: &d,
-                            attempt_id: None,
-                            output: "",
-                        },
-                    )?;
-                    // A remote that cannot be fetched is the worker's
-                    // environment, not this branch's: stop rather than fail it.
-                    return Err(Fault::Env(anyhow::anyhow!(d)));
+        let main_sha = match git::remote_branch_exists(url, &t.base_branch).await {
+            Ok(true) => {
+                let dest_ref = format!("refs/forge/origin/{}", t.base_branch);
+                match fetch_base_for_landing(home, repo, url, &t.base_branch, &dest_ref).await {
+                    Ok(s) => {
+                        // Best-effort only, for the operator: landing itself
+                        // never depends on the registered checkout's tracking
+                        // ref being current.
+                        let _ = git::fetch_branch(repo, remote, &t.base_branch).await;
+                        s
+                    }
+                    Err(e) => {
+                        let d = format!("fetch of {} from {url} failed: {e:#}", t.base_branch);
+                        return Err(integrate_env_fault(f, t.id, &timer, *seq, d));
+                    }
                 }
             }
-        } else {
-            let sha = git::rev_parse(repo, &format!("refs/heads/{}", t.base_branch))
-                .await
-                .task()?;
-            let base_ref = format!("refs/forge/base/{}", t.base_branch);
-            git::stage(home, repo, repo, &sha, &base_ref).await.task()?;
-            sha
+            // Only a successful, empty answer means the remote truly has no
+            // such branch yet: take the base from the registered checkout.
+            Ok(false) => {
+                let sha = git::rev_parse(repo, &format!("refs/heads/{}", t.base_branch))
+                    .await
+                    .task()?;
+                let base_ref = format!("refs/forge/base/{}", t.base_branch);
+                git::stage(home, repo, repo, &sha, &base_ref).await.task()?;
+                sha
+            }
+            Err(e) => {
+                let d = format!("checking {remote}/{} failed: {e:#}", t.base_branch);
+                return Err(integrate_env_fault(f, t.id, &timer, *seq, d));
+            }
         };
         let mut detail = String::new();
         if main_sha != base_sha {
@@ -373,6 +390,15 @@ pub async fn integrate(
                     );
                 }
                 git::Merge::Conflict(files) => {
+                    // A round after the first merges on top of what an
+                    // earlier round already merged into this landing tree;
+                    // the clone never saw that, so `base_sha` (the base an
+                    // earlier round settled on) would name a commit it
+                    // does not contain. Adopt the landing tree first, the
+                    // way the verify-failure path already does.
+                    if git::head(wt).await.task()? != staged {
+                        git::adopt_tree(clone, wt).task()?;
+                    }
                     git::place_branch(home, repo, clone, &main_sha, &placed)
                         .await
                         .task()?;
@@ -542,12 +568,55 @@ pub async fn integrate(
             )?;
             return Ok(Integrate::Failed(d));
         }
+        // The base advances first: the task branch is a record of what
+        // landed, never an input the base push waits on. Pushing it first,
+        // the way landing once did, let a later round or a resumed run
+        // rewind it to a branch that no longer descended from what the
+        // remote already had (REVIEW-3 2.1#5).
+        *seq += 1;
+        let land_seq = *seq;
+        let timer = Timer::now();
+        if let Err(e) = git::push_sha(home, repo, &candidate, url, &t.base_branch).await {
+            let args = round::BasePushFailure {
+                t,
+                url,
+                main_sha: &main_sha,
+                seq: land_seq,
+                timer: &timer,
+                round,
+                error: e,
+            };
+            match round::on_base_push_failure(f, args).await? {
+                BasePush::Retry => continue,
+                BasePush::Failed(d) => return Ok(Integrate::Failed(d)),
+            }
+        }
+        let sha = candidate.clone();
+        let _ = git::fetch_branch(repo, remote, &t.base_branch).await;
+        op(
+            f,
+            t.id,
+            &timer,
+            OpRow {
+                seq: land_seq,
+                name: "land",
+                kernel: true,
+                ok: true,
+                exit: None,
+                detail: &format!("{} @ {}", t.base_branch, &sha[..8]),
+                attempt_id: None,
+                output: "",
+            },
+        )?;
+
+        *seq += 1;
+        let push_timer = Timer::now();
         if let Err(e) = git::push_sha(home, repo, &candidate, url, &t.branch).await {
             let d = format!("push of {} failed: {e:#}", t.branch);
             op(
                 f,
                 t.id,
-                &timer,
+                &push_timer,
                 OpRow {
                     seq: *seq,
                     name: "push",
@@ -572,7 +641,7 @@ pub async fn integrate(
         op(
             f,
             t.id,
-            &timer,
+            &push_timer,
             OpRow {
                 seq: *seq,
                 name: "push",
@@ -584,53 +653,6 @@ pub async fn integrate(
                 output: "",
             },
         )?;
-
-        *seq += 1;
-        let timer = Timer::now();
-        if let Err(e) = git::push_sha(home, repo, &candidate, url, &t.base_branch).await {
-            let d = format!("fast-forward of {} rejected: {e:#}", t.base_branch);
-            op(
-                f,
-                t.id,
-                &timer,
-                OpRow {
-                    seq: *seq,
-                    name: "land",
-                    kernel: true,
-                    ok: false,
-                    exit: None,
-                    detail: &d,
-                    attempt_id: None,
-                    output: "",
-                },
-            )?;
-            // Only a base that actually moved goes round again: a refusal
-            // with the base where it was (a dirty checkout behind
-            // `updateInstead`, a hook, a permission) is the environment's,
-            // and verifying again cannot change it.
-            let now = git::remote_branch_sha(url, &t.base_branch).await;
-            if !now.is_some_and(|s| s != main_sha) {
-                return Err(Fault::Env(anyhow::anyhow!(
-                    "{d}; {} did not move, so the remote refused it",
-                    t.base_branch
-                )));
-            }
-            if round < 2 {
-                f.report.emit(
-                    t.id,
-                    Event::Note {
-                        text: &format!(
-                            "land     {} moved underneath; integrating again",
-                            t.base_branch
-                        ),
-                    },
-                );
-                continue;
-            }
-            return Ok(Integrate::Failed(d));
-        }
-        let sha = candidate.clone();
-        let _ = git::fetch_branch(repo, remote, &t.base_branch).await;
         // The task's hidden tests join the standing suite.
         let folded = match fold_tests(f, t, repo, url, &cfg_now.namespace).await {
             Ok(detail) => detail,
@@ -640,21 +662,6 @@ pub async fn integrate(
                 format!("; {detail}")
             }
         };
-        op(
-            f,
-            t.id,
-            &timer,
-            OpRow {
-                seq: *seq,
-                name: "land",
-                kernel: true,
-                ok: true,
-                exit: None,
-                detail: &format!("{} @ {}{folded}", t.base_branch, &sha[..8]),
-                attempt_id: None,
-                output: "",
-            },
-        )?;
         f.report.emit(
             t.id,
             Event::Note {
@@ -736,8 +743,10 @@ async fn fold_tests(
 /// After landing, run every on-landing deploy target of the task's project
 /// on this repository, through the same path `forge deploy` uses
 /// (`deploy::run`), tied to this task. A deploy's own failure never
-/// changes the task's landed state: `deploy::run` already emits its
-/// events and, on a failed check, follows the rollback-and-question path.
+/// changes the task's landed state: on a failed check, `deploy::run`
+/// already emits its events and follows the rollback-and-question path.
+/// Any other error (it never got that far, or a row was left open) is
+/// named on the task instead of dropped.
 async fn deploy_on_landing(f: &Forge, t: &Task, sha: &str) {
     let Some(project) = t.project.clone() else {
         return;
@@ -749,7 +758,7 @@ async fn deploy_on_landing(f: &Forge, t: &Task, sha: &str) {
         .into_iter()
         .filter(|d| d.on_landing && d.repo == t.repo)
     {
-        let _ = crate::deploy::run(
+        if let Err(e) = crate::deploy::run(
             f,
             &project,
             &target.name,
@@ -757,7 +766,15 @@ async fn deploy_on_landing(f: &Forge, t: &Task, sha: &str) {
             Some(t.id),
             false,
         )
-        .await;
+        .await
+        {
+            f.report.emit(
+                t.id,
+                Event::Note {
+                    text: &format!("deploy   {} failed: {e:#}", target.name),
+                },
+            );
+        }
     }
 }
 
@@ -937,7 +954,7 @@ pub async fn integrate_many(f: &Forge, ids: &[i64]) -> Result<IntegrateReport> {
         &cfg.push_remote,
         git::remote_url(&repo, cfg.push_remote.as_deref().unwrap_or("origin")).await,
     ) {
-        (Some(name), Some(url)) if git::remote_branch_exists(&url, &cfg.base_branch).await => {
+        (Some(name), Some(url)) if git::remote_branch_exists(&url, &cfg.base_branch).await? => {
             git::fetch_branch(&repo, name, &cfg.base_branch).await.ok();
             Some(format!("refs/remotes/{name}/{}", cfg.base_branch))
         }
@@ -976,7 +993,7 @@ pub async fn integrate_many(f: &Forge, ids: &[i64]) -> Result<IntegrateReport> {
         let src = if git::ref_exists(&repo, &format!("refs/heads/{}", t.branch)).await {
             repo.display().to_string()
         } else if let Some(url) = &remote_url
-            && git::remote_branch_exists(url, &t.branch).await
+            && git::remote_branch_exists(url, &t.branch).await?
         {
             url.clone()
         } else if Path::new(&t.worktree).join(".git").exists() {
@@ -1131,7 +1148,7 @@ pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<Strin
     if !Path::new(&t.worktree).join(".git").exists() {
         // The pushed branch is the truth: landing needs only that, not the
         // worktree gc may have collected.
-        if !t.pushed || t.branch.is_empty() || !git::remote_branch_exists(&url, &t.branch).await {
+        if !t.pushed || t.branch.is_empty() || !git::remote_branch_exists(&url, &t.branch).await? {
             bail!(
                 "task {id}'s worktree is gone ({}) and its branch {} is not on {remote}; retry the task instead",
                 t.worktree,
