@@ -872,6 +872,29 @@ fn recover_orphans(f: &Forge) -> Result<()> {
 }
 
 /// `worker.pid`: the newest worker's pid and the path it was launched by.
+fn log_pass_error(result: Result<()>) -> bool {
+    if let Err(error) = result {
+        eprintln!("worker pass failed; retrying: {error:#}");
+        true
+    } else {
+        false
+    }
+}
+
+fn prepare_claim(f: &Forge) -> Result<Option<Vec<i64>>> {
+    if let Some(msg) = day_budget_reached(f)? {
+        eprintln!("{msg}; {} task(s) left queued", f.store.queued_count()?);
+        return Ok(None);
+    }
+    for t in f.store.release_dependents()? {
+        eprintln!("task {t} unblocked: its dependencies landed or were withdrawn");
+    }
+    for (t, d, why) in f.store.block_dependents()? {
+        eprintln!("task {t} blocked: {why} (task {d})");
+    }
+    Ok(Some(held_initiatives(f)?))
+}
+
 fn write_pid_file(paths: &Paths, pid: i64) {
     let exe = crate::binary::launch_path()
         .map(|p| p.display().to_string())
@@ -934,18 +957,10 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 && running.len() < jobs
                 && opts.max_tasks.is_none_or(|m| claimed < m)
             {
-                if let Some(msg) = day_budget_reached(&f)? {
-                    eprintln!("{msg}; {} task(s) left queued", f.store.queued_count()?);
+                let Some(held) = prepare_claim(&f)? else {
                     stopping = true;
                     break;
-                }
-                for t in f.store.release_dependents()? {
-                    eprintln!("task {t} unblocked: its dependencies landed or were withdrawn");
-                }
-                for (t, d, why) in f.store.block_dependents()? {
-                    eprintln!("task {t} blocked: {why} (task {d})");
-                }
-                let held = held_initiatives(&f)?;
+                };
                 for line in new_holds(&f, &held, &mut announced_holds) {
                     eprintln!("{line}");
                 }
@@ -997,12 +1012,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
             Ok(())
         }
         .await;
-        let pass_failed = if let Err(error) = pass {
-            eprintln!("worker pass failed; retrying: {error:#}");
-            true
-        } else {
-            false
-        };
+        let pass_failed = log_pass_error(pass);
 
         if running.is_empty() {
             if superseded {
@@ -1018,7 +1028,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     && !exhausted
                     && f.store.queued_count().unwrap_or(0) > 0
             });
-            match (held, opts.poll) {
+            match (held, opts.poll.or_else(|| pass_failed.then_some(10))) {
                 (Some(until), poll) => {
                     let wait = (until - unix_now()).max(1) as u64;
                     let wait = poll.map_or(wait, |p| wait.min(p));
@@ -1026,12 +1036,6 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                         _ = tokio::time::sleep(Duration::from_secs(wait)) => continue,
                         _ = hangup.recv() => { hup = true; continue }
                         _ = shutdown.recv() => { eprintln!("stopping"); break }
-                    }
-                }
-                (None, _) if pass_failed && !stopping => {
-                    tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_secs(opts.poll.unwrap_or(10))) => continue,
-                        _ = shutdown.recv() => break,
                     }
                 }
                 (None, Some(secs)) if !stopping && env_error.is_none() && !exhausted => {
