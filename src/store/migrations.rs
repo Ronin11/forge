@@ -664,4 +664,97 @@ CREATE TABLE workers (
   stopped_at INTEGER
 );
 ",
+    // When each contract step (see `CONTRACT_MARKER`) was applied; the
+    // additive ladder above advances `user_version`, these record their own.
+    "
+CREATE TABLE contract_steps (
+  version INTEGER PRIMARY KEY,
+  applied_at INTEGER NOT NULL
+);
+",
 ];
+
+/// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs
+/// a column type). `migrate` skips its SQL but still advances
+/// `user_version`; `Store::apply_contracts` runs it once no live worker
+/// is on an older version (docs/OPS.md, "The running binary").
+pub const CONTRACT_MARKER: &str = "-- contract";
+
+/// Step index of the one non-additive step that shipped before the rule
+/// (the `decisions` rebuild). It is already applied everywhere and later
+/// steps build on it, so it stays in the additive ladder.
+#[cfg(test)]
+const LEGACY_REBUILD: usize = 59;
+
+pub fn is_contract(sql: &str) -> bool {
+    sql.trim_start().starts_with(CONTRACT_MARKER)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The statement's leading words, upper-cased, comments removed.
+    fn statements(sql: &str) -> Vec<String> {
+        let code: String = sql
+            .lines()
+            .map(|l| l.split("--").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join(" ");
+        code.split(';')
+            .map(|st| {
+                st.split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .to_uppercase()
+            })
+            .filter(|st| !st.is_empty())
+            .collect()
+    }
+
+    fn additive(st: &str) -> bool {
+        let w: Vec<&str> = st.split(' ').collect();
+        matches!(
+            w.as_slice(),
+            ["CREATE", "TABLE", ..]
+                | ["CREATE", "INDEX", ..]
+                | ["CREATE", "UNIQUE", "INDEX", ..]
+                | ["INSERT", ..]
+                | ["ALTER", "TABLE", _, "ADD", ..]
+        )
+    }
+
+    #[test]
+    fn every_migration_is_additive_or_marked_contract() {
+        for (i, sql) in MIGRATIONS.iter().enumerate() {
+            if is_contract(sql) || i == LEGACY_REBUILD {
+                continue;
+            }
+            for st in statements(sql) {
+                assert!(
+                    additive(&st),
+                    "migration {} has a non-additive statement without `{CONTRACT_MARKER}`: {st}",
+                    i + 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_legacy_exemption_is_the_decisions_rebuild() {
+        assert!(MIGRATIONS[LEGACY_REBUILD].contains("DROP TABLE decisions;"));
+    }
+
+    #[test]
+    fn a_drop_or_rename_is_not_additive() {
+        for st in [
+            "DROP TABLE X",
+            "ALTER TABLE A RENAME TO B",
+            "ALTER TABLE A RENAME COLUMN X TO Y",
+            "ALTER TABLE A DROP COLUMN X",
+        ] {
+            assert!(!additive(st), "{st}");
+        }
+        assert!(additive("ALTER TABLE A ADD COLUMN X INTEGER"));
+    }
+}

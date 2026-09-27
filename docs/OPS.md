@@ -84,8 +84,14 @@ who holds the pointer: **the store and every running binary agree.**
   SQLite while the old worker drains, so a release may only add tables,
   columns and indexes; a migration that drops or renames is tagged
   `contract` and applied by the newest worker only once no older worker
-  is alive. A test refuses a non-additive migration without the tag (81
-  of the 83 `ALTER TABLE`s in the history are already `ADD COLUMN`).
+  is alive. A step may `CREATE TABLE`, `ADD COLUMN`, `CREATE INDEX` or
+  `INSERT`; anything else starts with the `-- contract` line. `user_version`
+  advances on the additive part (a contract step's SQL is skipped there);
+  `Store::apply_contracts` runs the rest once the workers table shows no
+  live worker on an older version (a dead pid does not count) and records
+  each step's `applied_at` in `contract_steps`. A unit test parses every
+  migration and fails a non-additive statement without the tag (the one
+  shipped `decisions` rebuild predates the rule and is exempt by index).
 - **Config reloads between claims.** A `[providers]`, `[roles]`,
   `[environment]`, `[budget]` or `[sandbox]` edit is picked up on a signal
   or the file's mtime, never by a drain; only a binary change needs a

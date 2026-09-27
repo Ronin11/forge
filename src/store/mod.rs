@@ -695,6 +695,56 @@ fn seed_projects_from_tasks(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+impl Store {
+    /// Apply contract steps (see `migrations::CONTRACT_MARKER`) not yet
+    /// applied, but only when every live worker runs `version`: none on an
+    /// older one shares the store. A dead pid does not count. Each step
+    /// records its own `applied_at`. Returns how many were applied.
+    pub fn apply_contracts(&self, version: &str, alive: impl Fn(i64) -> bool) -> Result<usize> {
+        if self
+            .live_workers(alive)?
+            .iter()
+            .any(|w| w.version != version)
+        {
+            return Ok(0);
+        }
+        let c = self.lock();
+        let mut applied = 0;
+        for (i, sql) in MIGRATIONS.iter().enumerate() {
+            let v = i as i64 + 1;
+            if !migrations::is_contract(sql) {
+                continue;
+            }
+            let done: bool = c
+                .query_row("SELECT 1 FROM contract_steps WHERE version=?1", [v], |_| {
+                    Ok(())
+                })
+                .optional()?
+                .is_some();
+            if done {
+                continue;
+            }
+            c.execute_batch("BEGIN")?;
+            let r = c.execute_batch(sql).and_then(|()| {
+                c.execute(
+                    "INSERT INTO contract_steps (version, applied_at) VALUES (?1, ?2)",
+                    params![v, crate::unix_now()],
+                )
+                .map(|_| ())
+            });
+            match r {
+                Ok(()) => c.execute_batch("COMMIT")?,
+                Err(e) => {
+                    c.execute_batch("ROLLBACK").ok();
+                    bail!("contract step {v} failed: {e}");
+                }
+            }
+            applied += 1;
+        }
+        Ok(applied)
+    }
+}
+
 fn migrate(conn: &Connection) -> Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let target = MIGRATIONS.len() as i64;
@@ -707,7 +757,9 @@ fn migrate(conn: &Connection) -> Result<()> {
         let v = i as i64 + 1;
         conn.execute_batch("BEGIN")?;
         let r: rusqlite::Result<()> = (|| {
-            conn.execute_batch(sql)?;
+            if !migrations::is_contract(sql) {
+                conn.execute_batch(sql)?;
+            }
             if v == PROJECTS_MIGRATION_VERSION {
                 seed_projects_from_tasks(conn)?;
             }
