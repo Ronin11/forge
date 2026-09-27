@@ -118,7 +118,8 @@ pub fn read(path: &Path, from: Cursor, budget: u64) -> io::Result<Batch> {
             && header(&old)?.generation == from.generation
             && fs::metadata(&old)?.len() >= from.offset
         {
-            let complete = read_file(&old, &mut batch, budget)?;
+            batch.next.offset = batch.next.offset.max(header(&old)?.offset);
+            let complete = read_file(&old, &mut batch, budget, true)?;
             if !complete {
                 return Ok(batch);
             }
@@ -133,11 +134,11 @@ pub fn read(path: &Path, from: Cursor, budget: u64) -> io::Result<Batch> {
     if batch.next.offset < current.offset {
         batch.next = current;
     }
-    read_file(path, &mut batch, budget)?;
+    read_file(path, &mut batch, budget, false)?;
     Ok(batch)
 }
 
-fn read_file(path: &Path, batch: &mut Batch, budget: u64) -> io::Result<bool> {
+fn read_file(path: &Path, batch: &mut Batch, budget: u64, archived: bool) -> io::Result<bool> {
     let mut file = match File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(true),
@@ -152,8 +153,12 @@ fn read_file(path: &Path, batch: &mut Batch, budget: u64) -> io::Result<bool> {
         if n == 0 {
             return Ok(true);
         }
-        if used >= budget || !line.ends_with('\n') {
+        if used >= budget {
             return Ok(false);
+        }
+        if !line.ends_with('\n') {
+            batch.resync |= archived;
+            return Ok(archived);
         }
         let start = batch.next;
         batch.next.offset += n as u64;
@@ -218,6 +223,54 @@ mod tests {
         assert!(!batch.resync);
         assert_eq!(batch.lines.len(), 1);
         assert_eq!(batch.next.generation, 1);
+    }
+
+    #[test]
+    fn archived_headers_are_skipped_and_torn_tails_require_resync() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        fs::write(
+            path.with_extension("jsonl.1"),
+            "{\"generation\":1}\n{}\n{\"torn\"",
+        )
+        .unwrap();
+        fs::write(&path, "{\"generation\":2}\n{}\n").unwrap();
+        let batch = read(&path, "1:0".parse().unwrap(), 1000).unwrap();
+        assert!(batch.resync);
+        assert_eq!(batch.lines.len(), 2);
+        assert!(batch.lines.iter().all(|line| line.2 == "{}"));
+        assert_eq!(batch.next.generation, 2);
+    }
+
+    #[test]
+    fn four_writers_increment_generation_once_per_rotation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..25 {
+                        append(&path, "{}\n", 0).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert_eq!(snapshot(&path).unwrap().generation, 99);
+        assert_eq!(
+            header(&path.with_extension("jsonl.1")).unwrap().generation,
+            98
+        );
+        assert_eq!(
+            header(&path.with_extension("jsonl.2")).unwrap().generation,
+            97
+        );
+        let batch = read(&path, "98:0".parse().unwrap(), 1000).unwrap();
+        assert!(!batch.resync);
+        assert_eq!(batch.lines.len(), 2);
     }
 
     #[test]

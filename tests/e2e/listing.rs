@@ -1333,16 +1333,13 @@ fn events_are_a_json_log_and_a_snapshot_names_where_to_subscribe_from() {
     );
     assert_eq!(snap["tasks"].as_array().unwrap().len(), 1);
     assert_eq!(snap["worker"]["running"], false);
-    let after = e.forge("ok.sh", &["events", "--since", &offset.to_string()]);
+    let after = e.forge("ok.sh", &["events", "--since", offset]);
     assert!(after.stdout.is_empty(), "nothing after the snapshot");
     // A second task's events follow the offset, and --task filters.
     assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
     let later = String::from_utf8_lossy(
-        &e.forge(
-            "ok.sh",
-            &["events", "--since", &offset.to_string(), "--task", "2"],
-        )
-        .stdout,
+        &e.forge("ok.sh", &["events", "--since", offset, "--task", "2"])
+            .stdout,
     )
     .to_string();
     assert!(!later.is_empty());

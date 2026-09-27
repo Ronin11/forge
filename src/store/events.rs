@@ -1,5 +1,5 @@
 //! The event trigger's place in the log (docs/JOBS.md, "Triggers"): for
-//! each project's run workflow with `[trigger] on = "event"`, the byte
+//! each project's run workflow with `[trigger] on = "event"`, the generation and byte
 //! offset in `events.jsonl` up to which the worker has examined events. A
 //! row per workflow, so adding a second event-triggered workflow later
 //! starts it at the end of the log rather than replaying history, and a
@@ -39,6 +39,45 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_cursor_migration_preserves_legacy_positions_and_job_keys() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE event_cursors (event_offset INTEGER);
+            INSERT INTO event_cursors VALUES (123);
+            CREATE TABLE jobs (trigger_kind TEXT, trigger_ref TEXT);
+            INSERT INTO jobs VALUES ('event', '17'), ('webhook', '17');",
+        )
+        .unwrap();
+        conn.execute_batch(
+            super::super::migrations::MIGRATIONS
+                .iter()
+                .find(|sql| sql.contains("ADD COLUMN cursor TEXT"))
+                .unwrap(),
+        )
+        .unwrap();
+        let cursor: String = conn
+            .query_row("SELECT cursor FROM event_cursors", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cursor, "0:123");
+        let key: String = conn
+            .query_row(
+                "SELECT trigger_ref FROM jobs WHERE trigger_kind='event'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(key, "0:17");
+        let key: String = conn
+            .query_row(
+                "SELECT trigger_ref FROM jobs WHERE trigger_kind='webhook'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(key, "17");
+    }
 
     #[test]
     fn a_cursor_is_per_project_and_workflow_and_moves_either_way() {
