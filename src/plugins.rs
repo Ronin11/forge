@@ -321,6 +321,13 @@ const STOP_GRACE: Duration = Duration::from_secs(10);
 /// How often the supervisor re-reads the enabled set while the worker is
 /// up, so `forge plugin enable`/`disable` takes effect without a restart.
 const RECONCILE_SECS: u64 = 10;
+/// An `events`-subscribed plugin polls `events.jsonl` for new bytes rather
+/// than being pushed to (`cli::stats::events`'s 250ms sleep); stopping
+/// right after the run that produced the last event would signal (and,
+/// with the group now killed as a whole, terminate) that poll before it
+/// can land. This settle window lets one more poll cycle happen before
+/// `Supervisor::stop` reaches the plugins still up.
+const STOP_SETTLE: Duration = Duration::from_millis(400);
 
 /// What a plugin is doing right now, as the supervisor last recorded it.
 /// Persisted to `<FORGE_HOME>/plugins-run/<name>.json` so `forge plugin
@@ -718,6 +725,9 @@ impl Supervisor {
             // that raced the drain) must never be left running past
             // `Supervisor::stop`, so drain it once, unconditionally, rather
             // than only on the tick that first observes the stop signal.
+            if !running.is_empty() {
+                tokio::time::sleep(STOP_SETTLE).await;
+            }
             for (_, (ptx, handle, _)) in running {
                 let _ = ptx.send(true);
                 handle.await.ok();
@@ -1001,9 +1011,24 @@ mod tests {
 
         sup.stop().await;
 
+        // `kill(pid, 0)` still finds a just-killed process while it is a
+        // zombie awaiting reaping by whatever it was reparented to (pid 1,
+        // usually), which a busy machine can be slow to get to; a short
+        // poll instead of one immediate check keeps this test about the
+        // group having been signalled, not about reaper scheduling.
+        let deadline = Instant::now() + Duration::from_secs(5);
         for kid in children {
-            let alive = unsafe { libc::kill(kid, 0) } == 0;
-            assert!(!alive, "expected pipeline child {kid} reaped after stop");
+            loop {
+                let alive = unsafe { libc::kill(kid, 0) } == 0;
+                if !alive {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "expected pipeline child {kid} reaped after stop"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
         }
     }
 }
