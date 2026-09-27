@@ -85,3 +85,30 @@ fn an_operator_edited_copy_still_wins_and_refresh_refuses_without_a_flag() {
     assert!(o.status.success());
     assert!(!cat.join("actions/fmt.toml").exists());
 }
+
+#[test]
+fn an_identical_seed_is_a_stale_seed_and_refresh_deletes_it() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let cat = e.home.join("workflows");
+    std::fs::write(cat.join("actions/fmt.toml"), FMT).unwrap();
+    git(&cat, &["add", "actions/fmt.toml"]);
+    git(
+        &cat,
+        &[
+            "-c",
+            "user.name=forge",
+            "-c",
+            "user.email=forge@localhost",
+            "commit",
+            "-qm",
+            "catalog: built-in fmt",
+        ],
+    );
+    let o = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("fmt.toml (stale seed"), "{out}");
+    let o = e.forge("ok.sh", &["workflows", "refresh"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!cat.join("actions/fmt.toml").exists());
+}

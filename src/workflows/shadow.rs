@@ -30,7 +30,7 @@ impl Origin {
     }
 }
 
-/// One catalog action file whose text differs from the built-in it shadows.
+/// One catalog action file sharing a built-in's name (identical or not).
 #[derive(Clone, Debug)]
 pub struct Shadow {
     /// File name under `actions/`, e.g. `deploy-self.toml`.
@@ -106,19 +106,15 @@ fn diff_of(builtin: &str, copy: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Every catalog action file that differs from the built-in of the same
-/// name, sorted by file name.
+/// Every catalog action file sharing a built-in's name, sorted by file name.
 pub fn scan(catalog: &Path) -> Vec<Shadow> {
     let actions = catalog.join("actions");
     let mut out = Vec::new();
     for (file, builtin) in BUILTIN_ACTIONS.iter().chain(BUILTIN_OPERATIONS) {
         let path = actions.join(file);
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        if !path.is_file() {
             continue;
         };
-        if text == *builtin {
-            continue;
-        }
         let rel = format!("actions/{file}");
         let origin = if has_operator_commit(catalog, &rel) {
             Origin::OperatorEdit
@@ -154,7 +150,7 @@ pub(super) fn stale_seeds(catalog: &Path) -> HashSet<String> {
         let mut noted = NOTED.lock().unwrap();
         if noted.get_or_insert_with(HashSet::new).insert(key) {
             eprintln!(
-                "forge: ignoring stale seed actions/{} in the catalog (it differs from the built-in and was never edited); `forge workflows refresh` removes it",
+                "forge: ignoring stale seed actions/{} in the catalog (it shadows the built-in and was never edited); `forge workflows refresh` removes it",
                 s.file
             );
         }
