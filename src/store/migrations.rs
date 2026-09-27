@@ -665,6 +665,9 @@ CREATE TABLE workers (
   stopped_at INTEGER
 );
 ",
+    // A jev judgment's probabilities over the outcomes, as JSON, beside the
+    // outcome it led to (docs/EXECUTION.md, "The judgment tier").
+    "ALTER TABLE job_steps ADD COLUMN probabilities TEXT NOT NULL DEFAULT '';",
     // When each contract step (see `CONTRACT_MARKER`) was applied; the
     // additive ladder above advances `user_version`, these record their own.
     "

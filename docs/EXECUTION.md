@@ -158,6 +158,67 @@ profiles, resume and `forge trace` keyed by node rather than position.
 That is the flow engine Forge 1 built, confined to the failure path of
 run workflows.
 
+## The judgment tier
+
+An operation unless judgment; typed judgment before prose. When a step
+truly needs judgment, most of the time it needs a *classification*, not a
+paragraph: which of these outcomes, how sure. A model that answers in
+prose is the wrong tool for that. TypeSafe's Jev is a System One model:
+state plus typed questions in; a `choice`, `score` or `noul`, with its
+probabilities and a confidence, out, never text. Through Cloudflare
+Workers AI it took 687 ms and 500 input tokens for a short email
+(verified by hand, 2026-09-26), at $0.042 per million input tokens and
+free output.
+
+```toml
+# config.toml; every key but `runner` is its default
+[providers.jev]
+runner = "jev"
+base_url = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run"
+account_id_env = "CLOUDFLARE_ACCOUNT_ID"   # names the variable, never holds the id
+api_key_env = "CLOUDFLARE_API_TOKEN"
+model = "typesafe/jev"
+price_usd_per_million_input = 0.042
+```
+
+An action opts in by describing its outcomes (the list form still works,
+each name then being its own description) and may add questions and a
+confidence floor:
+
+```toml
+# actions/triage-mail.toml
+confidence_below = { 0.6 = "uncertain" }   # a judgment under 0.6 routes as `uncertain`
+
+[outcomes]
+reply = "a person wrote a question that needs an answer"
+forward = "the message is for someone else"
+nothing-to-do = "a newsletter, a receipt, noise"
+
+[[questions]]
+name = "urgency"
+type = "score"                              # choice | noul | score
+instructions = "How soon does this need an answer?"
+criteria = ["low", "medium", "high"]
+```
+
+The request's `state` is the step's inputs, the same text a chat
+directive gets (the input document and earlier step outputs); the outcomes
+become one `choice` question named `outcome`, its criteria the
+descriptions; each `[[questions]]` entry is asked beside it. The result is
+the directive's structured envelope: `outcome` (after the floor),
+`confidence`, `probabilities`, and any other question's answer under
+`answers`. The floor's names are outcomes like any other, so an edge
+routes on them (`on = { uncertain = "ask-april" }`); the choice the floor
+overrode stays in the envelope as `choice`. The step's row in `job_steps`
+records the probabilities (`forge job show --json`'s
+`steps[].probabilities`) beside the outcome. Cost is the usage tokens at
+the provider's price; the log carries the request and the response.
+
+The runner is HTTP only and has no tools, so it is refused for anything
+but a job's directive step whose action declares outcomes; the step's
+`schema` is not what it answers against, the outcomes are. Its host,
+`api.cloudflare.com`, joins the model rules of the egress allowlist.
+
 ## The directive library
 
 Forge 2 already reused Forge 1's word: a directive is an action with a

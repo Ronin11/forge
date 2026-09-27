@@ -573,6 +573,7 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
             start_sha,
             resume,
             no_tools: false,
+            judgment: None,
         },
     )
     .await
@@ -721,6 +722,7 @@ mod tests {
             model: model.map(str::to_string),
             base_url: None,
             api_key_env: None,
+            account_id_env: None,
             env: vec![],
             extra_args: vec![],
             notes: None,

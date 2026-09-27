@@ -139,6 +139,7 @@ pub async fn rule(f: &Forge, t: &Task, deny: &[String], need: &Need) -> Result<R
             start_sha: &start_sha,
             resume: None,
             no_tools: false,
+            judgment: None,
         },
     )
     .await?;

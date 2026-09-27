@@ -64,7 +64,7 @@ pub(super) fn provider_env(provider: &Provider) -> Vec<(String, String)> {
             Runner::ClaudeCli => "ANTHROPIC_API_KEY",
             Runner::CodexCli => "OPENAI_API_KEY",
             Runner::CopilotCli => "COPILOT_GITHUB_TOKEN",
-            Runner::Chat => return env,
+            Runner::Chat | Runner::Jev => return env,
         };
         env.push((target.into(), key));
     }

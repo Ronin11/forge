@@ -155,6 +155,7 @@ pub async fn run(
             start_sha: "",
             resume: None,
             no_tools: false,
+            judgment: None,
         },
     )
     .await?;
