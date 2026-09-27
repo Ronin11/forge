@@ -19,8 +19,10 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 pub mod edges;
+mod judgment;
 mod library;
 pub mod shadow;
+pub use judgment::{OUTCOME_QUESTION, Question};
 pub use library::{FRAGMENTS_DIR, Include, UNTRUSTED_DATA, text_hash};
 use library::{fragment_problems, load_prompt_file};
 
@@ -502,7 +504,16 @@ struct ActionRaw {
     schema: Option<String>,
     /// Directive: the named outcomes its structured result picks one of
     /// (docs/EXECUTION.md, "Outcomes, then edges").
-    outcomes: Option<Vec<String>>,
+    /// A table of `outcome = "description"` also serves: the descriptions are
+    /// the criteria a `jev` provider judges among; the list form names each
+    /// outcome as its own description.
+    outcomes: Option<judgment::OutcomesRaw>,
+    /// Directive (jev runner): further typed questions beside the outcomes.
+    #[serde(default)]
+    questions: Vec<Question>,
+    /// Directive (jev runner): `{ 0.6 = "uncertain" }` routes a judgment whose
+    /// confidence is below 0.6 to the outcome `uncertain`.
+    confidence_below: Option<serde_json::Value>,
     /// Directive (plan contract): when true and the task has an
     /// initiative id, file the plan's items as sibling tasks in that
     /// initiative after this step, instead of running the code step in
@@ -550,8 +561,19 @@ pub struct ActionDef {
     #[serde(default)]
     pub includes: Vec<Include>,
     pub schema: Option<String>,
+    /// Every outcome an edge may route on: the declared ones, then the
+    /// `confidence_below` names.
     #[serde(default)]
     pub outcomes: Vec<String>,
+    /// The declared outcomes' descriptions, the criteria of a jev judgment.
+    #[serde(default)]
+    pub outcome_criteria: BTreeMap<String, String>,
+    #[serde(default)]
+    pub questions: Vec<Question>,
+    /// Confidence floors, ascending: a judgment below the threshold takes
+    /// the outcome.
+    #[serde(default)]
+    pub confidence_below: Vec<(f64, String)>,
     pub file_into_initiative: bool,
     pub overlay: bool,
     pub verifies: bool,
@@ -1027,7 +1049,7 @@ fn blob_hash(dir: &Path, path: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
-fn parse_action(path: &Path, text: &str, hash: String) -> Result<ActionDef> {
+pub(crate) fn parse_action(path: &Path, text: &str, hash: String) -> Result<ActionDef> {
     let raw: ActionRaw =
         toml::from_str(text).with_context(|| format!("parsing {}", path.display()))?;
     let stem = path.file_stem().unwrap().to_string_lossy();
@@ -1109,15 +1131,13 @@ fn parse_action(path: &Path, text: &str, hash: String) -> Result<ActionDef> {
             .with_context(|| format!("{}: `schema` is not a valid JSON Schema", path.display()))?;
     }
     library::check_prompt_file(path, raw.prompt.is_some(), raw.prompt_file.as_deref())?;
-    if let Some(o) = &raw.outcomes {
-        let mut seen = std::collections::BTreeSet::new();
-        if o.is_empty() || o.iter().any(|n| n.trim().is_empty() || !seen.insert(n)) {
-            bail!(
-                "{}: `outcomes` needs at least one name, none empty or repeated",
-                path.display()
-            );
-        }
-    }
+    let judged = judgment::parse(
+        path,
+        raw.kind == Kind::Operation,
+        &raw.outcomes,
+        &raw.questions,
+        &raw.confidence_below,
+    )?;
     if raw.kind == Kind::Directive && (raw.overlay || raw.verifies) {
         bail!(
             "{}: overlay and verifies apply to operations only",
@@ -1189,7 +1209,10 @@ fn parse_action(path: &Path, text: &str, hash: String) -> Result<ActionDef> {
         prompt_file: raw.prompt_file,
         includes: Vec::new(),
         schema: raw.schema,
-        outcomes: raw.outcomes.unwrap_or_default(),
+        outcomes: judged.outcomes,
+        outcome_criteria: judged.outcome_criteria,
+        questions: raw.questions,
+        confidence_below: judged.confidence_below,
         file_into_initiative: raw.file_into_initiative,
         overlay: raw.overlay,
         verifies: raw.verifies,

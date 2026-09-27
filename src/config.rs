@@ -427,6 +427,9 @@ struct ProviderRaw {
     /// The environment variable that holds this provider's API key; see
     /// `agent::Provider::api_key_env`. Never the key itself.
     api_key_env: Option<String>,
+    /// The environment variable holding the Cloudflare account id, for the
+    /// jev runner; see `agent::Provider::account_id_env`.
+    account_id_env: Option<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
     #[serde(default)]
@@ -939,6 +942,21 @@ journal_control = 0.0
 # base_url = \"http://dev.home:11434/v1\"
 # model = \"qwen3-coder:30b\"
 #
+# runner = \"jev\" is typed judgment, not text: TypeSafe's Jev through
+# Cloudflare Workers AI, one HTTP call answering a directive step's outcomes
+# (and its [[questions]]) with a choice, probabilities and a confidence. Also
+# refused for anything but such a step. Every key below is its default;
+# `account_id_env` and `api_key_env` name environment variables, never hold
+# the values. Output tokens are free.
+#
+# [providers.jev]
+# runner = \"jev\"
+# base_url = \"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run\"
+# account_id_env = \"CLOUDFLARE_ACCOUNT_ID\"
+# api_key_env = \"CLOUDFLARE_API_TOKEN\"
+# model = \"typesafe/jev\"
+# price_usd_per_million_input = 0.042
+
 # [providers.openai-chat]
 # runner = \"chat\"
 # base_url = \"https://api.openai.com/v1\"
@@ -1142,18 +1160,32 @@ fn build_providers(
             None if name == "anthropic" => Runner::ClaudeCli,
             None => bail!("providers.{name}: needs a `runner`"),
         };
+        let jev = runner == Runner::Jev;
         providers.insert(
             name.clone(),
             Provider {
                 name,
                 runner,
-                model: p.model,
-                base_url: p.base_url,
-                api_key_env: p.api_key_env,
+                model: p
+                    .model
+                    .or_else(|| jev.then(|| crate::agent::JEV_DEFAULT_MODEL.into())),
+                base_url: p
+                    .base_url
+                    .or_else(|| jev.then(|| crate::agent::JEV_DEFAULT_URL.into())),
+                api_key_env: p
+                    .api_key_env
+                    .or_else(|| jev.then(|| crate::agent::JEV_DEFAULT_KEY_ENV.into())),
+                account_id_env: p
+                    .account_id_env
+                    .or_else(|| jev.then(|| crate::agent::JEV_DEFAULT_ACCOUNT_ENV.into())),
                 env: p.env.into_iter().collect(),
                 extra_args: p.extra_args,
                 notes: p.notes,
-                price_input_per_million: p.price_usd_per_million_input.unwrap_or(0.0),
+                price_input_per_million: p.price_usd_per_million_input.unwrap_or(if jev {
+                    crate::agent::JEV_PRICE_INPUT_PER_MILLION
+                } else {
+                    0.0
+                }),
                 price_output_per_million: p.price_usd_per_million_output.unwrap_or(0.0),
                 price_cache_read_per_million: p.price_usd_per_million_cache_read,
                 price_per_request: p.price_usd_per_premium_request.unwrap_or(0.0),

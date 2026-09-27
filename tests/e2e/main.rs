@@ -16,6 +16,7 @@ mod graph;
 mod init;
 mod initiatives;
 mod intake;
+mod jev;
 mod jobs;
 mod knownfixes;
 mod landing;
