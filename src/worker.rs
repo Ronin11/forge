@@ -242,11 +242,14 @@ fn hold_from_sample(
 }
 
 /// The role the task's *next agent step* will actually run under: the
-/// contract of the first directive step of its resolved workflow (see
-/// `engine::run_task`, which resolves the same way at start). Falls back
-/// to "code" on any failure to resolve (unknown/broken workflow, no
-/// directive step): a provider that fails to resolve is never held here,
-/// the real error surfaces when the task actually runs.
+/// contract of the first directive step in its resolved workflow that the
+/// record does not already show done (`engine::resume_done`, the same
+/// resume rule `run_task` builds its cursor from), so a resumed task whose
+/// code step already succeeded is judged by its review, not its code.
+/// Falls back to "code" on any failure to resolve (unknown/broken
+/// workflow, no undone directive step) or to read the record: a provider
+/// that fails to resolve is never held here, the real error surfaces when
+/// the task actually runs.
 fn first_role(f: &Forge, t: &Task) -> String {
     let resolved: workflows::Resolved = if !t.actions_json.is_empty() {
         match serde_json::from_str(&t.actions_json) {
@@ -259,11 +262,19 @@ fn first_role(f: &Forge, t: &Task) -> String {
             Err(_) => return "code".into(),
         }
     };
+    let done = f
+        .store
+        .attempts(t.id)
+        .map(|prior| engine::resume_done(&prior))
+        .unwrap_or_default();
     resolved
         .steps
         .into_iter()
-        .find(|s| s.action.kind == workflows::Kind::Directive)
-        .map(|s| s.action.contract.as_str().to_string())
+        .enumerate()
+        .find(|(i, s)| {
+            s.action.kind == workflows::Kind::Directive && !done.contains(&(*i as i64 + 1))
+        })
+        .map(|(_, s)| s.action.contract.as_str().to_string())
         .unwrap_or_else(|| "code".into())
 }
 
@@ -1198,6 +1209,31 @@ mod tests {
         let mut t = task_on("direct");
         t.actions_json = "not json".into();
         assert_eq!(first_role(&f, &t), "code");
+    }
+
+    #[test]
+    fn first_role_is_the_next_undone_directive_on_a_resumed_task() {
+        // `reviewed` resolves to setup, repo-map, code, review: seq 3 is
+        // the code step. A record whose latest attempt at that seq
+        // succeeded means the run already resumes past it (the same rule
+        // `engine::resume_done` builds the cursor from), so the next
+        // agent step, and the provider a claim is judged against, is the
+        // review, not the code the task started on.
+        let (_dir, f) = fixture();
+        let mut t = task_on("reviewed");
+        t.id = f.store.insert_task(&t).unwrap();
+        assert_eq!(first_role(&f, &t), "code");
+        f.store
+            .insert_attempt(&crate::store::Attempt {
+                task_id: t.id,
+                attempt_no: 1,
+                step_seq: 3,
+                state: crate::store::AttemptState::Succeeded,
+                started_at: crate::unix_now(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(first_role(&f, &t), "review");
     }
 
     /// A minute-aligned unix second: `Cron::find_previous_occurrence`

@@ -189,21 +189,40 @@ fn a_run_the_provider_refuses_does_not_count_and_waits_for_the_window() {
     let e = Env::new();
     // --retries 0: one attempt allowed, and the refused run must not be it.
     let o = e.run("ratelimit-hit.sh", &["--retries", "0"]);
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // The refusal's own window holds the provider (`window_hold`, read
+    // right after the refund): the run ends by handing the task back to
+    // the queue with the hold as its reason, rather than sleeping out the
+    // window inline (`run_directive_step` never waits in the attempt; see
+    // docs/REVIEW-3.md item 9).
+    assert!(
+        !o.status.success(),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
         err.contains("the provider refused this run; it does not count as an attempt"),
         "{err}"
     );
-    assert!(
-        err.contains("rate window 5h at 100%"),
-        "the hold used the refusal's window: {err}"
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 1, "the refused run is recorded, uncounted");
+    assert_eq!(a[0].2, "rate limited by the provider");
+    assert_eq!(
+        e.task(1).0,
+        "queued",
+        "the refusal's hold ends the run rather than sleep it out inline"
     );
+
+    // `forge work` claims the task back once the window resets; its next
+    // (real) attempt runs in the same worktree the refused one left
+    // behind (`ratelimit-hit.sh`'s own marker there is what tells the two
+    // apart) and succeeds.
+    let o = e.forge("ratelimit-hit.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(e.task(1).0, "succeeded");
     let a = e.attempts(1);
     assert_eq!(a.len(), 2, "the refused run is recorded, then the real one");
-    assert_eq!(a[0].2, "rate limited by the provider");
     assert_eq!(a[1].1, "succeeded");
-    assert_eq!(e.task(1).0, "succeeded");
     let (resets, started2): (i64, i64) = e
         .db()
         .query_row(
