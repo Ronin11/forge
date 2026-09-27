@@ -1,0 +1,14 @@
+# Forge yields the CPU while the operator works and takes it all when they
+# are away: follows the omarchy shell's idle monitor (docs/OPS.md, "CPU").
+# Install: cp deploy/forge-idle ~/.local/bin/ && cp deploy/forge-idle.service
+# ~/.config/systemd/user/ && systemctl --user enable --now forge-idle
+[Unit]
+Description=Forge CPU share follows the desktop's idle state
+
+[Service]
+ExecStart=%h/.local/bin/forge-idle watch-omarchy
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

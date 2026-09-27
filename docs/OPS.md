@@ -19,6 +19,32 @@ permissions for events.jsonl`) once `N` is above zero, so a systemic
 problem is visible even though no single attempt reported it as a
 failure.
 
+## CPU: yield while you work, everything while you're away (2026-09-26)
+
+Everything Forge runs, sandboxed builds included, lives in the
+`forge-worker` unit's cgroup, so one cgroup share governs all of it. The
+operator wants the whole box when away and an untouched desktop when
+present, and "present" is not "under load": a video is not idle, a
+background build the operator started is not Forge's business. So the
+share follows the desktop's own idle state rather than a fixed weight.
+
+`deploy/forge-idle` has two verbs, `active` (the worker's `CPUWeight` to
+40, a fraction of the default 100) and `idle` (back to 100), applied live
+with `systemctl --user set-property --runtime`, no restart, no drain. A
+share only matters under contention, so neither slows Forge on an idle
+box; a hard ceiling is one more line in the unit's drop-in
+(`CPUQuota=600%`). On omarchy, `forge-idle watch-omarchy` (the
+`forge-idle.service` user unit) follows the shell's own idle service,
+which is inhibitor-aware and logs every transition to the journal; it
+reads the state once at start over `omarchy-shell idle status`, then
+applies each transition as it is logged. No polling, no extra package.
+Another desktop drives the same two verbs from `swayidle -w timeout N
+'forge-idle idle' resume 'forge-idle active'`.
+
+Install: `cp deploy/forge-idle ~/.local/bin/ && cp deploy/forge-idle.service
+~/.config/systemd/user/ && systemctl --user enable --now forge-idle`;
+`forge-idle status` shows the weight and what the shell thinks.
+
 ## The running binary: releases, the pointer, and the successor worker (design, 2026-09-25)
 
 Three incidents in two days came from one cause: a binary replaced in

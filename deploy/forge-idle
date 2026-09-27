@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# forge-idle: Forge yields the CPU while the operator is at the keyboard and
+# takes all of it when they walk away (docs/OPS.md, "CPU: yield while you
+# work, everything while you're away").
+#
+#   forge-idle active         the operator is here: a low CPU share for the worker
+#   forge-idle idle           the operator is away: the default (full) share
+#   forge-idle status         the worker's CPU weight and, on omarchy, the shell's idle state
+#   forge-idle watch-omarchy  follow the omarchy shell's idle monitor and apply the two above
+#
+# The weights are cgroup shares on the forge-worker unit, applied live with
+# `systemctl --user set-property` (no restart, no drain): everything Forge
+# runs, sandboxed builds included, lives in that unit's cgroup. A share only
+# matters under contention, so "idle" is simply the default weight (100) and
+# "active" a fraction of it; neither slows Forge on an otherwise idle box.
+# Override with FORGE_IDLE_ACTIVE_WEIGHT / FORGE_IDLE_IDLE_WEIGHT.
+#
+# The omarchy watcher needs no polling and no extra package: the shell's
+# idle service (Quickshell IdleMonitor, inhibitor-aware, so a playing video
+# is not idle) logs every transition to the journal as
+# "omarchy idle <ts> idle-monitor: idle|active", and answers
+# `omarchy-shell idle status` with the state now, which is read once at
+# start so a restart never leaves the wrong weight in place. Another
+# desktop runs `swayidle -w timeout N 'forge-idle idle' resume 'forge-idle active'`
+# against the same two verbs.
+set -euo pipefail
+
+unit="${FORGE_IDLE_UNIT:-forge-worker}"
+active_weight="${FORGE_IDLE_ACTIVE_WEIGHT:-40}"
+idle_weight="${FORGE_IDLE_IDLE_WEIGHT:-100}"
+
+apply() { # <state>
+  case "$1" in
+    idle)   systemctl --user set-property --runtime "$unit" "CPUWeight=$idle_weight" ;;
+    active) systemctl --user set-property --runtime "$unit" "CPUWeight=$active_weight" ;;
+    *) echo "forge-idle: unknown state $1" >&2; return 1 ;;
+  esac
+  echo "forge-idle: $1 -> $unit CPUWeight=$( [ "$1" = idle ] && echo "$idle_weight" || echo "$active_weight" )"
+}
+
+shell_state() { # idle|active|unknown, from the omarchy shell's own service
+  local json
+  json="$(timeout 5 omarchy-shell idle status 2>/dev/null || true)"
+  case "$json" in
+    *'"idle":true'*)  echo idle ;;
+    *'"idle":false'*) echo active ;;
+    *) echo unknown ;;
+  esac
+}
+
+case "${1:-}" in
+  active|idle) apply "$1" ;;
+  status)
+    echo "$unit: $(systemctl --user show "$unit" -p CPUWeight --value 2>/dev/null || echo '?') (active=$active_weight idle=$idle_weight)"
+    command -v omarchy-shell >/dev/null 2>&1 && echo "omarchy shell says: $(shell_state)"
+    ;;
+  watch-omarchy)
+    s="$(shell_state)"
+    [ "$s" = unknown ] && s=active
+    apply "$s"
+    # -n0: transitions from now on; the state at start came from the shell itself.
+    journalctl --user -f -n0 -o cat SYSLOG_IDENTIFIER=omarchy-shell 2>/dev/null \
+      | grep --line-buffered -oE 'idle-monitor: (idle|active)$' \
+      | while read -r line; do apply "${line##*: }"; done
+    ;;
+  *) sed -n '2,10p' "$0" >&2; exit 2 ;;
+esac
