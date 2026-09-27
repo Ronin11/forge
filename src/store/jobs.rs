@@ -155,7 +155,10 @@ pub struct JobStep {
     /// A jev judgment's probabilities over the outcomes, as JSON, beside the
     /// `outcome` they led to (docs/EXECUTION.md, "The judgment tier"); empty
     /// for any other step.
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(
+        skip_serializing_if = "String::is_empty",
+        serialize_with = "probabilities_json"
+    )]
     pub probabilities: String,
     /// The step's node id, `<index>-<action>`; `seq` counts executions, so
     /// a loop shows one node at several seqs. Empty for the setup row.
@@ -199,6 +202,13 @@ pub struct JobStat {
     pub failed: i64,
     pub needs_human: i64,
     pub skipped: i64,
+}
+
+/// The stored probabilities as the JSON object they are, not a string of it.
+fn probabilities_json<S: serde::Serializer>(text: &str, s: S) -> Result<S::Ok, S::Error> {
+    serde_json::from_str::<serde_json::Value>(text)
+        .unwrap_or_default()
+        .serialize(s)
 }
 
 pub(super) const JOB_COLUMNS: &[&str] = &[

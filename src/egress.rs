@@ -1140,6 +1140,23 @@ mod tests {
     }
 
     #[test]
+    fn a_jev_provider_opens_the_workers_ai_host() {
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            "jev".to_string(),
+            crate::agent::Provider {
+                runner: crate::agent::Runner::Jev,
+                ..crate::agent::Provider::default()
+            },
+        );
+        let rules: Vec<String> = model_rules(&providers)
+            .iter()
+            .map(|r| r.to_string())
+            .collect();
+        assert!(rules.iter().any(|r| r == "api.cloudflare.com"), "{rules:?}");
+    }
+
+    #[test]
     fn a_policy_is_the_same_whatever_order_its_rules_came_in() {
         let a = Policy::new([rule("b.io"), rule("a.io"), rule("a.io")]);
         let b = Policy::new([rule("a.io"), rule("b.io")]);
