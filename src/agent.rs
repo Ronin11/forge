@@ -5,6 +5,7 @@
 
 mod inputs;
 mod jev;
+mod refusal;
 use inputs::{AgentRun, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
 pub use jev::*;
 
@@ -651,7 +652,7 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
                     let text = v["result"].as_str().unwrap_or("").to_ascii_lowercase();
                     if out.is_error && (text.contains("rate limit") || text.contains("rate-limit"))
                     {
-                        out.rate_limited = true;
+                        refusal::hold_text_only(&mut out);
                     }
                     out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
                     out.cost_usd = v["total_cost_usd"].as_f64();
