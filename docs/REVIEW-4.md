@@ -77,8 +77,8 @@ at its line.
 
 4. **Two more of the five largest files carry the same shape as
    workflows.rs, and one is a single crossing away.** agent.rs (3471)
-   is 38% inline test (`mod tests` from line 2155, 1317 of 3471 lines);
-   job.rs (2930) is roughly a fifth (`mod tests` from line 2367). The
+   is 38% inline test (`mod tests` from line 2154, 1318 of 3471 lines);
+   job.rs (2930) is roughly a fifth (`mod tests` from line 2339). The
    `kernel_lines` and `largest_files` measurements count both in the
    same column as parsing and control flow, so part of what crossed
    this week's threshold is 561 unit tests earning their keep, not new
