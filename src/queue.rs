@@ -138,15 +138,15 @@ pub struct TaskShape {
 
 /// The level's own `[trust.<level>]` policy, applied at enqueue: a
 /// workflow outside `policy.workflows` is refused naming the level and
-/// the list; `allow_protected` is refused where the level forbids it;
-/// `per_day` is refused against `filed_today` (how many tasks at this
-/// level were filed in the last 24 hours — see
-/// `Store::tasks_filed_since`), the way a job's own `per_day` is checked
-/// in `job::start`. Returns the budget to actually record: `budget`
-/// capped at `policy.budget_usd` when both are set, `policy.budget_usd`
-/// itself when the request named none and the level caps it, or `budget`
-/// unchanged when the level names no cap. Pure and argument-driven so
-/// every field is unit tested without a store or a config file.
+/// the list; `allow_protected` is refused where the level forbids it.
+/// `per_day` is enforced separately, inside `Store::insert_task_capped`'s
+/// transaction, so two concurrent filers cannot both pass a check made
+/// here and then both insert. Returns the budget to actually record:
+/// `budget` capped at `policy.budget_usd` when both are set,
+/// `policy.budget_usd` itself when the request named none and the level
+/// caps it, or `budget` unchanged when the level names no cap. Pure and
+/// argument-driven so every field is unit tested without a store or a
+/// config file.
 /// The one clause of `apply_trust_policy` an edit re-checks: a workflow
 /// outside `policy.workflows` is refused naming the level and the list.
 fn workflow_allowed(
@@ -172,20 +172,11 @@ fn apply_trust_policy(
     workflow: &str,
     allow_protected: bool,
     budget: Option<f64>,
-    filed_today: i64,
 ) -> Result<Option<f64>> {
     workflow_allowed(level, policy, workflow)?;
     if allow_protected && !policy.allow_protected {
         bail!(
             "trust {}: --allow-protected is not allowed at this level",
-            level.as_str()
-        );
-    }
-    if let Some(cap) = policy.per_day
-        && filed_today >= i64::from(cap)
-    {
-        bail!(
-            "trust {}: {filed_today} task(s) filed at this level in the last 24 hours and its per_day limit is {cap}; it can file again when the oldest of those is a day old",
             level.as_str()
         );
     }
@@ -588,15 +579,14 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         crate::store::Trust::Contact => &f.trust.contact,
         crate::store::Trust::Public => &f.trust.public,
     };
-    let filed_today = f.store.tasks_filed_since(trust, unix_now() - 24 * 3600)?;
     let budget = apply_trust_policy(
         trust,
         trust_policy,
         &workflow,
         args.allow_protected,
         args.budget,
-        filed_today,
     )?;
+    let per_day_cap = trust_policy.per_day;
     let mut t = Task {
         repo: repo.display().to_string(),
         task: args.task.clone(),
@@ -638,7 +628,12 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
     for &dep in &t.after {
         dependency_fits(f, dep)?;
     }
-    t.id = f.store.insert_task(&t)?;
+    t.id = match per_day_cap {
+        Some(cap) => f
+            .store
+            .insert_task_capped(&t, i64::from(cap), unix_now() - 24 * 3600)?,
+        None => f.store.insert_task(&t)?,
+    };
     let (journal, arm) = assign_journal_arm(t.id, args.journal_choice, f.measure.journal_control);
     t.journal = journal;
     t.journal_arm = arm.to_string();
@@ -1278,15 +1273,7 @@ mod tests {
     fn apply_trust_policy_allows_any_workflow_when_the_level_names_none() {
         let policy = unrestricted_policy();
         assert!(
-            apply_trust_policy(
-                crate::store::Trust::Public,
-                &policy,
-                "direct",
-                false,
-                None,
-                0
-            )
-            .is_ok()
+            apply_trust_policy(crate::store::Trust::Public, &policy, "direct", false, None).is_ok()
         );
     }
 
@@ -1297,16 +1284,9 @@ mod tests {
             workflows: Some(vec!["reviewed".to_string()]),
             ..unrestricted_policy()
         };
-        let err = apply_trust_policy(
-            crate::store::Trust::Public,
-            &policy,
-            "direct",
-            false,
-            None,
-            0,
-        )
-        .unwrap_err()
-        .to_string();
+        let err = apply_trust_policy(crate::store::Trust::Public, &policy, "direct", false, None)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("public"), "{err}");
         assert!(err.contains("direct"), "{err}");
         assert!(err.contains("reviewed"), "{err}");
@@ -1324,8 +1304,7 @@ mod tests {
                 &policy,
                 "tdd-reviewed",
                 false,
-                None,
-                0
+                None
             )
             .is_ok()
         );
@@ -1337,16 +1316,9 @@ mod tests {
             allow_protected: false,
             ..unrestricted_policy()
         };
-        let err = apply_trust_policy(
-            crate::store::Trust::Public,
-            &policy,
-            "direct",
-            true,
-            None,
-            0,
-        )
-        .unwrap_err()
-        .to_string();
+        let err = apply_trust_policy(crate::store::Trust::Public, &policy, "direct", true, None)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("public"), "{err}");
         assert!(err.contains("allow-protected"), "{err}");
     }
@@ -1355,15 +1327,8 @@ mod tests {
     fn apply_trust_policy_allows_allow_protected_where_the_level_permits_it() {
         let policy = unrestricted_policy();
         assert!(
-            apply_trust_policy(
-                crate::store::Trust::Operator,
-                &policy,
-                "direct",
-                true,
-                None,
-                0
-            )
-            .is_ok()
+            apply_trust_policy(crate::store::Trust::Operator, &policy, "direct", true, None)
+                .is_ok()
         );
     }
 
@@ -1374,70 +1339,7 @@ mod tests {
             ..unrestricted_policy()
         };
         assert!(
-            apply_trust_policy(
-                crate::store::Trust::Public,
-                &policy,
-                "direct",
-                false,
-                None,
-                0
-            )
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn apply_trust_policy_refuses_once_filed_today_reaches_per_day() {
-        let policy = config::TrustPolicy {
-            per_day: Some(5),
-            ..unrestricted_policy()
-        };
-        let err = apply_trust_policy(
-            crate::store::Trust::Public,
-            &policy,
-            "direct",
-            false,
-            None,
-            5,
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("public"), "{err}");
-        assert!(err.contains('5'), "{err}");
-    }
-
-    #[test]
-    fn apply_trust_policy_allows_below_the_per_day_cap() {
-        let policy = config::TrustPolicy {
-            per_day: Some(5),
-            ..unrestricted_policy()
-        };
-        assert!(
-            apply_trust_policy(
-                crate::store::Trust::Public,
-                &policy,
-                "direct",
-                false,
-                None,
-                4
-            )
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn apply_trust_policy_never_refuses_per_day_when_the_level_names_no_cap() {
-        let policy = unrestricted_policy();
-        assert!(
-            apply_trust_policy(
-                crate::store::Trust::Operator,
-                &policy,
-                "direct",
-                false,
-                None,
-                1_000_000
-            )
-            .is_ok()
+            apply_trust_policy(crate::store::Trust::Public, &policy, "direct", false, None).is_ok()
         );
     }
 
@@ -1450,7 +1352,6 @@ mod tests {
             "direct",
             false,
             None,
-            0,
         )
         .unwrap();
         assert_eq!(got, None);
@@ -1460,7 +1361,6 @@ mod tests {
             "direct",
             false,
             Some(50.0),
-            0,
         )
         .unwrap();
         assert_eq!(got, Some(50.0));
@@ -1472,15 +1372,8 @@ mod tests {
             budget_usd: Some(1.0),
             ..unrestricted_policy()
         };
-        let got = apply_trust_policy(
-            crate::store::Trust::Public,
-            &policy,
-            "direct",
-            false,
-            None,
-            0,
-        )
-        .unwrap();
+        let got = apply_trust_policy(crate::store::Trust::Public, &policy, "direct", false, None)
+            .unwrap();
         assert_eq!(got, Some(1.0));
     }
 
@@ -1496,7 +1389,6 @@ mod tests {
             "direct",
             false,
             Some(10.0),
-            0,
         )
         .unwrap();
         assert_eq!(got, Some(1.0));
@@ -1514,7 +1406,6 @@ mod tests {
             "direct",
             false,
             Some(2.0),
-            0,
         )
         .unwrap();
         assert_eq!(got, Some(2.0));
