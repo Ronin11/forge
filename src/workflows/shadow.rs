@@ -8,7 +8,7 @@
 
 use super::{BUILTIN_ACTIONS, BUILTIN_OPERATIONS};
 use anyhow::{Context, Result, bail};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -215,26 +215,30 @@ fn scan_uncached(catalog: &Path) -> Vec<Shadow> {
 /// name. A task start (`load_catalog`) and `forge doctor` each call this
 /// once per catalog load, so — with four workers starting tasks at once —
 /// the same catalog state was being diffed several times a second; this
-/// caches the result in the process, keyed on `state_key`, so a load that
-/// finds nothing changed costs a hash comparison, not a diff per file.
+/// caches the result in the process, keyed on the catalog path and then on
+/// `state_key`, so a load that finds nothing changed costs a hash
+/// comparison, not a diff per file, and different catalogs never evict each
+/// other's cached entry.
 ///
 /// A result holding a failed diff is never cached: the failure is meant to
 /// be transient (a killed `git diff`), and caching it would keep reporting
 /// the same failure until `HEAD` or an mtime changed, long after `git`
 /// itself had recovered.
+type ScanCache = HashMap<PathBuf, (String, Vec<Shadow>)>;
+
 pub fn scan(catalog: &Path) -> Vec<Shadow> {
-    static CACHE: Mutex<Option<(PathBuf, String, Vec<Shadow>)>> = Mutex::new(None);
+    static CACHE: Mutex<Option<ScanCache>> = Mutex::new(None);
     let key = state_key(catalog);
     let mut cache = CACHE.lock().unwrap();
-    if let Some((dir, k, shadows)) = cache.as_ref()
-        && dir == catalog
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some((k, shadows)) = cache.get(catalog)
         && *k == key
     {
         return shadows.clone();
     }
     let out = scan_uncached(catalog);
     if out.iter().all(|s| s.diff.is_ok()) {
-        *cache = Some((catalog.to_path_buf(), key, out.clone()));
+        cache.insert(catalog.to_path_buf(), (key, out.clone()));
     }
     out
 }
@@ -382,11 +386,11 @@ mod tests {
         }
     }
 
-    // `scan`'s cache is a single process-wide slot (see `scan`'s doc
-    // comment), so two tests calling `scan` on different catalogs at once
-    // can evict each other's cached entry; this one test exercises both
-    // the caching and the failed-diff behavior in sequence, on one thread,
-    // rather than risk that race across separate `#[test]` functions.
+    // `scan`'s cache is keyed per catalog path, so unrelated catalogs used
+    // by other tests running in parallel can't evict this one's entry; this
+    // test still exercises both the caching and the failed-diff behavior in
+    // sequence, on one thread, since it needs to observe cache hits and
+    // misses in a specific order.
     #[test]
     fn scan_caches_on_success_but_never_on_a_failed_diff() {
         use std::os::unix::fs::PermissionsExt;
