@@ -1037,3 +1037,68 @@ fn an_overlay_left_by_a_dead_worker_is_removed_before_the_next_attempt() {
     assert!(!wt.join("tests/hidden").exists());
     assert_eq!(e.task(id).0, "succeeded", "{:?}", e.task(id));
 }
+
+/// docs/REVIEW-3.md item 1.1.4: a refusal recognized only from the result
+/// text (no `rate_limit_event`) must still hold the provider, or the
+/// directive relaunches at once, indefinitely.
+#[test]
+fn a_text_only_refusal_holds_the_provider_instead_of_relaunching_at_once() {
+    let e = Env::new();
+    let id = e.add(&["--no-land"]);
+    let stderr_path = e.home.join("worker-stderr.log");
+    let stderr_file = std::fs::File::create(&stderr_path).unwrap();
+    let mut worker = Worker::spawn(
+        e.cmd("ratelimit-textonly.sh")
+            .args(["work", "--once"])
+            .stderr(stderr_file),
+    );
+    assert!(
+        wait_until(
+            || std::fs::read_to_string(&stderr_path)
+                .map(|s| s.contains("rate window") && s.contains("holding"))
+                .unwrap_or(false),
+            Duration::from_secs(20)
+        ),
+        "the worker never held the provider after the text-only refusal: {}",
+        std::fs::read_to_string(&stderr_path).unwrap_or_default()
+    );
+    worker.stop();
+    let a = e.attempts(id);
+    assert_eq!(a.len(), 1, "the refused run is recorded, uncounted: {a:?}");
+    assert_eq!(a[0].2, "rate limited by the provider");
+    assert_eq!(
+        e.task(id).0,
+        "queued",
+        "the hold ends the run rather than relaunch at once"
+    );
+}
+
+/// docs/REVIEW-3.md item 1.1.4: a refusal whose named window has already
+/// reset holds nothing, so only the directive's own bound on consecutive
+/// refusals keeps it from spinning the slot forever.
+#[test]
+fn a_directive_stops_after_too_many_consecutive_refusals() {
+    let e = Env::new();
+    let o = e.run("ratelimit-stale.sh", &["--retries", "10"]);
+    assert!(
+        !o.status.success(),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "failed", "{reason}");
+    assert!(
+        reason.contains("refused") || reason.contains("rate"),
+        "{reason}"
+    );
+    let a = e.attempts(1);
+    assert!(
+        a.len() < 10,
+        "the refusal bound stopped the loop well short of the attempt cap: {} refusals",
+        a.len()
+    );
+    assert!(
+        a.iter().all(|row| row.2 == "rate limited by the provider"),
+        "{a:?}"
+    );
+}
