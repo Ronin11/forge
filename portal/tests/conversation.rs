@@ -147,17 +147,23 @@ fn ask_section(body: &str) -> &str {
     &rest[..end]
 }
 
-#[test]
-fn three_messages_and_one_question_render_as_one_thread_in_order() {
+/// Runs one full request against a fresh `forge-portal` and returns its
+/// Ask section, asserting the ordering and the answerable-question markup
+/// that hold regardless of how many times this runs.
+fn one_pass() -> String {
     let p = start();
     let (status, body) = get(&p.addr, "/p/good-token");
     assert_eq!(status, 200, "{body}");
 
-    let section = ask_section(&body);
+    let section = ask_section(&body).to_string();
 
     // Ordering: the two early messages, then the question (asked between
     // them and the third message), then the third message — the thread
-    // merges by when things happened, not by source.
+    // merges by when things happened, not by source. The fixture's
+    // timestamps are explicit and distinct (see MESSAGES/DOC above), and
+    // `render_conversation` breaks any tie on row id, so this order is
+    // fixed however many times the request runs, and however much else
+    // is running alongside it.
     let gift_wrap = section.find("Can you add gift wrap").unwrap();
     let on_it = section.find("On it").unwrap();
     let question = section.find("Do you want the yearly plan").unwrap();
@@ -182,9 +188,32 @@ fn three_messages_and_one_question_render_as_one_thread_in_order() {
         "{section}"
     );
 
+    section
+}
+
+#[test]
+fn three_messages_and_one_question_render_as_one_thread_in_order() {
+    // Run the whole request/assert cycle 20 times, each against its own
+    // `forge-portal` process, so this proves itself under exactly the
+    // contention (CPU, process-spawn, port allocation) that the rest of
+    // `cargo test --workspace` running alongside it puts on the machine —
+    // the conditions the flaky run under load needs to survive.
+    let mut last = String::new();
+    for _ in 0..20 {
+        let section = one_pass();
+        if !last.is_empty() {
+            assert_eq!(
+                section, last,
+                "the rendered thread differs between runs of the same fixture"
+            );
+        }
+        last = section;
+    }
+    let section = last;
+
     let snap = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/conversation.txt");
     if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
-        std::fs::write(&snap, section).unwrap();
+        std::fs::write(&snap, &section).unwrap();
     }
     let want = std::fs::read_to_string(&snap).unwrap_or_default();
     assert_eq!(

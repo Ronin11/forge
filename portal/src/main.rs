@@ -497,6 +497,8 @@ fn render_questions(items: &[PortalQuestion], token: &str) -> String {
 #[derive(Deserialize, Default)]
 struct ConvMessage {
     #[serde(default)]
+    id: i64,
+    #[serde(default)]
     direction: String,
     #[serde(default)]
     text: String,
@@ -511,6 +513,8 @@ struct ConvMessage {
 /// (`CONTACT`) belongs in the customer's own thread.
 #[derive(Deserialize, Default)]
 struct ConvReply {
+    #[serde(default)]
+    id: i64,
     #[serde(default)]
     question: String,
     #[serde(default)]
@@ -546,17 +550,30 @@ fn conversation_replies(forge: &Forge, project: &str) -> Result<Vec<ConvReply>> 
 /// addressed to the customer, merged in the order they happened. A
 /// question renders as the same answerable form "Needs you" carries, so
 /// answering it in either place settles the same task.
+///
+/// Two rows can land in the same wall-clock second (a fast exchange, a
+/// question asked right after a message). `at` alone is then not a total
+/// order, so each entry also carries its own row id (message id, decision
+/// id, or the question's task id) and a kind discriminant, and the sort
+/// breaks ties on those — never on push order, which a future refactor
+/// could easily change.
 fn render_conversation(
     doc: &PortalDoc,
     token: &str,
     messages: &[ConvMessage],
     replies: &[ConvReply],
 ) -> String {
-    let mut entries: Vec<(i64, String)> = Vec::new();
+    const KIND_MESSAGE: u8 = 0;
+    const KIND_REPLY: u8 = 1;
+    const KIND_QUESTION: u8 = 2;
+
+    let mut entries: Vec<(i64, u8, i64, String)> = Vec::new();
     for m in messages {
         let class = if m.direction == "in" { "in" } else { "out" };
         entries.push((
             m.at,
+            KIND_MESSAGE,
+            m.id,
             format!(
                 r#"<div class="msg {class}"><p>{}</p><p class="date">{}</p></div>"#,
                 esc(&m.text),
@@ -567,6 +584,8 @@ fn render_conversation(
     for d in replies {
         entries.push((
             d.created_at,
+            KIND_REPLY,
+            d.id,
             format!(
                 r#"<div class="msg in"><p>{}</p></div><div class="msg out"><p>{}</p><p class="date">{}</p></div>"#,
                 esc(&d.question),
@@ -579,6 +598,8 @@ fn render_conversation(
         let at = q.asked_at.unwrap_or(0);
         entries.push((
             at,
+            KIND_QUESTION,
+            q.task_id,
             format!(
                 r#"<form class="ask msg question" method="post" action="/p/{token}/answer"><p>{text}</p><p class="date">{when}</p><input type="hidden" name="id" value="{id}"><input type="text" name="text" placeholder="Your answer" required><button type="submit">Send</button></form>"#,
                 token = esc(token),
@@ -588,11 +609,11 @@ fn render_conversation(
             ),
         ));
     }
-    entries.sort_by_key(|(at, _)| *at);
+    entries.sort_by_key(|(at, kind, id, _)| (*at, *kind, *id));
     if entries.is_empty() {
         return r#"<p class="empty">No conversation yet.</p>"#.to_string();
     }
-    entries.into_iter().map(|(_, html)| html).collect()
+    entries.into_iter().map(|(_, _, _, html)| html).collect()
 }
 
 /// The conversation thread, then the Ask box at its foot: what the
