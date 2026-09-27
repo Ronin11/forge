@@ -311,6 +311,7 @@ src/successor.rs     the successor worker: a staged release starts forge work on
 src/store/          SQLite, forward-only migrations by user_version, one file per table family (workers.rs: the registered workers and their releases)
   mod.rs            types, column lists, open, schema_version, the migration runner
   migrations.rs     MIGRATIONS: every forward-only schema migration, in order
+  retry.rs          statement retries for SQLite busy and locked errors, with backoff up to one minute
   tasks.rs          tasks: claim, queue, dependents, lineage
   attempts.rs       attempts and ops: insert, finish, rate limits, tool facts
   jobs.rs           jobs, job_steps, job_effects
