@@ -283,3 +283,56 @@ async fn identity_falls_back_to_the_constant_when_unset() {
     assert_eq!(config_or(&g, "user.name", IDENTITY.0).await, IDENTITY.0);
     assert_eq!(config_or(&g, "user.email", IDENTITY.1).await, IDENTITY.1);
 }
+
+#[tokio::test]
+async fn suite_catch_up_preserves_ahead_tips_and_rejects_divergence() {
+    let local = init_repo();
+    let remote = init_repo();
+    let url = remote.path().to_str().unwrap();
+    catch_up_branch(local.path(), url, "forge-verify")
+        .await
+        .unwrap();
+    let rg = Git::new(remote.path()).with_identity();
+    rg.line(&["checkout", "-b", "forge-verify"]).await.unwrap();
+    rg.line(&["commit", "--allow-empty", "-m", "suite"])
+        .await
+        .unwrap();
+    let first = head(remote.path()).await.unwrap();
+    catch_up_branch(local.path(), url, "forge-verify")
+        .await
+        .unwrap();
+    assert_eq!(
+        rev_parse(local.path(), "forge-verify").await.unwrap(),
+        first
+    );
+    let lg = Git::new(local.path()).with_identity();
+    lg.line(&["checkout", "forge-verify"]).await.unwrap();
+    lg.line(&["commit", "--allow-empty", "-m", "local ahead"])
+        .await
+        .unwrap();
+    let ahead = head(local.path()).await.unwrap();
+    catch_up_branch(local.path(), url, "forge-verify")
+        .await
+        .unwrap();
+    assert_eq!(
+        rev_parse(local.path(), "forge-verify").await.unwrap(),
+        ahead
+    );
+    rg.line(&["commit", "--allow-empty", "-m", "remote diverged"])
+        .await
+        .unwrap();
+    let diverged = head(remote.path()).await.unwrap();
+    let error = catch_up_branch(local.path(), url, "forge-verify")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains(&ahead) && error.contains(&diverged),
+        "{error}"
+    );
+    assert_eq!(
+        rev_parse(local.path(), "forge-verify").await.unwrap(),
+        ahead
+    );
+    assert_eq!(head(remote.path()).await.unwrap(), diverged);
+}

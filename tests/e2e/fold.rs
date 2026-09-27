@@ -96,3 +96,35 @@ fn fold_catches_up_with_remote_and_next_verification_overlays_it() {
         "{doc}"
     );
 }
+
+#[test]
+fn rejected_fold_push_emits_its_own_note() {
+    let e = Env::new();
+    tdd_repo(&e);
+    let hook = e.origin.join("hooks/update");
+    std::fs::write(&hook, "#!/bin/sh\n[ \"$1\" != refs/heads/forge-verify ]\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let o = e
+        .with_role("ok.sh", "TESTS", "testwriter.sh")
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--workflow",
+            "tdd",
+        ])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(err.lines().any(|line| line.contains("forge-verify fold push failed:") && !line.contains("landed")), "{err}");
+    assert!(origin_file(&e, "forge-verify", "tests/acceptance/answer.sh").is_none());
+    assert!(
+        git(
+            &e.repo,
+            &["show", "forge-verify:tests/acceptance/answer.sh"]
+        )
+        .contains("42")
+    );
+}
