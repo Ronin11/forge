@@ -720,6 +720,7 @@ mod tests {
                 | ["CREATE", "INDEX", ..]
                 | ["CREATE", "UNIQUE", "INDEX", ..]
                 | ["INSERT", ..]
+                | ["UPDATE", ..]
                 | ["ALTER", "TABLE", _, "ADD", ..]
         )
     }

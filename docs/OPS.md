@@ -84,8 +84,8 @@ who holds the pointer: **the store and every running binary agree.**
   SQLite while the old worker drains, so a release may only add tables,
   columns and indexes; a migration that drops or renames is tagged
   `contract` and applied by the newest worker only once no older worker
-  is alive. A step may `CREATE TABLE`, `ADD COLUMN`, `CREATE INDEX` or
-  `INSERT`; anything else starts with the `-- contract` line. `user_version`
+  is alive. A step may `CREATE TABLE`, `ADD COLUMN`, `CREATE INDEX`, `INSERT`
+  or `UPDATE` (a data backfill); anything else starts with the `-- contract` line. `user_version`
   advances on the additive part (a contract step's SQL is skipped there);
   `Store::apply_contracts` runs the rest once the workers table shows no
   live worker on an older version (a dead pid does not count) and records
