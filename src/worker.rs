@@ -152,7 +152,8 @@ pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
             Ok(TaskState::Failed)
         }
         Err(Fault::Env(e)) => {
-            f.store.requeue(id, crate::store::REQUEUE_ENV)?;
+            f.store
+                .requeue(id, &format!("worker environment error: {e:#}"))?;
             Err(e.context(format!(
                 "worker cannot run task {id}; it is back in the queue"
             )))
@@ -902,8 +903,20 @@ fn write_pid_file(paths: &Paths, pid: i64) {
     let _ = std::fs::write(paths.home.join("worker.pid"), format!("{pid} {exe}\n"));
 }
 
+/// Sweep the proxy directories of workers that are gone (a live one's, a
+/// draining predecessor's, is never touched); the guard removes this
+/// worker's own at exit.
+fn claim_egress_dir() -> crate::egress::OwnDirGuard {
+    let swept = crate::egress::sweep_dead(&std::env::temp_dir());
+    if swept > 0 {
+        eprintln!("egress: swept {swept} proxy director(ies) of dead pids");
+    }
+    crate::egress::OwnDirGuard
+}
+
 pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut shutdown = Shutdown::install();
+    let _own_egress_dir = claim_egress_dir();
     // SIGHUP: re-read `config.toml` before the next claim, whatever its
     // mtime says (`crate::reload`).
     let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())

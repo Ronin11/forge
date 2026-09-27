@@ -791,6 +791,7 @@ async fn run_with_relaunch(args: AgentRun<'_>) -> Result<(Outcome, String)> {
 }
 
 pub async fn run(l: Launch<'_>) -> Result<Outcome> {
+    l.sandbox.map_or(Ok(()), |sb| sb.check_socket(l.worktree))?;
     match l.provider.runner {
         Runner::ClaudeCli => run_claude(l).await,
         Runner::CodexCli => {

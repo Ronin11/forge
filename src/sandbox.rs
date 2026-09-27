@@ -396,6 +396,22 @@ impl Sandbox {
         self.command(worktree, argv, env, &self.policy_for(worktree))
     }
 
+    /// Whether the proxy socket this worktree's launch will bind in is
+    /// there: an error naming it when not, so the launch is an environment
+    /// fault rather than a `bwrap` failure the agent is blamed for.
+    pub fn check_socket(&self, worktree: &Path) -> Result<()> {
+        // No runtime means no route, which `command` already tolerates.
+        let Ok(socket) = self.proxies.socket_for(&self.policy_for(worktree)) else {
+            return Ok(());
+        };
+        anyhow::ensure!(
+            socket.exists(),
+            "egress proxy socket {} is missing",
+            socket.display()
+        );
+        Ok(())
+    }
+
     fn wrapper_script(&self, relay_enabled: bool, refused: Option<&Path>) -> String {
         // The claude CLI's own config file, not the credential-bearing
         // config directory: seed it into the tmpfs $HOME as a real, private
@@ -874,6 +890,21 @@ mod tests {
             caches: Mutex::new(BTreeMap::new()),
             granted: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    #[tokio::test]
+    async fn a_missing_proxy_socket_error_names_the_socket() {
+        let sb = test_sandbox("api.example.com");
+        let root = tempfile::tempdir().unwrap();
+        let worktree = root.path();
+        let socket = sb.proxies.socket_for(&sb.policy_for(worktree)).unwrap();
+        sb.check_socket(worktree).unwrap();
+        std::fs::remove_file(&socket).unwrap();
+        let error = sb.check_socket(worktree).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("egress proxy socket {} is missing", socket.display())
+        );
     }
 
     fn args_of(cmd: &Command) -> Vec<String> {
