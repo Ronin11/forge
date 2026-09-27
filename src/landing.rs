@@ -154,6 +154,24 @@ impl Drop for TempTree {
     }
 }
 
+/// Fetch the base branch by explicit refspec into the kernel repository
+/// (the pattern `deploy::origin_truth` uses), under the kernel lock, and
+/// return its sha. A transient failure (a held lock, a flaky network) is
+/// retried once before the caller treats it as the worker's environment.
+async fn fetch_base_for_landing(
+    home: &Path,
+    repo: &Path,
+    url: &str,
+    base: &str,
+    dest_ref: &str,
+) -> Result<String> {
+    let base_ref = format!("refs/heads/{base}");
+    match git::stage(home, repo, Path::new(url), &base_ref, dest_ref).await {
+        Ok(sha) => Ok(sha),
+        Err(_) => git::stage(home, repo, Path::new(url), &base_ref, dest_ref).await,
+    }
+}
+
 /// One landing at a time per repository, across every worker process:
 /// an advisory lock on a file under FORGE_HOME, held until dropped.
 pub(crate) async fn repo_lock(f: &Forge, repo: &Path) -> Result<std::fs::File, Fault> {
@@ -290,13 +308,21 @@ pub async fn integrate(
     for round in 0..3 {
         *seq += 1;
         let timer = Timer::now();
-        // The base as the remote has it; a remote that has no base branch
+        // The base as the remote has it, fetched straight into the kernel
+        // repository under its own lock; a remote that has no base branch
         // yet gets it from this landing, starting from the local one.
         let main_sha = if git::remote_branch_exists(url, &t.base_branch).await {
-            match git::fetch_branch(repo, remote, &t.base_branch).await {
-                Ok(s) => s,
+            let dest_ref = format!("refs/forge/origin/{}", t.base_branch);
+            match fetch_base_for_landing(home, repo, url, &t.base_branch, &dest_ref).await {
+                Ok(s) => {
+                    // Best-effort only, for the operator: landing itself
+                    // never depends on the registered checkout's tracking
+                    // ref being current.
+                    let _ = git::fetch_branch(repo, remote, &t.base_branch).await;
+                    s
+                }
                 Err(e) => {
-                    let d = format!("fetch of {remote}/{} failed: {e:#}", t.base_branch);
+                    let d = format!("fetch of {} from {url} failed: {e:#}", t.base_branch);
                     op(
                         f,
                         t.id,
@@ -318,16 +344,15 @@ pub async fn integrate(
                 }
             }
         } else {
-            git::rev_parse(repo, &format!("refs/heads/{}", t.base_branch))
+            let sha = git::rev_parse(repo, &format!("refs/heads/{}", t.base_branch))
                 .await
-                .task()?
+                .task()?;
+            let base_ref = format!("refs/forge/base/{}", t.base_branch);
+            git::stage(home, repo, repo, &sha, &base_ref).await.task()?;
+            sha
         };
         let mut detail = String::new();
         if main_sha != base_sha {
-            let base_ref = format!("refs/forge/base/{}", t.base_branch);
-            git::stage(home, repo, repo, &main_sha, &base_ref)
-                .await
-                .task()?;
             git::place_branch(home, repo, wt, &main_sha, &placed)
                 .await
                 .task()?;
