@@ -1153,14 +1153,15 @@ pub fn compare_url(remote_url: &str, base: &str, branch: &str) -> Option<String>
     ))
 }
 
-/// Whether `branch` already exists on the remote at `url`.
-pub async fn remote_branch_exists(url: &str, branch: &str) -> bool {
+/// Whether `branch` already exists on the remote at `url`. Err when the
+/// remote could not be asked at all (a failed `ls-remote`) — only a
+/// successful, empty answer means "no such branch".
+pub async fn remote_branch_exists(url: &str, branch: &str) -> Result<bool> {
     let full = format!("refs/heads/{branch}");
-    Git::new(".")
-        .output(&["ls-remote", "--heads", url, &full])
-        .await
-        .map(|o| o.status.success() && !o.stdout.is_empty())
-        .unwrap_or(false)
+    let out = Git::new(".")
+        .raw(&["ls-remote", "--heads", url, &full])
+        .await?;
+    Ok(!out.trim().is_empty())
 }
 
 /// The commit `branch` names on the remote at `url`, read with
