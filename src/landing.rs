@@ -604,53 +604,14 @@ pub async fn integrate(
         let sha = candidate.clone();
         let _ = git::fetch_branch(repo, remote, &t.base_branch).await;
         // The task's hidden tests join the standing suite.
-        let own = format!("verify/{}", t.id);
-        let mut folded = String::new();
-        if git::ref_exists(repo, &format!("refs/heads/{own}")).await
-            && !cfg_now.namespace.is_empty()
-        {
-            let files = git::ls_tree(repo, &own, &cfg_now.namespace).await.task()?;
-            let title = t
-                .task
-                .lines()
-                .next()
-                .unwrap_or("")
-                .chars()
-                .take(72)
-                .collect::<String>();
-            if !files.is_empty()
-                && git::graft(
-                    repo,
-                    &own,
-                    &files,
-                    "forge-verify",
-                    &format!("Task {}: {title}", t.id),
-                )
-                .await
-                .task()?
-                .is_some()
-            {
-                folded = match git::push_ref(
-                    home,
-                    repo,
-                    repo,
-                    "refs/heads/forge-verify",
-                    url,
-                    "forge-verify",
-                )
-                .await
-                {
-                    Ok(_) => format!(
-                        "; {} hidden test file(s) folded into forge-verify",
-                        files.len()
-                    ),
-                    Err(e) => format!(
-                        "; {} hidden test file(s) folded into forge-verify locally (push failed: {e:#})",
-                        files.len()
-                    ),
-                };
+        let folded = match fold_tests(f, t, repo, url, &cfg_now.namespace).await {
+            Ok(detail) => detail,
+            Err(e) => {
+                let detail = format!("forge-verify fold failed: {e:#}");
+                f.report.emit(t.id, Event::Note { text: &detail });
+                format!("; {detail}")
             }
-        }
+        };
         op(
             f,
             t.id,
@@ -677,6 +638,71 @@ pub async fn integrate(
         return Ok(Integrate::Landed(sha));
     }
     unreachable!("the landing loop returns")
+}
+
+async fn fold_tests(
+    f: &Forge,
+    t: &Task,
+    repo: &Path,
+    url: &str,
+    namespace: &[String],
+) -> anyhow::Result<String> {
+    let home = &f.paths.home;
+    let own = format!("verify/{}", t.id);
+    let mut folded = String::new();
+    if git::ref_exists(repo, &format!("refs/heads/{own}")).await && !namespace.is_empty() {
+        git::catch_up_branch(repo, url, "forge-verify").await?;
+        let files = git::ls_tree(repo, &own, namespace).await?;
+        let title = t
+            .task
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(72)
+            .collect::<String>();
+        if !files.is_empty()
+            && git::graft(
+                repo,
+                &own,
+                &files,
+                "forge-verify",
+                &format!("Task {}: {title}", t.id),
+            )
+            .await
+            .context("fold hidden tests")?
+            .is_some()
+        {
+            folded = match git::push_ref(
+                home,
+                repo,
+                repo,
+                "refs/heads/forge-verify",
+                url,
+                "forge-verify",
+            )
+            .await
+            {
+                Ok(_) => format!(
+                    "; {} hidden test file(s) folded into forge-verify",
+                    files.len()
+                ),
+                Err(e) => {
+                    f.report.emit(
+                        t.id,
+                        Event::Note {
+                            text: &format!("forge-verify fold push failed: {e:#}"),
+                        },
+                    );
+                    format!(
+                        "; {} hidden test file(s) folded into forge-verify locally (push failed: {e:#})",
+                        files.len()
+                    )
+                }
+            };
+        }
+    }
+    Ok(folded)
 }
 
 /// After landing, run every on-landing deploy target of the task's project
