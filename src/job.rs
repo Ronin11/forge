@@ -143,6 +143,30 @@ pub(crate) fn input_dir(f: &Forge, job_id: i64) -> PathBuf {
     f.paths.worktrees.join(format!("job-{job_id}-input"))
 }
 
+/// Moves a prior run's input directory (its `effects.log` included) out of
+/// the way of a fresh one instead of deleting it: `effects.log` is the only
+/// record of an effect an operation performed but a crash or an abort kept
+/// the store from learning about (see `recover_interrupted`), so a rerun
+/// must never truncate it out from under that recovery.
+fn archive_prior_input(idir: &Path) -> Result<()> {
+    if !idir.exists() {
+        return Ok(());
+    }
+    let mut n = 0u32;
+    let prior = loop {
+        let candidate = idir.with_file_name(format!(
+            "{}.prev-{n}",
+            idir.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        if !candidate.exists() {
+            break candidate;
+        }
+        n += 1;
+    };
+    std::fs::rename(idir, &prior)?;
+    Ok(())
+}
+
 /// Every top-level field of `input` whose value is a string, as
 /// `(name, value)` pairs — what becomes `FORGE_INPUT_<NAME>`.
 fn string_fields(input: &serde_json::Value) -> Result<Vec<(String, String)>> {
@@ -964,7 +988,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
     let repo_checks = config::load_working_checks(&scratch).unwrap_or_default();
 
     let idir = input_dir(f, job_id);
-    let _ = std::fs::remove_dir_all(&idir);
+    archive_prior_input(&idir)?;
     std::fs::create_dir_all(&idir)?;
     std::fs::write(idir.join("input.json"), input_text)?;
 
@@ -1612,10 +1636,36 @@ fn executor_error_verdict(e: &anyhow::Error) -> String {
     serde_json::to_string(&verdict).unwrap_or_else(|_| "[]".to_string())
 }
 
-/// Reconcile interrupted work without repeating any recorded external effect.
+/// Reconcile interrupted work without repeating any recorded external
+/// effect. An operation appends an effect to `effects.log` as it performs
+/// it, before the step it belongs to can finish and copy the new lines into
+/// `job_effects` (see `run_now`'s `Kind::Operation` arm); a worker that
+/// dies, or is aborted, between those two can leave a line in the log the
+/// store never learned about. Any such line is still proof the effect
+/// happened, so it is recorded here — marked recovered — and treated the
+/// same as an effect the store already knew of: the run is never requeued.
 pub(crate) fn recover_interrupted(f: &Forge, job_id: i64, owner: Option<i64>) -> Result<()> {
     let job = f.store.job(job_id)?.context("interrupted job vanished")?;
-    let effects = f.store.job_effects(job_id)?;
+    let mut effects = f.store.job_effects(job_id)?;
+    let logged = log_lines(&input_dir(f, job_id).join("effects.log"));
+    for line in logged.iter().skip(effects.len()) {
+        let mut parts = line.splitn(3, '\t');
+        let (Some(kind), Some(target), Some(summary)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let effect = JobEffect {
+            id: 0,
+            job_id,
+            seq: -1,
+            kind: kind.to_string(),
+            target: target.to_string(),
+            summary: format!("(recovered) {summary}"),
+            dry_run: job.dry_run,
+        };
+        f.store.append_job_effect(&effect)?;
+        effects.push(effect);
+    }
     let previous = owner.map_or_else(|| "unknown".into(), |pid| pid.to_string());
     let mut reason = format!("previous worker {previous} exited");
     if effects.is_empty() {
