@@ -440,17 +440,26 @@ async fn wait_backoff_or_stop(stop: &mut watch::Receiver<bool>, dur: Duration) -
     }
 }
 
-/// SIGTERM, then SIGKILL ten seconds later if it has not exited.
+/// SIGTERM to the child's process group, then SIGKILL to the group ten
+/// seconds later if it has not exited. `spawn_plugin` makes the child its
+/// own group leader (`process_group(0)`), so its pid is also its pgid;
+/// signalling the group reaches a shell plugin's pipeline, not just the
+/// leader that outlives its own SIGTERM.
 async fn stop_child(child: &mut Child) {
     if let Some(pid) = child.id() {
         unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
+            libc::kill(-(pid as i32), libc::SIGTERM);
         }
     }
     if tokio::time::timeout(STOP_GRACE, child.wait())
         .await
         .is_err()
     {
+        if let Some(pid) = child.id() {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+        }
         let _ = child.kill().await;
         let _ = child.wait().await;
     }
@@ -484,7 +493,10 @@ fn spawn_plugin(plugin: &Plugin, home: &Path, state_dir: &Path, log_path: &Path)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file))
-        .kill_on_drop(true);
+        .kill_on_drop(true)
+        // Its own process group, so `stop_child` can signal the whole
+        // pipeline of a shell plugin, not just this leader.
+        .process_group(0);
     cmd.spawn()
         .with_context(|| format!("spawning {:?}", plugin.manifest.run))
 }
@@ -925,5 +937,73 @@ mod tests {
         assert!(cat.plugins.contains_key("good"));
         assert!(!cat.plugins.contains_key("bad"));
         assert!(cat.problems.iter().any(|p| p.blocking));
+    }
+
+    /// docs/REVIEW-3.md §3.1 item 8: a shell plugin's pipeline (`sleep 1000
+    /// | cat`) must not outlive `Supervisor::stop`. `spawn_plugin` puts the
+    /// plugin in its own process group and `stop_child` signals the group,
+    /// so stopping the leader (the shell) also reaches the children it
+    /// forked for the pipeline, which never install a SIGTERM trap of
+    /// their own.
+    #[tokio::test]
+    async fn stop_kills_a_shell_plugins_whole_pipeline_not_just_its_leader() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            "pipeline",
+            "name = \"pipeline\"\nrun = [\"sh\", \"-c\", \"sleep 1000 | cat\"]\ncapabilities = [\"events\"]\nrestart = \"never\"\n",
+        );
+        let store = crate::store::Store::open(&dir.path().join("forge.db")).unwrap();
+        let paths = crate::ctx::Paths {
+            home: dir.path().to_path_buf(),
+            worktrees: dir.path().join("worktrees"),
+            logs: dir.path().join("logs"),
+        };
+        let f = crate::ctx::Forge::open_with(paths, store).unwrap();
+        f.store
+            .set_plugin_enabled("pipeline", true, crate::unix_now())
+            .unwrap();
+        let f = Arc::new(f);
+        let sup = Supervisor::start(f.clone());
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let pid = loop {
+            if let RunState::Running { pid, .. } = read_run_state(&f.paths.home, "pipeline") {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "the plugin never started");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+
+        // `sleep` and `cat`, the shell's own direct children for the
+        // pipeline: waited for by pid, not group, so the assertion below
+        // is not itself relying on the fix under test (`process_group(0)`)
+        // to find them.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let children = loop {
+            let out = std::process::Command::new("pgrep")
+                .args(["-P", &pid.to_string()])
+                .output()
+                .unwrap();
+            let kids: Vec<i32> = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|l| l.trim().parse().ok())
+                .collect();
+            if kids.len() >= 2 {
+                break kids;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the shell never forked its pipeline"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+
+        sup.stop().await;
+
+        for kid in children {
+            let alive = unsafe { libc::kill(kid, 0) } == 0;
+            assert!(!alive, "expected pipeline child {kid} reaped after stop");
+        }
     }
 }
