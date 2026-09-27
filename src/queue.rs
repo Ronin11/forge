@@ -242,13 +242,23 @@ fn workflow_fits(
 /// `Store::block_dependents`, both keyed on the dependency's id and state
 /// alone), so it carries across repositories: a task on one repository
 /// may wait on a task in another.
-fn dependency_fits(f: &Forge, dep: i64) -> Result<()> {
+async fn dependency_fits(f: &Forge, dep: i64) -> Result<()> {
     let Some(d) = f.store.task(dep)? else {
         bail!("--after {dep}: no such task");
     };
     if !d.land && d.state != TaskState::Succeeded {
         bail!(
             "--after {dep}: that task will not land (--no-land), so nothing built on it could see its work"
+        );
+    }
+    // A repository with no push remote never lands anything either
+    // (engine::land skips it, leaving `landed_sha` empty), so a
+    // dependent would wait on landing that never comes.
+    let cfg = config::load_working(std::path::Path::new(&d.repo)).await?;
+    if cfg.push_remote.is_none() {
+        bail!(
+            "--after {dep}: {} has no push remote, so nothing built on it could see its work",
+            d.repo
         );
     }
     Ok(())
@@ -386,7 +396,7 @@ pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String
             if dep == id {
                 bail!("--after {dep}: a task cannot wait on itself");
             }
-            dependency_fits(f, dep)?;
+            dependency_fits(f, dep).await?;
             if waits_on(f, dep, id)? {
                 bail!(
                     "--after {dep}: that task already waits on task {id}; they would wait on each other"
@@ -626,7 +636,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         ..Default::default()
     };
     for &dep in &t.after {
-        dependency_fits(f, dep)?;
+        dependency_fits(f, dep).await?;
     }
     t.id = match per_day_cap {
         Some(cap) => f
