@@ -1600,15 +1600,15 @@ fi
 /// A registered checkout whose `origin` is a fixture bare repository, an
 /// old release live through `FORGE_HOME/bin/current`, the fakes on `PATH`,
 /// and a `forge` project whose `self` target uses `deploy-self` on it.
-struct SelfDeploy {
-    e: Env,
-    bins: std::path::PathBuf,
+pub(crate) struct SelfDeploy {
+    pub(crate) e: Env,
+    pub(crate) bins: std::path::PathBuf,
     fakehome: std::path::PathBuf,
     path: String,
 }
 
 impl SelfDeploy {
-    fn new() -> SelfDeploy {
+    pub(crate) fn new() -> SelfDeploy {
         let e = Env::new();
         let repo_s = e.repo.to_str().unwrap();
         assert!(
@@ -1697,7 +1697,7 @@ impl SelfDeploy {
     }
 
     /// Commit `flag.txt` = `flag` and push it to origin's main: a landing.
-    fn commit(&self, flag: &str) -> String {
+    pub(crate) fn commit(&self, flag: &str) -> String {
         let sha = self.commit_locally(flag);
         git(&self.e.repo, &["push", "-q", "origin", "main"]);
         sha
@@ -1714,11 +1714,11 @@ impl SelfDeploy {
             .unwrap()
     }
 
-    fn deploy(&self, sha: &str) -> std::process::Output {
+    pub(crate) fn deploy(&self, sha: &str) -> std::process::Output {
         self.deploy_args(&["--sha", sha])
     }
 
-    fn calls(&self) -> Vec<String> {
+    pub(crate) fn calls(&self) -> Vec<String> {
         std::fs::read_to_string(self.fakehome.join("deploy-calls.log"))
             .unwrap_or_default()
             .lines()
@@ -1726,7 +1726,7 @@ impl SelfDeploy {
             .collect()
     }
 
-    fn link(&self, name: &str) -> String {
+    pub(crate) fn link(&self, name: &str) -> String {
         std::fs::read_link(self.bins.join(name))
             .map(|p| p.display().to_string())
             .unwrap_or_default()
@@ -1737,7 +1737,7 @@ impl SelfDeploy {
         std::fs::read_to_string(self.bins.join("current").join(name)).unwrap()
     }
 
-    fn deploy_rows(&self) -> Vec<serde_json::Value> {
+    pub(crate) fn deploy_rows(&self) -> Vec<serde_json::Value> {
         let rows: serde_json::Value = serde_json::from_slice(
             &self
                 .e
@@ -2027,70 +2027,4 @@ fn a_landing_on_forge_stages_the_landed_sha() {
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0]["sha"], landed);
     assert_eq!(rows[0]["check_ok"], true, "{:?}", rows[0]);
-}
-
-/// The worker-unit restarts in a self-deploy's recorded calls.
-fn worker_restarts(calls: &[String]) -> usize {
-    calls
-        .iter()
-        .filter(|c| {
-            c.starts_with("systemctl") && c.contains("restart") && c.contains("forge-worker")
-        })
-        .count()
-}
-
-#[test]
-fn deploy_self_only_stages_for_a_successor_capable_worker_and_restarts_an_older_one() {
-    // Not capable: no worker registered, no capability file. One restart.
-    let legacy = SelfDeploy::new();
-    let sha = legacy.commit("good");
-    assert!(legacy.deploy(&sha).status.success());
-    assert_eq!(legacy.link("staged"), format!("releases/{sha}"));
-    assert_eq!(worker_restarts(&legacy.calls()), 1, "{:?}", legacy.calls());
-
-    // Capable by the workers table: a live worker (this test's own pid).
-    let s = SelfDeploy::new();
-    s.e.db()
-        .execute(
-            "INSERT INTO workers (pid, version, started_at) VALUES (?1, 'old', 0)",
-            [i64::from(std::process::id())],
-        )
-        .unwrap();
-    let sha = s.commit("good");
-    let o = s.deploy(&sha);
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    assert_eq!(s.link("staged"), format!("releases/{sha}"));
-    // The successor flips current; the deploy leaves it alone.
-    assert_eq!(s.link("current"), "releases/old");
-    let calls = s.calls();
-    assert_eq!(worker_restarts(&calls), 0, "{calls:?}");
-    assert!(
-        !calls
-            .iter()
-            .any(|c| c.starts_with("systemctl") && c.contains("restart")),
-        "{calls:?}"
-    );
-    assert_eq!(s.deploy_rows()[0]["check_ok"], true);
-
-    // Capable by the capability file under FORGE_HOME/bin.
-    let s = SelfDeploy::new();
-    std::fs::write(
-        s.bins.join("successor-capable"),
-        format!("{}\n", std::process::id()),
-    )
-    .unwrap();
-    let sha = s.commit("good");
-    assert!(s.deploy(&sha).status.success());
-    assert_eq!(s.link("staged"), format!("releases/{sha}"));
-    assert_eq!(worker_restarts(&s.calls()), 0, "{:?}", s.calls());
-
-    // A capability file whose worker is gone is an older worker's home.
-    let s = SelfDeploy::new();
-    let mut dead = std::process::Command::new("true").spawn().unwrap();
-    let pid = dead.id();
-    dead.wait().unwrap();
-    std::fs::write(s.bins.join("successor-capable"), format!("{pid}\n")).unwrap();
-    let sha = s.commit("good");
-    assert!(s.deploy(&sha).status.success());
-    assert_eq!(worker_restarts(&s.calls()), 1, "{:?}", s.calls());
 }
