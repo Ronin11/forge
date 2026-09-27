@@ -112,11 +112,20 @@ fn concierge(f: &Forge) -> Result<Vec<Item>> {
 /// (the demotion-as-task rule) or answered "do it as stated", `no` when it
 /// blocked as a question.
 fn demotions(f: &Forge) -> Result<Vec<Item>> {
-    let filed: std::collections::HashSet<String> = f
+    let filed: std::collections::HashSet<(i64, String)> = f
         .store
         .decisions_of_kind_since("demotion-as-task", 0)?
         .into_iter()
-        .map(|d| d.question.trim().to_string())
+        .filter_map(|d| {
+            d.task_id.map(|id| {
+                let text = d
+                    .question
+                    .strip_prefix("review demoted: ")
+                    .unwrap_or(&d.question)
+                    .trim();
+                (id, text.to_string())
+            })
+        })
         .collect();
     let mut items = Vec::new();
     for r in f.store.question_records(None)? {
@@ -131,7 +140,7 @@ fn demotions(f: &Forge) -> Result<Vec<Item>> {
             .to_string();
         let stated = crate::view::is_as_stated(&r);
         items.push(Item {
-            label: if stated || filed.contains(&text) {
+            label: if stated || filed.contains(&(r.task_id, text.clone())) {
                 "yes"
             } else {
                 "no"
@@ -206,4 +215,84 @@ pub(super) fn record(path: &Path, sets: &[Set]) -> Result<()> {
     let doc: BTreeMap<&str, &Vec<Item>> = sets.iter().map(|s| (s.name, &s.items)).collect();
     std::fs::write(path, serde_json::to_string_pretty(&doc)?)
         .with_context(|| format!("writing {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ctx::Paths;
+    use crate::store::{
+        Attempt, AttemptState, FinishAttempt, InsertDecisionBy, Store, Task, TaskState,
+    };
+
+    #[test]
+    fn demotion_labels_match_the_task_that_filed_the_follow_up() {
+        for prefix in ["", "review demoted: "] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open(&dir.path().join("forge.db")).unwrap();
+            let text = "cargo test parse::edge fails with left 3, right 4";
+            for index in 0..2 {
+                let id = store
+                    .insert_task(&Task {
+                        repo: "r".into(),
+                        task: format!("task {index}"),
+                        state: TaskState::Blocked,
+                        ..Default::default()
+                    })
+                    .unwrap();
+                let attempt = store
+                    .insert_attempt(&Attempt {
+                        task_id: id,
+                        attempt_no: 1,
+                        step: "review".into(),
+                        state: AttemptState::NeedsInput,
+                        ..Default::default()
+                    })
+                    .unwrap();
+                store
+                    .finish_attempt(&FinishAttempt {
+                        id: attempt,
+                        state: AttemptState::NeedsInput,
+                        reason: format!("review demoted: {text}"),
+                        finished_at: Some(1),
+                        ..Default::default()
+                    })
+                    .unwrap();
+                if index == 0 {
+                    let decision = store
+                        .insert_decision_by(InsertDecisionBy {
+                            task_id: id,
+                            repo: "r",
+                            question: &format!("{prefix}{text}"),
+                            answer: "filed the demotion as a follow-up task",
+                            answered_by: "supervisor",
+                            citations: "",
+                            answered_for: None,
+                        })
+                        .unwrap();
+                    store
+                        .set_decision_kind(decision, "demotion-as-task")
+                        .unwrap();
+                }
+            }
+            let f = Forge::open_with(
+                Paths {
+                    home: dir.path().to_path_buf(),
+                    worktrees: dir.path().join("worktrees"),
+                    logs: dir.path().join("logs"),
+                },
+                store,
+            )
+            .unwrap();
+            let items = demotions(&f).unwrap();
+            assert_eq!(
+                items
+                    .iter()
+                    .map(|item| item.label.as_str())
+                    .collect::<Vec<_>>(),
+                ["yes", "no"]
+            );
+            assert!(items.iter().all(|item| item.state == text));
+        }
+    }
 }

@@ -23,6 +23,7 @@ pub struct RetryFacts {
 /// settled: the raw material of `forge stats --questions`.
 #[derive(Debug, Clone)]
 pub struct QuestionRecord {
+    pub task_id: i64,
     /// `review`, `question`, `workflow`, `job` or `dependency`.
     pub kind: &'static str,
     pub blocked_at: i64,
@@ -165,6 +166,7 @@ impl Store {
                 continue;
             }
             out.push(QuestionRecord {
+                task_id: id,
                 kind,
                 blocked_at,
                 question,

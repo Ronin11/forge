@@ -79,6 +79,7 @@ fn demotion(id: i64, by_supervisor: bool, landed: bool) -> QuestionRecord {
     let answer = "keep the branch, make this one fix";
     let parent = format!("task {id}");
     QuestionRecord {
+        task_id: id,
         kind: "review",
         blocked_at: 0,
         question: DEMOTION.into(),
