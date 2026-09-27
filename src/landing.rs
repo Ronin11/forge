@@ -229,6 +229,9 @@ async fn verify_merged_tree(f: &Forge, args: MergeVerifyArgs<'_>) -> Result<Verd
 /// it on the task and reload the config from it. `attempt_no` is the same
 /// running count `run_attempt` draws its own numbers from, so a check run
 /// recorded here never collides with the directive attempt that follows it.
+/// `_lock` must already hold `repo_lock` on `t.repo`: the caller takes it
+/// before reading the task so two landings of the same task never both
+/// reach here (see `land_task`).
 pub async fn integrate(
     f: &Forge,
     t: &mut Task,
@@ -236,6 +239,7 @@ pub async fn integrate(
     remote: &str,
     seq: &mut i64,
     attempt_no: &mut i64,
+    _lock: &std::fs::File,
 ) -> Result<Integrate, Fault> {
     let repo = Path::new(&t.repo);
     let home = &f.paths.home;
@@ -243,7 +247,6 @@ pub async fn integrate(
     // placed base). The merge, the re-verification and every push run from
     // a tree cloned from the kernel-owned repository.
     let clone = Path::new(&t.worktree);
-    let _lock = repo_lock(f, repo).await?;
     let branch_ref = format!("refs/heads/{}", t.branch);
     let staged = git::stage(home, repo, clone, "HEAD", &branch_ref)
         .await
@@ -1038,6 +1041,14 @@ pub(crate) fn landable_needs_input(f: &Forge, t: &Task) -> Result<bool> {
 /// automated accept-and-land (see `Task::hand_landed`, one of the
 /// human-attention signals). Returns the line to print.
 pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<String> {
+    // Just enough of the task to name the repository to lock: a second
+    // `land_task` for the same id, running concurrently (the supervisor's
+    // accept-and-land against the operator's `forge land`, or two of
+    // either), blocks here rather than racing the checks below.
+    let Some(repo_hint) = f.store.task(id)? else {
+        bail!("no task {id}");
+    };
+    let lock = repo_lock(f, Path::new(&repo_hint.repo)).await?;
     let Some(mut t) = f.store.task(id)? else {
         bail!("no task {id}");
     };
@@ -1096,7 +1107,7 @@ pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<Strin
         t.worktree = dir.display().to_string();
         recreated = Some(dir);
     }
-    let result = land_integrated(f, id, by_hand, demoted, t, &url, &remote).await;
+    let result = land_integrated(f, by_hand, demoted, t, &url, &remote, &lock).await;
     if let Some(dir) = recreated {
         let _ = std::fs::remove_dir_all(&dir);
         crate::sandbox::discard_provider_state(&dir);
@@ -1106,17 +1117,18 @@ pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<Strin
 
 async fn land_integrated(
     f: &Forge,
-    id: i64,
     by_hand: bool,
     demoted: bool,
     mut t: Task,
     url: &str,
     remote: &str,
+    lock: &std::fs::File,
 ) -> Result<String> {
+    let id = t.id;
     let (url, remote) = (url.to_string(), remote.to_string());
     let mut seq = f.store.ops(id)?.len() as i64;
     let mut attempt_no = f.store.attempts(id)?.len() as i64;
-    match crate::landing::integrate(f, &mut t, &url, &remote, &mut seq, &mut attempt_no)
+    match crate::landing::integrate(f, &mut t, &url, &remote, &mut seq, &mut attempt_no, lock)
         .await
         .map_err(|e| match e {
             crate::engine::Fault::Task(e) | crate::engine::Fault::Env(e) => e,

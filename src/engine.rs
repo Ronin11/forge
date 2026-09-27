@@ -1382,7 +1382,8 @@ async fn try_land(args: TryLand<'_>) -> Result<Option<End>, Fault> {
         return Ok(Some(End::Verified));
     };
     let mut seq = run.seq;
-    let outcome = integrate(f, t, url, remote, &mut seq, attempt_no).await?;
+    let lock = crate::landing::repo_lock(f, repo).await?;
+    let outcome = integrate(f, t, url, remote, &mut seq, attempt_no, &lock).await?;
     run.seq = seq;
     match outcome {
         Integrate::Landed(sha) => {
