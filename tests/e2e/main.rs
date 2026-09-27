@@ -25,6 +25,7 @@ mod knownfixes;
 mod landing;
 mod landing_assess;
 mod landing_concurrency;
+mod landing_effects;
 mod landing_fetch;
 mod landing_rewind;
 mod listing;
