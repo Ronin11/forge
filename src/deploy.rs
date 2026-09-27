@@ -121,6 +121,58 @@ async fn origin_truth(
     Ok((kernel, sha))
 }
 
+/// Where a non-self target's tree comes from, and the commit to archive.
+/// On landing, the sha is the commit that just landed, staged in the
+/// kernel repository by `landing::try_land`'s `stage` of the task branch;
+/// resolve and archive it there, since the registered checkout only gets
+/// it through its own best-effort fetch, and a landing must not depend on
+/// that fetch to deploy. An operator's own `forge deploy` still resolves
+/// and archives against the registered checkout, the tree they mean.
+async fn non_self_src(
+    f: &Forge,
+    repo: &Path,
+    cfg: &config::Config,
+    sha: Option<String>,
+    task_id: Option<i64>,
+) -> Result<(PathBuf, String)> {
+    if task_id.is_some() {
+        let sha = sha.context("an on-landing deploy always resolves a sha before deploy::run")?;
+        let kernel = git::kernel_repository(&f.paths.home, repo).await?;
+        let full = git::rev_parse(&kernel, &format!("{sha}^{{commit}}"))
+            .await
+            .with_context(|| format!("--sha {sha}"))?;
+        return Ok((kernel, full));
+    }
+    let sha = match sha {
+        Some(s) => git::rev_parse(repo, &s)
+            .await
+            .with_context(|| format!("--sha {s}"))?,
+        None => git::rev_parse(repo, &format!("refs/heads/{}", cfg.base_branch))
+            .await
+            .with_context(|| format!("resolving {} on {}", cfg.base_branch, repo.display()))?,
+    };
+    Ok((repo.to_path_buf(), sha))
+}
+
+/// Finish `deploy_id`'s row as a failure with `e`'s text as the reason, so
+/// an error after `start_deploy` never leaves the row open, and return `e`
+/// unchanged for the caller to propagate.
+fn record_deploy_error(f: &Forge, deploy_id: i64, e: anyhow::Error) -> anyhow::Error {
+    let _ = f.store.finish_deploy(crate::store::FinishDeploy {
+        id: deploy_id,
+        at: unix_now(),
+        check_ok: false,
+        check_output: "",
+        rolled_back_to: None,
+        reason: &format!("{e:#}"),
+        smoke_ok: None,
+        smoke_json: None,
+        look_ok: None,
+        look_json: None,
+    });
+    e
+}
+
 /// Mark the project's most recent terminal task for `repo` as blocked
 /// with `reason`, or file a new no-work task in that state when there is
 /// none: the human rung docs/DEPLOY.md ends every failed deploy at.
@@ -210,15 +262,7 @@ pub async fn run(
     let (src, sha) = if target.method == SELF_METHOD {
         origin_truth(f, &repo, &cfg, sha, force).await?
     } else {
-        let sha = match sha {
-            Some(s) => git::rev_parse(&repo, &s)
-                .await
-                .with_context(|| format!("--sha {s}"))?,
-            None => git::rev_parse(&repo, &format!("refs/heads/{}", cfg.base_branch))
-                .await
-                .with_context(|| format!("resolving {} on {}", cfg.base_branch, repo.display()))?,
-        };
-        (repo.clone(), sha)
+        non_self_src(f, &repo, &cfg, sha, task_id).await?
     };
     let timeout = Duration::from_secs(cfg.check_timeout_secs);
 
@@ -234,124 +278,176 @@ pub async fn run(
         .store
         .start_deploy(project, name, &sha, unix_now(), task_id)?;
 
-    let mut r = deploy_at(
-        &action,
-        &target,
-        &src,
-        &sha,
-        f,
-        timeout,
-        &scratch_dir(f, deploy_id, ""),
-    )
-    .await?;
+    // An error anywhere below finishes the row as a failure
+    // (`record_deploy_error`) rather than leaving it open: only a
+    // deliberately recorded outcome (ok, a failed check, or a failed
+    // rollback) returns from this block without one.
+    let outcome: Result<bool> = async {
+        let mut r = deploy_at(
+            &action,
+            &target,
+            &src,
+            &sha,
+            f,
+            timeout,
+            &scratch_dir(f, deploy_id, ""),
+        )
+        .await?;
 
-    // A check that answers is not a site that works (see docs/DEPLOY.md,
-    // "A deterministic smoke step"): open the target's smoke url only once
-    // the check itself has passed, and let it fail the deploy too.
-    let (smoke_ok, smoke_json, look_ok, look_json) = if r.ok {
-        match (&target.smoke_url, &smoke_action) {
-            (Some(url), Some(smoke_action)) => {
-                let out_dir = f.paths.home.join("deploys").join(deploy_id.to_string());
-                let sr = operation::run_deploy_smoke(smoke_action, url, &out_dir, timeout).await?;
-                let json = std::fs::read_to_string(out_dir.join("smoke.json")).ok();
-                if !sr.ok {
-                    r.ok = false;
-                    r.tail = format!("{}\n\n-- smoke check ({url}) --\n{}", r.tail, sr.tail);
-                }
+        // A check that answers is not a site that works (see docs/DEPLOY.md,
+        // "A deterministic smoke step"): open the target's smoke url only once
+        // the check itself has passed, and let it fail the deploy too.
+        let (smoke_ok, smoke_json, look_ok, look_json) = if r.ok {
+            match (&target.smoke_url, &smoke_action) {
+                (Some(url), Some(smoke_action)) => {
+                    let out_dir = f.paths.home.join("deploys").join(deploy_id.to_string());
+                    let sr = operation::run_deploy_smoke(smoke_action, url, &out_dir, timeout).await?;
+                    let json = std::fs::read_to_string(out_dir.join("smoke.json")).ok();
+                    if !sr.ok {
+                        r.ok = false;
+                        r.tail = format!("{}\n\n-- smoke check ({url}) --\n{}", r.tail, sr.tail);
+                    }
 
-                // The last, human-shaped step (see docs/DEPLOY.md, "The
-                // deploy look"): whether or not the deterministic smoke
-                // check itself passed, look at what it caught.
-                let (look_ok, look_json) =
-                    match crate::deploy_look::run(f, &target, deploy_id, &out_dir).await {
-                        Ok(Some(v)) => {
-                            f.report.emit(
-                                event_task,
-                                Event::Note {
-                                    text: &format!(
-                                        "deploy-look {}, {} finding(s)",
-                                        if v.ok { "ok" } else { "not ok" },
-                                        v.findings.len()
-                                    ),
-                                },
-                            );
-                            if let Some(blocking) =
-                                v.findings.iter().find(|fnd| fnd.severity == "blocking")
-                            {
-                                r.ok = false;
-                                r.tail = format!(
-                                    "{}\n\n-- deploy look --\n{}",
-                                    r.tail, blocking.finding
+                    // The last, human-shaped step (see docs/DEPLOY.md, "The
+                    // deploy look"): whether or not the deterministic smoke
+                    // check itself passed, look at what it caught.
+                    let (look_ok, look_json) =
+                        match crate::deploy_look::run(f, &target, deploy_id, &out_dir).await {
+                            Ok(Some(v)) => {
+                                f.report.emit(
+                                    event_task,
+                                    Event::Note {
+                                        text: &format!(
+                                            "deploy-look {}, {} finding(s)",
+                                            if v.ok { "ok" } else { "not ok" },
+                                            v.findings.len()
+                                        ),
+                                    },
                                 );
+                                if let Some(blocking) =
+                                    v.findings.iter().find(|fnd| fnd.severity == "blocking")
+                                {
+                                    r.ok = false;
+                                    r.tail = format!(
+                                        "{}\n\n-- deploy look --\n{}",
+                                        r.tail, blocking.finding
+                                    );
+                                }
+                                (Some(v.ok), Some(serde_json::to_string(&v.findings)?))
                             }
-                            (Some(v.ok), Some(serde_json::to_string(&v.findings)?))
-                        }
-                        Ok(None) => (None, None),
-                        Err(e) => {
-                            f.report.emit(
-                                event_task,
-                                Event::Note {
-                                    text: &format!("deploy-look failed: {e:#}"),
-                                },
-                            );
-                            (None, None)
-                        }
-                    };
+                            Ok(None) => (None, None),
+                            Err(e) => {
+                                f.report.emit(
+                                    event_task,
+                                    Event::Note {
+                                        text: &format!("deploy-look failed: {e:#}"),
+                                    },
+                                );
+                                (None, None)
+                            }
+                        };
 
-                (Some(sr.ok), json, look_ok, look_json)
+                    (Some(sr.ok), json, look_ok, look_json)
+                }
+                _ => (None, None, None, None),
             }
-            _ => (None, None, None, None),
-        }
-    } else {
-        (None, None, None, None)
-    };
+        } else {
+            (None, None, None, None)
+        };
 
-    if r.ok {
-        f.store.finish_deploy(crate::store::FinishDeploy {
-            id: deploy_id,
-            at: unix_now(),
-            check_ok: true,
-            check_output: &r.tail,
-            rolled_back_to: None,
-            reason: "",
-            smoke_ok,
-            smoke_json: smoke_json.as_deref(),
-            look_ok,
-            look_json: look_json.as_deref(),
-        })?;
-        f.report.emit(
-            event_task,
-            Event::DeployFinished {
-                project,
-                target: name,
-                sha: &sha,
-                ok: true,
+        if r.ok {
+            f.store.finish_deploy(crate::store::FinishDeploy {
+                id: deploy_id,
+                at: unix_now(),
+                check_ok: true,
+                check_output: &r.tail,
                 rolled_back_to: None,
-            },
-        );
-        return Ok(true);
-    }
+                reason: "",
+                smoke_ok,
+                smoke_json: smoke_json.as_deref(),
+                look_ok,
+                look_json: look_json.as_deref(),
+            })?;
+            f.report.emit(
+                event_task,
+                Event::DeployFinished {
+                    project,
+                    target: name,
+                    sha: &sha,
+                    ok: true,
+                    rolled_back_to: None,
+                },
+            );
+            return Ok(true);
+        }
 
-    // The check failed: redeploy the last commit that passed its check on
-    // this target (a target has one method for its whole life, so "the
-    // same target" already means "the same method").
-    let previous = f
-        .store
-        .deploys(project, Some(name))?
-        .into_iter()
-        .find(|d| d.id != deploy_id && d.check_ok == Some(true));
+        // The check failed: redeploy the last commit that passed its check on
+        // this target (a target has one method for its whole life, so "the
+        // same target" already means "the same method").
+        let previous = f
+            .store
+            .deploys(project, Some(name))?
+            .into_iter()
+            .find(|d| d.id != deploy_id && d.check_ok == Some(true));
 
-    let Some(previous) = previous else {
+        let Some(previous) = previous else {
+            let reason = format!(
+                "the deploy of {} failed its check; there is no previous deploy to roll back to",
+                short(&sha)
+            );
+            f.store.finish_deploy(crate::store::FinishDeploy {
+                id: deploy_id,
+                at: unix_now(),
+                check_ok: false,
+                check_output: &r.tail,
+                rolled_back_to: None,
+                reason: &reason,
+                smoke_ok,
+                smoke_json: smoke_json.as_deref(),
+                look_ok,
+                look_json: look_json.as_deref(),
+            })?;
+            f.report.emit(
+                event_task,
+                Event::DeployFinished {
+                    project,
+                    target: name,
+                    sha: &sha,
+                    ok: false,
+                    rolled_back_to: None,
+                },
+            );
+            ask(
+                f,
+                project,
+                &target.repo,
+                format!("{reason}; here is the check's output:\n{}", r.tail),
+            )?;
+            return Ok(false);
+        };
+
+        let rb = deploy_at(
+            &action,
+            &target,
+            &src,
+            &previous.sha,
+            f,
+            timeout,
+            &scratch_dir(f, deploy_id, "-rollback"),
+        )
+        .await?;
+
         let reason = format!(
-            "the deploy of {} failed its check; there is no previous deploy to roll back to",
-            short(&sha)
+            "the deploy of {} failed its check and was rolled back to {}",
+            short(&sha),
+            short(&previous.sha)
         );
         f.store.finish_deploy(crate::store::FinishDeploy {
             id: deploy_id,
             at: unix_now(),
             check_ok: false,
             check_output: &r.tail,
-            rolled_back_to: None,
+            rolled_back_to: Some(&previous.sha),
             reason: &reason,
             smoke_ok,
             smoke_json: smoke_json.as_deref(),
@@ -365,70 +461,26 @@ pub async fn run(
                 target: name,
                 sha: &sha,
                 ok: false,
-                rolled_back_to: None,
+                rolled_back_to: Some(&previous.sha),
             },
         );
-        ask(
-            f,
-            project,
-            &target.repo,
-            format!("{reason}; here is the check's output:\n{}", r.tail),
-        )?;
-        return Ok(false);
-    };
 
-    let rb = deploy_at(
-        &action,
-        &target,
-        &src,
-        &previous.sha,
-        f,
-        timeout,
-        &scratch_dir(f, deploy_id, "-rollback"),
-    )
-    .await?;
-
-    let reason = format!(
-        "the deploy of {} failed its check and was rolled back to {}",
-        short(&sha),
-        short(&previous.sha)
-    );
-    f.store.finish_deploy(crate::store::FinishDeploy {
-        id: deploy_id,
-        at: unix_now(),
-        check_ok: false,
-        check_output: &r.tail,
-        rolled_back_to: Some(&previous.sha),
-        reason: &reason,
-        smoke_ok,
-        smoke_json: smoke_json.as_deref(),
-        look_ok,
-        look_json: look_json.as_deref(),
-    })?;
-    f.report.emit(
-        event_task,
-        Event::DeployFinished {
-            project,
-            target: name,
-            sha: &sha,
-            ok: false,
-            rolled_back_to: Some(&previous.sha),
-        },
-    );
-
-    let question = if rb.ok {
-        format!("{reason}; here is the check's output:\n{}", r.tail)
-    } else {
-        format!(
-            "{reason}, but the rollback's own check failed too; nothing further was attempted. Here is what each check said:\n-- {} --\n{}\n-- rollback to {} --\n{}",
-            short(&sha),
-            r.tail,
-            short(&previous.sha),
-            rb.tail
-        )
-    };
-    ask(f, project, &target.repo, question)?;
-    Ok(false)
+        let question = if rb.ok {
+            format!("{reason}; here is the check's output:\n{}", r.tail)
+        } else {
+            format!(
+                "{reason}, but the rollback's own check failed too; nothing further was attempted. Here is what each check said:\n-- {} --\n{}\n-- rollback to {} --\n{}",
+                short(&sha),
+                r.tail,
+                short(&previous.sha),
+                rb.tail
+            )
+        };
+        ask(f, project, &target.repo, question)?;
+        Ok(false)
+    }
+    .await;
+    outcome.map_err(|e| record_deploy_error(f, deploy_id, e))
 }
 
 /// `forge project deploy add`'s fields, parsed by clap but not yet

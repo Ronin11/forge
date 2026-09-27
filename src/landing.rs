@@ -750,8 +750,10 @@ async fn fold_tests(
 /// After landing, run every on-landing deploy target of the task's project
 /// on this repository, through the same path `forge deploy` uses
 /// (`deploy::run`), tied to this task. A deploy's own failure never
-/// changes the task's landed state: `deploy::run` already emits its
-/// events and, on a failed check, follows the rollback-and-question path.
+/// changes the task's landed state: on a failed check, `deploy::run`
+/// already emits its events and follows the rollback-and-question path.
+/// Any other error (it never got that far, or a row was left open) is
+/// named on the task instead of dropped.
 async fn deploy_on_landing(f: &Forge, t: &Task, sha: &str) {
     let Some(project) = t.project.clone() else {
         return;
@@ -763,7 +765,7 @@ async fn deploy_on_landing(f: &Forge, t: &Task, sha: &str) {
         .into_iter()
         .filter(|d| d.on_landing && d.repo == t.repo)
     {
-        let _ = crate::deploy::run(
+        if let Err(e) = crate::deploy::run(
             f,
             &project,
             &target.name,
@@ -771,7 +773,15 @@ async fn deploy_on_landing(f: &Forge, t: &Task, sha: &str) {
             Some(t.id),
             false,
         )
-        .await;
+        .await
+        {
+            f.report.emit(
+                t.id,
+                Event::Note {
+                    text: &format!("deploy   {} failed: {e:#}", target.name),
+                },
+            );
+        }
     }
 }
 
