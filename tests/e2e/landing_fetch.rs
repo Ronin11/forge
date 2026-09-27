@@ -2,6 +2,7 @@
 //! repository, not through the registered checkout's tracking ref.
 
 use crate::support::*;
+use std::path::Path;
 use std::process::Command;
 
 fn origin_sha(e: &Env, branch: &str) -> String {
@@ -82,8 +83,8 @@ fn landing_lands_on_the_remotes_tip_even_when_the_checkouts_tracking_ref_cannot_
             ("repo-map".into(), true),
             ("verify".into(), true),
             ("integrate".into(), true),
-            ("push".into(), true),
-            ("land".into(), true)
+            ("land".into(), true),
+            ("push".into(), true)
         ]
     );
     assert_eq!(
@@ -99,5 +100,77 @@ fn landing_lands_on_the_remotes_tip_even_when_the_checkouts_tracking_ref_cannot_
         git(&e.repo, &["rev-parse", "refs/remotes/origin/main"]),
         stale,
         "the checkout's own tracking ref is still stale; landing never read through it"
+    );
+}
+
+/// docs/REVIEW-3.md §2.1 item 1: a failed `ls-remote` must never be read as
+/// "no such branch" — that would take the base straight from the operator's
+/// own, unpublished checkout and land it under the task's name. The origin
+/// here is unreachable, so every remote op fails alike; the trace is what
+/// tells the fix apart from the bug: the probe must fail its own
+/// `integrate` op naming `ls-remote`, before anything ever tries `push`.
+#[test]
+fn an_unreachable_remote_at_landing_does_not_land_and_leaves_the_remote_untouched() {
+    let e = Env::new();
+    let mut c = e.with_role("ok.sh", "REVIEW", "reviewer-ok.sh");
+    c.env(
+        "FORGE_CLAUDE_BIN_ASSESS",
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/assessor.sh"),
+    );
+    let o = c
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--trust",
+            "public",
+            "--workflow",
+            "reviewed",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "unverified", "{reason}");
+    assert!(pushed, "{}", String::from_utf8_lossy(&o.stderr));
+    git(
+        &e.repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "/nonexistent/deliberately-missing.git",
+        ],
+    );
+    let before = op_names(&e, 1).len();
+    let mut land = e.cmd("ok.sh");
+    land.env(
+        "FORGE_CLAUDE_BIN_ASSESS",
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/assessor.sh"),
+    );
+    let o = land.args(["land", "1"]).output().unwrap();
+    assert!(!o.status.success());
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(out.contains("ls-remote"), "{out}");
+    let landed_sha: String = e
+        .db()
+        .query_row("SELECT landed_sha FROM tasks WHERE id=1", [], |r| r.get(0))
+        .unwrap();
+    assert!(landed_sha.is_empty());
+    assert_eq!(origin_sha(&e, "main"), "", "the remote's main is untouched");
+    let ops = &op_names(&e, 1)[before..];
+    assert_eq!(
+        ops.first().map(|(n, ok)| (n.as_str(), *ok)),
+        Some(("integrate", false)),
+        "{ops:?}"
+    );
+    assert!(
+        !ops.iter().any(|(n, _)| n == "push" || n == "land"),
+        "{ops:?}"
     );
 }

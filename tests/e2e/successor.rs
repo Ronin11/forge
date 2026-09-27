@@ -384,3 +384,78 @@ fn deploy_self_only_stages_for_a_successor_capable_worker_and_restarts_an_older_
     assert!(s.deploy(&sha).status.success());
     assert_eq!(worker_restarts(&s.calls()), 1, "{:?}", s.calls());
 }
+
+#[test]
+fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_ones() {
+    let e = Env::new();
+    let root = e.home.join("bin");
+    let tmp = e.home.join("tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    for id in ["old", "new"] {
+        let dir = root.join("releases").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let built = std::path::Path::new(env!("CARGO_BIN_EXE_forge"))
+            .parent()
+            .unwrap();
+        for bin in ["forge", "forge-repomap"] {
+            std::fs::copy(built.join(bin), dir.join(bin)).unwrap();
+        }
+    }
+    std::os::unix::fs::symlink("releases/old", root.join("current")).unwrap();
+    let systemctl_dir = e.home.join("fakebin");
+    std::fs::create_dir_all(&systemctl_dir).unwrap();
+    let systemctl = systemctl_dir.join("systemctl");
+    std::fs::write(&systemctl, "#!/bin/bash\nexit 0\n").unwrap();
+    std::fs::set_permissions(
+        &systemctl,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let path = format!(
+        "{}:{}",
+        systemctl_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let first = e.add(&["--retries", "0"]);
+    let mut cmd = std::process::Command::new(root.join("releases/old/forge"));
+    cmd.envs(
+        e.cmd("slow-ok.sh")
+            .get_envs()
+            .filter_map(|(k, v)| Some((k, v?))),
+    )
+    .env("PATH", &path)
+    .env("TMPDIR", &tmp)
+    .args(["work", "--poll", "1"]);
+    let mut old = Worker::spawn(&mut cmd);
+    let _reap = Reap(e.home.clone());
+    assert!(
+        wait_until(|| running_pid(&e, first).is_some(), Duration::from_secs(30)),
+        "the old worker never claimed task {first}"
+    );
+    let old_pid = running_pid(&e, first).unwrap();
+
+    // The live predecessor's directory, and one left by a worker that died.
+    let mut gone = std::process::Command::new("true").spawn().unwrap();
+    gone.wait().unwrap();
+    let live = tmp.join(format!("forge-egress-{old_pid}"));
+    let dead = tmp.join(format!("forge-egress-{}", gone.id()));
+    std::fs::create_dir(&live).unwrap();
+    std::fs::create_dir(&dead).unwrap();
+
+    std::os::unix::fs::symlink("releases/new", root.join("staged")).unwrap();
+    let second = e.add(&["--retries", "0"]);
+    assert!(
+        wait_until(
+            || running_pid(&e, second).is_some(),
+            Duration::from_secs(30)
+        ),
+        "the successor never claimed task {second}"
+    );
+    assert!(
+        live.is_dir(),
+        "the successor removed the live predecessor's directory"
+    );
+    assert!(!dead.exists(), "the dead worker's directory was not swept");
+    assert!(old.wait().success());
+}

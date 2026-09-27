@@ -55,8 +55,8 @@ fn a_verified_task_lands_on_the_base_and_the_next_task_starts_from_it() {
             ("repo-map".into(), true),
             ("verify".into(), true),
             ("integrate".into(), true),
-            ("push".into(), true),
-            ("land".into(), true)
+            ("land".into(), true),
+            ("push".into(), true)
         ]
     );
     // The registered checkout's own main is untouched: it is the operator's.
@@ -255,8 +255,8 @@ fn a_conflicting_landing_goes_back_to_the_coder_who_merges_the_base() {
             "integrate",
             "verify",
             "integrate",
-            "push",
-            "land"
+            "land",
+            "push"
         ],
         "{ops:?}"
     );
@@ -517,8 +517,8 @@ fn landing_reverifies_against_the_moved_base_and_folds_the_hidden_tests() {
             "integrate",
             "verify",
             "integrate",
-            "push",
-            "land"
+            "land",
+            "push"
         ],
         "{names:?}"
     );
@@ -1403,8 +1403,8 @@ fn a_retry_whose_merged_base_does_not_build_feeds_setup_to_the_coder() {
             ("repo-map".into(), true),
             ("verify".into(), true),
             ("integrate".into(), true),
-            ("push".into(), true),
-            ("land".into(), true)
+            ("land".into(), true),
+            ("push".into(), true)
         ]
     );
     // The coder saw the setup failure and fixed it, on top of task 1's answer.

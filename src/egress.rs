@@ -737,11 +737,12 @@ impl Proxies {
             match &*d {
                 Some(d) => d.clone(),
                 None => {
-                    let path =
-                        std::env::temp_dir().join(format!("forge-egress-{}", std::process::id()));
-                    let _ = std::fs::remove_dir_all(&path);
+                    // The process's one directory, shared by every `Proxies`
+                    // in it: never wiped here, only removed at exit.
+                    let path = own_dir();
                     use std::os::unix::fs::DirBuilderExt;
                     std::fs::DirBuilder::new()
+                        .recursive(true)
                         .mode(0o700)
                         .create(&path)
                         .with_context(|| format!("creating {}", path.display()))?;
@@ -750,7 +751,9 @@ impl Proxies {
                 }
             }
         };
-        let path = dir.join(format!("p{}.sock", running.len()));
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = dir.join(format!("p{n}.sock"));
         let listener = {
             let _guard = handle.enter();
             bind(&path)?
@@ -763,13 +766,65 @@ impl Proxies {
 
 impl Drop for Proxies {
     fn drop(&mut self) {
-        for (_, task) in self.running.lock().unwrap().values() {
+        // Its own sockets only: the directory is the process's, and other
+        // `Proxies` in it are still serving from it.
+        for (path, task) in self.running.lock().unwrap().values() {
             task.abort();
-        }
-        if let Some(d) = self.dir.lock().unwrap().as_ref() {
-            let _ = std::fs::remove_dir_all(d);
+            let _ = std::fs::remove_file(path);
         }
     }
+}
+
+/// This process's proxy directory.
+pub fn own_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("forge-egress-{}", std::process::id()))
+}
+
+/// Remove this process's proxy directory: a worker does it once, at exit.
+pub fn remove_own_dir() {
+    let _ = std::fs::remove_dir_all(own_dir());
+}
+
+/// Removes the process's proxy directory when dropped.
+pub struct OwnDirGuard;
+
+impl Drop for OwnDirGuard {
+    fn drop(&mut self) {
+        remove_own_dir();
+    }
+}
+
+/// Remove the `forge-egress-<pid>` directories under `tmp` whose pid is
+/// dead (`kill(pid, 0)` says `ESRCH`) and no others: not a live worker's,
+/// not this process's, however old. Returns how many it removed.
+pub fn sweep_dead(tmp: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(tmp) else {
+        return 0;
+    };
+    let me = std::process::id() as i64;
+    let mut swept = 0;
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix("forge-egress-"))
+            .and_then(|p| p.parse::<i64>().ok())
+        else {
+            continue;
+        };
+        let Ok(raw) = libc::pid_t::try_from(pid) else {
+            continue;
+        };
+        if pid == me || raw <= 0 || !e.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let gone = unsafe { libc::kill(raw, 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if gone && std::fs::remove_dir_all(e.path()).is_ok() {
+            swept += 1;
+        }
+    }
+    swept
 }
 
 #[cfg(test)]
@@ -778,6 +833,23 @@ mod tests {
 
     fn rule(s: &str) -> Rule {
         Rule::parse(s).unwrap()
+    }
+
+    #[test]
+    fn the_sweep_removes_dead_pids_and_keeps_live_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let live = tmp
+            .path()
+            .join(format!("forge-egress-{}", std::process::id()));
+        // pid_max is at most 2^22: this pid cannot exist.
+        let dead = tmp.path().join("forge-egress-2147483646");
+        let other = tmp.path().join("forge-egress-refused.jsonl");
+        for d in [&live, &dead] {
+            std::fs::create_dir(d).unwrap();
+        }
+        std::fs::write(&other, "").unwrap();
+        assert_eq!(sweep_dead(tmp.path()), 1);
+        assert!(live.exists() && !dead.exists() && other.exists());
     }
 
     #[test]

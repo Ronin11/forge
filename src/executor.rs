@@ -263,6 +263,14 @@ impl Execution {
             }
         }
     }
+    /// Fails, naming the socket, when a bwrap launch in `path` would bind
+    /// a proxy socket that is not there.
+    pub fn check_socket(&self, path: &Path) -> anyhow::Result<()> {
+        match &self.bwrap {
+            Ok(sb) if self.backend(path) == Backend::Bwrap => sb.check_socket(path),
+            _ => Ok(()),
+        }
+    }
     pub fn set_egress(&self, path: &Path, rules: &[Rule]) {
         if let Ok(sb) = &self.bwrap {
             sb.set_egress(path, rules);

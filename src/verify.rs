@@ -76,6 +76,11 @@ pub struct Subject<'a> {
     pub pending_main: Option<&'a str>,
     pub sandbox: Option<&'a Execution>,
     pub report: &'a Reporter,
+    /// Where a failed L1/L2 check's whole output is written
+    /// (`run_one_recorded`): `Forge::paths.logs`, the same directory the
+    /// attempt's own transcript lives in, so `forge show` names a path
+    /// that outlives the worktree.
+    pub logs_dir: &'a Path,
     /// The tests contract's scratch directory for the red-on-base run;
     /// created and removed by the verdict. Other contracts leave it None.
     pub scratch: Option<&'a Path>,
@@ -309,6 +314,38 @@ pub(crate) fn l0(rule: Rule, ok: bool, detail: String) -> CheckResult {
         tail: if ok { String::new() } else { detail },
         ..Default::default()
     }
+}
+
+/// How much of a failed L1/L2 check's combined stdout and stderr stays on
+/// the row the attempt keeps forever (`verdict_json`); the rest is only on
+/// disk, at `CheckResult::log_path`.
+const RECORD_TAIL_BYTES: usize = 4 * 1024;
+
+/// As `checks::run_one`, but bounding what stays on the row to
+/// `RECORD_TAIL_BYTES` and writing the check's whole output to
+/// `s.logs_dir`, so a failed check's record is never missing the test
+/// that failed for want of room, whatever the check printed.
+async fn run_one_recorded(
+    s: &Subject<'_>,
+    level: &str,
+    name: &str,
+    argv: &[String],
+    cwd: &Path,
+    timeout: Duration,
+    env: &[(String, String)],
+) -> CheckResult {
+    crate::checks::run_one_capped(crate::checks::RunOneCapped {
+        level,
+        name,
+        argv,
+        cwd,
+        sandbox: s.sandbox,
+        timeout,
+        env,
+        cap_bytes: RECORD_TAIL_BYTES,
+        full_log_dir: Some(s.logs_dir),
+    })
+    .await
 }
 
 fn in_namespace(namespace: &[String], path: &str) -> bool {
@@ -693,7 +730,7 @@ async fn l1_l2(
     names.sort_by_key(|n| (n.as_str() != "setup", n.as_str()));
     for name in names {
         let argv = &s.cfg.checks[name];
-        let r = run_one("L1", name, argv, s.worktree, s.sandbox, timeout, &facts).await;
+        let r = run_one_recorded(s, "L1", name, argv, s.worktree, timeout, &facts).await;
         s.report.emit(
             s.task_id,
             Event::Check {
@@ -750,7 +787,7 @@ async fn l1_l2(
         for (i, cmd) in s.task_checks.iter().enumerate() {
             let name = format!("task-check-{}", i + 1);
             let argv = vec!["bash".to_string(), "-c".to_string(), cmd.clone()];
-            let mut r = run_one("L2", &name, &argv, s.worktree, s.sandbox, timeout, &facts).await;
+            let mut r = run_one_recorded(s, "L2", &name, &argv, s.worktree, timeout, &facts).await;
             if !r.ok {
                 r.tail = format!("$ {cmd}\n{}", r.tail);
             }
@@ -1225,19 +1262,19 @@ async fn red_on_base(s: &Subject<'_>, checks: &mut Vec<CheckResult>) -> Result<(
     let facts = s.facts();
     let mut setup_ok = true;
     if let Some(argv) = s.cfg.checks.get("setup") {
-        let r = run_one("L1", "setup", argv, scratch, s.sandbox, timeout, &facts).await;
+        let r = run_one_recorded(s, "L1", "setup", argv, scratch, timeout, &facts).await;
         emit_check(s.report, s.task_id, &r);
         setup_ok = r.ok;
         checks.push(r);
     }
     if setup_ok {
         let argv = s.cfg.checks.get("test").cloned().unwrap_or_default();
-        let mut r = run_one(
+        let mut r = run_one_recorded(
+            s,
             Rule::RedOnBase.level(),
             Rule::RedOnBase.name(),
             &argv,
             scratch,
-            s.sandbox,
             timeout,
             &facts,
         )
@@ -1704,6 +1741,7 @@ mod tests {
             pending_main: None,
             sandbox: None,
             report: &report,
+            logs_dir: dir.path(),
             scratch: None,
             plan_rows: true,
         };
@@ -1751,6 +1789,7 @@ mod tests {
             pending_main: None,
             sandbox: None,
             report: &report,
+            logs_dir: dir.path(),
             scratch: None,
             plan_rows: true,
         };
@@ -1801,6 +1840,7 @@ mod tests {
             pending_main: None,
             sandbox: None,
             report: &report,
+            logs_dir: dir.path(),
             scratch: None,
             plan_rows: true,
         };
@@ -1862,6 +1902,7 @@ mod tests {
             pending_main: None,
             sandbox: None,
             report: &report,
+            logs_dir: dir.path(),
             scratch: None,
             plan_rows: true,
         };
@@ -1908,6 +1949,7 @@ mod tests {
             pending_main: None,
             sandbox: None,
             report: &report,
+            logs_dir: dir.path(),
             scratch: None,
             plan_rows: true,
         };
@@ -1940,6 +1982,7 @@ mod tests {
             pending_main: None,
             sandbox: None,
             report: &report,
+            logs_dir: dir.path(),
             scratch: None,
             plan_rows: true,
         };
@@ -1972,6 +2015,7 @@ mod tests {
             pending_main: None,
             sandbox: None,
             report: &report,
+            logs_dir: dir.path(),
             scratch: None,
             plan_rows: true,
         };
@@ -2136,6 +2180,7 @@ mod tests_fault_tests {
             timed_out: false,
             tail: tail.into(),
             failing_tests: vec![],
+            log_path: String::new(),
             stdout: String::new(),
         }
     }
