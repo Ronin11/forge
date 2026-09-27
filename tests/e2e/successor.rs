@@ -161,6 +161,42 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
     assert_eq!(claimed, 2);
 }
 
+#[test]
+fn a_successor_exiting_without_taking_over_makes_the_old_worker_fail() {
+    let e = Env::new();
+    let root = e.home.join("bin");
+    let release = root.join("releases/new");
+    std::fs::create_dir_all(&release).unwrap();
+    let bin = release.join("forge");
+    std::fs::write(&bin, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink("releases/new", root.join("staged")).unwrap();
+
+    let output = e
+        .cmd("ok.sh")
+        .env("FORGE_RELEASE", "old")
+        .env("NOTIFY_SOCKET", e.home.join("missing.sock"))
+        .env_remove("FORGE_SUCCESSOR_OF")
+        .args(["work", "--poll", "1"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("successor pid "), "{stderr}");
+    assert!(stderr.contains("for release new exited ("), "{stderr}");
+    assert!(stderr.contains("without taking the unit over"), "{stderr}");
+    assert!(stderr.contains("worked 0 task(s)"), "{stderr}");
+    let stopped: bool = e
+        .db()
+        .query_row(
+            "SELECT stopped_at IS NOT NULL FROM workers WHERE version='old'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(stopped, "the old worker must deregister even on failure");
+}
+
 /// A fake `systemctl` whose `is-active` answers what `$SUCC_UNIT_STATE`
 /// (a file) says, and which records every call.
 fn fake_systemctl(e: &Env) -> (String, std::path::PathBuf) {

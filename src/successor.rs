@@ -182,11 +182,12 @@ impl Succession {
     /// Deregister; a worker that started a successor first waits (bounded)
     /// until the successor has taken the unit over, so systemd never sees
     /// the main pid exit before `MAINPID=` moved it.
-    pub fn leave(&mut self, f: &Forge) {
+    pub fn leave(&mut self, f: &Forge) -> Result<()> {
         if !self.daemon {
-            return;
+            return Ok(());
         }
-        if let Some((child, _)) = &mut self.child {
+        let mut result = Ok(());
+        if let Some((child, id)) = &mut self.child {
             let root = release::root(&f.paths.home);
             let want = i64::from(child.id());
             let start = std::time::Instant::now();
@@ -196,8 +197,20 @@ impl Succession {
             {
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
+            if read_capability(&root) != Some(want) {
+                result = Err(match child.try_wait() {
+                    Ok(Some(status)) => anyhow::anyhow!(
+                        "successor pid {want} for release {id} exited ({status}) without taking the unit over"
+                    ),
+                    _ => anyhow::anyhow!(
+                        "successor pid {want} for release {id} did not take the unit over within {} s",
+                        HANDOVER_WAIT.as_secs()
+                    ),
+                });
+            }
         }
         let _ = f.store.stop_worker(self.id);
+        result
     }
 }
 

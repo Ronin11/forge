@@ -1077,7 +1077,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     if let Some(p) = plugins {
         p.stop().await;
     }
-    succession.leave(&f);
+    let handover = succession.leave(&f);
     eprintln!("worked {done} task(s): {ok} succeeded, {} not", done - ok);
     if jobs_done > 0 {
         eprintln!(
@@ -1087,7 +1087,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     }
     match env_error {
         Some(e) => Err(e),
-        None => Ok(()),
+        None => handover,
     }
 }
 
