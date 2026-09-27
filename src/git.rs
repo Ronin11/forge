@@ -860,6 +860,17 @@ pub async fn diff_shortstat(dir: &Path, from: &str, to: &str) -> Result<String> 
         .to_string())
 }
 
+/// Lines added plus deleted from `from` to `to` (binary files count none),
+/// what the `diff-size` operation caps.
+pub async fn diff_line_total(dir: &Path, from: &str, to: &str) -> Result<u64> {
+    let text = Git::new(dir).raw(&["diff", "--numstat", from, to]).await?;
+    Ok(text
+        .lines()
+        .flat_map(|l| l.split('\t').take(2))
+        .filter_map(|n| n.parse::<u64>().ok())
+        .sum())
+}
+
 /// `git log --oneline` for the commits on the branch since `from`.
 pub async fn log_oneline(dir: &Path, from: &str) -> Result<String> {
     let range = format!("{from}..HEAD");
@@ -1177,6 +1188,7 @@ mod tests {
         "diff_lines:repo",
         "changed_with_status:wt",
         "diff_text:dir",
+        "diff_line_total:dir",
         "diff_shortstat:dir",
         "diff_stat_tree:dir",
         "log_oneline:dir",

@@ -160,3 +160,56 @@ fn a_confident_judgment_keeps_its_choice() {
     assert_eq!(doc["state"], "ok", "{doc}");
     assert_eq!(doc["steps"][0]["outcome"], "ignore", "{doc}");
 }
+
+#[test]
+fn eval_jev_replays_a_fixture_and_reports_accuracy_calibration_latency_and_cost() {
+    let e = Env::new();
+    let (url, rx) = fake_jev("request", 0.9);
+    std::fs::create_dir_all(&e.home).unwrap();
+    std::fs::write(
+        e.home.join("config.toml"),
+        format!(
+            "[providers.jev]\nrunner = \"jev\"\nbase_url = \"{url}/accounts/{{account_id}}/ai/run\"\n"
+        ),
+    )
+    .unwrap();
+    let fixture = e.home.join("fixture.json");
+    std::fs::write(
+        &fixture,
+        r#"{"concierge": [
+              {"state": "make the quote say usually same day", "label": "request"},
+              {"state": "did the reminder go out?", "label": "question"}]}"#,
+    )
+    .unwrap();
+    let report = e.home.join("report.md");
+    let o = e
+        .cmd("ok.sh")
+        .env("CLOUDFLARE_ACCOUNT_ID", "acct-1")
+        .env("CLOUDFLARE_API_TOKEN", "tok-1")
+        .args(["eval", "jev", "--provider", "jev", "--fixture"])
+        .arg(&fixture)
+        .arg("--out")
+        .arg(&report)
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        o.status.success(),
+        "{out}{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&report).unwrap().trim_end(),
+        out.trim_end()
+    );
+    assert!(out.contains("## Concierge decisions"), "{out}");
+    assert!(out.contains("accuracy: 50.0% (1 of 2 answered)"), "{out}");
+    assert!(out.contains("| 0.9-1.0 | 2 | 0.90 | 50.0% |"), "{out}");
+    assert!(out.contains("mean latency:"), "{out}");
+    // Two calls of 500 input tokens at $0.042 per million.
+    assert!(out.contains("total cost: $0.000042"), "{out}");
+    assert!(out.contains("No labeled items in the record."), "{out}");
+    let (_, _, body) = rx.recv().unwrap();
+    assert_eq!(body["input"]["questions"]["outcome"]["type"], "choice");
+    assert!(body["input"]["questions"]["outcome"]["criteria"]["need"].is_string());
+}

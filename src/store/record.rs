@@ -217,6 +217,17 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Every decision `by` answered, oldest first.
+    pub fn decisions_answered_by(&self, by: &str) -> Result<Vec<Decision>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM decisions d WHERE d.answered_by = ?1 ORDER BY d.id",
+            DECISION_COLUMNS.join(", ")
+        ))?;
+        let rows = stmt.query_map(params![by], decision_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Decisions of `kind` recorded at or after `since`, newest first.
     pub fn decisions_of_kind_since(&self, kind: &str, since: i64) -> Result<Vec<Decision>> {
         let c = self.lock();

@@ -219,6 +219,33 @@ but a job's directive step whose action declares outcomes; the step's
 `schema` is not what it answers against, the outcomes are. Its host,
 `api.cloudflare.com`, joins the model rules of the egress allowlist.
 
+### Measuring it: `forge eval jev`
+
+Before anything routes through Jev, `forge eval jev --provider jev` scores it against
+what the record already knows. It changes no routing; it measures. Three sets are
+pulled from the store and each item is sent to the provider as one question named
+`outcome`:
+
+1. **Concierge decisions**: every message the concierge sorted (its recorded
+   `concierge_json`, plus the questions it answered) as state, labeled with its
+   decision; a `choice` over `request`, `question`, `need`, `unclear`, whose criteria
+   are docs/INTAKE.md's definitions.
+2. **Review demotions**: each demotion's text as state, one `noul`: names a
+   reproducible defect with a command or steps. Labeled `yes` when the
+   demotion-as-task rule filed a follow-up (or the answer was "do it as stated"),
+   `no` when it blocked as a question.
+3. **Task size**: each landed task's text as state, a `score` over `small`, `medium`,
+   `large`, labeled from lines changed (added plus deleted, base to landing): small
+   up to 50, medium up to 300, large above. It is the proxy for "which workflow".
+
+Per set the report gives accuracy against the label, a calibration table (confidence
+decile against accuracy), mean latency and total cost from usage. It is written to
+`docs/research/jev-eval-<date>.md` (`--out` overrides) and printed. `--record FILE`
+saves the pulled sets and `--fixture FILE` replays such a file instead of reading the
+store (`{"concierge": [{"state", "label"}], "demotions": [...], "size": [...]}`),
+which is how the e2e test runs it against a fake endpoint. `--limit N` judges only
+each set's newest N.
+
 ## The directive library
 
 Forge 2 already reused Forge 1's word: a directive is an action with a

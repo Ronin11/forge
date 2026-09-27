@@ -116,6 +116,73 @@ pub fn probabilities(runner: super::Runner, envelope: &Value) -> String {
     }
 }
 
+/// The URL and bearer token a `jev` provider posts with, from the
+/// environment variables it names.
+pub fn endpoint(provider: &super::Provider) -> Result<(String, String)> {
+    let name = &provider.name;
+    let mut url = provider
+        .base_url
+        .clone()
+        .unwrap_or_else(|| JEV_DEFAULT_URL.to_string());
+    if url.contains("{account_id}") {
+        let var = provider
+            .account_id_env
+            .as_deref()
+            .unwrap_or(JEV_DEFAULT_ACCOUNT_ENV);
+        let id = std::env::var(var).map_err(|_| {
+            anyhow::anyhow!(
+                "provider {name:?}: ${var} is not set (account_id_env names the environment variable that holds the Cloudflare account id)"
+            )
+        })?;
+        url = url.replace("{account_id}", &id);
+    }
+    let key_var = provider
+        .api_key_env
+        .as_deref()
+        .unwrap_or(JEV_DEFAULT_KEY_ENV);
+    let key = std::env::var(key_var).map_err(|_| {
+        anyhow::anyhow!(
+            "provider {name:?}: ${key_var} is not set (api_key_env names the environment variable that holds the key, never the key itself)"
+        )
+    })?;
+    Ok((url, key))
+}
+
+/// What a call's usage cost at the provider's prices, when it reported any.
+pub fn usage_cost(
+    provider: &super::Provider,
+    input: Option<i64>,
+    output: Option<i64>,
+) -> Option<f64> {
+    input.map(|i| {
+        i as f64 * provider.price_input_per_million / 1_000_000.0
+            + output.unwrap_or(0) as f64 * provider.price_output_per_million / 1_000_000.0
+    })
+}
+
+/// One raw request through a `jev` provider: the `answers` object and the
+/// usage cost, for a caller that builds its own questions (`forge eval jev`).
+pub async fn ask(
+    provider: &super::Provider,
+    body: &Value,
+    timeout: Duration,
+) -> Result<(Value, f64)> {
+    let (url, key) = endpoint(provider)?;
+    let resp = post_json(&reqwest::Client::new(), &url, &key, body, timeout).await?;
+    let result = if resp["result"]["result"].is_object() {
+        &resp["result"]["result"]
+    } else {
+        &resp["result"]
+    };
+    let usage = &result["usage"];
+    let cost = usage_cost(
+        provider,
+        usage["input_tokens"].as_i64(),
+        usage["output_tokens"].as_i64(),
+    );
+    Ok((result["answers"].clone(), cost.unwrap_or(0.0)))
+}
+
 /// A job's directive step judged by Jev (docs/EXECUTION.md, "The judgment
 /// tier"): one POST, no tools, typed answers back. `run` has already
 /// refused anything but a directive whose action declares outcomes.
@@ -143,46 +210,12 @@ pub(super) async fn run(l: Launch<'_>) -> Result<Outcome> {
         )?;
         Ok(())
     };
-    let name = &l.provider.name;
-    let mut url = l
-        .provider
-        .base_url
-        .clone()
-        .unwrap_or_else(|| JEV_DEFAULT_URL.to_string());
-    if url.contains("{account_id}") {
-        let var = l
-            .provider
-            .account_id_env
-            .as_deref()
-            .unwrap_or(JEV_DEFAULT_ACCOUNT_ENV);
-        match std::env::var(var) {
-            Ok(id) => url = url.replace("{account_id}", &id),
-            Err(_) => {
-                fail(
-                    &mut log,
-                    &mut out,
-                    format!(
-                        "provider {name:?}: ${var} is not set (account_id_env names the environment variable that holds the Cloudflare account id)"
-                    ),
-                )?;
-                return Ok(out);
-            }
+    let (url, key) = match endpoint(l.provider) {
+        Ok(found) => found,
+        Err(e) => {
+            fail(&mut log, &mut out, format!("{e:#}"))?;
+            return Ok(out);
         }
-    }
-    let key_var = l
-        .provider
-        .api_key_env
-        .as_deref()
-        .unwrap_or(JEV_DEFAULT_KEY_ENV);
-    let Ok(key) = std::env::var(key_var) else {
-        fail(
-            &mut log,
-            &mut out,
-            format!(
-                "provider {name:?}: ${key_var} is not set (api_key_env names the environment variable that holds the key, never the key itself)"
-            ),
-        )?;
-        return Ok(out);
     };
     let body = request(l.model, judgment.action, judgment.state);
     writeln!(log, "{{\"type\":\"forge_jev_request\",\"body\":{body}}}")?;
@@ -203,13 +236,7 @@ pub(super) async fn run(l: Launch<'_>) -> Result<Outcome> {
     let usage = &result["usage"];
     out.input_tokens = usage["input_tokens"].as_i64();
     out.output_tokens = usage["output_tokens"].as_i64();
-    if let Some(i) = out.input_tokens {
-        out.cost_usd = Some(
-            i as f64 * l.provider.price_input_per_million / 1_000_000.0
-                + out.output_tokens.unwrap_or(0) as f64 * l.provider.price_output_per_million
-                    / 1_000_000.0,
-        );
-    }
+    out.cost_usd = usage_cost(l.provider, out.input_tokens, out.output_tokens);
     out.exit_code = Some(0);
     match envelope(judgment.action, &result["answers"]) {
         Ok(env) => {

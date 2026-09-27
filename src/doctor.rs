@@ -111,7 +111,7 @@ fn count_files(dir: &std::path::Path) -> (u64, u64) {
 
 /// A unix timestamp as a plain `YYYY-MM-DD`, with no timezone-database
 /// dependency: Howard Hinnant's civil_from_days over UTC days.
-fn ymd(unix_secs: i64) -> String {
+pub(crate) fn ymd(unix_secs: i64) -> String {
     let z = unix_secs.div_euclid(86_400) + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;

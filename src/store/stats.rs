@@ -531,6 +531,18 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Tasks the concierge produced, each carrying its recorded decision
+    /// (`concierge_json`): the labeled set `forge eval jev` reads.
+    pub fn concierge_tasks(&self) -> Result<Vec<Task>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM tasks WHERE concierge_json IS NOT NULL AND proposal_json IS NULL ORDER BY id",
+            TASK_COLUMNS.join(", ")
+        ))?;
+        let rows = stmt.query_map([], task_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Landed tasks on `repo`, other than `exclude`, whose landing fell in
     /// `(from, to]`: the later landings a churn computation diffs `added`
     /// against (see docs/LATER.md, the delayed-cost follow-up to "Defect

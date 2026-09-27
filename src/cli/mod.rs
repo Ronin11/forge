@@ -25,6 +25,7 @@ macro_rules! out {
 
 mod demo;
 mod deploy;
+mod eval;
 mod gc;
 mod initiatives;
 mod jobs;
@@ -38,6 +39,7 @@ mod web;
 mod workflows;
 
 use deploy::{DeployArgs, PluginCmd, ProvisionArgs};
+use eval::EvalCmd;
 use initiatives::InitiativeCmd;
 use jobs::{EconomistCmd, ExperimentCmd, JobCmd, MessageCmd};
 use projects::{IntakeCmd, ProjectCmd, RefCmd};
@@ -432,6 +434,12 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Measure a provider against what the record already knows (no routing
+    /// changes; see docs/EXECUTION.md, "Measuring the judgment tier")
+    Eval {
+        #[command(subcommand)]
+        cmd: EvalCmd,
+    },
     /// Outcomes per workflow version and per step
     Stats {
         /// What the agents ran: tools, shell commands, files read, with time, per step
@@ -655,6 +663,7 @@ pub async fn main() -> Result<()> {
         | Cmd::Graph { .. }
         | Cmd::Requests { .. }
         | Cmd::Stats { .. }
+        | Cmd::Eval { .. }
         | Cmd::Events { .. }
         | Cmd::Snapshot
         | Cmd::Web { .. } => stats::dispatch(cmd).await,

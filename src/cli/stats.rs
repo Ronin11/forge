@@ -380,6 +380,7 @@ pub(super) async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::EgressRelay { .. } => dispatch_egressrelay(cmd).await,
         Cmd::Graph { .. } => dispatch_graph(cmd).await,
         Cmd::Requests { .. } => dispatch_requests(cmd).await,
+        Cmd::Eval { .. } => super::eval::dispatch(cmd).await,
         Cmd::Stats { .. } => dispatch_stats(cmd).await,
         Cmd::Events { .. } => dispatch_events(cmd).await,
         Cmd::Snapshot => dispatch_snapshot(cmd).await,
