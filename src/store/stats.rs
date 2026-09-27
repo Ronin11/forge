@@ -531,6 +531,18 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// The concierge's own runs (`forge ask`'s `concierge` workflow tasks)
+    /// that recorded a decision in their `plan`, oldest first.
+    pub fn concierge_runs(&self) -> Result<Vec<Task>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM tasks WHERE workflow = 'concierge' AND plan != '' ORDER BY id",
+            TASK_COLUMNS.join(", ")
+        ))?;
+        let rows = stmt.query_map([], task_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Tasks the concierge produced, each carrying its recorded decision
     /// (`concierge_json`): the labeled set `forge eval jev` reads.
     pub fn concierge_tasks(&self) -> Result<Vec<Task>> {

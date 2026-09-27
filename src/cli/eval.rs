@@ -43,7 +43,7 @@ pub(super) enum EvalCmd {
 }
 
 /// One labeled item: the state Jev is shown and the label the record gives it.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(super) struct Item {
     pub state: String,
     pub label: String,
@@ -62,12 +62,32 @@ pub(super) struct Set {
 }
 
 impl Set {
-    /// The request Jev is sent for `state`.
+    /// The request Jev is sent for `state`: a `choice`'s criteria are its
+    /// labels with their meanings, a `noul`'s are `true` (`yes`) and `false`
+    /// (`no`), and a `score`'s are its levels' names in order.
     fn request(&self, model: &str, state: &str) -> Value {
         let mut q = json!({"type": self.kind, "instructions": self.instructions});
-        if self.kind != "noul" {
-            q["criteria"] = self.criteria.iter().cloned().collect();
-        }
+        q["criteria"] = match self.kind {
+            "score" => self
+                .criteria
+                .iter()
+                .map(|(l, _)| *l)
+                .collect::<Vec<_>>()
+                .into(),
+            "noul" => self
+                .criteria
+                .iter()
+                .map(|(l, d)| {
+                    let key = match *l {
+                        "yes" => "true",
+                        "no" => "false",
+                        other => other,
+                    };
+                    (key.to_string(), Value::from(d.clone()))
+                })
+                .collect(),
+            _ => self.criteria.iter().cloned().collect(),
+        };
         json!({"model": model, "input": {"state": state, "questions": {
             crate::workflows::OUTCOME_QUESTION: q,
         }}})
@@ -83,8 +103,8 @@ pub(super) struct Judged {
     pub error: Option<String>,
 }
 
-/// The answer's label and confidence: a `choice`, else a `noul`'s yes/no,
-/// else the most probable label; confidence falls back to that probability.
+/// The answer's label and confidence (`crate::agent::read_answer`), a
+/// noul's `true`/`false` read as the set's `yes`/`no`.
 pub(super) fn read_answer(answers: &Value) -> Option<(String, f64)> {
     let a = &answers[crate::workflows::OUTCOME_QUESTION];
     let a = if a.is_object() {
@@ -92,31 +112,13 @@ pub(super) fn read_answer(answers: &Value) -> Option<(String, f64)> {
     } else {
         answers.as_object()?.values().next()?
     };
-    let probs = a["probabilities"].as_object();
-    let top = probs.and_then(|p| {
-        p.iter()
-            .filter_map(|(k, v)| Some((k.clone(), v.as_f64()?)))
-            .max_by(|x, y| x.1.total_cmp(&y.1))
-    });
-    let yes_no = |b: bool| if b { "yes" } else { "no" }.to_string();
-    let label = ["choice", "value", "answer", "noul"]
-        .iter()
-        .find_map(|k| match &a[*k] {
-            Value::String(s) => Some(s.to_lowercase()),
-            Value::Bool(b) => Some(yes_no(*b)),
-            _ => None,
-        })
-        .or_else(|| top.as_ref().map(|t| t.0.clone()))?;
-    let label = match label.as_str() {
+    let read = crate::agent::read_answer(a)?;
+    let label = match read.label.to_lowercase().as_str() {
         "true" => "yes".to_string(),
         "false" => "no".to_string(),
-        _ => label,
+        other => other.to_string(),
     };
-    let confidence = a["confidence"]
-        .as_f64()
-        .or_else(|| top.map(|t| t.1))
-        .unwrap_or(0.0);
-    Some((label, confidence))
+    Some((label, read.confidence))
 }
 
 async fn judge(provider: &crate::agent::Provider, set: &Set, item: &Item) -> Judged {
