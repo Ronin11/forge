@@ -2810,10 +2810,10 @@ ok = ["true"]
 
 /// The event trigger (docs/JOBS.md, "Triggers"): a task that lands starts
 /// exactly one `task_done` job, `FORGE_INPUT_STATE` `succeeded` and
-/// `trigger_ref` the event's offset in the log; that job's own
+/// `trigger_ref` the event's generation:offset in the log; that job's own
 /// `job_finished` starts the `job_finished` workflow once, and neither
 /// workflow's own job starts itself again. A second `forge work --once`
-/// starts nothing: the offset each workflow examined is kept.
+/// starts nothing: the cursor each workflow examined is kept.
 #[test]
 fn a_task_that_lands_starts_one_task_done_job_and_a_second_work_once_starts_none() {
     let e = Env::new();
@@ -2835,15 +2835,15 @@ fn a_task_that_lands_starts_one_task_done_job_and_a_second_work_once_starts_none
     assert_eq!(done.len(), 1, "{rows:?}");
     assert_eq!(done[0]["trigger_kind"], "event");
     assert_eq!(done[0]["state"], "ok", "{:?}", done[0]);
-    assert!(
-        done[0]["trigger_ref"]
-            .as_str()
-            .unwrap()
-            .parse::<u64>()
-            .is_ok(),
-        "the event's offset: {:?}",
-        done[0]
-    );
+    let cursor = done[0]["trigger_ref"].as_str().unwrap();
+    let (generation, offset) = cursor.split_once(':').expect("generation:offset cursor");
+    assert_eq!(generation.parse::<u64>().unwrap(), 0);
+    let offset = offset.parse::<usize>().unwrap();
+    let log = std::fs::read_to_string(e.home.join("events.jsonl")).unwrap();
+    let event: serde_json::Value =
+        serde_json::from_str(log[offset..].lines().next().unwrap()).unwrap();
+    assert_eq!(event["type"], "task_done");
+    assert_eq!(event["task"], task);
     let job_id = done[0]["id"].as_i64().unwrap();
     let scratch = e.home.join("worktrees").join(format!("job-{job_id}"));
     assert_eq!(
