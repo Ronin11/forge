@@ -121,6 +121,7 @@ struct RunNow<'a> {
 
 mod directive_text;
 mod flow;
+mod input;
 use directive_text::{directive_inputs, directive_instructions, directive_prompt};
 
 use crate::ctx::Forge;
@@ -596,7 +597,7 @@ pub async fn start(args: Start<'_>) -> Result<i64> {
         state: if now {
             JobState::Running
         } else {
-            scheduled_state(due_at, started_at)
+            JobState::Scheduled
         },
         workflow_source: source.as_str().to_string(),
         dry_run,
@@ -604,7 +605,7 @@ pub async fn start(args: Start<'_>) -> Result<i64> {
         finished_at: None,
         cost_usd: None,
         verdict_json: "[]".to_string(),
-        due_at,
+        due_at: None,
         retry_count: 0,
     };
     let job_id = match wf.limits.as_ref().filter(|l| l.per_day > 0 && !dry_run) {
@@ -617,12 +618,7 @@ pub async fn start(args: Start<'_>) -> Result<i64> {
         None => f.store.create_job(&job)?,
     };
     if !now {
-        // Persist the input for whenever the worker claims this job
-        // (`drive`, below); `run_now` writes the same file again once it
-        // does.
-        let idir = input_dir(f, job_id);
-        std::fs::create_dir_all(&idir)?;
-        std::fs::write(idir.join("input.json"), &input_text)?;
+        input::publish(f, job_id, &input_text, due_at)?;
         return Ok(job_id);
     }
 
@@ -922,14 +918,14 @@ fn queue_triggered(args: QueueTriggered<'_>) -> Result<i64> {
         landed_sha: landed_sha.to_string(),
         trigger_kind: kind.as_str().to_string(),
         trigger_ref: trigger_ref.to_string(),
-        state: scheduled_state(due_at, started_at),
+        state: JobState::Scheduled,
         workflow_source: source.as_str().to_string(),
         dry_run: false,
         started_at,
         finished_at: None,
         cost_usd: None,
         verdict_json: "[]".to_string(),
-        due_at,
+        due_at: None,
         retry_count: 0,
     };
     let job_id = match wf.limits.as_ref().filter(|l| l.per_day > 0) {
@@ -939,9 +935,7 @@ fn queue_triggered(args: QueueTriggered<'_>) -> Result<i64> {
         }
         None => f.store.create_job(&job)?,
     };
-    let idir = input_dir(f, job_id);
-    std::fs::create_dir_all(&idir)?;
-    std::fs::write(idir.join("input.json"), input_text)?;
+    input::publish(f, job_id, input_text, due_at)?;
     Ok(job_id)
 }
 
@@ -1545,7 +1539,7 @@ async fn retry_job(f: &Forge, job: &Job, input_text: &str) -> Result<i64> {
         landed_sha: job.landed_sha.clone(),
         trigger_kind: job.trigger_kind.clone(),
         trigger_ref: job.trigger_ref.clone(),
-        state: JobState::Queued,
+        state: JobState::Scheduled,
         workflow_source: job.workflow_source.clone(),
         dry_run: false,
         started_at: unix_now(),
@@ -1556,9 +1550,7 @@ async fn retry_job(f: &Forge, job: &Job, input_text: &str) -> Result<i64> {
         retry_count: job.retry_count + 1,
     };
     let retry_id = f.store.create_job(&retry)?;
-    let idir = input_dir(f, retry_id);
-    std::fs::create_dir_all(&idir)?;
-    std::fs::write(idir.join("input.json"), input_text)?;
+    input::publish(f, retry_id, input_text, None)?;
     Ok(retry_id)
 }
 
@@ -1574,6 +1566,8 @@ async fn run_claimed(f: &Forge, job_id: i64) -> Result<()> {
         .store
         .job(job_id)?
         .with_context(|| format!("job {job_id} vanished before the worker could run it"))?;
+    let input_text = std::fs::read_to_string(input_dir(f, job_id).join("input.json"))
+        .with_context(|| format!("reading job {job_id} saved input.json"))?;
     let repo = f
         .store
         .first_repo(&job.project)?
@@ -1587,9 +1581,6 @@ async fn run_claimed(f: &Forge, job_id: i64) -> Result<()> {
         &job.workflow,
     )?;
 
-    let idir = input_dir(f, job_id);
-    let input_text =
-        std::fs::read_to_string(idir.join("input.json")).unwrap_or_else(|_| "{}".into());
     let input_json: serde_json::Value =
         serde_json::from_str(&input_text).context("parsing the job's saved input as JSON")?;
     let input_fields = string_fields(&input_json)?;

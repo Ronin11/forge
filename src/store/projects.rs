@@ -207,7 +207,7 @@ fn initiative_from_row(r: &Row) -> rusqlite::Result<Initiative> {
 impl Store {
     /// Register a new project. Fails if the name is already taken.
     pub fn create_project(&self, p: &Project) -> Result<()> {
-        self.lock().execute(
+        self.lock().retry_execute(
             "INSERT INTO projects (name, purpose, created_at) VALUES (?1, ?2, ?3)",
             params![p.name, p.purpose, p.created_at],
         )?;
@@ -217,7 +217,7 @@ impl Store {
     pub fn project(&self, name: &str) -> Result<Option<Project>> {
         Ok(self
             .lock()
-            .query_row(
+            .retry_query_row(
                 &format!(
                     "SELECT {} FROM projects WHERE name=?1",
                     PROJECT_COLUMNS.join(", ")
@@ -254,7 +254,7 @@ impl Store {
         } else {
             let current: Option<String> = self
                 .lock()
-                .query_row(
+                .retry_query_row(
                     "SELECT role_providers_json FROM projects WHERE name=?1",
                     params![name],
                     |r| r.get(0),
@@ -274,7 +274,7 @@ impl Store {
             }
             Some(serde_json::to_string(&merged)?)
         };
-        let n = self.lock().execute(
+        let n = self.lock().retry_execute(
             "UPDATE projects SET
                 purpose = COALESCE(?2, purpose),
                 workflow = COALESCE(?3, workflow),
@@ -313,7 +313,7 @@ impl Store {
     /// Add a backlog item to a project. Returns its id.
     pub fn add_backlog(&self, project: &str, text: &str) -> Result<i64> {
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "INSERT INTO backlog (project, text, created_at) VALUES (?1, ?2, ?3)",
             params![project, text, crate::unix_now()],
         )?;
@@ -334,7 +334,7 @@ impl Store {
     /// Mark a backlog item done. `false` if it does not exist in this
     /// project or is already done.
     pub fn mark_backlog_done(&self, project: &str, id: i64) -> Result<bool> {
-        let n = self.lock().execute(
+        let n = self.lock().retry_execute(
             "UPDATE backlog SET done_at=?3 WHERE id=?1 AND project=?2 AND done_at IS NULL",
             params![id, project, crate::unix_now()],
         )?;
@@ -345,7 +345,7 @@ impl Store {
     /// it is"): `forge project portal` generates the token text itself
     /// (32 random bytes, hex-encoded) and records it here.
     pub fn create_portal_token(&self, project: &str, token: &str, at: i64) -> Result<()> {
-        self.lock().execute(
+        self.lock().retry_execute(
             "INSERT INTO portal_tokens (token, project, created_at) VALUES (?1, ?2, ?3)",
             params![token, project, at],
         )?;
@@ -355,7 +355,7 @@ impl Store {
     /// Revoke every currently-active token on a project (`forge project
     /// portal --revoke`). Returns how many were revoked.
     pub fn revoke_portal_tokens(&self, project: &str, at: i64) -> Result<usize> {
-        Ok(self.lock().execute(
+        Ok(self.lock().retry_execute(
             "UPDATE portal_tokens SET revoked_at=?2 WHERE project=?1 AND revoked_at IS NULL",
             params![project, at],
         )?)
@@ -367,7 +367,7 @@ impl Store {
     pub fn portal_token_project(&self, token: &str) -> Result<Option<String>> {
         Ok(self
             .lock()
-            .query_row(
+            .retry_query_row(
                 "SELECT project FROM portal_tokens WHERE token=?1 AND revoked_at IS NULL",
                 params![token],
                 |r| r.get(0),
@@ -379,7 +379,7 @@ impl Store {
     /// paths within it the project owns; `None` means the whole
     /// repository). Registering the same pair again replaces the scope.
     pub fn register_repo(&self, project: &str, repo: &str, scope: Option<&str>) -> Result<()> {
-        self.lock().execute(
+        self.lock().retry_execute(
             "INSERT INTO project_repos (project, repo, scope_json) VALUES (?1, ?2, ?3)
              ON CONFLICT(project, repo) DO UPDATE SET scope_json = excluded.scope_json",
             params![project, repo, scope],
@@ -394,7 +394,7 @@ impl Store {
     pub fn first_repo(&self, project: &str) -> Result<Option<String>> {
         Ok(self
             .lock()
-            .query_row(
+            .retry_query_row(
                 "SELECT repo FROM project_repos WHERE project=?1 ORDER BY rowid LIMIT 1",
                 params![project],
                 |r| r.get(0),
@@ -438,7 +438,7 @@ impl Store {
         if let Some(name) = self.default_project_for_repo(repo)? {
             return Ok(Some(name));
         }
-        let ambiguous: i64 = self.lock().query_row(
+        let ambiguous: i64 = self.lock().retry_query_row(
             "SELECT COUNT(*) FROM project_repos WHERE repo=?1",
             params![repo],
             |r| r.get(0),
@@ -462,7 +462,7 @@ impl Store {
     /// Register a new initiative. Returns its id.
     pub fn create_initiative(&self, ini: &Initiative) -> Result<i64> {
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "INSERT INTO initiatives (project, outcome, budget_usd, stop_after_same_rule, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
@@ -479,7 +479,7 @@ impl Store {
     /// Change only the fields `d` gives; returns `false` if `id` names no
     /// initiative.
     pub fn set_initiative(&self, id: i64, d: &InitiativeUpdate) -> Result<bool> {
-        let n = self.lock().execute(
+        let n = self.lock().retry_execute(
             "UPDATE initiatives SET
                 outcome = COALESCE(?2, outcome),
                 budget_usd = COALESCE(?3, budget_usd),
@@ -493,7 +493,7 @@ impl Store {
     pub fn initiative(&self, id: i64) -> Result<Option<Initiative>> {
         Ok(self
             .lock()
-            .query_row(
+            .retry_query_row(
                 &format!(
                     "SELECT {} FROM initiatives WHERE id=?1",
                     INITIATIVE_COLUMNS.join(", ")
@@ -539,7 +539,7 @@ impl Store {
 
     /// The summed cost of every attempt of every one of an initiative's tasks.
     pub fn initiative_cost(&self, id: i64) -> Result<f64> {
-        Ok(self.lock().query_row(
+        Ok(self.lock().retry_query_row(
             "SELECT COALESCE(SUM(a.cost_usd), 0) FROM attempts a
              WHERE a.task_id IN (SELECT id FROM tasks WHERE initiative=?1)",
             params![id],
@@ -561,7 +561,7 @@ impl Store {
 
     /// Mark an initiative settled now. `false` if it already was.
     pub fn settle_initiative(&self, id: i64, at: i64) -> Result<bool> {
-        let n = self.lock().execute(
+        let n = self.lock().retry_execute(
             "UPDATE initiatives SET settled_at=?2 WHERE id=?1 AND settled_at IS NULL",
             params![id, at],
         )?;
@@ -571,7 +571,7 @@ impl Store {
     /// Task counts by state and total cost for one project.
     pub fn project_task_stats(&self, project: &str) -> Result<ProjectTaskStats> {
         let c = self.lock();
-        Ok(c.query_row(
+        Ok(c.retry_query_row(
             "SELECT SUM(state='queued') AS queued, SUM(state='running') AS running,
                     SUM(state='succeeded') AS succeeded, SUM(state='failed') AS failed,
                     SUM(state='unverified') AS unverified, SUM(state='blocked') AS blocked,
