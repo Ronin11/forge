@@ -51,6 +51,7 @@ mod store;
 mod successor;
 mod supervisor;
 mod tools;
+mod unit_path;
 mod upgrade;
 mod verify;
 mod view;
