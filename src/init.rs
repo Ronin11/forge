@@ -37,17 +37,7 @@ impl Report {
     }
 }
 
-/// `$XDG_CONFIG_HOME/systemd/user`, else `$HOME/.config/systemd/user` —
-/// the OS user's own config directory, never `FORGE_HOME` (which may sit
-/// elsewhere entirely): systemd only ever looks for user units there.
-pub(crate) fn systemd_user_dir() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("XDG_CONFIG_HOME") {
-        return Some(PathBuf::from(p).join("systemd/user"));
-    }
-    std::env::var("HOME")
-        .ok()
-        .map(|h| PathBuf::from(h).join(".config/systemd/user"))
-}
+pub(crate) use crate::unit_path::systemd_user_dir;
 
 /// `/run` in production; `tests/e2e/init.rs`'s session-path test points
 /// this at a tempdir holding its own `systemd/system` marker, since the
@@ -70,34 +60,38 @@ fn systemd_available() -> bool {
         && std::env::var_os("XDG_RUNTIME_DIR").is_some()
 }
 
-fn worker_unit(home: &Path, forge_bin: &Path, bin_dir: &Path) -> String {
+fn worker_unit(home: &Path, forge_bin: &Path, path: &str) -> String {
     format!(
         "# Written by `forge init`; re-run it after moving the binary.\n\
 [Unit]\n\
 Description=Forge worker\n\
 After=network-online.target\n\
+StartLimitIntervalSec=10800\n\
+StartLimitBurst=5\n\
 \n\
 [Service]\n\
 Type=notify\n\
 NotifyAccess=all\n\
 Environment=FORGE_HOME={home}\n\
-Environment=PATH={bin_dir}:/usr/local/bin:/usr/bin:/bin\n\
+Environment=PATH={path}\n\
 ExecStart={forge_bin} work --jobs 4\n\
 KillSignal=SIGTERM\n\
 KillMode=mixed\n\
 TimeoutStopSec=2400\n\
 Restart=on-failure\n\
 RestartSec=10\n\
+RestartSteps=5\n\
+RestartMaxDelaySec=900\n\
 \n\
 [Install]\n\
 WantedBy=default.target\n",
         home = home.display(),
-        bin_dir = bin_dir.display(),
+        path = path,
         forge_bin = forge_bin.display(),
     )
 }
 
-fn web_unit(home: &Path, forge_bin: &Path, web_bin: &Path, bin_dir: &Path) -> String {
+fn web_unit(home: &Path, forge_bin: &Path, web_bin: &Path, path: &str) -> String {
     format!(
         "# Written by `forge init`; re-run it after moving the binary.\n\
 [Unit]\n\
@@ -107,7 +101,7 @@ After=network.target\n\
 [Service]\n\
 Environment=FORGE_HOME={home}\n\
 Environment=FORGE_BIN={forge_bin}\n\
-Environment=PATH={bin_dir}:/usr/local/bin:/usr/bin:/bin\n\
+Environment=PATH={path}\n\
 ExecStart={web_bin} --bind 127.0.0.1:7788\n\
 Restart=on-failure\n\
 RestartSec=3\n\
@@ -115,7 +109,7 @@ RestartSec=3\n\
 [Install]\n\
 WantedBy=default.target\n",
         home = home.display(),
-        bin_dir = bin_dir.display(),
+        path = path,
         forge_bin = forge_bin.display(),
         web_bin = web_bin.display(),
     )
@@ -152,13 +146,8 @@ fn by_hand(home: &Path, forge_bin: &Path, web_bin: &Path) -> StepResult {
     )
 }
 
-/// The two unit files, written under the OS user's systemd config
-/// directory with the currently running binary's own path, enabled and
-/// started with linger when a systemd user session is reachable; when it
-/// is not, the files are still written (so they are ready once systemd
-/// is), and the commands the operator would run by hand are printed in
-/// the returned detail instead of being run.
-fn install_units(home: &Path) -> Result<StepResult> {
+/// The `forge` the units run and the directory it sits in.
+fn forge_binary(home: &Path) -> Result<(PathBuf, PathBuf)> {
     let current = release::root(home).join("current");
     let forge_bin = if current.join("forge").is_file() {
         current.join("forge")
@@ -169,6 +158,23 @@ fn install_units(home: &Path) -> Result<StepResult> {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
+    Ok((forge_bin, bin_dir))
+}
+
+/// The PATH the units declare: `bin_dir`, then this shell's own PATH, so
+/// the agent CLIs the operator can run are on the worker's PATH too.
+fn unit_path(bin_dir: &Path) -> String {
+    crate::unit_path::compose(bin_dir, std::env::var_os("PATH"))
+}
+
+/// The two unit files, written under the OS user's systemd config
+/// directory with the currently running binary's own path, enabled and
+/// started with linger when a systemd user session is reachable; when it
+/// is not, the files are still written (so they are ready once systemd
+/// is), and the commands the operator would run by hand are printed in
+/// the returned detail instead of being run.
+fn install_units(home: &Path) -> Result<StepResult> {
+    let (forge_bin, bin_dir) = forge_binary(home)?;
     let web_bin = bin_dir.join("forge-web");
     if !cfg!(target_os = "linux") {
         return Ok(by_hand(home, &forge_bin, &web_bin));
@@ -182,8 +188,9 @@ fn install_units(home: &Path) -> Result<StepResult> {
     };
     let worker_path = dir.join("forge-worker.service");
     let web_path = dir.join("forge-web.service");
-    let worker_changed = write_if_changed(&worker_path, &worker_unit(home, &forge_bin, &bin_dir))?;
-    let web_changed = write_if_changed(&web_path, &web_unit(home, &forge_bin, &web_bin, &bin_dir))?;
+    let path = unit_path(&bin_dir);
+    let worker_changed = write_if_changed(&worker_path, &worker_unit(home, &forge_bin, &path))?;
+    let web_changed = write_if_changed(&web_path, &web_unit(home, &forge_bin, &web_bin, &path))?;
     let files_changed = worker_changed || web_changed;
 
     if !systemd_available() {
@@ -373,6 +380,8 @@ pub async fn run(home_override: Option<PathBuf>, relink: bool) -> Result<Report>
     }
     steps.extend(link_local_bin(&home)?);
     steps.push(install_units(&home)?);
+    let (_, bin_dir) = forge_binary(&home)?;
+    steps.push(step("unit PATH", false, unit_path(&bin_dir)));
 
     Ok(Report { home, steps })
 }

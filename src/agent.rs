@@ -4,7 +4,9 @@
 //! own clock, never from the model's prose.
 
 mod inputs;
+mod jev;
 use inputs::{AgentRun, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
+pub use jev::*;
 
 use crate::executor::Execution;
 use crate::report::{Event, Reporter};
@@ -92,6 +94,9 @@ pub enum Runner {
     /// GitHub Copilot CLI, `copilot -p`; see `run_copilot`.
     CopilotCli,
     Chat,
+    /// TypeSafe's Jev through Cloudflare Workers AI: typed judgment, one
+    /// HTTP call, never text; see `run_jev`.
+    Jev,
 }
 
 impl Runner {
@@ -101,6 +106,7 @@ impl Runner {
             Runner::CodexCli => "codex-cli",
             Runner::CopilotCli => "copilot-cli",
             Runner::Chat => "chat",
+            Runner::Jev => "jev",
         }
     }
 }
@@ -113,8 +119,9 @@ impl std::str::FromStr for Runner {
             "codex-cli" => Ok(Runner::CodexCli),
             "copilot-cli" => Ok(Runner::CopilotCli),
             "chat" => Ok(Runner::Chat),
+            "jev" => Ok(Runner::Jev),
             other => Err(format!(
-                "unknown runner {other:?}; expected \"claude-cli\", \"codex-cli\", \"copilot-cli\" or \"chat\""
+                "unknown runner {other:?}; expected \"claude-cli\", \"codex-cli\", \"copilot-cli\", \"chat\" or \"jev\""
             )),
         }
     }
@@ -138,6 +145,8 @@ pub struct Provider {
     /// which stays out of the config file and the record (see
     /// `run_chat`). `None` for a provider that needs none (a local model).
     pub api_key_env: Option<String>,
+    /// Names the variable holding a jev provider's Cloudflare account id.
+    pub account_id_env: Option<String>,
     pub env: Vec<(String, String)>,
     /// Extra argv this provider always adds, after the launcher's own
     /// flags and before the prompt (e.g. codex's `--oss --local-provider
@@ -180,6 +189,7 @@ impl Default for Provider {
             model: Some("sonnet".into()),
             base_url: None,
             api_key_env: None,
+            account_id_env: None,
             env: Vec::new(),
             extra_args: Vec::new(),
             notes: None,
@@ -384,6 +394,8 @@ pub struct Launch<'a> {
     /// every tool; the codex backend cannot yet guarantee the same and
     /// refuses the run instead of pretending to (see `run`).
     pub no_tools: bool,
+    /// What a `Runner::Jev` judges; `None` outside a job's directive step.
+    pub judgment: Option<Judgment<'a>>,
 }
 
 /// Live signs that an attempt is going nowhere, computed from the tool
@@ -809,6 +821,7 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
             }
             run_chat(l).await
         }
+        Runner::Jev => jev::run(l).await,
     }
 }
 
@@ -964,7 +977,7 @@ async fn chat_once(
 /// The first line of `text`, bounded to a sane length: a non-2xx response
 /// body can be an HTML error page or a wall of JSON, neither of which
 /// belongs whole in an error message.
-fn truncated_first_line(text: &str) -> String {
+pub(super) fn truncated_first_line(text: &str) -> String {
     let first = text.lines().next().unwrap_or(text);
     first.chars().take(300).collect()
 }
@@ -2713,6 +2726,7 @@ mod tests {
             schema: crate::envelope::SCHEMA,
             early_ending: thresholds(100, 100, 100, 2),
             no_tools: false,
+            judgment: None,
         })
         .await
         .unwrap();
@@ -2900,6 +2914,7 @@ fi\n"
             schema,
             early_ending: thresholds(100, 100, 100, 2),
             no_tools,
+            judgment: None,
         }
     }
 
@@ -3102,6 +3117,7 @@ fi\n"
             schema,
             early_ending: thresholds(100, 100, 100, 2),
             no_tools: true,
+            judgment: None,
         }
     }
 

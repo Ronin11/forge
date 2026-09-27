@@ -325,6 +325,16 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (honour
   workflow's `directive_share` of cost, so drift toward using the model
   for what a script can do is a number.
 
+  A step that only classifies does not need prose. Under a `runner =
+  "jev"` provider (docs/EXECUTION.md, "The judgment tier": typed judgment
+  before prose) a directive whose action declares `outcomes` — a list, or
+  a table of `outcome = "description"` — is one HTTP call: its outcomes
+  become a `choice` question, its optional `[[questions]]` add `noul` and
+  `score` ones, and the envelope it returns is `outcome`, `confidence` and
+  `probabilities`. `confidence_below = { 0.6 = "uncertain" }` makes a low
+  confidence its own outcome an edge can route on; the probabilities are
+  recorded on the step (`steps[].probabilities`).
+
   A run workflow with any `effect` step cannot be enabled until `forge
   job test` passes on a fixture for it: `forge job enable <project>
   <workflow>` and the scheduler's first run of it both replay

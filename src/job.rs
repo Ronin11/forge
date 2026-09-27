@@ -119,7 +119,9 @@ struct RunNow<'a> {
     recorded: &'a BTreeMap<String, serde_json::Value>,
 }
 
+mod directive_text;
 mod flow;
+use directive_text::{directive_inputs, directive_instructions, directive_prompt};
 
 use crate::ctx::Forge;
 use crate::report::Event;
@@ -272,51 +274,6 @@ fn bounded(text: &str, limit: usize) -> String {
     format!("{}\n... [inputs cut to {limit} bytes]", &text[..cut])
 }
 
-/// A directive job step's system content (docs/JOBS.md, "Steps"): the
-/// untrusted-data sentence every Forge prompt carries, and the step's own
-/// instructions — the action's description and its own `prompt`, if any.
-/// Kept apart from the inputs (`directive_prompt`, below) so `Runner::Chat`,
-/// which has its own system channel, does not have to guess where a
-/// merged prompt's instructions end and its data begins.
-fn directive_instructions(action: &workflows::ActionDef) -> String {
-    let mut p = String::from(workflows::UNTRUSTED_DATA);
-    p.push_str(
-        "\n\n\
-         You are one bounded step of a job's automation in Forge. You have no tools: you cannot \
-         read or write files, run commands, or reach the network. Decide from the inputs below \
-         alone and return the structured object the schema you were given describes.\n\n",
-    );
-    p.push_str(&format!("This step: {}", action.description));
-    if let Some(extra) = &action.prompt {
-        p.push_str(&format!("\n{extra}"));
-    }
-    p
-}
-
-/// A directive job step's prompt (docs/JOBS.md, "Steps"): `directive_
-/// instructions` followed by its inputs — the trigger's input document and
-/// every earlier step's output, as text, bounded to `input_bytes`. What a
-/// claude or codex runner, which take one prompt and have no system
-/// channel of their own, are launched with in full; `Runner::Chat` gets
-/// `directive_instructions` again as its own system message (some
-/// duplication, since this already carries it) and this whole text as its
-/// user message, so its behavior matches what the other two runners see.
-fn directive_prompt(
-    action: &workflows::ActionDef,
-    input_text: &str,
-    step_outputs: &[(String, String)],
-    input_bytes: usize,
-) -> String {
-    let mut inputs = format!("The input document:\n{input_text}");
-    for (name, output) in step_outputs {
-        inputs.push_str(&format!("\n\nThe output of step {name:?}:\n{output}"));
-    }
-    let inputs = bounded(&inputs, input_bytes);
-    let mut p = directive_instructions(action);
-    p.push_str(&format!("\n\n{inputs}"));
-    p
-}
-
 /// What a directive job step produced: the provider and model it ran under,
 /// its cost, the check that judges it (a schema-valid structured output, or
 /// the failure that means it never produced one), and — when the check
@@ -330,6 +287,8 @@ struct DirectiveOutcome {
     output_text: String,
     output_ref: Option<PathBuf>,
     outcome: String,
+    /// A jev judgment's probabilities, as JSON; empty for every other runner.
+    probabilities: String,
 }
 
 /// A job step's directive (docs/JOBS.md, "Steps"): a bounded launch with no
@@ -398,6 +357,10 @@ async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOutcome> {
             start_sha: "",
             resume: None,
             no_tools: true,
+            judgment: Some(crate::agent::Judgment {
+                action,
+                state: &directive_inputs(input_text, step_outputs, input_bytes),
+            }),
         },
     )
     .await?;
@@ -437,6 +400,7 @@ async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOutcome> {
         output_text: output_text.clone().unwrap_or_default(),
         output_ref: output_ref.clone(),
         outcome: String::new(),
+        probabilities: String::new(),
     };
     if let Some(why) = crate::directive::failure(&outcome) {
         return Ok(fail(why.tail(&stderr_tail)));
@@ -454,10 +418,18 @@ async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOutcome> {
             )));
         }
     };
-    if let Err(e) = jsonschema::validate(&schema_value, &instance) {
-        return Ok(fail(format!(
-            "the structured output does not match the schema: {e}"
-        )));
+    // A judgment is Jev's typed answer, not a model's attempt at the schema:
+    // it is held to the action's outcomes instead.
+    let judged = provider.runner == crate::agent::Runner::Jev;
+    let invalid = if judged {
+        crate::agent::check_judgment(action, &instance)
+    } else {
+        jsonschema::validate(&schema_value, &instance)
+            .err()
+            .map(|e| format!("the structured output does not match the schema: {e}"))
+    };
+    if let Some(why) = invalid {
+        return Ok(fail(why));
     }
 
     Ok(DirectiveOutcome {
@@ -473,6 +445,7 @@ async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOutcome> {
         output_text: structured.clone(),
         output_ref,
         outcome: outcome_of(&instance),
+        probabilities: crate::agent::probabilities(provider.runner, &instance),
     })
 }
 
@@ -525,6 +498,7 @@ fn recorded_directive(
         } else {
             String::new()
         },
+        probabilities: String::new(),
     })
 }
 
@@ -1063,6 +1037,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
             output_ref,
             tail: tail.clone(),
             outcome: String::new(),
+            probabilities: String::new(),
             node: String::new(),
         })?;
         if !r.ok {
@@ -1190,6 +1165,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
                         output_ref,
                         tail: tail.clone(),
                         outcome: String::new(),
+                        probabilities: String::new(),
                         node: step.node.clone(),
                     })?;
                     for line in log_lines(&effect_log).into_iter().skip(before) {
@@ -1274,6 +1250,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
                         exit_code: None,
                         tail: String::new(),
                         outcome: d.outcome.clone(),
+                        probabilities: d.probabilities,
                         node: step.node.clone(),
                         output_ref: d
                             .output_ref
@@ -2383,6 +2360,9 @@ mod tests {
             includes: vec![],
             schema: None,
             outcomes: vec![],
+            outcome_criteria: Default::default(),
+            questions: vec![],
+            confidence_below: vec![],
             file_into_initiative: false,
             overlay: false,
             verifies: false,

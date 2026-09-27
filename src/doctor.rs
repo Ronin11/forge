@@ -125,86 +125,8 @@ fn ymd(unix_secs: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-fn binary(name: &str, required: bool, why_optional: &str) -> Check {
-    match sandbox::resolve_binary(name) {
-        Ok((_, path)) => check(
-            &format!("binary.{name}"),
-            Status::Ok,
-            path.display().to_string(),
-            "",
-        ),
-        Err(_) if required => check(
-            &format!("binary.{name}"),
-            Status::Fail,
-            "not found on PATH",
-            format!("install {name} and put it on PATH"),
-        ),
-        Err(_) => check(
-            &format!("binary.{name}"),
-            Status::Warn,
-            "not found on PATH",
-            why_optional,
-        ),
-    }
-}
-
-/// The agent, git, and the sandbox launcher.
-fn check_binaries() -> Vec<Check> {
-    let mut out = Vec::new();
-    let agent_bin = agent::agent_bin();
-    out.push(binary(&agent_bin, true, ""));
-    out.push(binary("git", true, ""));
-    let sandbox_off = config::env("SANDBOX").as_deref() == Ok("0");
-    out.push(match (sandbox::resolve_binary("bwrap"), sandbox_off) {
-        (Ok((_, p)), false) => match sandbox::bwrap_version(&p) {
-            Some(v) if !sandbox::version_has_overlay(Some(v.clone())) => {
-                check(
-                    "sandbox",
-                    Status::Warn,
-                    format!(
-                        "package caches are not shared with attempts: bwrap {v} has no overlay support; bwrap at {}",
-                        p.display()
-                    ),
-                    "install bubblewrap >= 0.10",
-                )
-            }
-            Some(v) => check(
-                "sandbox",
-                Status::Ok,
-                format!("bwrap {v} at {}", p.display()),
-                "",
-            ),
-            None => check(
-                "sandbox",
-                Status::Warn,
-                format!(
-                    "package caches are not shared with attempts: bwrap version unknown; bwrap at {}",
-                    p.display()
-                ),
-                "install bubblewrap >= 0.10",
-            ),
-        },
-        (Ok(_), true) => check(
-            "sandbox",
-            Status::Warn,
-            "FORGE_SANDBOX=0: agents run on the host",
-            "unset FORGE_SANDBOX",
-        ),
-        (Err(_), true) => check(
-            "sandbox",
-            Status::Warn,
-            "no bwrap and FORGE_SANDBOX=0",
-            "install bubblewrap",
-        ),
-        (Err(_), false) => check(
-            "sandbox",
-            Status::Warn,
-            "bwrap not found: attempts run on the host backend, with no egress bound and no private home",
-            "install bubblewrap (Linux) to sandbox attempts",
-        ),
-    });
-    out
-}
+mod binaries;
+use binaries::check_binaries;
 
 /// What an attempt can reach: whether bwrap can give it a network namespace
 /// at all, the model endpoints that are always allowed, and each project's
@@ -1164,7 +1086,7 @@ fn check_executors(store: &Store, paths: &Paths) -> Vec<Check> {
                                     agent::Runner::ClaudeCli => "claude",
                                     agent::Runner::CodexCli => "codex",
                                     agent::Runner::CopilotCli => "copilot",
-                                    agent::Runner::Chat => continue,
+                                    agent::Runner::Chat | agent::Runner::Jev => continue,
                                 };
                                 let result = std::process::Command::new("ssh")
                                     .args([
