@@ -4088,3 +4088,138 @@ run = ["true"]
         1
     );
 }
+
+/// Queues a job whose one operation step appends a `row` effect to
+/// `$FORGE_EFFECT_LOG` and then hangs, and returns its id: a step killed
+/// mid-run this way has logged an effect the store has not yet learned of.
+fn queue_abort_recover_job(e: &Env) -> i64 {
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "acme",
+                "--purpose",
+                "p",
+                "--repo",
+                e.repo.to_str().unwrap()
+            ]
+        )
+        .status
+        .success()
+    );
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    std::fs::write(
+        e.home.join("workflows/abort-recover.toml"),
+        r#"
+name = "abort-recover"
+kind = "run"
+description = "double-signal abort regression"
+steps = [{ action = "log-then-hang", effect = "row" }]
+[trigger]
+on = "manual"
+[assert]
+ok = ["true"]
+[limits]
+budget_usd = 1.0
+per_day = 10
+on_failure = "ask:operator"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        e.home.join("workflows/actions/log-then-hang.toml"),
+        r#"
+name = "log-then-hang"
+kind = "operation"
+description = "logs an effect, then hangs until killed"
+run = ["bash", "-c", "printf 'row\tsent\tmessage sent\n' >> \"$FORGE_EFFECT_LOG\"; touch logged; exec sleep 30"]
+"#,
+    )
+    .unwrap();
+    let input = e.home.join("abort-input.json");
+    std::fs::write(&input, "{}").unwrap();
+    let out = e.forge(
+        "ok.sh",
+        &[
+            "job",
+            "start",
+            "acme",
+            "abort-recover",
+            "--input",
+            input.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+}
+
+/// A double-signal abort kills the operation mid-step, after it appended a
+/// line to `effects.log` but before `run_now` could copy that line into
+/// `job_effects`: the effect happened, and `recover_interrupted` must find
+/// it in the log and record it rather than requeue the job to repeat it.
+#[test]
+fn double_signal_abort_records_a_logged_effect_and_fails_the_job() {
+    use std::time::Duration;
+    let e = Env::new();
+    let id = queue_abort_recover_job(&e);
+
+    let stderr_path = e.home.join("worker-stderr.log");
+    let stderr_file = std::fs::File::create(&stderr_path).unwrap();
+    let mut worker = Worker::spawn(e.cmd("ok.sh").args(["work", "--once"]).stderr(stderr_file));
+    assert!(
+        wait_until(
+            || e.home.join(format!("worktrees/job-{id}/logged")).exists(),
+            Duration::from_secs(10)
+        ),
+        "the operation never logged its effect"
+    );
+    worker.signal(libc::SIGINT);
+    assert!(
+        wait_until(
+            || std::fs::read_to_string(&stderr_path)
+                .map(|s| s.contains("stopping: no new tasks"))
+                .unwrap_or(false),
+            Duration::from_secs(10)
+        ),
+        "the worker never acknowledged the first signal"
+    );
+    worker.signal(libc::SIGINT);
+    let status = worker.wait();
+    assert!(status.success());
+
+    let db = e.db();
+    let (state, worker_pid): (String, Option<i64>) = db
+        .query_row(
+            "SELECT state, worker_pid FROM jobs WHERE id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, "failed", "the job must never end up queued again");
+    assert_eq!(worker_pid, None);
+    let effects: Vec<(String, String, String)> = db
+        .prepare("SELECT kind, target, summary FROM job_effects WHERE job_id=?1")
+        .unwrap()
+        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        effects.len(),
+        1,
+        "the logged effect must be recorded exactly once"
+    );
+    assert_eq!(effects[0].0, "row");
+    assert_eq!(effects[0].1, "sent");
+    assert!(
+        effects[0].2.contains("recovered"),
+        "an effect recovered from the log, not the store, should say so: {:?}",
+        effects[0]
+    );
+}

@@ -681,6 +681,10 @@ INSERT INTO contract_steps (version, applied_at)
   SELECT 60, strftime('%s','now')
   WHERE (SELECT \"notnull\" FROM pragma_table_info('decisions') WHERE name='task_id') = 0;
 ",
+    // An attempt the run did not count against its directive (the provider
+    // refused it, or an environment grant was applied), so a resumed run
+    // seeds its attempt cap from the record without them.
+    "ALTER TABLE attempts ADD COLUMN refunded INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

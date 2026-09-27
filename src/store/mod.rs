@@ -21,12 +21,14 @@ mod migrations;
 mod projects;
 mod questions;
 mod record;
+mod retry;
+use retry::RetryConnection;
 mod stats;
 mod tasks;
 mod webhooks;
 mod workers;
 
-pub use attempts::{Attempt, AttemptState, FinishAttempt, Op, RateLimitSample};
+pub use attempts::{Attempt, AttemptState, FinishAttempt, Op, RateLimitSample, seed_used};
 pub use daily::DailyStat;
 pub use deploys::{Assessment, Deploy, DeployTarget, FinishDeploy};
 pub use factors::{FactorLevelStat, ROLES};
@@ -44,7 +46,10 @@ pub use stats::{
     HumanAttentionProjectStat, HumanAttentionStat, JournalStat, RoleStat, StatsFilter, StepStat,
     TaskTtl, WorkflowStat,
 };
-pub use tasks::{RoleRouting, Routed, Task, TaskState, TaskUpdate, Trust};
+pub use tasks::{
+    REQUEUE_ABORT, REQUEUE_ENV, REQUEUE_ORPHAN, REQUEUE_REASONS, RoleRouting, Routed, Task,
+    TaskState, TaskUpdate, Trust,
+};
 pub use workers::WorkerRow;
 
 /// Forward-only. Index = version - 1. Never edit a shipped entry; append.
@@ -347,9 +352,9 @@ impl Store {
     pub fn open(path: &Path) -> Result<Store> {
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;",
+            "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=60000; PRAGMA foreign_keys=ON;",
         )?;
-        let fresh: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let fresh: i64 = conn.retry_query_row("PRAGMA user_version", [], |r| r.get(0))?;
         migrate(&conn)?;
         let store = Store {
             conn: Mutex::new(conn),
@@ -369,14 +374,14 @@ impl Store {
     pub fn schema_version(&self) -> Result<i64> {
         Ok(self
             .lock()
-            .query_row("PRAGMA user_version", [], |r| r.get(0))?)
+            .retry_query_row("PRAGMA user_version", [], |r| r.get(0))?)
     }
 
     /// How many `interview` attempts blocked on a question since `since`:
     /// the operator's `[intake] max_questions_per_day` cap, one row per
     /// person-facing turn (the confirmation counts as one).
     pub fn interview_questions_since(&self, since: i64) -> Result<i64> {
-        Ok(self.lock().query_row(
+        Ok(self.lock().retry_query_row(
             "SELECT COUNT(*) FROM attempts WHERE step = 'interview' AND state = 'needs_input' AND started_at >= ?1",
             params![since],
             |r| r.get(0),
@@ -670,11 +675,11 @@ fn project_name_for_repo(repo: &str) -> String {
 /// Idempotent: a repository already listed keeps its existing project.
 fn seed_project_for_repo(conn: &Connection, repo: &str) -> rusqlite::Result<String> {
     let name = project_name_for_repo(repo);
-    conn.execute(
+    conn.retry_execute(
         "INSERT INTO projects (name, purpose, created_at) VALUES (?1, ?2, ?3) ON CONFLICT(name) DO NOTHING",
         params![name, format!("Repository {repo}."), crate::unix_now()],
     )?;
-    conn.execute(
+    conn.retry_execute(
         "INSERT INTO project_repos (project, repo, scope_json) VALUES (?1, ?2, NULL)
          ON CONFLICT(project, repo) DO NOTHING",
         params![name, repo],
@@ -694,7 +699,7 @@ fn seed_projects_from_tasks(conn: &Connection) -> rusqlite::Result<()> {
     };
     for repo in repos {
         let name = seed_project_for_repo(conn, &repo)?;
-        conn.execute(
+        conn.retry_execute(
             "UPDATE tasks SET project = ?1 WHERE repo = ?2",
             params![name, repo],
         )?;
@@ -723,7 +728,7 @@ impl Store {
                 continue;
             }
             let done: bool = c
-                .query_row("SELECT 1 FROM contract_steps WHERE version=?1", [v], |_| {
+                .retry_query_row("SELECT 1 FROM contract_steps WHERE version=?1", [v], |_| {
                     Ok(())
                 })
                 .optional()?
@@ -733,7 +738,7 @@ impl Store {
             }
             c.execute_batch("BEGIN")?;
             let r = c.execute_batch(sql).and_then(|()| {
-                c.execute(
+                c.retry_execute(
                     "INSERT INTO contract_steps (version, applied_at) VALUES (?1, ?2)",
                     params![v, crate::unix_now()],
                 )
@@ -753,7 +758,7 @@ impl Store {
 }
 
 fn migrate(conn: &Connection) -> Result<()> {
-    let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    let current: i64 = conn.retry_query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let target = MIGRATIONS.len() as i64;
     if current > target {
         bail!(

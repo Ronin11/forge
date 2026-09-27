@@ -73,7 +73,7 @@ impl Store {
                 .find(|a| a.is_agent() && a.state == AttemptState::NeedsInput);
             let withdraw_question: Option<String> = {
                 let c = self.lock();
-                c.query_row(
+                c.retry_query_row(
                     "SELECT question FROM decisions WHERE task_id = ?1 AND retry_id = ?1 ORDER BY id LIMIT 1",
                     params![id],
                     |r| r.get("question"),
@@ -113,7 +113,7 @@ impl Store {
             }
             let decision: Option<(String, String, i64, Option<i64>)> = {
                 let c = self.lock();
-                c.query_row(
+                c.retry_query_row(
                     "SELECT answered_by, answer, created_at, retry_id FROM decisions
                      WHERE task_id = ?1 AND created_at >= ?2 AND question != ?3
                      ORDER BY id LIMIT 1",

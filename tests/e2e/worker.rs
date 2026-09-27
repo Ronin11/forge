@@ -452,6 +452,57 @@ fn an_orphaned_task_is_requeued_and_resumes_at_the_next_attempt() {
 }
 
 #[test]
+fn a_requeued_task_keeps_the_attempts_already_spent() {
+    let e = Env::new();
+    assert!(!e.run("crash.sh", &["--retries", "0"]).status.success());
+    assert_eq!(e.task(1).0, "failed");
+    let c = e.db();
+    let seq: i64 = c
+        .query_row("SELECT step_seq FROM attempts WHERE task_id=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    // The worker died mid-way through a second attempt at the same step.
+    c.execute(
+        "UPDATE tasks SET state='running', worker_pid=999999999 WHERE id=1",
+        [],
+    )
+    .unwrap();
+    c.execute(
+        "INSERT INTO attempts(task_id, attempt_no, step_seq, state, started_at) VALUES (1, 2, ?1, 'running', 0)",
+        [seq],
+    )
+    .unwrap();
+    // `ok.sh` would succeed if it were launched again.
+    assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2, "no further agent launch: {a:?}");
+    assert_eq!(a[1].2, "previous worker exited");
+    assert_eq!(e.task(1).0, "failed");
+}
+
+#[test]
+fn an_unrecorded_clone_does_not_stop_the_next_worker() {
+    let e = Env::new();
+    let id = e.add(&[]);
+    let dir = e.home.join("worktrees").join(id.to_string());
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("interrupted-clone"), "debris").unwrap();
+
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(o.status.success(), "{output}");
+    assert!(!output.contains("worker cannot run task"), "{output}");
+    assert!(op_names(&e, id).contains(&("clone".to_string(), true)));
+    assert_eq!(e.attempts(id)[0].1, "succeeded");
+    assert!(!dir.join("interrupted-clone").exists());
+}
+
+#[test]
 fn an_environment_fault_requeues_and_stops_the_worker() {
     use std::os::unix::fs::PermissionsExt;
     let e = Env::new();

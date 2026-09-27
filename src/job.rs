@@ -121,6 +121,7 @@ struct RunNow<'a> {
 
 mod directive_text;
 mod flow;
+mod input;
 use directive_text::{directive_inputs, directive_instructions, directive_prompt};
 
 use crate::ctx::Forge;
@@ -141,6 +142,30 @@ fn scratch_dir(f: &Forge, job_id: i64) -> PathBuf {
 
 pub(crate) fn input_dir(f: &Forge, job_id: i64) -> PathBuf {
     f.paths.worktrees.join(format!("job-{job_id}-input"))
+}
+
+/// Moves a prior run's input directory (its `effects.log` included) out of
+/// the way of a fresh one instead of deleting it: `effects.log` is the only
+/// record of an effect an operation performed but a crash or an abort kept
+/// the store from learning about (see `recover_interrupted`), so a rerun
+/// must never truncate it out from under that recovery.
+fn archive_prior_input(idir: &Path) -> Result<()> {
+    if !idir.exists() {
+        return Ok(());
+    }
+    let mut n = 0u32;
+    let prior = loop {
+        let candidate = idir.with_file_name(format!(
+            "{}.prev-{n}",
+            idir.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        if !candidate.exists() {
+            break candidate;
+        }
+        n += 1;
+    };
+    std::fs::rename(idir, &prior)?;
+    Ok(())
 }
 
 /// Every top-level field of `input` whose value is a string, as
@@ -561,20 +586,6 @@ pub async fn start(args: Start<'_>) -> Result<i64> {
     let input_fields = string_fields(&input_json)?;
 
     let started_at = unix_now();
-    if let Some(l) = wf.limits.as_ref()
-        && l.per_day > 0
-        && !dry_run
-    {
-        let n = f
-            .store
-            .jobs_started_since(project, workflow, started_at - 24 * 3600)?;
-        if n >= i64::from(l.per_day) {
-            anyhow::bail!(
-                "{workflow} has started {n} time(s) in the last 24 hours and its per_day limit is {}; it can start again when the oldest of those is a day old (asking instead is docs/JOBS.md step 5)",
-                l.per_day
-            );
-        }
-    }
     let job = Job {
         id: 0,
         project: project.to_string(),
@@ -586,7 +597,7 @@ pub async fn start(args: Start<'_>) -> Result<i64> {
         state: if now {
             JobState::Running
         } else {
-            scheduled_state(due_at, started_at)
+            JobState::Scheduled
         },
         workflow_source: source.as_str().to_string(),
         dry_run,
@@ -594,17 +605,20 @@ pub async fn start(args: Start<'_>) -> Result<i64> {
         finished_at: None,
         cost_usd: None,
         verdict_json: "[]".to_string(),
-        due_at,
+        due_at: None,
         retry_count: 0,
     };
-    let job_id = f.store.create_job(&job)?;
+    let job_id = match wf.limits.as_ref().filter(|l| l.per_day > 0 && !dry_run) {
+        Some(l) => f.store.create_job_within(
+            &job,
+            i64::from(l.per_day),
+            started_at - 24 * 3600,
+            "; it can start again when the oldest of those is a day old (asking instead is docs/JOBS.md step 5)",
+        )?,
+        None => f.store.create_job(&job)?,
+    };
     if !now {
-        // Persist the input for whenever the worker claims this job
-        // (`drive`, below); `run_now` writes the same file again once it
-        // does.
-        let idir = input_dir(f, job_id);
-        std::fs::create_dir_all(&idir)?;
-        std::fs::write(idir.join("input.json"), &input_text)?;
+        input::publish(f, job_id, &input_text, due_at)?;
         return Ok(job_id);
     }
 
@@ -891,19 +905,6 @@ fn queue_triggered(args: QueueTriggered<'_>) -> Result<i64> {
         input_text,
     } = args;
     let started_at = unix_now();
-    if let Some(l) = wf.limits.as_ref()
-        && l.per_day > 0
-    {
-        let n = f
-            .store
-            .jobs_started_since(project, workflow, started_at - 24 * 3600)?;
-        if n >= i64::from(l.per_day) {
-            anyhow::bail!(
-                "{workflow} has started {n} time(s) in the last 24 hours and its per_day limit is {}",
-                l.per_day
-            );
-        }
-    }
     let due_at = wf
         .trigger
         .as_ref()
@@ -917,20 +918,24 @@ fn queue_triggered(args: QueueTriggered<'_>) -> Result<i64> {
         landed_sha: landed_sha.to_string(),
         trigger_kind: kind.as_str().to_string(),
         trigger_ref: trigger_ref.to_string(),
-        state: scheduled_state(due_at, started_at),
+        state: JobState::Scheduled,
         workflow_source: source.as_str().to_string(),
         dry_run: false,
         started_at,
         finished_at: None,
         cost_usd: None,
         verdict_json: "[]".to_string(),
-        due_at,
+        due_at: None,
         retry_count: 0,
     };
-    let job_id = f.store.create_job(&job)?;
-    let idir = input_dir(f, job_id);
-    std::fs::create_dir_all(&idir)?;
-    std::fs::write(idir.join("input.json"), input_text)?;
+    let job_id = match wf.limits.as_ref().filter(|l| l.per_day > 0) {
+        Some(l) => {
+            f.store
+                .create_job_within(&job, i64::from(l.per_day), started_at - 24 * 3600, "")?
+        }
+        None => f.store.create_job(&job)?,
+    };
+    input::publish(f, job_id, input_text, due_at)?;
     Ok(job_id)
 }
 
@@ -977,7 +982,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
     let repo_checks = config::load_working_checks(&scratch).unwrap_or_default();
 
     let idir = input_dir(f, job_id);
-    let _ = std::fs::remove_dir_all(&idir);
+    archive_prior_input(&idir)?;
     std::fs::create_dir_all(&idir)?;
     std::fs::write(idir.join("input.json"), input_text)?;
 
@@ -1534,7 +1539,7 @@ async fn retry_job(f: &Forge, job: &Job, input_text: &str) -> Result<i64> {
         landed_sha: job.landed_sha.clone(),
         trigger_kind: job.trigger_kind.clone(),
         trigger_ref: job.trigger_ref.clone(),
-        state: JobState::Queued,
+        state: JobState::Scheduled,
         workflow_source: job.workflow_source.clone(),
         dry_run: false,
         started_at: unix_now(),
@@ -1545,9 +1550,7 @@ async fn retry_job(f: &Forge, job: &Job, input_text: &str) -> Result<i64> {
         retry_count: job.retry_count + 1,
     };
     let retry_id = f.store.create_job(&retry)?;
-    let idir = input_dir(f, retry_id);
-    std::fs::create_dir_all(&idir)?;
-    std::fs::write(idir.join("input.json"), input_text)?;
+    input::publish(f, retry_id, input_text, None)?;
     Ok(retry_id)
 }
 
@@ -1563,6 +1566,8 @@ async fn run_claimed(f: &Forge, job_id: i64) -> Result<()> {
         .store
         .job(job_id)?
         .with_context(|| format!("job {job_id} vanished before the worker could run it"))?;
+    let input_text = std::fs::read_to_string(input_dir(f, job_id).join("input.json"))
+        .with_context(|| format!("reading job {job_id} saved input.json"))?;
     let repo = f
         .store
         .first_repo(&job.project)?
@@ -1576,9 +1581,6 @@ async fn run_claimed(f: &Forge, job_id: i64) -> Result<()> {
         &job.workflow,
     )?;
 
-    let idir = input_dir(f, job_id);
-    let input_text =
-        std::fs::read_to_string(idir.join("input.json")).unwrap_or_else(|_| "{}".into());
     let input_json: serde_json::Value =
         serde_json::from_str(&input_text).context("parsing the job's saved input as JSON")?;
     let input_fields = string_fields(&input_json)?;
@@ -1625,10 +1627,36 @@ fn executor_error_verdict(e: &anyhow::Error) -> String {
     serde_json::to_string(&verdict).unwrap_or_else(|_| "[]".to_string())
 }
 
-/// Reconcile interrupted work without repeating any recorded external effect.
+/// Reconcile interrupted work without repeating any recorded external
+/// effect. An operation appends an effect to `effects.log` as it performs
+/// it, before the step it belongs to can finish and copy the new lines into
+/// `job_effects` (see `run_now`'s `Kind::Operation` arm); a worker that
+/// dies, or is aborted, between those two can leave a line in the log the
+/// store never learned about. Any such line is still proof the effect
+/// happened, so it is recorded here — marked recovered — and treated the
+/// same as an effect the store already knew of: the run is never requeued.
 pub(crate) fn recover_interrupted(f: &Forge, job_id: i64, owner: Option<i64>) -> Result<()> {
     let job = f.store.job(job_id)?.context("interrupted job vanished")?;
-    let effects = f.store.job_effects(job_id)?;
+    let mut effects = f.store.job_effects(job_id)?;
+    let logged = log_lines(&input_dir(f, job_id).join("effects.log"));
+    for line in logged.iter().skip(effects.len()) {
+        let mut parts = line.splitn(3, '\t');
+        let (Some(kind), Some(target), Some(summary)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let effect = JobEffect {
+            id: 0,
+            job_id,
+            seq: -1,
+            kind: kind.to_string(),
+            target: target.to_string(),
+            summary: format!("(recovered) {summary}"),
+            dry_run: job.dry_run,
+        };
+        f.store.append_job_effect(&effect)?;
+        effects.push(effect);
+    }
     let previous = owner.map_or_else(|| "unknown".into(), |pid| pid.to_string());
     let mut reason = format!("previous worker {previous} exited");
     if effects.is_empty() {

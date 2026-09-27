@@ -914,15 +914,22 @@ fn check_logs(paths: &Paths) -> Vec<Check> {
             }
         }
     }
-    let dropped = crate::report::dropped_log_task_count(&events_path);
+    let dropped_tasks = crate::report::dropped_log_task_count(&events_path);
+    let dropped_jobs = crate::report::dropped_log_job_count(&events_path);
+    let dropped = dropped_tasks + dropped_jobs;
     let total = events_size + attempt_size;
     let detail = format!(
-        "events.jsonl {}; {attempt_count} attempt log(s) totaling {}{}{}",
+        "events.jsonl {}; {attempt_count} attempt log(s) totaling {}{}{}{}",
         human_bytes(events_size),
         human_bytes(attempt_size),
         oldest.map_or(String::new(), |o| format!(", oldest {}", ymd(o))),
-        if dropped > 0 {
-            format!("; {dropped} task(s) lost log lines")
+        if dropped_tasks > 0 {
+            format!("; {dropped_tasks} task(s) lost log lines")
+        } else {
+            String::new()
+        },
+        if dropped_jobs > 0 {
+            format!("; {dropped_jobs} job(s) lost log lines")
         } else {
             String::new()
         },
@@ -1284,6 +1291,31 @@ mod tests {
         assert_eq!(checks[0].worktree_ids, Some(vec![t.id]));
         assert!(
             checks[0].detail.contains(&t.id.to_string()),
+            "{}",
+            checks[0].detail
+        );
+    }
+
+    /// `events.dropped` naming one task and two jobs: `logs` reports each
+    /// count on its own, since a job's drops are marked `job:<id>` and must
+    /// not collapse into (or be missed by) the task tally.
+    #[test]
+    fn check_logs_counts_task_and_job_drops_separately() {
+        let (_dir, f) = fixture();
+        std::fs::write(f.paths.home.join("events.jsonl"), b"{}\n").unwrap();
+        std::fs::write(f.paths.home.join("events.dropped"), b"1\njob:2\njob:3\n").unwrap();
+
+        let checks = check_logs(&f.paths);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "logs");
+        assert!(checks[0].status == Status::Warn);
+        assert!(
+            checks[0].detail.contains("1 task(s) lost log lines"),
+            "{}",
+            checks[0].detail
+        );
+        assert!(
+            checks[0].detail.contains("2 job(s) lost log lines"),
             "{}",
             checks[0].detail
         );

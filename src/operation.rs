@@ -387,7 +387,9 @@ pub(crate) async fn run_operation(
                     v.reason.clone()
                 },
                 attempt_id: None,
-                output: "",
+                // The commit this verify judged, for the landing guard
+                // (`landing::last_verified_sha`).
+                output: if ok { &sha } else { "" },
             },
         )?;
         if !ok {

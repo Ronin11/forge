@@ -152,7 +152,7 @@ pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
             Ok(TaskState::Failed)
         }
         Err(Fault::Env(e)) => {
-            f.store.requeue(id, "worker environment error")?;
+            f.store.requeue(id, crate::store::REQUEUE_ENV)?;
             Err(e.context(format!(
                 "worker cannot run task {id}; it is back in the queue"
             )))
@@ -242,11 +242,14 @@ fn hold_from_sample(
 }
 
 /// The role the task's *next agent step* will actually run under: the
-/// contract of the first directive step of its resolved workflow (see
-/// `engine::run_task`, which resolves the same way at start). Falls back
-/// to "code" on any failure to resolve (unknown/broken workflow, no
-/// directive step): a provider that fails to resolve is never held here,
-/// the real error surfaces when the task actually runs.
+/// contract of the first directive step in its resolved workflow that the
+/// record does not already show done (`engine::resume_done`, the same
+/// resume rule `run_task` builds its cursor from), so a resumed task whose
+/// code step already succeeded is judged by its review, not its code.
+/// Falls back to "code" on any failure to resolve (unknown/broken
+/// workflow, no undone directive step) or to read the record: a provider
+/// that fails to resolve is never held here, the real error surfaces when
+/// the task actually runs.
 fn first_role(f: &Forge, t: &Task) -> String {
     let resolved: workflows::Resolved = if !t.actions_json.is_empty() {
         match serde_json::from_str(&t.actions_json) {
@@ -259,11 +262,19 @@ fn first_role(f: &Forge, t: &Task) -> String {
             Err(_) => return "code".into(),
         }
     };
+    let done = f
+        .store
+        .attempts(t.id)
+        .map(|prior| engine::resume_done(&prior))
+        .unwrap_or_default();
     resolved
         .steps
         .into_iter()
-        .find(|s| s.action.kind == workflows::Kind::Directive)
-        .map(|s| s.action.contract.as_str().to_string())
+        .enumerate()
+        .find(|(i, s)| {
+            s.action.kind == workflows::Kind::Directive && !done.contains(&(*i as i64 + 1))
+        })
+        .map(|(_, s)| s.action.contract.as_str().to_string())
         .unwrap_or_else(|| "code".into())
 }
 
@@ -851,7 +862,7 @@ fn recover_orphans(f: &Forge) -> Result<()> {
         if let Some(t) = f.store.task(id)? {
             crate::git::clear_recorded_overlay(&t.worktree);
         }
-        f.store.requeue(id, "previous worker exited")?;
+        f.store.requeue(id, crate::store::REQUEUE_ORPHAN)?;
         eprintln!("requeued task {id}: its previous worker exited");
     }
     for (id, owner) in f.store.orphan_jobs(pid_alive)? {
@@ -861,6 +872,29 @@ fn recover_orphans(f: &Forge) -> Result<()> {
 }
 
 /// `worker.pid`: the newest worker's pid and the path it was launched by.
+fn log_pass_error(result: Result<()>) -> bool {
+    if let Err(error) = result {
+        eprintln!("worker pass failed; retrying: {error:#}");
+        true
+    } else {
+        false
+    }
+}
+
+fn prepare_claim(f: &Forge) -> Result<Option<Vec<i64>>> {
+    if let Some(msg) = day_budget_reached(f)? {
+        eprintln!("{msg}; {} task(s) left queued", f.store.queued_count()?);
+        return Ok(None);
+    }
+    for t in f.store.release_dependents()? {
+        eprintln!("task {t} unblocked: its dependencies landed or were withdrawn");
+    }
+    for (t, d, why) in f.store.block_dependents()? {
+        eprintln!("task {t} blocked: {why} (task {d})");
+    }
+    Ok(Some(held_initiatives(f)?))
+}
+
 fn write_pid_file(paths: &Paths, pid: i64) {
     let exe = crate::binary::launch_path()
         .map(|p| p.display().to_string())
@@ -911,87 +945,86 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         if !stopping && let Some(next) = reloader.check(&f, std::mem::take(&mut hup)) {
             f = next;
         }
-        let runs = tick_run_workflows(&f).await?;
-        schedule_tick(&f, &runs).await?;
-        event_tick(&f, &runs).await?;
-        let superseded = succession.superseded(&f)?;
-        if !stopping && succession.stop_requested() {
-            stopping = true;
-            eprintln!(
-                "stopping: the unit has a stop job; {} running attempt(s) will finish",
-                running.len()
-            );
-        }
-        if superseded && let Some(p) = plugins.take() {
-            p.stop().await;
-        }
-
-        // Fill free slots.
-        while !stopping
-            && !superseded
-            && env_error.is_none()
-            && running.len() < jobs
-            && opts.max_tasks.is_none_or(|m| claimed < m)
-        {
-            if let Some(msg) = day_budget_reached(&f)? {
-                eprintln!("{msg}; {} task(s) left queued", f.store.queued_count()?);
+        let mut superseded = false;
+        let pass: Result<()> = async {
+            let runs = tick_run_workflows(&f).await?;
+            schedule_tick(&f, &runs).await?;
+            event_tick(&f, &runs).await?;
+            superseded = succession.superseded(&f)?;
+            if !stopping && succession.stop_requested() {
                 stopping = true;
-                break;
-            }
-            for t in f.store.release_dependents()? {
-                eprintln!("task {t} unblocked: its dependencies landed or were withdrawn");
-            }
-            for (t, d, why) in f.store.block_dependents()? {
-                eprintln!("task {t} blocked: {why} (task {d})");
-            }
-            let held = held_initiatives(&f)?;
-            for line in new_holds(&f, &held, &mut announced_holds) {
-                eprintln!("{line}");
-            }
-            if let Some(t) = f.store.claim_next(pid, &held, |t| {
-                provider_is_held(&f, t) || intake_is_held(&f, t)
-            })? {
-                hold_until = None;
-                claimed += 1;
                 eprintln!(
-                    "======== task {} starting ({} queued, {} running)",
-                    t.id,
-                    f.store.queued_count()?,
-                    running.len() + 1
+                    "stopping: the unit has a stop job; {} running attempt(s) will finish",
+                    running.len()
                 );
-                ids.push(t.id);
-                let fc = f.clone();
-                running.spawn(async move { WorkResult::Task(t.id, drive(fc, t.id).await) });
-            } else if let Some(j) = f.store.claim_next_job()? {
-                // A job carries no provider or initiative hold (it runs
-                // no directive step yet), so it is claimed only once
-                // every queued task has already been tried this pass.
-                hold_until = None;
-                claimed += 1;
-                eprintln!(
-                    "======== job {} starting ({} queued, {} running)",
-                    j.id,
-                    f.store.queued_jobs()?.len(),
-                    running.len() + 1
-                );
-                job_ids.push(j.id);
-                let fc = f.clone();
-                running.spawn(async move { WorkResult::Job(j.id, job::drive(fc, j.id).await) });
-            } else {
-                // Nothing claimable: either the queue is empty/blocked, or
-                // every queued candidate's own provider is at its cap.
-                // Only the latter is a hold worth waiting out.
-                if let Some((msg, until)) = tightest_provider_hold(&f, &held)? {
-                    if f.store.queued_count()? > 0 && hold_until != Some(until) {
-                        eprintln!("{msg}; holding, {} task(s) queued", f.store.queued_count()?);
-                    }
-                    hold_until = Some(until);
-                } else {
-                    hold_until = None;
+            }
+            if superseded && let Some(p) = plugins.take() {
+                p.stop().await;
+            }
+
+            // Fill free slots.
+            while !stopping
+                && !superseded
+                && env_error.is_none()
+                && running.len() < jobs
+                && opts.max_tasks.is_none_or(|m| claimed < m)
+            {
+                let Some(held) = prepare_claim(&f)? else {
+                    stopping = true;
+                    break;
+                };
+                for line in new_holds(&f, &held, &mut announced_holds) {
+                    eprintln!("{line}");
                 }
-                break;
+                if let Some(t) = f.store.claim_next(pid, &held, |t| {
+                    provider_is_held(&f, t) || intake_is_held(&f, t)
+                })? {
+                    hold_until = None;
+                    claimed += 1;
+                    eprintln!(
+                        "======== task {} starting ({} queued, {} running)",
+                        t.id,
+                        f.store.queued_count().unwrap_or(0),
+                        running.len() + 1
+                    );
+                    ids.push(t.id);
+                    let fc = f.clone();
+                    running.spawn(async move { WorkResult::Task(t.id, drive(fc, t.id).await) });
+                } else if let Some(j) = f.store.claim_next_job()? {
+                    // A job carries no provider or initiative hold (it runs
+                    // no directive step yet), so it is claimed only once
+                    // every queued task has already been tried this pass.
+                    hold_until = None;
+                    claimed += 1;
+                    eprintln!(
+                        "======== job {} starting ({} queued, {} running)",
+                        j.id,
+                        f.store.queued_jobs().map_or(0, |jobs| jobs.len()),
+                        running.len() + 1
+                    );
+                    job_ids.push(j.id);
+                    let fc = f.clone();
+                    running.spawn(async move { WorkResult::Job(j.id, job::drive(fc, j.id).await) });
+                } else {
+                    // Nothing claimable: either the queue is empty/blocked, or
+                    // every queued candidate's own provider is at its cap.
+                    // Only the latter is a hold worth waiting out.
+                    if let Some((msg, until)) = tightest_provider_hold(&f, &held)? {
+                        if f.store.queued_count()? > 0 && hold_until != Some(until) {
+                            eprintln!("{msg}; holding, {} task(s) queued", f.store.queued_count()?);
+                        }
+                        hold_until = Some(until);
+                    } else {
+                        hold_until = None;
+                    }
+                    break;
+                }
             }
+
+            Ok(())
         }
+        .await;
+        let pass_failed = log_pass_error(pass);
 
         if running.is_empty() {
             if superseded {
@@ -1007,7 +1040,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     && !exhausted
                     && f.store.queued_count().unwrap_or(0) > 0
             });
-            match (held, opts.poll) {
+            match (held, opts.poll.or_else(|| pass_failed.then_some(10))) {
                 (Some(until), poll) => {
                     let wait = (until - unix_now()).max(1) as u64;
                     let wait = poll.map_or(wait, |p| wait.min(p));
@@ -1075,7 +1108,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     running.abort_all();
                     while running.join_next().await.is_some() {}
                     for id in ids.drain(..) {
-                        f.store.requeue(id, "worker aborted by operator")?;
+                        f.store.requeue(id, crate::store::REQUEUE_ABORT)?;
                     }
                     for id in job_ids.drain(..) {
                         crate::job::recover_interrupted(&f, id, Some(pid))?;
@@ -1210,6 +1243,31 @@ mod tests {
         let mut t = task_on("direct");
         t.actions_json = "not json".into();
         assert_eq!(first_role(&f, &t), "code");
+    }
+
+    #[test]
+    fn first_role_is_the_next_undone_directive_on_a_resumed_task() {
+        // `reviewed` resolves to setup, repo-map, code, review: seq 3 is
+        // the code step. A record whose latest attempt at that seq
+        // succeeded means the run already resumes past it (the same rule
+        // `engine::resume_done` builds the cursor from), so the next
+        // agent step, and the provider a claim is judged against, is the
+        // review, not the code the task started on.
+        let (_dir, f) = fixture();
+        let mut t = task_on("reviewed");
+        t.id = f.store.insert_task(&t).unwrap();
+        assert_eq!(first_role(&f, &t), "code");
+        f.store
+            .insert_attempt(&crate::store::Attempt {
+                task_id: t.id,
+                attempt_no: 1,
+                step_seq: 3,
+                state: crate::store::AttemptState::Succeeded,
+                started_at: crate::unix_now(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(first_role(&f, &t), "review");
     }
 
     /// A minute-aligned unix second: `Cron::find_previous_occurrence`

@@ -72,7 +72,7 @@ use anyhow::Context;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 pub enum Fault {
     Task(anyhow::Error),
@@ -261,13 +261,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     let mut run = Run {
         idx: 0,
         seq: 0,
-        used: HashMap::new(),
+        used: crate::store::seed_used(&prior, &f.store.refunded_attempts(id).env()?),
         owed: HashMap::new(),
-        done: prior
-            .iter()
-            .filter(|a| a.state == AttemptState::Succeeded)
-            .map(|a| a.step_seq)
-            .collect(),
+        done: resume_done(&prior),
     };
     let mut end: Option<End> = None;
     'run: loop {
@@ -315,6 +311,10 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                 StepFlow::End(e) => {
                     end = Some(e);
                     break;
+                }
+                StepFlow::Requeue(reason) => {
+                    f.store.requeue(id, &reason).env()?;
+                    return Ok(TaskState::Queued);
                 }
             }
         }
@@ -484,11 +484,16 @@ fn blocked_on(reason: String) -> StepFlow {
 }
 
 /// What one step of the run decided: move to the next step, go round
-/// again from wherever the cursor now points (a rewind), or end the run.
+/// again from wherever the cursor now points (a rewind), end the run, or
+/// give up the slot: the step's own provider is held, so the task goes
+/// back to `queued` with the hold as its reason rather than sleep out the
+/// window inside this attempt (the claim loop's own hold logic waits for
+/// the reset).
 enum StepFlow {
     Next,
     Again,
     End(End),
+    Requeue(String),
 }
 
 /// The workflow resolved once, at start: the latest versions of every
@@ -539,10 +544,8 @@ async fn prepare_worktree(
 ) -> Result<bool, Fault> {
     let id = t.id;
     let seq: i64 = 0;
-    // Set when this retry starts from a verified branch with the current
-    // base merged into it: a textually clean merge that does not build
-    // surfaces at the setup step, and that failure belongs to the coder,
-    // not to the task, since a fresh clone would never see it.
+    // A verified-branch retry merged with the current base may fail setup;
+    // that failure belongs to the coder, since a fresh clone would build.
     let mut merged_base_retry = false;
     crate::git::clear_recorded_overlay(&t.worktree);
     if t.worktree.is_empty() {
@@ -557,6 +560,10 @@ async fn prepare_worktree(
             }
         }
         let dir = f.paths.worktrees.join(t.id.to_string());
+        // An unrecorded clone can only be debris from an interrupted run.
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).env()?;
+        }
         let timer = Timer::now();
         // The base is the remote's, so a task started after a landing sees it.
         let base_ref = match (&base_cfg.push_remote, &remote_url) {
@@ -613,10 +620,9 @@ async fn prepare_worktree(
             .await
             .unwrap_or_default();
         t.worktree = dir.display().to_string();
-        // A retry of a task whose branch passed the checks starts from
-        // that branch, not from scratch: the review's finding or the
-        // operator's answer is the only thing left to act on. Three fresh
-        // rebuilds of one verified split cost ten dollars before this.
+        f.store.update_task(t).env()?;
+        // Reuse a verified branch: only the review finding or operator's
+        // answer remains to address, avoiding repeated rebuilds from scratch.
         if let Some(old) = t.retry_of
             && let Some(from) = verified_branch_of(f, old).await
         {
@@ -628,10 +634,8 @@ async fn prepare_worktree(
                     if git::is_ancestor(&dir, &t.base_sha, "HEAD").await {
                         f.report.emit(id, Event::Note { text: &format!("start    from task {old}'s verified branch {} @ {short}", from.branch) });
                     } else {
-                        // Main moved while the branch was verified: merge the
-                        // current base into it, as the integrator would at
-                        // landing, rather than throw the verified work away.
-                        // Only a conflict sends the retry back to scratch.
+                        // Main moved: merge the current base as at landing,
+                        // preserving verified work unless the merge fails.
                         let msg = format!("Merge the current base into {}", from.branch);
                         match git::merge(&dir, &t.base_sha, &msg).await {
                             Ok(git::Merge::Merged(_)) | Ok(git::Merge::UpToDate) => {
@@ -888,17 +892,13 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
     // clean, no result: the checks can still judge the code.
     let mut capped_committed = false;
     while run.used_at(seq) < t.max_attempts {
-        // A subscription window at its cap: wait for the reset
-        // rather than start an attempt that would be rate limited.
-        while let Some((msg, until)) = crate::worker::window_hold(f, &ts.provider).env()? {
-            f.report.emit(
-                id,
-                Event::Note {
-                    text: &format!("rate     {msg}; waiting"),
-                },
-            );
-            let wait = (until - unix_now()).clamp(1, 3600) as u64;
-            tokio::time::sleep(Duration::from_secs(wait)).await;
+        // A subscription window at its cap: give up the slot rather than
+        // sleep it out here, deaf to shutdown, for as long as an hour at a
+        // turn. The claim loop's own hold logic (`worker::first_role`,
+        // read against this same record) waits for the reset and claims
+        // this task again once it is free.
+        if let Some((msg, _)) = crate::worker::window_hold(f, &ts.provider).env()? {
+            return Ok(StepFlow::Requeue(msg));
         }
         let spent = f.store.task_cost(id).env()?;
         if spent >= task_cap {
@@ -1009,7 +1009,7 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
                     text: "rate     the provider refused this run; it does not count as an attempt",
                 },
             );
-            run.refund(seq);
+            run.refund(f, seq, a.id)?;
             continue;
         }
         // An environment need the policy covers (a host the proxy
@@ -1018,7 +1018,7 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
         // not cover falls through as it always has.
         match environment_after(f, t, cfg, &a, &verdict).await? {
             Environment::Applied => {
-                run.refund(seq);
+                run.refund(f, seq, a.id)?;
                 continue;
             }
             Environment::Ask(reason) => return Ok(blocked_on(reason)),
@@ -1038,7 +1038,7 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
             let t_seq = t_idx as i64 + 1;
             let t_used = run.used_at(t_seq);
             if t_used < t.max_attempts {
-                run.refund(seq);
+                run.refund(f, seq, a.id)?;
                 f.report.emit(
                     id,
                     Event::Note {
@@ -1139,6 +1139,7 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
                         return Ok(StepFlow::End(End::Filed {
                             n: filed.len(),
                             initiative: iid,
+                            last: *filed.last().unwrap_or(&id),
                         }));
                     }
                 }
@@ -1381,7 +1382,8 @@ async fn try_land(args: TryLand<'_>) -> Result<Option<End>, Fault> {
         return Ok(Some(End::Verified));
     };
     let mut seq = run.seq;
-    let outcome = integrate(f, t, url, remote, &mut seq, attempt_no).await?;
+    let lock = crate::landing::repo_lock(f, repo).await?;
+    let outcome = integrate(f, t, url, remote, &mut seq, attempt_no, &lock).await?;
     run.seq = seq;
     match outcome {
         Integrate::Landed(sha) => {
@@ -1580,6 +1582,20 @@ async fn finish(
     if t.state == TaskState::Succeeded && (!t.land || !t.landed_sha.is_empty()) {
         crate::queue::settle_superseded(f, id).env()?;
     }
+    // A filing task never lands: the work its dependents waited for now
+    // happens in the tasks it filed, so they follow the last of those
+    // instead (the same reroute a retry carries its own dependents
+    // through, see `queue::enqueue`).
+    if let End::Filed { last, .. } = end {
+        for d in f.store.reroute_dependents(id, *last).env()? {
+            f.report.emit(
+                d,
+                Event::Note {
+                    text: &format!("waits on task {last} now (task {id} filed its plan)"),
+                },
+            );
+        }
+    }
     // A dependent waiting on this task, blocked with a stale reason
     // because its after list has since been re-pointed here, is released
     // or given a fresh reason now that this task itself has landed,
@@ -1626,14 +1642,31 @@ struct Run {
     /// The op sequence number of the current step; landing and push
     /// continue from it.
     seq: i64,
-    /// Attempts used per directive by this worker (a resumed task's
-    /// earlier attempts were ended by a worker that died, not by the agent).
+    /// Attempts used per directive, seeded from the record (`seed_used`).
     used: HashMap<i64, i64>,
     /// Feedback owed to a directive by a verifying operation or a landing
     /// that failed after it.
     owed: HashMap<i64, String>,
     /// Directives already verified, by sequence number.
     done: HashSet<i64>,
+}
+
+/// Directives a resumed task may skip: those whose latest attempt
+/// succeeded with no later attempt at an earlier step. An attempt at an
+/// earlier step after it means the run was rewound past it, so the old
+/// success no longer verifies what the tree now holds.
+pub(crate) fn resume_done(prior: &[crate::store::Attempt]) -> HashSet<i64> {
+    let mut done = HashSet::new();
+    let mut floor = i64::MAX;
+    for a in prior.iter().rev() {
+        if a.step_seq < floor {
+            floor = a.step_seq;
+            if a.state == AttemptState::Succeeded {
+                done.insert(a.step_seq);
+            }
+        }
+    }
+    done
 }
 
 impl Run {
@@ -1647,8 +1680,9 @@ impl Run {
 
     /// An attempt that does not count against the directive (refused by
     /// the provider, or a failure that was the test author's).
-    fn refund(&mut self, seq: i64) {
+    fn refund(&mut self, f: &Forge, seq: i64, attempt_id: i64) -> Result<(), Fault> {
         *self.used.entry(seq).or_insert(1) -= 1;
+        f.store.refund_attempt(attempt_id).env()
     }
 
     /// Go back to the directive at `to`, owing it `feedback`; everything
@@ -1693,8 +1727,14 @@ enum End {
     Budget(String),
     /// A plan step with `file_into_initiative` filed its items as
     /// sibling tasks in the task's initiative; nothing changed the tree,
-    /// so nothing is pushed.
-    Filed { n: usize, initiative: i64 },
+    /// so nothing is pushed. `last` is the last filed task, chained
+    /// after every other: `finish` re-points this task's own dependents
+    /// at it, since the work they waited for now happens there.
+    Filed {
+        n: usize,
+        initiative: i64,
+        last: i64,
+    },
 }
 
 /// Names the L0 rows the last attempt's verdict failed, the same shape
@@ -1744,7 +1784,7 @@ impl End {
             End::Landed(sha) => {
                 format!("landed {} @ {}", t.base_branch, &sha[..sha.len().min(8)])
             }
-            End::Filed { n, initiative } => {
+            End::Filed { n, initiative, .. } => {
                 format!("filed {n} task(s) into initiative {initiative}")
             }
             End::Unverified(r) | End::Blocked { reason: r, .. } | End::Budget(r) => r.clone(),
@@ -1837,152 +1877,4 @@ fn fresh_arm(t: &Task) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn task_state_maps_every_end_variant() {
-        let cases: Vec<(End, TaskState)> = vec![
-            (End::Verified, TaskState::Succeeded),
-            (End::Landed("abc123".to_string()), TaskState::Succeeded),
-            (End::Unverified("reason".to_string()), TaskState::Unverified),
-            (
-                End::Blocked {
-                    reason: "reason".to_string(),
-                    demoted: false,
-                    to: None,
-                },
-                TaskState::Blocked,
-            ),
-            (
-                End::Blocked {
-                    reason: "reason".to_string(),
-                    demoted: true,
-                    to: None,
-                },
-                TaskState::Blocked,
-            ),
-            (
-                End::Failed {
-                    reason: "reason".to_string(),
-                    counted: true,
-                    pushes: false,
-                },
-                TaskState::Failed,
-            ),
-            (
-                End::Budget("task budget reached".to_string()),
-                TaskState::Failed,
-            ),
-            (
-                // Budget hit after the code step verified but before review
-                // completed: not a failure, a human review the same as a
-                // review that could not finish.
-                End::Unverified(
-                    "budget reached after the code step verified; review did not run".to_string(),
-                ),
-                TaskState::Unverified,
-            ),
-        ];
-        for (end, expected) in cases {
-            assert_eq!(end.task_state(), expected, "{end:?} -> {expected:?}");
-        }
-    }
-
-    fn check(level: &str, name: &str, ok: bool) -> CheckResult {
-        CheckResult {
-            level: level.into(),
-            name: name.into(),
-            ok,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn l0_failure_reason_names_failing_l0_rows_and_none_otherwise() {
-        assert_eq!(l0_failure_reason(&[]), None);
-        assert_eq!(
-            l0_failure_reason(&[check("L0", "clean-tree", true)]),
-            None,
-            "an L0 row that passed names nothing"
-        );
-        assert_eq!(
-            l0_failure_reason(&[check("L1", "tests", false)]),
-            None,
-            "a failing row outside L0 does not count"
-        );
-        assert_eq!(
-            l0_failure_reason(&[
-                check("L0", "clean-tree", true),
-                check("L0", "has-commits", false)
-            ]),
-            Some("L0 failed: has-commits".to_string())
-        );
-    }
-
-    #[test]
-    fn reason_maps_every_end_variant() {
-        let t = Task::default();
-        let cases: Vec<(End, usize, &str)> = vec![
-            (End::Verified, 1, ""),
-            (
-                End::Landed("abc123def".to_string()),
-                1,
-                "landed  @ abc123de",
-            ),
-            (End::Unverified("reason".to_string()), 1, "reason"),
-            (
-                End::Blocked {
-                    reason: "needs input: which one?".to_string(),
-                    demoted: false,
-                    to: None,
-                },
-                1,
-                "needs input: which one?",
-            ),
-            (
-                End::Failed {
-                    reason: "operation setup failed: exit 1".to_string(),
-                    counted: false,
-                    pushes: false,
-                },
-                3,
-                "operation setup failed: exit 1",
-            ),
-            (
-                End::Failed {
-                    reason: "some failure".to_string(),
-                    counted: true,
-                    pushes: false,
-                },
-                4,
-                "some failure (after 4 attempt(s))",
-            ),
-            (
-                // A landing rewind sent the coder back to commit again; it
-                // made none, so the checks failed on has-commits with no
-                // agent failure to explain it. The reason built after the
-                // attempt loop must name the failing rule, never come out
-                // empty (task 232's bug).
-                End::Failed {
-                    reason: l0_failure_reason(&[
-                        check("L0", "clean-tree", true),
-                        check("L0", "has-commits", false),
-                    ])
-                    .expect("has-commits failed"),
-                    counted: true,
-                    pushes: false,
-                },
-                4,
-                "L0 failed: has-commits (after 4 attempt(s))",
-            ),
-        ];
-        for (end, attempts, expected) in cases {
-            assert_eq!(end.reason(&t, attempts), expected, "{end:?}");
-            assert!(
-                !end.reason(&t, attempts).is_empty() || matches!(end, End::Verified),
-                "a non-Verified end must never carry an empty reason: {end:?}"
-            );
-        }
-    }
-}
+mod tests;

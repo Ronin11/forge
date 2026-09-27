@@ -84,22 +84,47 @@ async fn record_verdict(
     Ok(a.id)
 }
 
-/// The `end_sha` of the most recent attempt that ran in the task's own
-/// worktree and succeeded: the commit its verify judged, and so the one
-/// landing is about to merge and push. The tests contract runs in its own
-/// clone, never `t.worktree`, so it is not a candidate. `None` when the
-/// task has no such attempt (an operator-driven flow with nothing on
-/// record), in which case the guard that reads this has nothing to check
-/// against and stays quiet.
+/// The commit the kernel last verified in the task's own worktree, and so
+/// the one landing is about to merge and push: the later of the `end_sha`
+/// of the most recent attempt that succeeded there, and the commit a
+/// mutating operation (`fmt`) made after it, which its kernel verify row
+/// records as its `output`. The tests contract runs in its own clone,
+/// never `t.worktree`, so it is not a candidate. Op row ids order the two:
+/// every directive's kernel verify row names its attempt; an attempt with
+/// no such row keeps the precedence it had before operations counted.
+/// `None` when the task has neither (an operator-driven flow with nothing
+/// on record), in which case the guard that reads this has nothing to
+/// check against and stays quiet.
 fn last_verified_sha(f: &Forge, task_id: i64) -> Result<Option<String>, Fault> {
-    Ok(f.store
+    let attempt = f
+        .store
         .attempts(task_id)
         .env()?
         .into_iter()
         .rev()
         .find(|a| a.step != "tests" && a.state == AttemptState::Succeeded)
-        .map(|a| a.end_sha)
-        .filter(|s| !s.is_empty()))
+        .filter(|a| !a.end_sha.is_empty());
+    let ops = f.store.ops(task_id).env()?;
+    let operation = ops.iter().rev().find(|o| {
+        o.kernel && o.ok && o.name == "verify" && o.attempt_id.is_none() && !o.output.is_empty()
+    });
+    Ok(match (attempt, operation) {
+        (Some(a), Some(o)) => {
+            let at = ops
+                .iter()
+                .filter(|r| r.attempt_id == Some(a.id))
+                .map(|r| r.id)
+                .max();
+            if at.is_some_and(|at| at < o.id) {
+                Some(o.output.clone())
+            } else {
+                Some(a.end_sha)
+            }
+        }
+        (Some(a), None) => Some(a.end_sha),
+        (None, Some(o)) => Some(o.output.clone()),
+        (None, None) => None,
+    })
 }
 
 pub enum Integrate {
@@ -126,6 +151,24 @@ impl Drop for TempTree {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
         crate::sandbox::discard_provider_state(&self.0);
+    }
+}
+
+/// Fetch the base branch by explicit refspec into the kernel repository
+/// (the pattern `deploy::origin_truth` uses), under the kernel lock, and
+/// return its sha. A transient failure (a held lock, a flaky network) is
+/// retried once before the caller treats it as the worker's environment.
+async fn fetch_base_for_landing(
+    home: &Path,
+    repo: &Path,
+    url: &str,
+    base: &str,
+    dest_ref: &str,
+) -> Result<String> {
+    let base_ref = format!("refs/heads/{base}");
+    match git::stage(home, repo, Path::new(url), &base_ref, dest_ref).await {
+        Ok(sha) => Ok(sha),
+        Err(_) => git::stage(home, repo, Path::new(url), &base_ref, dest_ref).await,
     }
 }
 
@@ -204,6 +247,9 @@ async fn verify_merged_tree(f: &Forge, args: MergeVerifyArgs<'_>) -> Result<Verd
 /// it on the task and reload the config from it. `attempt_no` is the same
 /// running count `run_attempt` draws its own numbers from, so a check run
 /// recorded here never collides with the directive attempt that follows it.
+/// `_lock` must already hold `repo_lock` on `t.repo`: the caller takes it
+/// before reading the task so two landings of the same task never both
+/// reach here (see `land_task`).
 pub async fn integrate(
     f: &Forge,
     t: &mut Task,
@@ -211,6 +257,7 @@ pub async fn integrate(
     remote: &str,
     seq: &mut i64,
     attempt_no: &mut i64,
+    _lock: &std::fs::File,
 ) -> Result<Integrate, Fault> {
     let repo = Path::new(&t.repo);
     let home = &f.paths.home;
@@ -218,7 +265,6 @@ pub async fn integrate(
     // placed base). The merge, the re-verification and every push run from
     // a tree cloned from the kernel-owned repository.
     let clone = Path::new(&t.worktree);
-    let _lock = repo_lock(f, repo).await?;
     let branch_ref = format!("refs/heads/{}", t.branch);
     let staged = git::stage(home, repo, clone, "HEAD", &branch_ref)
         .await
@@ -265,13 +311,21 @@ pub async fn integrate(
     for round in 0..3 {
         *seq += 1;
         let timer = Timer::now();
-        // The base as the remote has it; a remote that has no base branch
+        // The base as the remote has it, fetched straight into the kernel
+        // repository under its own lock; a remote that has no base branch
         // yet gets it from this landing, starting from the local one.
         let main_sha = if git::remote_branch_exists(url, &t.base_branch).await {
-            match git::fetch_branch(repo, remote, &t.base_branch).await {
-                Ok(s) => s,
+            let dest_ref = format!("refs/forge/origin/{}", t.base_branch);
+            match fetch_base_for_landing(home, repo, url, &t.base_branch, &dest_ref).await {
+                Ok(s) => {
+                    // Best-effort only, for the operator: landing itself
+                    // never depends on the registered checkout's tracking
+                    // ref being current.
+                    let _ = git::fetch_branch(repo, remote, &t.base_branch).await;
+                    s
+                }
                 Err(e) => {
-                    let d = format!("fetch of {remote}/{} failed: {e:#}", t.base_branch);
+                    let d = format!("fetch of {} from {url} failed: {e:#}", t.base_branch);
                     op(
                         f,
                         t.id,
@@ -293,16 +347,15 @@ pub async fn integrate(
                 }
             }
         } else {
-            git::rev_parse(repo, &format!("refs/heads/{}", t.base_branch))
+            let sha = git::rev_parse(repo, &format!("refs/heads/{}", t.base_branch))
                 .await
-                .task()?
+                .task()?;
+            let base_ref = format!("refs/forge/base/{}", t.base_branch);
+            git::stage(home, repo, repo, &sha, &base_ref).await.task()?;
+            sha
         };
         let mut detail = String::new();
         if main_sha != base_sha {
-            let base_ref = format!("refs/forge/base/{}", t.base_branch);
-            git::stage(home, repo, repo, &main_sha, &base_ref)
-                .await
-                .task()?;
             git::place_branch(home, repo, wt, &main_sha, &placed)
                 .await
                 .task()?;
@@ -551,6 +604,17 @@ pub async fn integrate(
                     output: "",
                 },
             )?;
+            // Only a base that actually moved goes round again: a refusal
+            // with the base where it was (a dirty checkout behind
+            // `updateInstead`, a hook, a permission) is the environment's,
+            // and verifying again cannot change it.
+            let now = git::remote_branch_sha(url, &t.base_branch).await;
+            if !now.is_some_and(|s| s != main_sha) {
+                return Err(Fault::Env(anyhow::anyhow!(
+                    "{d}; {} did not move, so the remote refused it",
+                    t.base_branch
+                )));
+            }
             if round < 2 {
                 f.report.emit(
                     t.id,
@@ -568,53 +632,14 @@ pub async fn integrate(
         let sha = candidate.clone();
         let _ = git::fetch_branch(repo, remote, &t.base_branch).await;
         // The task's hidden tests join the standing suite.
-        let own = format!("verify/{}", t.id);
-        let mut folded = String::new();
-        if git::ref_exists(repo, &format!("refs/heads/{own}")).await
-            && !cfg_now.namespace.is_empty()
-        {
-            let files = git::ls_tree(repo, &own, &cfg_now.namespace).await.task()?;
-            let title = t
-                .task
-                .lines()
-                .next()
-                .unwrap_or("")
-                .chars()
-                .take(72)
-                .collect::<String>();
-            if !files.is_empty()
-                && git::graft(
-                    repo,
-                    &own,
-                    &files,
-                    "forge-verify",
-                    &format!("Task {}: {title}", t.id),
-                )
-                .await
-                .task()?
-                .is_some()
-            {
-                folded = match git::push_ref(
-                    home,
-                    repo,
-                    repo,
-                    "refs/heads/forge-verify",
-                    url,
-                    "forge-verify",
-                )
-                .await
-                {
-                    Ok(_) => format!(
-                        "; {} hidden test file(s) folded into forge-verify",
-                        files.len()
-                    ),
-                    Err(e) => format!(
-                        "; {} hidden test file(s) folded into forge-verify locally (push failed: {e:#})",
-                        files.len()
-                    ),
-                };
+        let folded = match fold_tests(f, t, repo, url, &cfg_now.namespace).await {
+            Ok(detail) => detail,
+            Err(e) => {
+                let detail = format!("forge-verify fold failed: {e:#}");
+                f.report.emit(t.id, Event::Note { text: &detail });
+                format!("; {detail}")
             }
-        }
+        };
         op(
             f,
             t.id,
@@ -637,10 +662,75 @@ pub async fn integrate(
             },
         );
         deploy_on_landing(f, t, &sha).await;
-        crate::assess::run_on_landing(f, t, &sha).await;
+        crate::assess::run_on_landing(f, t, &base_sha, &sha).await;
         return Ok(Integrate::Landed(sha));
     }
     unreachable!("the landing loop returns")
+}
+
+async fn fold_tests(
+    f: &Forge,
+    t: &Task,
+    repo: &Path,
+    url: &str,
+    namespace: &[String],
+) -> anyhow::Result<String> {
+    let home = &f.paths.home;
+    let own = format!("verify/{}", t.id);
+    let mut folded = String::new();
+    if git::ref_exists(repo, &format!("refs/heads/{own}")).await && !namespace.is_empty() {
+        git::catch_up_branch(repo, url, "forge-verify").await?;
+        let files = git::ls_tree(repo, &own, namespace).await?;
+        let title = t
+            .task
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(72)
+            .collect::<String>();
+        if !files.is_empty()
+            && git::graft(
+                repo,
+                &own,
+                &files,
+                "forge-verify",
+                &format!("Task {}: {title}", t.id),
+            )
+            .await
+            .context("fold hidden tests")?
+            .is_some()
+        {
+            folded = match git::push_ref(
+                home,
+                repo,
+                repo,
+                "refs/heads/forge-verify",
+                url,
+                "forge-verify",
+            )
+            .await
+            {
+                Ok(_) => format!(
+                    "; {} hidden test file(s) folded into forge-verify",
+                    files.len()
+                ),
+                Err(e) => {
+                    f.report.emit(
+                        t.id,
+                        Event::Note {
+                            text: &format!("forge-verify fold push failed: {e:#}"),
+                        },
+                    );
+                    format!(
+                        "; {} hidden test file(s) folded into forge-verify locally (push failed: {e:#})",
+                        files.len()
+                    )
+                }
+            };
+        }
+    }
+    Ok(folded)
 }
 
 /// After landing, run every on-landing deploy target of the task's project
@@ -1002,6 +1092,14 @@ pub(crate) fn landable_needs_input(f: &Forge, t: &Task) -> Result<bool> {
 /// automated accept-and-land (see `Task::hand_landed`, one of the
 /// human-attention signals). Returns the line to print.
 pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<String> {
+    // Just enough of the task to name the repository to lock: a second
+    // `land_task` for the same id, running concurrently (the supervisor's
+    // accept-and-land against the operator's `forge land`, or two of
+    // either), blocks here rather than racing the checks below.
+    let Some(repo_hint) = f.store.task(id)? else {
+        bail!("no task {id}");
+    };
+    let lock = repo_lock(f, Path::new(&repo_hint.repo)).await?;
     let Some(mut t) = f.store.task(id)? else {
         bail!("no task {id}");
     };
@@ -1060,7 +1158,7 @@ pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<Strin
         t.worktree = dir.display().to_string();
         recreated = Some(dir);
     }
-    let result = land_integrated(f, id, by_hand, demoted, t, &url, &remote).await;
+    let result = land_integrated(f, by_hand, demoted, t, &url, &remote, &lock).await;
     if let Some(dir) = recreated {
         let _ = std::fs::remove_dir_all(&dir);
         crate::sandbox::discard_provider_state(&dir);
@@ -1070,17 +1168,18 @@ pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<Strin
 
 async fn land_integrated(
     f: &Forge,
-    id: i64,
     by_hand: bool,
     demoted: bool,
     mut t: Task,
     url: &str,
     remote: &str,
+    lock: &std::fs::File,
 ) -> Result<String> {
+    let id = t.id;
     let (url, remote) = (url.to_string(), remote.to_string());
     let mut seq = f.store.ops(id)?.len() as i64;
     let mut attempt_no = f.store.attempts(id)?.len() as i64;
-    match crate::landing::integrate(f, &mut t, &url, &remote, &mut seq, &mut attempt_no)
+    match crate::landing::integrate(f, &mut t, &url, &remote, &mut seq, &mut attempt_no, lock)
         .await
         .map_err(|e| match e {
             crate::engine::Fault::Task(e) | crate::engine::Fault::Env(e) => e,

@@ -1658,3 +1658,111 @@ fn a_task_whose_branch_was_never_pushed_and_whose_worktree_is_gone_is_refused() 
     assert!(err.contains("not on"), "{err}");
     assert_eq!(origin_sha(&e, "main"), "");
 }
+
+/// docs/REVIEW-3.md §2.1 item 2: under `cheap`, `fmt` commits after the
+/// `fix` directive and its kernel verify judges that commit, so the landing
+/// guard must take it as the verified one rather than the directive's.
+#[test]
+fn a_cheap_task_whose_formatter_commits_still_lands() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let cat = e.home.join("workflows");
+    std::fs::write(
+        cat.join("actions/fmt.toml"),
+        "name = \"fmt\"\nkind = \"operation\"\ndescription = \"strips trailing whitespace\"\n\
+         consumes = [\"branch\"]\nproduces = [\"branch\"]\n\
+         run = [\"sed\", \"-i\", \"s/[[:space:]]*$//\", \"notes.txt\"]\n",
+    )
+    .unwrap();
+    git(&cat, &["add", "actions/fmt.toml"]);
+    git(
+        &cat,
+        &[
+            "-c",
+            "user.name=operator",
+            "-c",
+            "user.email=x@localhost",
+            "commit",
+            "-qm",
+            "a fmt for this repo",
+        ],
+    );
+    let o = e.forge(
+        "unformatted.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--workflow",
+            "cheap",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    assert!(reason.starts_with("landed main @ "), "{reason}");
+    assert!(pushed);
+    assert_eq!(
+        origin_file(&e, "main", "notes.txt").as_deref(),
+        Some("hello\n"),
+        "the formatter's commit is what landed"
+    );
+    let log = git(&e.origin, &["log", "-1", "--format=%s", "main"]);
+    assert_eq!(log.trim(), "forge: fmt");
+}
+
+#[test]
+fn a_base_push_the_remote_refuses_with_the_base_unmoved_ends_the_landing_once_as_the_environments()
+{
+    // A non-bare remote pushed into with `updateInstead` refuses the base
+    // push while its checkout is dirty, and the base does not move: going
+    // round again cannot fix that, so the merged tree is verified once and
+    // the code is not blamed.
+    let e = Env::new();
+    let live = e._dir.path().join("live");
+    let o = Command::new("git")
+        .args(["clone", "-q"])
+        .arg(&e.repo)
+        .arg(&live)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    git(
+        &live,
+        &["config", "receive.denyCurrentBranch", "updateInstead"],
+    );
+    std::fs::write(live.join("hello.sh"), "#!/bin/bash\necho dirty\n").unwrap();
+    git(
+        &e.repo,
+        &["remote", "set-url", "origin", live.to_str().unwrap()],
+    );
+    let before = git(&live, &["rev-parse", "main"]);
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--retries",
+            "0",
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "{stderr}");
+    assert!(stderr.contains("unstaged changes"), "{stderr}");
+    assert_eq!(git(&live, &["rev-parse", "main"]), before, "main unmoved");
+    let (state, reason, _) = e.task(1);
+    assert_ne!(state, "failed", "{reason}");
+    let ops = op_names(&e, 1);
+    let count = |name: &str| ops.iter().filter(|(n, _)| n == name).count();
+    assert_eq!(count("integrate"), 1, "{ops:?}");
+    assert_eq!(count("land"), 1, "{ops:?}");
+    assert_eq!(ops.last(), Some(&("land".to_string(), false)), "{ops:?}");
+    let a = e.attempts(1);
+    assert!(
+        a.iter().all(|x| x.1 == "succeeded"),
+        "no attempt at the code failed: {a:?}"
+    );
+}

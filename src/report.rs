@@ -316,34 +316,109 @@ pub struct Reporter {
     log: Option<PathBuf>,
     prefix: bool,
     quiet: bool,
-    /// Tasks a write failure has already been surfaced for, so a directory
-    /// that stays unwritable for an entire attempt costs one `Note`, not
-    /// one per event (see `note_dropped`).
-    noted_drops: Mutex<HashSet<i64>>,
+    /// Markers a write failure has already been surfaced for — a task id,
+    /// or `job:<id>` for a job event — so a directory that stays
+    /// unwritable for an entire attempt costs one `Note`, not one per event
+    /// (see `note_dropped`).
+    noted_drops: Mutex<HashSet<String>>,
 }
 
 static OUT: Mutex<()> = Mutex::new(());
 
-/// The file `dropped_log_task_count` reads: one task id per line, appended
-/// once the first time that task's event log write fails. Sits beside the
-/// log itself (`events.jsonl` -> `events.dropped`) so it shares the log's
-/// directory and survives across processes without a database dependency.
+/// The file `dropped_log_task_count` and `dropped_log_job_count` read: one
+/// marker per line (a task id, or `job:<id>`), appended once the first time
+/// that task's or job's event log write fails. Sits beside the log itself
+/// (`events.jsonl` -> `events.dropped`) so it shares the log's directory
+/// and survives across processes without a database dependency.
 fn dropped_marker_path(log_path: &Path) -> PathBuf {
     log_path.with_extension("dropped")
 }
 
-/// How many distinct tasks have lost at least one event-log line, for
-/// `forge doctor`'s `logs` check. Reads the marker file `note_dropped`
-/// maintains; missing or unreadable means zero, never an error.
-pub fn dropped_log_task_count(log_path: &Path) -> usize {
+/// The lock a writer holds across the size check, any rotation and the
+/// append itself, so two processes racing `append_log_with_limit` never
+/// both rotate (one renames the other's fresh `.1` over `.2`) and never
+/// interleave a line (one `write_all` per line, but only under this lock
+/// does "the file is under the limit" stay true until the write lands).
+fn log_lock_path(log_path: &Path) -> PathBuf {
+    log_path.with_extension("lock")
+}
+
+/// The marker file's distinct lines: a task id, or `job:<id>` for a job
+/// event. Missing or unreadable reads as empty, never an error.
+fn dropped_markers(log_path: &Path) -> HashSet<String> {
     let Ok(content) = std::fs::read_to_string(dropped_marker_path(log_path)) else {
-        return 0;
+        return HashSet::new();
     };
     content
         .lines()
         .filter(|l| !l.is_empty())
-        .collect::<HashSet<_>>()
-        .len()
+        .map(str::to_string)
+        .collect()
+}
+
+/// How many distinct tasks have lost at least one event-log line, for
+/// `forge doctor`'s `logs` check.
+pub fn dropped_log_task_count(log_path: &Path) -> usize {
+    dropped_markers(log_path)
+        .iter()
+        .filter(|m| !m.starts_with("job:"))
+        .count()
+}
+
+/// How many distinct jobs have lost at least one event-log line. Counted
+/// apart from `dropped_log_task_count`: every job event carries task 0 in
+/// the log (job.rs), so without its own `job:<id>` marker every job's
+/// drops would collapse onto one line and undercount by doctor's tally.
+pub fn dropped_log_job_count(log_path: &Path) -> usize {
+    dropped_markers(log_path)
+        .iter()
+        .filter(|m| m.starts_with("job:"))
+        .count()
+}
+
+/// A write failure's identity for the marker file and `forge doctor`. Every
+/// job event carries task 0 in the log itself (job.rs), so a job's drops
+/// are keyed on its own id instead, else every job's failures would collapse
+/// onto one marker line.
+fn drop_marker(task_id: i64, ev: &Event) -> String {
+    match ev {
+        Event::JobStarted { job_id, .. } | Event::JobFinished { job_id, .. } => {
+            format!("job:{job_id}")
+        }
+        _ => task_id.to_string(),
+    }
+}
+
+/// The size check, any rotation and the append all happen under one lock on
+/// a sibling `.lock` file: two writers racing here either both see the file
+/// under the limit, or the first to acquire the lock rotates and the second
+/// reopens the fresh file that rotation left, rather than both renaming
+/// `.1` to `.2` and discarding a generation between them.
+fn write_log_line(path: &Path, line: &str, size_limit: u64) -> std::io::Result<()> {
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(log_lock_path(path))?;
+    lock.lock()?;
+    // Bounded: past size_limit the log rolls to .1 and .1 rolls to .2; a client resnapshots.
+    if std::fs::metadata(path)
+        .map(|m| m.len() > size_limit)
+        .unwrap_or(false)
+    {
+        let path_1 = path.with_extension("jsonl.1");
+        let path_2 = path.with_extension("jsonl.2");
+
+        if path_1.exists() {
+            let _ = std::fs::rename(&path_1, &path_2);
+        }
+        let _ = std::fs::rename(path, &path_1);
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?
+        .write_all(line.as_bytes())
 }
 
 impl Reporter {
@@ -384,24 +459,23 @@ impl Reporter {
     /// marker file — a `forge work` restart mid-task (the orphan-requeue
     /// path in worker.rs) starts a fresh `Reporter` with an empty
     /// in-memory set, but the marker file still names the task.
-    fn note_dropped(&self, task_id: i64, path: &Path, err: &std::io::Error) {
+    fn note_dropped(&self, task_id: i64, marker: &str, path: &Path, err: &std::io::Error) {
         let mut noted = self.noted_drops.lock().unwrap_or_else(|p| p.into_inner());
-        if !noted.insert(task_id) {
+        if !noted.insert(marker.to_string()) {
             return;
         }
         drop(noted);
-        if let Ok(content) = std::fs::read_to_string(dropped_marker_path(path)) {
-            let id = task_id.to_string();
-            if content.lines().any(|l| l.trim() == id) {
-                return;
-            }
+        if let Ok(content) = std::fs::read_to_string(dropped_marker_path(path))
+            && content.lines().any(|l| l.trim() == marker)
+        {
+            return;
         }
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(dropped_marker_path(path))
         {
-            let _ = writeln!(f, "{task_id}");
+            let _ = writeln!(f, "{marker}");
         }
         let text = format!("event log write failed at {}: {err}", path.display());
         let lines = render(Event::Note { text: &text });
@@ -423,26 +497,11 @@ impl Reporter {
         let mut v = to_json(ev);
         v["ts"] = serde_json::json!(crate::unix_now());
         v["task"] = serde_json::json!(task_id);
-        // Bounded: past size_limit the log rolls to .1 and .1 rolls to .2; a client resnapshots.
-        if std::fs::metadata(path)
-            .map(|m| m.len() > size_limit)
-            .unwrap_or(false)
-        {
-            let path_1 = path.with_extension("jsonl.1");
-            let path_2 = path.with_extension("jsonl.2");
-
-            if path_1.exists() {
-                let _ = std::fs::rename(&path_1, &path_2);
-            }
-            let _ = std::fs::rename(path, &path_1);
-        }
-        let result = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .and_then(|mut f| writeln!(f, "{v}"));
-        if let Err(e) = result {
-            self.note_dropped(task_id, path, &e);
+        // Serialized to a complete line first: one write_all lands it whole,
+        // never token-by-token the way Display-ing the Value in place would.
+        let line = format!("{v}\n");
+        if let Err(e) = write_log_line(path, &line, size_limit) {
+            self.note_dropped(task_id, &drop_marker(task_id, ev), path, &e);
         }
     }
 
@@ -1043,6 +1102,155 @@ mod tests {
             "the marker file already named the task, so the second process must not append again"
         );
         assert_eq!(dropped_log_task_count(&log_path), 1);
+
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Many threads appending at once, unbounded so no rotation muddies the
+    /// count: every line still lands whole. Before the fix, `writeln!` on
+    /// the JSON `Value`'s `Display` wrote token by token, and `O_APPEND`
+    /// only keeps a single `write(2)` call atomic — many threads interleave
+    /// inside a line, and this test's line count or its JSON parse fails.
+    #[test]
+    fn concurrent_appends_never_tear_a_line() {
+        let temp_dir = std::env::temp_dir().join("forge_test_events_concurrent_lines");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+        let log_path = temp_dir.join("events.jsonl");
+        let reporter = std::sync::Arc::new(Reporter::new(false, Some(log_path.clone())));
+
+        const THREADS: i64 = 8;
+        const PER_THREAD: usize = 60;
+        let handles: Vec<_> = (0..THREADS)
+            .map(|t| {
+                let reporter = reporter.clone();
+                std::thread::spawn(move || {
+                    let text = "x".repeat(500);
+                    let event = Event::Note { text: &text };
+                    for _ in 0..PER_THREAD {
+                        reporter.append_log_with_limit(t, &event, u64::MAX);
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let content = fs::read_to_string(&log_path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(
+            lines.len(),
+            (THREADS as usize) * PER_THREAD,
+            "every append landed exactly one line, none merged or split"
+        );
+        for line in lines {
+            assert!(
+                serde_json::from_str::<serde_json::Value>(line).is_ok(),
+                "torn line is not valid JSON: {line}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// `write_log_line` must wait for the sibling `.lock` file rather than
+    /// racing straight into the size check: with the lock held elsewhere,
+    /// a writer released 200ms later has still not touched the log, and
+    /// only proceeds once the lock is freed. Without this, the size check,
+    /// any rotation and the append are unguarded, and two writers can both
+    /// see the log over the limit and both rotate — the second renaming
+    /// the first's fresh `.1` over `.2`, discarding a whole generation.
+    #[test]
+    fn write_log_line_waits_for_the_sibling_lock_file() {
+        let temp_dir = std::env::temp_dir().join("forge_test_events_flock_blocks");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+        let log_path = temp_dir.join("events.jsonl");
+
+        let held = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(log_lock_path(&log_path))
+            .unwrap();
+        held.lock().unwrap();
+
+        let writer_path = log_path.clone();
+        let handle = std::thread::spawn(move || {
+            write_log_line(&writer_path, "line\n", u64::MAX).unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            fs::read_to_string(&log_path).unwrap_or_default().is_empty(),
+            "the writer must not touch the log while the lock file is held elsewhere"
+        );
+
+        held.unlock().unwrap();
+        handle.join().unwrap();
+        assert_eq!(fs::read_to_string(&log_path).unwrap(), "line\n");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// A job event's write failure is marked under its own job id, not task
+    /// 0 — every job event shares task 0 in the log (job.rs) — so two jobs'
+    /// drops each get counted, and `forge doctor` can tell jobs and tasks
+    /// apart.
+    #[test]
+    fn a_job_drop_is_marked_by_job_id_and_counted_apart_from_tasks() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = std::env::temp_dir().join("forge_test_events_job_dropped");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+        let locked = temp_dir.join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        let log_path = locked.join("events.jsonl");
+        fs::write(log_path.with_extension("dropped"), b"").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+
+        let reporter = Reporter::new(false, Some(log_path.clone()));
+        // Every job event is emitted under task 0 (job.rs), same as a real
+        // job run would.
+        reporter.append_log_with_limit(
+            0,
+            &Event::JobStarted {
+                project: "p",
+                workflow: "w",
+                job_id: 7,
+                dry_run: false,
+            },
+            EVENT_LOG_SIZE_LIMIT,
+        );
+        reporter.append_log_with_limit(
+            0,
+            &Event::JobFinished {
+                project: "p",
+                workflow: "w",
+                job_id: 9,
+                state: "ok",
+                cost_usd: 0.0,
+            },
+            EVENT_LOG_SIZE_LIMIT,
+        );
+        // A real task's own drop still counts as a task, not a job.
+        reporter.append_log_with_limit(
+            3,
+            &Event::Note {
+                text: "does not matter",
+            },
+            EVENT_LOG_SIZE_LIMIT,
+        );
+
+        let marker = std::fs::read_to_string(log_path.with_extension("dropped")).unwrap();
+        let mut lines: Vec<&str> = marker.lines().collect();
+        lines.sort();
+        assert_eq!(lines, vec!["3", "job:7", "job:9"]);
+        assert_eq!(dropped_log_task_count(&log_path), 1);
+        assert_eq!(dropped_log_job_count(&log_path), 2);
 
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
         let _ = fs::remove_dir_all(&temp_dir);

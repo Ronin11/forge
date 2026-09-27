@@ -187,7 +187,7 @@ impl Store {
     /// Declare a deploy target. Fails if `(project, name)` already exists.
     pub fn add_deploy_target(&self, t: &DeployTarget) -> Result<()> {
         let args_json = serde_json::to_string(&t.args)?;
-        self.lock().execute(
+        self.lock().retry_execute(
             "INSERT INTO deploy_targets (project, name, repo, scope_json, method, args_json, check_cmd, on_landing, smoke_url)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
@@ -210,7 +210,7 @@ impl Store {
     /// merging only the flags given onto the row `deploy_target` returned.
     pub fn update_deploy_target(&self, t: &DeployTarget) -> Result<()> {
         let args_json = serde_json::to_string(&t.args)?;
-        let n = self.lock().execute(
+        let n = self.lock().retry_execute(
             "UPDATE deploy_targets SET repo=?3, scope_json=?4, method=?5, args_json=?6, check_cmd=?7, on_landing=?8, smoke_url=?9
              WHERE project=?1 AND name=?2",
             params![
@@ -235,7 +235,7 @@ impl Store {
     /// log`) are untouched; only future `--on-landing` runs and `forge
     /// deploy` of this name stop.
     pub fn remove_deploy_target(&self, project: &str, name: &str) -> Result<()> {
-        let n = self.lock().execute(
+        let n = self.lock().retry_execute(
             "DELETE FROM deploy_targets WHERE project=?1 AND name=?2",
             params![project, name],
         )?;
@@ -249,7 +249,7 @@ impl Store {
     pub fn deploy_target(&self, project: &str, name: &str) -> Result<Option<DeployTarget>> {
         Ok(self
             .lock()
-            .query_row(
+            .retry_query_row(
                 &format!(
                     "SELECT {} FROM deploy_targets WHERE project=?1 AND name=?2",
                     DEPLOY_TARGET_COLUMNS.join(", ")
@@ -282,7 +282,7 @@ impl Store {
         task_id: Option<i64>,
     ) -> Result<i64> {
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "INSERT INTO deploys (project, target, sha, started_at, task_id) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![project, target, sha, at, task_id],
         )?;
@@ -307,7 +307,7 @@ impl Store {
             look_ok,
             look_json,
         } = args;
-        self.lock().execute(
+        self.lock().retry_execute(
             "UPDATE deploys SET finished_at=?2, check_ok=?3, check_output=?4, rolled_back_to=?5, reason=?6, smoke_ok=?7, smoke_json=?8, look_ok=?9, look_json=?10
              WHERE id=?1",
             params![
@@ -355,7 +355,7 @@ impl Store {
     /// Record one assess directive run against a landed task. Returns its id.
     pub fn insert_assessment(&self, a: &Assessment) -> Result<i64> {
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "INSERT INTO assessments (task_id, score, findings_json, model, provider, cost_usd, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
@@ -376,7 +376,7 @@ impl Store {
     pub fn assessment(&self, task_id: i64) -> Result<Option<Assessment>> {
         Ok(self
             .lock()
-            .query_row(
+            .retry_query_row(
                 &format!(
                     "SELECT {} FROM assessments WHERE task_id=?1 ORDER BY id DESC LIMIT 1",
                     ASSESSMENT_COLUMNS.join(", ")

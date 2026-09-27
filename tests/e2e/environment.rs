@@ -172,3 +172,26 @@ fn a_refusal_the_tool_swallowed_is_in_the_attempts_outputs_trace_and_doctor() {
     // Recorded, never granted.
     assert_eq!(e.decisions_json().as_array().unwrap().len(), 0);
 }
+
+#[test]
+fn a_covered_cache_path_that_keeps_failing_is_granted_once_and_the_task_then_fails() {
+    let e = Env::new();
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[checks]\nanswer = [\"true\"]\nsetup = [\"bash\", \"-c\", \"echo \\\"Executable doesn't exist at $HOME/.cache/ms-playwright/chromium\\\"; echo run >> ../setup-runs; exit 1\"]\n",
+    )
+    .unwrap();
+    git(
+        &e.repo,
+        &["commit", "-qam", "setup always misses the cache"],
+    );
+    assert!(!e.run("ok.sh", &["--retries", "0"]).status.success());
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "failed");
+    assert!(reason.starts_with("operation setup failed"), "{reason}");
+    assert_eq!(
+        e.decisions_json().as_array().unwrap().len(),
+        1,
+        "the grant is recorded once"
+    );
+}

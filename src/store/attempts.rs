@@ -187,9 +187,9 @@ pub struct Op {
 
 /// Every column of the `attempts` table (`store::column_tests::
 /// the_column_lists_agree_with_the_schema` enforces the two agree).
-/// `repriced_at` has no field on `Attempt`: `Store::reprice_attempts` is
-/// the only reader, and it queries the column directly rather than going
-/// through this struct.
+/// `refunded` and `repriced_at` have no field on `Attempt`: `refunded_attempts`
+/// and `Store::reprice_attempts` are their only readers, and they query the
+/// columns directly rather than going through this struct.
 pub(super) const ATTEMPT_COLUMNS: &[&str] = &[
     "id",
     "task_id",
@@ -233,6 +233,7 @@ pub(super) const ATTEMPT_COLUMNS: &[&str] = &[
     "provider",
     "repriced_at",
     "cli_cost_usd",
+    "refunded",
 ];
 
 pub(super) const OP_COLUMNS: &[&str] = &[
@@ -353,7 +354,7 @@ impl Store {
 
     pub fn insert_attempt(&self, a: &Attempt) -> Result<i64> {
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "INSERT INTO attempts (task_id, attempt_no, state, started_at, log_path, step, start_sha, inputs_json, step_seq, runner, provider)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![a.task_id, a.attempt_no, a.state.as_str(), a.started_at, a.log_path, a.step, a.start_sha, a.inputs_json, a.step_seq, a.runner, a.provider],
@@ -362,7 +363,7 @@ impl Store {
     }
 
     pub fn finish_attempt(&self, a: &FinishAttempt) -> Result<()> {
-        self.lock().execute(
+        self.lock().retry_execute(
             "UPDATE attempts SET state=?2, reason=?3, finished_at=?4, agent_exit=?5, timed_out=?6, num_turns=?7,
              tool_calls=?8, cost_usd=?9, agent_ms=?10, commits=?11, files_changed=?12, dirty=?13, verdict_json=?14,
              result_text=?15, envelope_json=?16, rl_five_hour=?17, rl_seven_day=?18, rl_five_hour_resets=?19,
@@ -419,7 +420,7 @@ impl Store {
     pub fn latest_rate_limit(&self, provider: &str) -> Result<Option<RateLimitSample>> {
         Ok(self
             .lock()
-            .query_row(
+            .retry_query_row(
                 "SELECT COALESCE(finished_at, started_at) AS seen_at, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets FROM attempts
                  WHERE provider = ?1 AND (rl_five_hour IS NOT NULL OR rl_seven_day IS NOT NULL) ORDER BY id DESC LIMIT 1",
                 params![provider],
@@ -438,7 +439,7 @@ impl Store {
 
     pub fn insert_op(&self, o: &Op) -> Result<i64> {
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "INSERT INTO ops (task_id, seq, name, kernel, started_at, ms, ok, exit, detail, attempt_id, output)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![o.task_id, o.seq, o.name, o.kernel as i64, o.started_at, o.ms, o.ok as i64, o.exit, o.detail, o.attempt_id, o.output],
@@ -454,6 +455,21 @@ impl Store {
         ))?;
         let rows = stmt.query_map(params![task_id], op_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Mark an attempt the run did not count against its directive.
+    pub fn refund_attempt(&self, id: i64) -> Result<()> {
+        self.lock()
+            .retry_execute("UPDATE attempts SET refunded=1 WHERE id=?1", params![id])?;
+        Ok(())
+    }
+
+    /// Ids of a task's attempts marked by `refund_attempt`.
+    pub fn refunded_attempts(&self, task_id: i64) -> Result<std::collections::HashSet<i64>> {
+        let c = self.lock();
+        let mut stmt = c.prepare("SELECT id FROM attempts WHERE task_id=?1 AND refunded=1")?;
+        let rows = stmt.query_map(params![task_id], |r| r.get("id"))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn attempts(&self, task_id: i64) -> Result<Vec<Attempt>> {
@@ -592,7 +608,7 @@ impl Store {
             } else {
                 cli_cost
             };
-            c.execute(
+            c.retry_execute(
                 "UPDATE attempts SET cost_usd=?2, repriced_at=?3, cli_cost_usd=?4 WHERE id=?1",
                 params![id, cost, now, cli],
             )?;
@@ -604,7 +620,7 @@ impl Store {
 
     /// Total cost of a task's attempts so far, from the CLI's accounting.
     pub fn task_cost(&self, task_id: i64) -> Result<f64> {
-        Ok(self.lock().query_row(
+        Ok(self.lock().retry_query_row(
             "SELECT COALESCE(SUM(cost_usd), 0) FROM attempts WHERE task_id=?1",
             params![task_id],
             |r| r.get(0),
@@ -641,7 +657,7 @@ impl Store {
     }
 
     pub fn spent_since(&self, since: i64) -> Result<f64> {
-        Ok(self.lock().query_row(
+        Ok(self.lock().retry_query_row(
             "SELECT COALESCE(SUM(cost_usd), 0) FROM attempts WHERE started_at >= ?1",
             params![since],
             |r| r.get(0),
@@ -660,7 +676,7 @@ impl Store {
     }
 
     pub fn mark_worktree_removed(&self, id: i64) -> Result<()> {
-        self.lock().execute(
+        self.lock().retry_execute(
             "UPDATE tasks SET worktree_removed_at=?2 WHERE id=?1",
             params![id, crate::unix_now()],
         )?;
@@ -678,9 +694,50 @@ impl Attempt {
     }
 }
 
+/// Attempts already spent per directive seq. An attempt does not count if
+/// `requeue` closed it (a worker ended it, not the agent) or the run
+/// refunded it (rate limited, environment applied).
+pub fn seed_used(
+    prior: &[Attempt],
+    refunded: &std::collections::HashSet<i64>,
+) -> std::collections::HashMap<i64, i64> {
+    let mut used = std::collections::HashMap::new();
+    for a in prior {
+        let requeued =
+            a.state == AttemptState::AgentFailed && REQUEUE_REASONS.contains(&a.reason.as_str());
+        if !requeued && !refunded.contains(&a.id) {
+            *used.entry(a.step_seq).or_insert(0) += 1;
+        }
+    }
+    used
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seeded_attempts_skip_requeued_and_refunded_ones() {
+        let at = |id, seq, state, reason: &str| Attempt {
+            id,
+            step_seq: seq,
+            state,
+            reason: reason.to_string(),
+            ..Default::default()
+        };
+        let prior = vec![
+            at(1, 1, AttemptState::ChecksFailed, "checks failed"),
+            at(2, 1, AttemptState::AgentFailed, "agent failed"),
+            at(3, 1, AttemptState::ChecksFailed, "environment applied"),
+            at(4, 2, AttemptState::Succeeded, ""),
+            at(5, 1, AttemptState::AgentFailed, REQUEUE_ORPHAN),
+            at(6, 3, AttemptState::AgentFailed, REQUEUE_ENV),
+        ];
+        let used = seed_used(&prior, &std::collections::HashSet::from([3]));
+        assert_eq!(used.get(&1), Some(&2));
+        assert_eq!(used.get(&2), Some(&1));
+        assert_eq!(used.get(&3), None);
+    }
 
     #[test]
     fn latest_rate_limit_is_keyed_by_provider() {

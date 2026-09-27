@@ -312,12 +312,58 @@ fn job_effect_from_row(r: &Row) -> rusqlite::Result<JobEffect> {
     })
 }
 
+/// Insert `j`, `conn` already holding the write lock a caller may have
+/// taken as part of a larger transaction.
+fn create_job_row(conn: &Connection, j: &Job) -> Result<i64> {
+    conn.retry_execute(
+        "INSERT INTO jobs (project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, workflow_source, dry_run, started_at, finished_at, cost_usd, verdict_json, due_at, retry_count, worker_pid)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, CASE WHEN ?7='running' THEN ?16 ELSE NULL END)",
+        params![
+            j.project,
+            j.workflow,
+            j.workflow_hash,
+            j.landed_sha,
+            j.trigger_kind,
+            j.trigger_ref,
+            j.state.as_str(),
+            j.workflow_source,
+            j.dry_run,
+            j.started_at,
+            j.finished_at,
+            j.cost_usd,
+            j.verdict_json,
+            j.due_at,
+            j.retry_count,
+            std::process::id(),
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// How many of `project`'s runs of `workflow` started at or after `since`,
+/// dry runs excluded: what `Limits.per_day` is checked against, in
+/// `create_job_within`'s transaction (docs/JOBS.md, "Limits"). A run a
+/// `[skip_if]` command ended before any step ran is excluded too — it
+/// counts against nothing (docs/JOBS.md, "Skipping a run").
+fn count_jobs_started_since(
+    conn: &Connection,
+    project: &str,
+    workflow: &str,
+    since: i64,
+) -> Result<i64> {
+    Ok(conn.retry_query_row(
+        "SELECT COUNT(*) FROM jobs WHERE project=?1 AND workflow=?2 AND dry_run=0 AND state != 'skipped' AND started_at >= ?3",
+        params![project, workflow, since],
+        |r| r.get(0),
+    )?)
+}
+
 impl Store {
     /// One project's jobs in the last rolling 24h, by outcome: what `forge
     /// project show` counts separately from its task rollup (see
     /// `JobStat`, docs/JOBS.md step 1d).
     pub fn project_job_stats(&self, project: &str, since: i64) -> Result<JobStat> {
-        Ok(self.lock().query_row(
+        Ok(self.lock().retry_query_row(
             "SELECT COUNT(*) AS today, SUM(state='ok') AS ok, SUM(state='failed') AS failed, SUM(state='needs_human') AS needs_human, SUM(state='skipped') AS skipped
              FROM jobs WHERE project=?1 AND started_at >= ?2",
             params![project, since],
@@ -361,36 +407,36 @@ impl Store {
     /// way (see docs/JOBS.md, "The record"), and `src/job.rs` is the
     /// executor that calls all four.
     pub fn create_job(&self, j: &Job) -> Result<i64> {
-        let c = self.lock();
-        c.execute(
-            "INSERT INTO jobs (project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, workflow_source, dry_run, started_at, finished_at, cost_usd, verdict_json, due_at, retry_count, worker_pid)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, CASE WHEN ?7='running' THEN ?16 ELSE NULL END)",
-            params![
-                j.project,
-                j.workflow,
-                j.workflow_hash,
-                j.landed_sha,
-                j.trigger_kind,
-                j.trigger_ref,
-                j.state.as_str(),
-                j.workflow_source,
-                j.dry_run,
-                j.started_at,
-                j.finished_at,
-                j.cost_usd,
-                j.verdict_json,
-                j.due_at,
-                j.retry_count,
-                std::process::id(),
-            ],
-        )?;
-        Ok(c.last_insert_rowid())
+        create_job_row(&self.lock(), j)
+    }
+
+    /// Insert `j` only if fewer than `cap` non-dry, non-skipped runs of
+    /// `j.project`'s `j.workflow` started since `since` (unix seconds): the
+    /// count and the insert share one `BEGIN IMMEDIATE` transaction, so two
+    /// triggers racing to start a workflow at its `per_day` cap cannot both
+    /// win the way `job::start` and `job::queue_triggered`'s separate
+    /// `jobs_started_since` then `create_job` could. Refuses with the text
+    /// those two used to produce, `hint` supplying whatever each appended
+    /// of its own.
+    pub fn create_job_within(&self, j: &Job, cap: i64, since: i64, hint: &str) -> Result<i64> {
+        let mut c = self.lock();
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let started = count_jobs_started_since(&tx, &j.project, &j.workflow, since)?;
+        if started >= cap {
+            bail!(
+                "{} has started {started} time(s) in the last 24 hours and its per_day limit is {cap}{hint}",
+                j.workflow
+            );
+        }
+        let id = create_job_row(&tx, j)?;
+        tx.commit()?;
+        Ok(id)
     }
 
     /// Record one step of a job's run. Returns its id; see `create_job`.
     pub fn append_job_step(&self, s: &JobStep) -> Result<i64> {
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "INSERT INTO job_steps (job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref, tail, outcome, node, probabilities)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
@@ -418,7 +464,7 @@ impl Store {
     /// id; see `create_job`.
     pub fn append_job_effect(&self, e: &JobEffect) -> Result<i64> {
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "INSERT INTO job_effects (job_id, seq, kind, target, summary, dry_run)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![e.job_id, e.seq, e.kind, e.target, e.summary, e.dry_run],
@@ -436,7 +482,7 @@ impl Store {
         cost_usd: Option<f64>,
         verdict_json: &str,
     ) -> Result<()> {
-        self.lock().execute(
+        self.lock().retry_execute(
             "UPDATE jobs SET state=?2, finished_at=?3, cost_usd=?4, verdict_json=?5, worker_pid=NULL WHERE id=?1",
             params![id, state.as_str(), at, cost_usd, verdict_json],
         )?;
@@ -447,7 +493,7 @@ impl Store {
     pub fn job(&self, id: i64) -> Result<Option<Job>> {
         Ok(self
             .lock()
-            .query_row(
+            .retry_query_row(
                 &format!("SELECT {} FROM jobs WHERE id=?1", JOB_COLUMNS.join(", ")),
                 params![id],
                 job_from_row,
@@ -519,6 +565,15 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Publish a staged job only after its input has been saved.
+    pub fn publish_job(&self, id: i64, state: JobState, due_at: Option<i64>) -> Result<bool> {
+        Ok(self.lock().execute(
+            "UPDATE jobs SET state=?2, due_at=?3
+             WHERE id=?1 AND state='scheduled' AND due_at IS NULL",
+            params![id, state.as_str(), due_at],
+        )? == 1)
+    }
+
     /// The oldest claimable job the worker can claim right now, same shape
     /// as `claim_next` for tasks: a job carries no provider or initiative
     /// hold yet (it runs no directive step), so the first one found is
@@ -529,7 +584,7 @@ impl Store {
     pub fn claim_next_job(&self) -> Result<Option<Job>> {
         let id: Option<i64> = self
             .lock()
-            .query_row(
+            .retry_query_row(
                 "UPDATE jobs SET state='running', worker_pid=?2
                  WHERE id = (
                    SELECT id FROM jobs
@@ -553,24 +608,11 @@ impl Store {
     /// (its `due_at` having just passed) is left alone. Returns whether it
     /// changed anything.
     pub fn withdraw_job(&self, id: i64) -> Result<bool> {
-        let n = self.lock().execute(
+        let n = self.lock().retry_execute(
             "UPDATE jobs SET state='dropped', finished_at=?2 WHERE id=?1 AND state='scheduled'",
             params![id, crate::unix_now()],
         )?;
         Ok(n == 1)
-    }
-
-    /// How many of `project`'s runs of `workflow` started at or after
-    /// `since`, dry runs excluded: `Limits.per_day` is checked against it
-    /// by `job::start` (docs/JOBS.md, "Limits"). A run a `[skip_if]`
-    /// command ended before any step ran is excluded too — it counts
-    /// against nothing (docs/JOBS.md, "Skipping a run").
-    pub fn jobs_started_since(&self, project: &str, workflow: &str, since: i64) -> Result<i64> {
-        Ok(self.lock().query_row(
-            "SELECT COUNT(*) FROM jobs WHERE project=?1 AND workflow=?2 AND dry_run=0 AND state != 'skipped' AND started_at >= ?3",
-            params![project, workflow, since],
-            |r| r.get(0),
-        )?)
     }
 
     /// The latest slot (`Job::trigger_ref`, a unix second) `project`'s
@@ -580,7 +622,7 @@ impl Store {
     /// slot never starts twice and a restart cannot double-fire (docs/JOBS.md,
     /// "Triggers").
     pub fn last_scheduled_job(&self, project: &str, workflow: &str) -> Result<Option<i64>> {
-        Ok(self.lock().query_row(
+        Ok(self.lock().retry_query_row(
             "SELECT MAX(CAST(trigger_ref AS INTEGER)) FROM jobs WHERE project=?1 AND workflow=?2 AND trigger_kind='schedule'",
             params![project, workflow],
             |r| r.get(0),
@@ -601,7 +643,7 @@ impl Store {
     ) -> Result<Option<i64>> {
         Ok(self
             .lock()
-            .query_row(
+            .retry_query_row(
                 "SELECT id FROM jobs WHERE project=?1 AND workflow=?2 AND trigger_kind=?3 AND trigger_ref=?4 AND retry_count=0 ORDER BY id LIMIT 1",
                 params![project, workflow, trigger_kind, trigger_ref],
                 |r| r.get(0),
@@ -627,7 +669,7 @@ impl Store {
     /// still in flight (see `worker::work`'s double-signal abort, which
     /// does the same for a running task's `requeue`).
     pub fn requeue_job(&self, id: i64) -> Result<()> {
-        self.lock().execute(
+        self.lock().retry_execute(
             "UPDATE jobs SET state='queued', worker_pid=NULL WHERE id=?1 AND state='running' AND NOT EXISTS (SELECT 1 FROM job_effects WHERE job_id=?1)",
             params![id],
         )?;
@@ -1101,5 +1143,49 @@ mod tests {
             serde_json::to_string(&effect).unwrap(),
             r#"{"id":2,"job_id":7,"seq":0,"kind":"message","target":"customer-a","summary":"quote sent","dry_run":false}"#,
         );
+    }
+
+    #[test]
+    fn create_job_within_lets_exactly_one_concurrent_insert_through_at_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let since = crate::unix_now() - 3600;
+        let cap = 3i64;
+        let job = || Job {
+            project: "acme".into(),
+            workflow: "once".into(),
+            workflow_hash: "deadbeef".into(),
+            landed_sha: "cafef00d".into(),
+            trigger_kind: "manual".into(),
+            trigger_ref: "".into(),
+            state: JobState::Running,
+            dry_run: false,
+            started_at: crate::unix_now(),
+            ..Default::default()
+        };
+        {
+            let store = Store::open(&path).unwrap();
+            mk_project(&store, "acme");
+            for _ in 0..cap - 1 {
+                store.create_job(&job()).unwrap();
+            }
+        }
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let results: Vec<Result<i64>> = (0..2)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let store = Store::open(&path).unwrap();
+                    barrier.wait();
+                    store.create_job_within(&job(), cap, since, "")
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect();
+        let ok = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(ok, 1, "{results:?}");
     }
 }
