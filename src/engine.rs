@@ -263,11 +263,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         seq: 0,
         used: HashMap::new(),
         owed: HashMap::new(),
-        done: prior
-            .iter()
-            .filter(|a| a.state == AttemptState::Succeeded)
-            .map(|a| a.step_seq)
-            .collect(),
+        done: resume_done(&prior),
     };
     let mut end: Option<End> = None;
     'run: loop {
@@ -1635,6 +1631,24 @@ struct Run {
     done: HashSet<i64>,
 }
 
+/// Directives a resumed task may skip: those whose latest attempt
+/// succeeded with no later attempt at an earlier step. An attempt at an
+/// earlier step after it means the run was rewound past it, so the old
+/// success no longer verifies what the tree now holds.
+fn resume_done(prior: &[crate::store::Attempt]) -> HashSet<i64> {
+    let mut done = HashSet::new();
+    let mut floor = i64::MAX;
+    for a in prior.iter().rev() {
+        if a.step_seq < floor {
+            floor = a.step_seq;
+            if a.state == AttemptState::Succeeded {
+                done.insert(a.step_seq);
+            }
+        }
+    }
+    done
+}
+
 impl Run {
     fn step_seq(&self) -> i64 {
         self.idx as i64 + 1
@@ -1836,152 +1850,4 @@ fn fresh_arm(t: &Task) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn task_state_maps_every_end_variant() {
-        let cases: Vec<(End, TaskState)> = vec![
-            (End::Verified, TaskState::Succeeded),
-            (End::Landed("abc123".to_string()), TaskState::Succeeded),
-            (End::Unverified("reason".to_string()), TaskState::Unverified),
-            (
-                End::Blocked {
-                    reason: "reason".to_string(),
-                    demoted: false,
-                    to: None,
-                },
-                TaskState::Blocked,
-            ),
-            (
-                End::Blocked {
-                    reason: "reason".to_string(),
-                    demoted: true,
-                    to: None,
-                },
-                TaskState::Blocked,
-            ),
-            (
-                End::Failed {
-                    reason: "reason".to_string(),
-                    counted: true,
-                    pushes: false,
-                },
-                TaskState::Failed,
-            ),
-            (
-                End::Budget("task budget reached".to_string()),
-                TaskState::Failed,
-            ),
-            (
-                // Budget hit after the code step verified but before review
-                // completed: not a failure, a human review the same as a
-                // review that could not finish.
-                End::Unverified(
-                    "budget reached after the code step verified; review did not run".to_string(),
-                ),
-                TaskState::Unverified,
-            ),
-        ];
-        for (end, expected) in cases {
-            assert_eq!(end.task_state(), expected, "{end:?} -> {expected:?}");
-        }
-    }
-
-    fn check(level: &str, name: &str, ok: bool) -> CheckResult {
-        CheckResult {
-            level: level.into(),
-            name: name.into(),
-            ok,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn l0_failure_reason_names_failing_l0_rows_and_none_otherwise() {
-        assert_eq!(l0_failure_reason(&[]), None);
-        assert_eq!(
-            l0_failure_reason(&[check("L0", "clean-tree", true)]),
-            None,
-            "an L0 row that passed names nothing"
-        );
-        assert_eq!(
-            l0_failure_reason(&[check("L1", "tests", false)]),
-            None,
-            "a failing row outside L0 does not count"
-        );
-        assert_eq!(
-            l0_failure_reason(&[
-                check("L0", "clean-tree", true),
-                check("L0", "has-commits", false)
-            ]),
-            Some("L0 failed: has-commits".to_string())
-        );
-    }
-
-    #[test]
-    fn reason_maps_every_end_variant() {
-        let t = Task::default();
-        let cases: Vec<(End, usize, &str)> = vec![
-            (End::Verified, 1, ""),
-            (
-                End::Landed("abc123def".to_string()),
-                1,
-                "landed  @ abc123de",
-            ),
-            (End::Unverified("reason".to_string()), 1, "reason"),
-            (
-                End::Blocked {
-                    reason: "needs input: which one?".to_string(),
-                    demoted: false,
-                    to: None,
-                },
-                1,
-                "needs input: which one?",
-            ),
-            (
-                End::Failed {
-                    reason: "operation setup failed: exit 1".to_string(),
-                    counted: false,
-                    pushes: false,
-                },
-                3,
-                "operation setup failed: exit 1",
-            ),
-            (
-                End::Failed {
-                    reason: "some failure".to_string(),
-                    counted: true,
-                    pushes: false,
-                },
-                4,
-                "some failure (after 4 attempt(s))",
-            ),
-            (
-                // A landing rewind sent the coder back to commit again; it
-                // made none, so the checks failed on has-commits with no
-                // agent failure to explain it. The reason built after the
-                // attempt loop must name the failing rule, never come out
-                // empty (task 232's bug).
-                End::Failed {
-                    reason: l0_failure_reason(&[
-                        check("L0", "clean-tree", true),
-                        check("L0", "has-commits", false),
-                    ])
-                    .expect("has-commits failed"),
-                    counted: true,
-                    pushes: false,
-                },
-                4,
-                "L0 failed: has-commits (after 4 attempt(s))",
-            ),
-        ];
-        for (end, attempts, expected) in cases {
-            assert_eq!(end.reason(&t, attempts), expected, "{end:?}");
-            assert!(
-                !end.reason(&t, attempts).is_empty() || matches!(end, End::Verified),
-                "a non-Verified end must never carry an empty reason: {end:?}"
-            );
-        }
-    }
-}
+mod tests;
