@@ -565,6 +565,15 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Publish a staged job only after its input has been saved.
+    pub fn publish_job(&self, id: i64, state: JobState, due_at: Option<i64>) -> Result<bool> {
+        Ok(self.lock().execute(
+            "UPDATE jobs SET state=?2, due_at=?3
+             WHERE id=?1 AND state='scheduled' AND due_at IS NULL",
+            params![id, state.as_str(), due_at],
+        )? == 1)
+    }
+
     /// The oldest claimable job the worker can claim right now, same shape
     /// as `claim_next` for tasks: a job carries no provider or initiative
     /// hold yet (it runs no directive step), so the first one found is
