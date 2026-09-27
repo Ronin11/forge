@@ -2,6 +2,8 @@
 //! is one consumer; a JSON or web consumer is another file, never a change
 //! to the engine.
 
+pub mod log;
+
 use serde::Serialize;
 use std::collections::HashSet;
 use std::io::Write;
@@ -395,30 +397,7 @@ fn drop_marker(task_id: i64, ev: &Event) -> String {
 /// reopens the fresh file that rotation left, rather than both renaming
 /// `.1` to `.2` and discarding a generation between them.
 fn write_log_line(path: &Path, line: &str, size_limit: u64) -> std::io::Result<()> {
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(log_lock_path(path))?;
-    lock.lock()?;
-    // Bounded: past size_limit the log rolls to .1 and .1 rolls to .2; a client resnapshots.
-    if std::fs::metadata(path)
-        .map(|m| m.len() > size_limit)
-        .unwrap_or(false)
-    {
-        let path_1 = path.with_extension("jsonl.1");
-        let path_2 = path.with_extension("jsonl.2");
-
-        if path_1.exists() {
-            let _ = std::fs::rename(&path_1, &path_2);
-        }
-        let _ = std::fs::rename(path, &path_1);
-    }
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?
-        .write_all(line.as_bytes())
+    log::append(path, line, size_limit)
 }
 
 impl Reporter {

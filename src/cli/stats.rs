@@ -160,9 +160,7 @@ fn requests(repo: Option<PathBuf>, grep: Option<String>, json: bool) -> Result<(
 
 fn snapshot() -> Result<()> {
     let f = Forge::open(false, false)?;
-    let offset = std::fs::metadata(f.paths.home.join("events.jsonl"))
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let offset = crate::report::log::snapshot(&f.paths.home.join("events.jsonl"))?.to_string();
     let doc = serde_json::json!({
         "tasks": tasks_json(&f, &crate::store::TaskFilter { limit: 200, ..Default::default() })?,
         "requests": requests_json(&f, None, None)?,
@@ -173,44 +171,35 @@ fn snapshot() -> Result<()> {
     Ok(())
 }
 
-fn events(since: Option<u64>, follow: bool, task: Option<i64>) -> Result<()> {
-    use std::io::{BufRead, Seek};
+fn events(since: Option<String>, follow: bool, task: Option<i64>) -> Result<()> {
+    use crate::report::log::{self, Cursor};
+    use std::io::Write;
     let paths = crate::ctx::Paths::resolve()?;
     let path = paths.home.join("events.jsonl");
-    let mut pos = since.unwrap_or(0);
+    let mut pos: Cursor = since.as_deref().unwrap_or("0").parse()?;
     let mut stdout = std::io::stdout().lock();
     loop {
-        if let Ok(mut file) = std::fs::File::open(&path) {
-            let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-            if len < pos {
-                // Rolled: start over from the new file.
-                pos = 0;
+        let batch = log::read(&path, pos, 8 * 1024 * 1024)?;
+        if batch.resync && writeln!(stdout, "{}", serde_json::json!({
+            "type": "resync", "cursor": batch.lines.first().map(|l| l.0).unwrap_or(batch.next).to_string()
+        })).is_err() { return Ok(()); }
+        for (_, cursor, line) in batch.lines {
+            let Ok(mut event) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if task.is_some_and(|id| event["task"].as_i64() != Some(id)) {
+                continue;
             }
-            file.seek(std::io::SeekFrom::Start(pos))?;
-            let mut reader = std::io::BufReader::new(file);
-            let mut line = String::new();
-            loop {
-                line.clear();
-                let n = reader.read_line(&mut line)?;
-                if n == 0 || !line.ends_with('\n') {
-                    break;
-                }
-                pos += n as u64;
-                if let Some(id) = task
-                    && serde_json::from_str::<serde_json::Value>(&line)
-                        .ok()
-                        .and_then(|v| v["task"].as_i64())
-                        != Some(id)
-                {
-                    continue;
-                }
-                use std::io::Write;
-                if writeln!(stdout, "{}", line.trim_end()).is_err() {
-                    return Ok(());
-                }
+            event["cursor"] = cursor.to_string().into();
+            if writeln!(stdout, "{event}").is_err() {
+                return Ok(());
             }
-            use std::io::Write;
-            let _ = stdout.flush();
+        }
+        let _ = stdout.flush();
+        let advanced = pos != batch.next;
+        pos = batch.next;
+        if advanced {
+            continue;
         }
         if !follow {
             return Ok(());

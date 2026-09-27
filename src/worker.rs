@@ -551,36 +551,6 @@ async fn tick_run_workflows(f: &Forge) -> Result<Vec<TickRun>> {
 /// holding the whole backlog in memory.
 const EVENT_TICK_BYTES: u64 = 8 * 1024 * 1024;
 
-/// The complete lines of `path` from byte `from` on, each as `(its offset,
-/// the line without its newline)`, and the offset just past the last one
-/// returned — where the next read starts. A last line still being written
-/// (no newline yet) is left for the next read. Stops once `budget` bytes are
-/// consumed.
-fn read_event_lines(path: &Path, from: u64, budget: u64) -> (Vec<(u64, String)>, u64) {
-    use std::io::{BufRead, Seek};
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return (Vec::new(), from);
-    };
-    if file.seek(std::io::SeekFrom::Start(from)).is_err() {
-        return (Vec::new(), from);
-    }
-    let mut reader = std::io::BufReader::new(file);
-    let (mut lines, mut pos) = (Vec::new(), from);
-    let mut line = String::new();
-    while pos - from < budget {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(n) if n > 0 && line.ends_with('\n') => {
-                lines.push((pos, line.trim_end().to_string()));
-                pos += n as u64;
-            }
-            // End of the log, a line still being written, or a read error.
-            _ => break,
-        }
-    }
-    (lines, pos)
-}
-
 /// The project an event belongs to: the one it names (a deploy's, a job's),
 /// else its task's. `None` for an event that names neither (a note, say),
 /// which belongs to no project's workflows.
@@ -600,8 +570,7 @@ fn event_project(f: &Forge, ev: &serde_json::Value) -> Option<String> {
 /// (`job::start_event`) and the event's own JSON its input. The cursor then
 /// moves past everything read, whatever its type. A workflow the tick sees
 /// for the first time starts at the end of the log — a new automation is
-/// never backfilled with the whole history — and a log that has rolled (it
-/// is shorter than the cursor) is read again from its start. A job's own
+/// never backfilled with the whole history — and rotation drains the preceding generation before reading the new file. A job's own
 /// `job_started` and `job_finished` events never start the workflow that
 /// ran it. Called once per pass of the poll loop, after the schedule tick;
 /// cheap when no workflow has an event trigger or nothing was appended.
@@ -617,11 +586,11 @@ async fn event_tick(f: &Forge, runs: &[TickRun]) -> Result<()> {
             continue;
         };
         let (project, name) = (run.project.as_str(), run.name.as_str());
-        let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let end = crate::report::log::snapshot(&path)?.to_string();
         let stored = match f.store.event_cursor(project, name) {
             Ok(Some(c)) => c,
             Ok(None) => {
-                if let Err(e) = f.store.set_event_cursor(project, name, len as i64) {
+                if let Err(e) = f.store.set_event_cursor(project, name, &end) {
                     eprintln!("event tick: {project}/{name}: {e:#}");
                 }
                 continue;
@@ -631,14 +600,9 @@ async fn event_tick(f: &Forge, runs: &[TickRun]) -> Result<()> {
                 continue;
             }
         };
-        // A cursor past the end of the log: it rolled to a shorter file.
-        let cursor = if (stored as u64) <= len {
-            stored as u64
-        } else {
-            0
-        };
-        let (lines, next) = read_event_lines(&path, cursor, EVENT_TICK_BYTES);
-        for (offset, line) in lines {
+        let batch = crate::report::log::read(&path, stored.parse()?, EVENT_TICK_BYTES)?;
+        let next = batch.next.to_string();
+        for (offset, _, line) in batch.lines {
             let Ok(ev) = serde_json::from_str::<serde_json::Value>(&line) else {
                 continue;
             };
@@ -661,7 +625,7 @@ async fn event_tick(f: &Forge, runs: &[TickRun]) -> Result<()> {
                 landed_sha: &run.landed_sha,
                 wf: &run.wf,
                 source: run.source,
-                offset,
+                offset: &offset.to_string(),
                 at,
                 input: &line,
             }) {
@@ -672,8 +636,8 @@ async fn event_tick(f: &Forge, runs: &[TickRun]) -> Result<()> {
                 Err(e) => eprintln!("event tick: {project}/{name}: {e:#}"),
             }
         }
-        if next as i64 != stored
-            && let Err(e) = f.store.set_event_cursor(project, name, next as i64)
+        if next != stored
+            && let Err(e) = f.store.set_event_cursor(project, name, &next)
         {
             eprintln!("event tick: {project}/{name}: {e:#}");
         }
@@ -1702,7 +1666,7 @@ mod tests {
         let job = &jobs[0];
         assert_eq!(job.workflow, "on-done");
         assert_eq!(job.state, JobState::Queued);
-        assert_eq!(job.trigger_ref, before.to_string());
+        assert_eq!(job.trigger_ref, format!("0:{before}"));
         assert_eq!(job.due_at, None);
         let input = std::fs::read_to_string(
             f.paths
@@ -1807,7 +1771,7 @@ mod tests {
         tick_events(&f).await;
         let job = event_jobs(&f).remove(0);
         // The crash between the job and the cursor: the cursor is back at 0.
-        f.store.set_event_cursor("demo", "on-done", 0).unwrap();
+        f.store.set_event_cursor("demo", "on-done", "0:0").unwrap();
         tick_events(&f).await;
         assert_eq!(event_jobs(&f).len(), 1);
         let mut dup = job;
@@ -1832,30 +1796,20 @@ mod tests {
         tick_events(&f).await;
         let log = f.paths.home.join("events.jsonl");
         let cursor = f.store.event_cursor("demo", "on-done").unwrap().unwrap();
-        assert_eq!(cursor as u64, std::fs::metadata(&log).unwrap().len());
+        assert_eq!(
+            cursor.split_once(':').unwrap().1.parse::<u64>().unwrap(),
+            std::fs::metadata(&log).unwrap().len()
+        );
         // The log rolls: a new, shorter file.
         std::fs::remove_file(&log).unwrap();
         finish_task(&f, "demo", "succeeded");
-        assert!((std::fs::metadata(&log).unwrap().len() as i64) < cursor);
+        assert!(
+            std::fs::metadata(&log).unwrap().len()
+                < cursor.split_once(':').unwrap().1.parse::<u64>().unwrap()
+        );
         tick_events(&f).await;
         assert_eq!(event_jobs(&f).len(), 1);
-        assert_eq!(event_jobs(&f)[0].trigger_ref, "0");
-    }
-
-    #[test]
-    fn a_line_still_being_written_waits_for_its_newline() {
-        let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join("events.jsonl");
-        std::fs::write(&log, "{\"a\":1}\n{\"b\":2}\n{\"c\"").unwrap();
-        let (lines, next) = read_event_lines(&log, 0, 1 << 20);
-        assert_eq!(
-            lines,
-            vec![(0, "{\"a\":1}".to_string()), (8, "{\"b\":2}".to_string())]
-        );
-        assert_eq!(next, 16);
-        let (lines, next) = read_event_lines(&log, next, 1 << 20);
-        assert!(lines.is_empty());
-        assert_eq!(next, 16);
+        assert_eq!(event_jobs(&f)[0].trigger_ref, "0:0");
     }
 
     /// A held initiative with a queued task is announced the first time

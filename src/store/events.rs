@@ -8,16 +8,16 @@
 use super::*;
 
 #[cfg(test)]
-pub(super) const EVENT_CURSOR_COLUMNS: &[&str] = &["project", "workflow", "event_offset"];
+pub(super) const EVENT_CURSOR_COLUMNS: &[&str] = &["project", "workflow", "event_offset", "cursor"];
 
 impl Store {
     /// The offset `project`'s `workflow` has examined events up to, or
     /// `None` if the event tick has never seen it.
-    pub fn event_cursor(&self, project: &str, workflow: &str) -> Result<Option<i64>> {
+    pub fn event_cursor(&self, project: &str, workflow: &str) -> Result<Option<String>> {
         Ok(self
             .lock()
             .retry_query_row(
-                "SELECT event_offset FROM event_cursors WHERE project=?1 AND workflow=?2",
+                "SELECT cursor FROM event_cursors WHERE project=?1 AND workflow=?2",
                 params![project, workflow],
                 |r| r.get(0),
             )
@@ -25,12 +25,11 @@ impl Store {
     }
 
     /// Record that `project`'s `workflow` has examined events up to
-    /// `offset`. Not monotonic: the worker sets it back to 0 when the log
-    /// has rolled to a shorter file.
-    pub fn set_event_cursor(&self, project: &str, workflow: &str, offset: i64) -> Result<()> {
+    /// `generation:offset`, including progress across rotations.
+    pub fn set_event_cursor(&self, project: &str, workflow: &str, offset: &str) -> Result<()> {
         self.lock().retry_execute(
-            "INSERT INTO event_cursors (project, workflow, event_offset) VALUES (?1, ?2, ?3)
-             ON CONFLICT(project, workflow) DO UPDATE SET event_offset=excluded.event_offset",
+            "INSERT INTO event_cursors (project, workflow, event_offset, cursor) VALUES (?1, ?2, 0, ?3)
+             ON CONFLICT(project, workflow) DO UPDATE SET cursor=excluded.cursor",
             params![project, workflow, offset],
         )?;
         Ok(())
@@ -52,11 +51,20 @@ mod tests {
             )
             .unwrap();
         assert_eq!(s.event_cursor("shop", "on-done").unwrap(), None);
-        s.set_event_cursor("shop", "on-done", 120).unwrap();
-        s.set_event_cursor("shop", "on-deploy", 7).unwrap();
-        assert_eq!(s.event_cursor("shop", "on-done").unwrap(), Some(120));
-        assert_eq!(s.event_cursor("shop", "on-deploy").unwrap(), Some(7));
-        s.set_event_cursor("shop", "on-done", 0).unwrap();
-        assert_eq!(s.event_cursor("shop", "on-done").unwrap(), Some(0));
+        s.set_event_cursor("shop", "on-done", "0:120").unwrap();
+        s.set_event_cursor("shop", "on-deploy", "0:7").unwrap();
+        assert_eq!(
+            s.event_cursor("shop", "on-done").unwrap(),
+            Some("0:120".into())
+        );
+        assert_eq!(
+            s.event_cursor("shop", "on-deploy").unwrap(),
+            Some("0:7".into())
+        );
+        s.set_event_cursor("shop", "on-done", "0:0").unwrap();
+        assert_eq!(
+            s.event_cursor("shop", "on-done").unwrap(),
+            Some("0:0".into())
+        );
     }
 }

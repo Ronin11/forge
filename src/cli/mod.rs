@@ -514,9 +514,9 @@ enum Cmd {
     },
     /// The event log as JSON lines: a client's subscription
     Events {
-        /// Byte offset to start from (a snapshot's events_offset)
+        /// Generation:offset cursor to start from (a snapshot's events_offset)
         #[arg(long)]
-        since: Option<u64>,
+        since: Option<String>,
         /// Keep printing as events arrive
         #[arg(long)]
         follow: bool,

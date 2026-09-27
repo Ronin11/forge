@@ -66,7 +66,7 @@ pub struct StartEvent<'a> {
     pub landed_sha: &'a str,
     pub wf: &'a workflows::Workflow,
     pub source: workflows::JobSource,
-    pub offset: u64,
+    pub offset: &'a str,
     pub at: i64,
     pub input: &'a str,
 }
@@ -778,7 +778,7 @@ pub fn start_message(
 
 /// Start a job for one Forge event a run workflow's `[trigger] on =
 /// "event"` matched (`worker::event_tick`): queued, never run inline,
-/// `trigger_kind = "event"` and `trigger_ref` the event's byte offset in
+/// `trigger_kind = "event"` and `trigger_ref` the event's generation:offset in
 /// `events.jsonl`, `input` the event's own JSON line. `None` when this
 /// workflow already started a job for that offset, so an event the tick
 /// examines twice starts one job; `[trigger] delay` is added to the event's
