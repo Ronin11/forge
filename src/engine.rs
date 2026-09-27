@@ -261,7 +261,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     let mut run = Run {
         idx: 0,
         seq: 0,
-        used: seed_used(&prior, &f.store.refunded_attempts(id).env()?),
+        used: crate::store::seed_used(&prior, &f.store.refunded_attempts(id).env()?),
         owed: HashMap::new(),
         done: prior
             .iter()
@@ -1617,21 +1617,6 @@ async fn finish(
 /// The run's cursor over the resolved steps: where it is, what each
 /// directive has spent, what a verifying step or a landing owes a
 /// directive as feedback, and which directives are already verified.
-/// Attempts already spent per directive seq. An attempt does not count if
-/// `requeue` closed it (a worker ended it, not the agent) or the run
-/// refunded it (rate limited, environment applied).
-fn seed_used(prior: &[crate::store::Attempt], refunded: &HashSet<i64>) -> HashMap<i64, i64> {
-    let mut used = HashMap::new();
-    for a in prior {
-        let requeued = a.state == AttemptState::AgentFailed
-            && crate::store::REQUEUE_REASONS.contains(&a.reason.as_str());
-        if !requeued && !refunded.contains(&a.id) {
-            *used.entry(a.step_seq).or_insert(0) += 1;
-        }
-    }
-    used
-}
-
 /// One `rewind` does every piece of bookkeeping a step back needs; the
 /// side effects the caller owns (resetting the tree, reloading the
 /// config, refunding an attempt) stay at the call site, named.
@@ -1853,34 +1838,6 @@ fn fresh_arm(t: &Task) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn seeded_attempts_skip_requeued_and_refunded_ones() {
-        let at = |id, seq, state, reason: &str| crate::store::Attempt {
-            id,
-            step_seq: seq,
-            state,
-            reason: reason.to_string(),
-            ..Default::default()
-        };
-        let prior = vec![
-            at(1, 1, AttemptState::ChecksFailed, "checks failed"),
-            at(2, 1, AttemptState::AgentFailed, "agent failed"),
-            at(3, 1, AttemptState::ChecksFailed, "environment applied"),
-            at(4, 2, AttemptState::Succeeded, ""),
-            at(
-                5,
-                1,
-                AttemptState::AgentFailed,
-                crate::store::REQUEUE_ORPHAN,
-            ),
-            at(6, 3, AttemptState::AgentFailed, crate::store::REQUEUE_ENV),
-        ];
-        let used = seed_used(&prior, &HashSet::from([3]));
-        assert_eq!(used.get(&1), Some(&2));
-        assert_eq!(used.get(&2), Some(&1));
-        assert_eq!(used.get(&3), None);
-    }
 
     #[test]
     fn task_state_maps_every_end_variant() {

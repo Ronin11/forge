@@ -694,9 +694,50 @@ impl Attempt {
     }
 }
 
+/// Attempts already spent per directive seq. An attempt does not count if
+/// `requeue` closed it (a worker ended it, not the agent) or the run
+/// refunded it (rate limited, environment applied).
+pub fn seed_used(
+    prior: &[Attempt],
+    refunded: &std::collections::HashSet<i64>,
+) -> std::collections::HashMap<i64, i64> {
+    let mut used = std::collections::HashMap::new();
+    for a in prior {
+        let requeued =
+            a.state == AttemptState::AgentFailed && REQUEUE_REASONS.contains(&a.reason.as_str());
+        if !requeued && !refunded.contains(&a.id) {
+            *used.entry(a.step_seq).or_insert(0) += 1;
+        }
+    }
+    used
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seeded_attempts_skip_requeued_and_refunded_ones() {
+        let at = |id, seq, state, reason: &str| Attempt {
+            id,
+            step_seq: seq,
+            state,
+            reason: reason.to_string(),
+            ..Default::default()
+        };
+        let prior = vec![
+            at(1, 1, AttemptState::ChecksFailed, "checks failed"),
+            at(2, 1, AttemptState::AgentFailed, "agent failed"),
+            at(3, 1, AttemptState::ChecksFailed, "environment applied"),
+            at(4, 2, AttemptState::Succeeded, ""),
+            at(5, 1, AttemptState::AgentFailed, REQUEUE_ORPHAN),
+            at(6, 3, AttemptState::AgentFailed, REQUEUE_ENV),
+        ];
+        let used = seed_used(&prior, &std::collections::HashSet::from([3]));
+        assert_eq!(used.get(&1), Some(&2));
+        assert_eq!(used.get(&2), Some(&1));
+        assert_eq!(used.get(&3), None);
+    }
 
     #[test]
     fn latest_rate_limit_is_keyed_by_provider() {
