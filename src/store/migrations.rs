@@ -598,7 +598,7 @@ ALTER TABLE attempts ADD COLUMN repriced_at INTEGER;
     // name. SQLite has no `ALTER COLUMN`, so the table is rebuilt;
     // `decisions_task` is recreated after, same as it was defined
     // (`CREATE INDEX decisions_task ON decisions(task_id, id)`, above).
-    "
+    "-- contract
 CREATE TABLE decisions_new (
   id INTEGER PRIMARY KEY,
   task_id INTEGER REFERENCES tasks(id),
@@ -609,10 +609,11 @@ CREATE TABLE decisions_new (
   answered_by TEXT NOT NULL DEFAULT 'operator',
   citations TEXT NOT NULL DEFAULT '',
   retry_id INTEGER,
-  answered_for TEXT
+  answered_for TEXT,
+  kind TEXT NOT NULL DEFAULT ''
 );
-INSERT INTO decisions_new (id, task_id, repo, question, answer, created_at, answered_by, citations, retry_id, answered_for)
-  SELECT id, task_id, repo, question, answer, created_at, answered_by, citations, retry_id, answered_for FROM decisions;
+INSERT INTO decisions_new (id, task_id, repo, question, answer, created_at, answered_by, citations, retry_id, answered_for, kind)
+  SELECT id, task_id, repo, question, answer, created_at, answered_by, citations, retry_id, answered_for, kind FROM decisions;
 DROP TABLE decisions;
 ALTER TABLE decisions_new RENAME TO decisions;
 CREATE INDEX decisions_task ON decisions(task_id, id);
@@ -671,6 +672,11 @@ CREATE TABLE contract_steps (
   version INTEGER PRIMARY KEY,
   applied_at INTEGER NOT NULL
 );
+-- Databases that applied step 60 as an ordinary step already have the
+-- nullable `task_id`; record it so the contract does not run again.
+INSERT INTO contract_steps (version, applied_at)
+  SELECT 60, strftime('%s','now')
+  WHERE (SELECT \"notnull\" FROM pragma_table_info('decisions') WHERE name='task_id') = 0;
 ",
 ];
 
@@ -679,12 +685,6 @@ CREATE TABLE contract_steps (
 /// `user_version`; `Store::apply_contracts` runs it once no live worker
 /// is on an older version (docs/OPS.md, "The running binary").
 pub const CONTRACT_MARKER: &str = "-- contract";
-
-/// Step index of the one non-additive step that shipped before the rule
-/// (the `decisions` rebuild). It is already applied everywhere and later
-/// steps build on it, so it stays in the additive ladder.
-#[cfg(test)]
-const LEGACY_REBUILD: usize = 59;
 
 pub fn is_contract(sql: &str) -> bool {
     sql.trim_start().starts_with(CONTRACT_MARKER)
@@ -728,7 +728,7 @@ mod tests {
     #[test]
     fn every_migration_is_additive_or_marked_contract() {
         for (i, sql) in MIGRATIONS.iter().enumerate() {
-            if is_contract(sql) || i == LEGACY_REBUILD {
+            if is_contract(sql) {
                 continue;
             }
             for st in statements(sql) {
@@ -742,8 +742,9 @@ mod tests {
     }
 
     #[test]
-    fn the_legacy_exemption_is_the_decisions_rebuild() {
-        assert!(MIGRATIONS[LEGACY_REBUILD].contains("DROP TABLE decisions;"));
+    fn step_60_the_decisions_rebuild_is_a_contract() {
+        assert!(is_contract(MIGRATIONS[59]));
+        assert!(MIGRATIONS[59].contains("DROP TABLE decisions;"));
     }
 
     #[test]

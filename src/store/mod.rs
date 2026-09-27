@@ -349,10 +349,17 @@ impl Store {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;",
         )?;
+        let fresh: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         migrate(&conn)?;
-        Ok(Store {
+        let store = Store {
             conn: Mutex::new(conn),
-        })
+        };
+        if fresh == 0 {
+            // A brand-new database is shared with no older worker, so its
+            // contract steps run now.
+            store.apply_contracts(env!("CARGO_PKG_VERSION"), |_| false)?;
+        }
+        Ok(store)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -792,6 +799,29 @@ mod tests {
         drop(s);
         let s = Store::open(&path).unwrap();
         assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
+    }
+
+    #[test]
+    fn a_fresh_store_has_a_nullable_decisions_task_id_and_a_kind_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        let c = s.lock();
+        let notnull: i64 = c
+            .query_row(
+                "SELECT \"notnull\" FROM pragma_table_info('decisions') WHERE name='task_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(notnull, 0);
+        let kind: i64 = c
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('decisions') WHERE name='kind'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, 1);
     }
 
     #[test]
