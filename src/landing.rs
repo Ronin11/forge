@@ -84,22 +84,47 @@ async fn record_verdict(
     Ok(a.id)
 }
 
-/// The `end_sha` of the most recent attempt that ran in the task's own
-/// worktree and succeeded: the commit its verify judged, and so the one
-/// landing is about to merge and push. The tests contract runs in its own
-/// clone, never `t.worktree`, so it is not a candidate. `None` when the
-/// task has no such attempt (an operator-driven flow with nothing on
-/// record), in which case the guard that reads this has nothing to check
-/// against and stays quiet.
+/// The commit the kernel last verified in the task's own worktree, and so
+/// the one landing is about to merge and push: the later of the `end_sha`
+/// of the most recent attempt that succeeded there, and the commit a
+/// mutating operation (`fmt`) made after it, which its kernel verify row
+/// records as its `output`. The tests contract runs in its own clone,
+/// never `t.worktree`, so it is not a candidate. Op row ids order the two:
+/// every directive's kernel verify row names its attempt; an attempt with
+/// no such row keeps the precedence it had before operations counted.
+/// `None` when the task has neither (an operator-driven flow with nothing
+/// on record), in which case the guard that reads this has nothing to
+/// check against and stays quiet.
 fn last_verified_sha(f: &Forge, task_id: i64) -> Result<Option<String>, Fault> {
-    Ok(f.store
+    let attempt = f
+        .store
         .attempts(task_id)
         .env()?
         .into_iter()
         .rev()
         .find(|a| a.step != "tests" && a.state == AttemptState::Succeeded)
-        .map(|a| a.end_sha)
-        .filter(|s| !s.is_empty()))
+        .filter(|a| !a.end_sha.is_empty());
+    let ops = f.store.ops(task_id).env()?;
+    let operation = ops.iter().rev().find(|o| {
+        o.kernel && o.ok && o.name == "verify" && o.attempt_id.is_none() && !o.output.is_empty()
+    });
+    Ok(match (attempt, operation) {
+        (Some(a), Some(o)) => {
+            let at = ops
+                .iter()
+                .filter(|r| r.attempt_id == Some(a.id))
+                .map(|r| r.id)
+                .max();
+            if at.is_some_and(|at| at < o.id) {
+                Some(o.output.clone())
+            } else {
+                Some(a.end_sha)
+            }
+        }
+        (Some(a), None) => Some(a.end_sha),
+        (None, Some(o)) => Some(o.output.clone()),
+        (None, None) => None,
+    })
 }
 
 pub enum Integrate {

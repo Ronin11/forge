@@ -1658,3 +1658,57 @@ fn a_task_whose_branch_was_never_pushed_and_whose_worktree_is_gone_is_refused() 
     assert!(err.contains("not on"), "{err}");
     assert_eq!(origin_sha(&e, "main"), "");
 }
+
+/// docs/REVIEW-3.md §2.1 item 2: under `cheap`, `fmt` commits after the
+/// `fix` directive and its kernel verify judges that commit, so the landing
+/// guard must take it as the verified one rather than the directive's.
+#[test]
+fn a_cheap_task_whose_formatter_commits_still_lands() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let cat = e.home.join("workflows");
+    std::fs::write(
+        cat.join("actions/fmt.toml"),
+        "name = \"fmt\"\nkind = \"operation\"\ndescription = \"strips trailing whitespace\"\n\
+         consumes = [\"branch\"]\nproduces = [\"branch\"]\n\
+         run = [\"sed\", \"-i\", \"s/[[:space:]]*$//\", \"notes.txt\"]\n",
+    )
+    .unwrap();
+    git(&cat, &["add", "actions/fmt.toml"]);
+    git(
+        &cat,
+        &[
+            "-c",
+            "user.name=operator",
+            "-c",
+            "user.email=x@localhost",
+            "commit",
+            "-qm",
+            "a fmt for this repo",
+        ],
+    );
+    let o = e.forge(
+        "unformatted.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--workflow",
+            "cheap",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    assert!(reason.starts_with("landed main @ "), "{reason}");
+    assert!(pushed);
+    assert_eq!(
+        origin_file(&e, "main", "notes.txt").as_deref(),
+        Some("hello\n"),
+        "the formatter's commit is what landed"
+    );
+    let log = git(&e.origin, &["log", "-1", "--format=%s", "main"]);
+    assert_eq!(log.trim(), "forge: fmt");
+}
