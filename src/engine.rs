@@ -557,6 +557,10 @@ async fn prepare_worktree(
             }
         }
         let dir = f.paths.worktrees.join(t.id.to_string());
+        // An unrecorded clone can only be debris from an interrupted run.
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).env()?;
+        }
         let timer = Timer::now();
         // The base is the remote's, so a task started after a landing sees it.
         let base_ref = match (&base_cfg.push_remote, &remote_url) {
@@ -613,6 +617,7 @@ async fn prepare_worktree(
             .await
             .unwrap_or_default();
         t.worktree = dir.display().to_string();
+        f.store.update_task(t).env()?;
         // A retry of a task whose branch passed the checks starts from
         // that branch, not from scratch: the review's finding or the
         // operator's answer is the only thing left to act on. Three fresh

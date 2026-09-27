@@ -452,6 +452,27 @@ fn an_orphaned_task_is_requeued_and_resumes_at_the_next_attempt() {
 }
 
 #[test]
+fn an_unrecorded_clone_does_not_stop_the_next_worker() {
+    let e = Env::new();
+    let id = e.add(&[]);
+    let dir = e.home.join("worktrees").join(id.to_string());
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("interrupted-clone"), "debris").unwrap();
+
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(o.status.success(), "{output}");
+    assert!(!output.contains("worker cannot run task"), "{output}");
+    assert!(op_names(&e, id).contains(&("clone".to_string(), true)));
+    assert_eq!(e.attempts(id)[0].1, "succeeded");
+    assert!(!dir.join("interrupted-clone").exists());
+}
+
+#[test]
 fn an_environment_fault_requeues_and_stops_the_worker() {
     use std::os::unix::fs::PermissionsExt;
     let e = Env::new();
