@@ -315,7 +315,7 @@ fn job_effect_from_row(r: &Row) -> rusqlite::Result<JobEffect> {
 /// Insert `j`, `conn` already holding the write lock a caller may have
 /// taken as part of a larger transaction.
 fn create_job_row(conn: &Connection, j: &Job) -> Result<i64> {
-    conn.execute(
+    conn.retry_execute(
         "INSERT INTO jobs (project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, workflow_source, dry_run, started_at, finished_at, cost_usd, verdict_json, due_at, retry_count, worker_pid)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, CASE WHEN ?7='running' THEN ?16 ELSE NULL END)",
         params![
@@ -351,7 +351,7 @@ fn count_jobs_started_since(
     workflow: &str,
     since: i64,
 ) -> Result<i64> {
-    Ok(conn.query_row(
+    Ok(conn.retry_query_row(
         "SELECT COUNT(*) FROM jobs WHERE project=?1 AND workflow=?2 AND dry_run=0 AND state != 'skipped' AND started_at >= ?3",
         params![project, workflow, since],
         |r| r.get(0),
@@ -363,7 +363,7 @@ impl Store {
     /// project show` counts separately from its task rollup (see
     /// `JobStat`, docs/JOBS.md step 1d).
     pub fn project_job_stats(&self, project: &str, since: i64) -> Result<JobStat> {
-        Ok(self.lock().query_row(
+        Ok(self.lock().retry_query_row(
             "SELECT COUNT(*) AS today, SUM(state='ok') AS ok, SUM(state='failed') AS failed, SUM(state='needs_human') AS needs_human, SUM(state='skipped') AS skipped
              FROM jobs WHERE project=?1 AND started_at >= ?2",
             params![project, since],
@@ -436,7 +436,7 @@ impl Store {
     /// Record one step of a job's run. Returns its id; see `create_job`.
     pub fn append_job_step(&self, s: &JobStep) -> Result<i64> {
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "INSERT INTO job_steps (job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref, tail, outcome, node, probabilities)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
@@ -464,7 +464,7 @@ impl Store {
     /// id; see `create_job`.
     pub fn append_job_effect(&self, e: &JobEffect) -> Result<i64> {
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "INSERT INTO job_effects (job_id, seq, kind, target, summary, dry_run)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![e.job_id, e.seq, e.kind, e.target, e.summary, e.dry_run],
@@ -482,7 +482,7 @@ impl Store {
         cost_usd: Option<f64>,
         verdict_json: &str,
     ) -> Result<()> {
-        self.lock().execute(
+        self.lock().retry_execute(
             "UPDATE jobs SET state=?2, finished_at=?3, cost_usd=?4, verdict_json=?5, worker_pid=NULL WHERE id=?1",
             params![id, state.as_str(), at, cost_usd, verdict_json],
         )?;
@@ -493,7 +493,7 @@ impl Store {
     pub fn job(&self, id: i64) -> Result<Option<Job>> {
         Ok(self
             .lock()
-            .query_row(
+            .retry_query_row(
                 &format!("SELECT {} FROM jobs WHERE id=?1", JOB_COLUMNS.join(", ")),
                 params![id],
                 job_from_row,
@@ -565,6 +565,15 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Publish a staged job only after its input has been saved.
+    pub fn publish_job(&self, id: i64, state: JobState, due_at: Option<i64>) -> Result<bool> {
+        Ok(self.lock().execute(
+            "UPDATE jobs SET state=?2, due_at=?3
+             WHERE id=?1 AND state='scheduled' AND due_at IS NULL",
+            params![id, state.as_str(), due_at],
+        )? == 1)
+    }
+
     /// The oldest claimable job the worker can claim right now, same shape
     /// as `claim_next` for tasks: a job carries no provider or initiative
     /// hold yet (it runs no directive step), so the first one found is
@@ -575,7 +584,7 @@ impl Store {
     pub fn claim_next_job(&self) -> Result<Option<Job>> {
         let id: Option<i64> = self
             .lock()
-            .query_row(
+            .retry_query_row(
                 "UPDATE jobs SET state='running', worker_pid=?2
                  WHERE id = (
                    SELECT id FROM jobs
@@ -599,7 +608,7 @@ impl Store {
     /// (its `due_at` having just passed) is left alone. Returns whether it
     /// changed anything.
     pub fn withdraw_job(&self, id: i64) -> Result<bool> {
-        let n = self.lock().execute(
+        let n = self.lock().retry_execute(
             "UPDATE jobs SET state='dropped', finished_at=?2 WHERE id=?1 AND state='scheduled'",
             params![id, crate::unix_now()],
         )?;
@@ -613,7 +622,7 @@ impl Store {
     /// slot never starts twice and a restart cannot double-fire (docs/JOBS.md,
     /// "Triggers").
     pub fn last_scheduled_job(&self, project: &str, workflow: &str) -> Result<Option<i64>> {
-        Ok(self.lock().query_row(
+        Ok(self.lock().retry_query_row(
             "SELECT MAX(CAST(trigger_ref AS INTEGER)) FROM jobs WHERE project=?1 AND workflow=?2 AND trigger_kind='schedule'",
             params![project, workflow],
             |r| r.get(0),
@@ -634,7 +643,7 @@ impl Store {
     ) -> Result<Option<i64>> {
         Ok(self
             .lock()
-            .query_row(
+            .retry_query_row(
                 "SELECT id FROM jobs WHERE project=?1 AND workflow=?2 AND trigger_kind=?3 AND trigger_ref=?4 AND retry_count=0 ORDER BY id LIMIT 1",
                 params![project, workflow, trigger_kind, trigger_ref],
                 |r| r.get(0),
@@ -660,7 +669,7 @@ impl Store {
     /// still in flight (see `worker::work`'s double-signal abort, which
     /// does the same for a running task's `requeue`).
     pub fn requeue_job(&self, id: i64) -> Result<()> {
-        self.lock().execute(
+        self.lock().retry_execute(
             "UPDATE jobs SET state='queued', worker_pid=NULL WHERE id=?1 AND state='running' AND NOT EXISTS (SELECT 1 FROM job_effects WHERE job_id=?1)",
             params![id],
         )?;

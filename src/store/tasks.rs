@@ -342,7 +342,7 @@ fn release_or_reblock(c: &Connection, candidates: Vec<(i64, String)>) -> Result<
         let mut all_resolved = true;
         for d in after {
             let row: Option<(String, String, bool, String)> = c
-                .query_row(
+                .retry_query_row(
                     "SELECT state, reason, land, landed_sha FROM tasks WHERE id=?1",
                     params![d],
                     |r| {
@@ -372,12 +372,12 @@ fn release_or_reblock(c: &Connection, candidates: Vec<(i64, String)>) -> Result<
         }
         if let Some((d, state, reason)) = blocker {
             let why = format!("waits on task {d} ({state}: {reason})");
-            c.execute(
+            c.retry_execute(
                 "UPDATE tasks SET reason=?2 WHERE id=?1 AND state='blocked'",
                 params![id, why],
             )?;
         } else if all_resolved {
-            c.execute(
+            c.retry_execute(
                 "UPDATE tasks SET state='queued', reason='', finished_at=NULL WHERE id=?1 AND state='blocked'",
                 params![id],
             )?;
@@ -478,7 +478,7 @@ pub(super) fn backfill_task_shape(conn: &Connection) -> rusqlite::Result<()> {
         };
         let tdd = source
             .is_some_and(|t| crate::workflows::text_writes_hidden_tests(&workflow, &t, &known, 0));
-        conn.execute(
+        conn.retry_execute(
             "UPDATE tasks SET shape_text_len=?1, shape_path_tokens=?2, shape_tdd=?3 WHERE id=?4",
             params![text_len, path_tokens, tdd as i64, id],
         )?;
@@ -489,7 +489,7 @@ pub(super) fn backfill_task_shape(conn: &Connection) -> rusqlite::Result<()> {
 /// Insert `t`, `conn` already holding the write lock a caller may have
 /// taken as part of a larger transaction.
 fn insert_task_row(conn: &Connection, t: &Task) -> Result<i64> {
-    conn.execute(
+    conn.retry_execute(
         "INSERT INTO tasks (repo, task, title, base_branch, model, provider, max_turns, max_attempts, timeout_secs, checks_json,
                             state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm, explore_json,
                             shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json, trust)
@@ -535,7 +535,7 @@ fn insert_task_row(conn: &Connection, t: &Task) -> Result<i64> {
 }
 
 fn count_filed_since(conn: &Connection, trust: Trust, since: i64) -> Result<i64> {
-    Ok(conn.query_row(
+    Ok(conn.retry_query_row(
         "SELECT COUNT(*) FROM tasks WHERE trust=?1 AND created_at >= ?2",
         params![trust.as_str(), since],
         |r| r.get(0),
@@ -575,7 +575,7 @@ impl Store {
     /// and `worktree_removed_at`, which gc owns. A field mutated after
     /// insert used to be silently dropped here.
     pub fn update_task(&self, t: &Task) -> Result<()> {
-        self.lock().execute(
+        self.lock().retry_execute(
             "UPDATE tasks SET repo=?2, task=?3, base_branch=?4, base_sha=?5, branch=?6, worktree=?7, model=?8,
              max_turns=?9, max_attempts=?10, timeout_secs=?11, checks_json=?12, state=?13, reason=?14,
              started_at=?15, finished_at=?16, pushed=?17, worker_pid=?18, budget_usd=?19, allow_protected=?20,
@@ -652,7 +652,7 @@ impl Store {
     pub fn task(&self, id: i64) -> Result<Option<Task>> {
         Ok(self
             .lock()
-            .query_row(
+            .retry_query_row(
                 &format!("SELECT {} FROM tasks WHERE id=?1", TASK_COLUMNS.join(", ")),
                 params![id],
                 task_from_row,
@@ -710,7 +710,7 @@ impl Store {
 
     /// Atomically take one specific queued task.
     pub fn claim(&self, id: i64, pid: i64) -> Result<bool> {
-        let n = self.lock().execute(
+        let n = self.lock().retry_execute(
             "UPDATE tasks SET state='running', worker_pid=?2, started_at=?3 WHERE id=?1 AND state='queued'",
             params![id, pid, crate::unix_now()],
         )?;
@@ -721,7 +721,7 @@ impl Store {
     /// not be done. Atomic on state, so a task the worker claims in
     /// between is left alone. Returns whether it changed anything.
     pub fn withdraw(&self, id: i64, reason: &str) -> Result<bool> {
-        let n = self.lock().execute(
+        let n = self.lock().retry_execute(
             "UPDATE tasks SET state='withdrawn', reason=?2, finished_at=?3 WHERE id=?1 AND state IN ('blocked', 'queued')",
             params![id, reason, crate::unix_now()],
         )?;
@@ -745,7 +745,7 @@ impl Store {
         };
         let after_json = d.after.as_ref().map(serde_json::to_string).transpose()?;
         let checks_json = d.checks.as_ref().map(serde_json::to_string).transpose()?;
-        let n = self.lock().execute(
+        let n = self.lock().retry_execute(
             "UPDATE tasks SET
                 budget_usd = COALESCE(?2, budget_usd),
                 max_turns = COALESCE(?3, max_turns),
@@ -805,7 +805,7 @@ impl Store {
         let mut out = Vec::new();
         for (t, d, state, reason) in rows {
             let why = format!("waits on task {d} ({state}: {reason})");
-            let n = c.execute(
+            let n = c.retry_execute(
                 "UPDATE tasks SET state='blocked', reason=?2, finished_at=?3 WHERE id=?1 AND state='queued'",
                 params![t, why, crate::unix_now()],
             )?;
@@ -840,7 +840,7 @@ impl Store {
                 .into_iter()
                 .map(|d| if d == old { new } else { d })
                 .collect();
-            c.execute(
+            c.retry_execute(
                 "UPDATE tasks SET after_json=?2 WHERE id=?1",
                 params![id, serde_json::to_string(&after)?],
             )?;
@@ -929,7 +929,7 @@ impl Store {
 
     /// The newest task that retries `id`, if any.
     pub fn latest_retry_of(&self, id: i64) -> Result<Option<i64>> {
-        Ok(self.lock().query_row(
+        Ok(self.lock().retry_query_row(
             "SELECT MAX(id) FROM tasks WHERE retry_of=?1",
             params![id],
             |r| r.get::<_, Option<i64>>(0),
@@ -937,11 +937,11 @@ impl Store {
     }
 
     pub fn queued_count(&self) -> Result<i64> {
-        Ok(self
-            .lock()
-            .query_row("SELECT COUNT(*) FROM tasks WHERE state='queued'", [], |r| {
-                r.get(0)
-            })?)
+        Ok(self.lock().retry_query_row(
+            "SELECT COUNT(*) FROM tasks WHERE state='queued'",
+            [],
+            |r| r.get(0),
+        )?)
     }
 
     /// Put a running task back in the queue, closing its open attempt as
@@ -949,11 +949,11 @@ impl Store {
     /// attempt number.
     pub fn requeue(&self, id: i64, why: &str) -> Result<()> {
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "UPDATE attempts SET state='agent_failed', reason=?2, finished_at=?3 WHERE task_id=?1 AND state='running'",
             params![id, why, crate::unix_now()],
         )?;
-        c.execute(
+        c.retry_execute(
             "UPDATE tasks SET state='queued', worker_pid=NULL, reason=?2 WHERE id=?1 AND state='running'",
             params![id, format!("requeued: {why}")],
         )?;

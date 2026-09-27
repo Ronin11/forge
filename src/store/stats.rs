@@ -199,7 +199,7 @@ pub struct TaskDemotion {
 /// `compute_repair_cost` in view.rs for how the git-level number is
 /// derived.
 pub(super) fn repair_cost_cache_query(c: &Connection, task_id: i64) -> Result<Option<(f64, i64)>> {
-    Ok(c.query_row(
+    Ok(c.retry_query_row(
         "SELECT repair_cost, computed_at FROM task_repair_cost WHERE task_id = ?1",
         params![task_id],
         |r| Ok((r.get("repair_cost")?, r.get("computed_at")?)),
@@ -213,7 +213,7 @@ fn set_repair_cost_cache_query(
     repair_cost: f64,
     computed_at: i64,
 ) -> Result<()> {
-    c.execute(
+    c.retry_execute(
         "INSERT INTO task_repair_cost (task_id, repair_cost, computed_at)
          VALUES (?1, ?2, ?3)
          ON CONFLICT(task_id) DO UPDATE SET
@@ -237,7 +237,7 @@ fn line_overlap_cache_query(
     t_sha: &str,
     l_sha: &str,
 ) -> Result<Option<(i64, i64)>> {
-    Ok(c.query_row(
+    Ok(c.retry_query_row(
         "SELECT overlap_lines, removed_lines FROM line_overlap_cache WHERE t_sha = ?1 AND l_sha = ?2",
         params![t_sha, l_sha],
         |r| Ok((r.get("overlap_lines")?, r.get("removed_lines")?)),
@@ -252,7 +252,7 @@ fn set_line_overlap_cache_query(
     overlap_lines: i64,
     removed_lines: i64,
 ) -> Result<()> {
-    c.execute(
+    c.retry_execute(
         "INSERT INTO line_overlap_cache (t_sha, l_sha, overlap_lines, removed_lines)
          VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(t_sha, l_sha) DO UPDATE SET
@@ -279,7 +279,7 @@ fn code_attempt_groups_query(c: &Connection, task_id: i64) -> Result<Vec<(String
 /// `task_churn`'s cached row for `task_id`: `(added_lines, churned_lines,
 /// computed_at)`, or `None` if it has never been computed.
 fn churn_cache_query(c: &Connection, task_id: i64) -> Result<Option<(i64, i64, i64)>> {
-    Ok(c.query_row(
+    Ok(c.retry_query_row(
         "SELECT added_lines, churned_lines, computed_at FROM task_churn WHERE task_id = ?1",
         params![task_id],
         |r| {
@@ -300,7 +300,7 @@ fn set_churn_cache_query(
     churned_lines: i64,
     computed_at: i64,
 ) -> Result<()> {
-    c.execute(
+    c.retry_execute(
         "INSERT INTO task_churn (task_id, added_lines, churned_lines, computed_at)
          VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(task_id) DO UPDATE SET
@@ -317,7 +317,7 @@ fn set_churn_cache_query(
 /// on the same repository and this task's `base_sha`, or `None` if it has
 /// never been computed. See `refresh_hand_commits` in view.rs.
 fn hand_commits_cache_query(c: &Connection, task_id: i64) -> Result<Option<i64>> {
-    Ok(c.query_row(
+    Ok(c.retry_query_row(
         "SELECT hand_commits FROM task_hand_commits WHERE task_id = ?1",
         params![task_id],
         |r| r.get(0),
@@ -331,7 +331,7 @@ fn set_hand_commits_cache_query(
     hand_commits: i64,
     computed_at: i64,
 ) -> Result<()> {
-    c.execute(
+    c.retry_execute(
         "INSERT INTO task_hand_commits (task_id, hand_commits, computed_at)
          VALUES (?1, ?2, ?3)
          ON CONFLICT(task_id) DO UPDATE SET
@@ -584,7 +584,7 @@ impl Store {
     /// landing a repository ever gets.
     pub fn previous_landing(&self, repo: &str, before_id: i64) -> Result<Option<Task>> {
         let c = self.lock();
-        Ok(c.query_row(
+        Ok(c.retry_query_row(
             &format!(
                 "SELECT {} FROM tasks WHERE repo = ?1 AND id < ?2 AND landed_sha != ''
                  ORDER BY id DESC LIMIT 1",

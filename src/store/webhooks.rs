@@ -53,7 +53,7 @@ impl Store {
         at: i64,
     ) -> Result<i64> {
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "INSERT INTO webhook_tokens (project, name, token_hash, trust, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![project, name, token_hash, trust.as_str(), at],
         )?;
@@ -63,7 +63,7 @@ impl Store {
     /// Revoke every active token on `project`'s webhook `name`. Returns
     /// how many were revoked; a second call revokes none.
     pub fn revoke_webhook_tokens(&self, project: &str, name: &str, at: i64) -> Result<usize> {
-        Ok(self.lock().execute(
+        Ok(self.lock().retry_execute(
             "UPDATE webhook_tokens SET revoked_at=?3 WHERE project=?1 AND name=?2 AND revoked_at IS NULL",
             params![project, name, at],
         )?)
@@ -80,7 +80,7 @@ impl Store {
     ) -> Result<Option<Trust>> {
         let t: Option<String> = self
             .lock()
-            .query_row(
+            .retry_query_row(
                 "SELECT trust FROM webhook_tokens WHERE project=?1 AND name=?2 AND token_hash=?3 AND revoked_at IS NULL",
                 params![project, name, token_hash],
                 |r| r.get(0),
@@ -92,7 +92,7 @@ impl Store {
 
     /// Record the trust level a job was started at (`forge job fire`).
     pub fn set_job_trust(&self, job_id: i64, trust: Trust) -> Result<()> {
-        self.lock().execute(
+        self.lock().retry_execute(
             "INSERT OR REPLACE INTO job_trust (job_id, trust) VALUES (?1, ?2)",
             params![job_id, trust.as_str()],
         )?;
@@ -103,7 +103,7 @@ impl Store {
     pub fn job_trust(&self, job_id: i64) -> Result<Option<Trust>> {
         let t: Option<String> = self
             .lock()
-            .query_row(
+            .retry_query_row(
                 "SELECT trust FROM job_trust WHERE job_id=?1",
                 params![job_id],
                 |r| r.get(0),

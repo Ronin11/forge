@@ -21,7 +21,7 @@ impl Store {
     pub fn register_worker(&self, pid: i64, version: &str) -> Result<i64> {
         let c = self.lock();
         let open: Option<i64> = c
-            .query_row(
+            .retry_query_row(
                 "SELECT id FROM workers WHERE pid=?1 AND version=?2 AND stopped_at IS NULL",
                 params![pid, version],
                 |r| r.get(0),
@@ -31,11 +31,11 @@ impl Store {
             return Ok(id);
         }
         let now = crate::unix_now();
-        c.execute(
+        c.retry_execute(
             "UPDATE workers SET stopped_at=?2 WHERE pid=?1 AND stopped_at IS NULL",
             params![pid, now],
         )?;
-        c.execute(
+        c.retry_execute(
             "INSERT INTO workers (pid, version, started_at) VALUES (?1, ?2, ?3)",
             params![pid, version, now],
         )?;
@@ -44,7 +44,7 @@ impl Store {
 
     /// The worker exited: it no longer counts, whatever its pid does.
     pub fn stop_worker(&self, id: i64) -> Result<()> {
-        self.lock().execute(
+        self.lock().retry_execute(
             "UPDATE workers SET stopped_at=?2 WHERE id=?1 AND stopped_at IS NULL",
             params![id, crate::unix_now()],
         )?;
@@ -71,7 +71,7 @@ impl Store {
     /// Tasks and jobs `pid` is running right now.
     pub fn held_by_worker(&self, pid: i64) -> Result<i64> {
         let c = self.lock();
-        let n: i64 = c.query_row(
+        let n: i64 = c.retry_query_row(
             "SELECT (SELECT COUNT(*) FROM tasks WHERE state='running' AND worker_pid=?1)
                   + (SELECT COUNT(*) FROM jobs WHERE state='running' AND worker_pid=?1)",
             [pid],

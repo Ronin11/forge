@@ -406,7 +406,7 @@ impl Store {
 
         let mut true_cost: BTreeMap<i64, f64> = BTreeMap::new();
         for t in tasks.iter().filter(|t| t.landed) {
-            let cost: f64 = c.query_row(
+            let cost: f64 = c.retry_query_row(
                 "SELECT COALESCE(SUM(cost_usd), 0) FROM attempts WHERE task_id=?1",
                 params![t.id],
                 |r| r.get(0),
