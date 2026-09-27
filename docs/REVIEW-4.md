@@ -53,9 +53,9 @@ at its line.
    docs/REVIEW-2.md's stage 4 shrank it from 1082. But
    `run_directive_step` — the function that stage 4 deliberately left
    holding "the step loop" when it carved `retry_start`, `escalate` and
-   `finish` out of `run_task` — is now 530 lines (engine.rs:801-1330;
-   measurements.json's own figure, 533, agrees to within the doc
-   comment above it), the single largest function in the kernel, ahead
+   `finish` out of `run_task` — is now 533 lines (engine.rs:796-1328,
+   matching measurements.json's own figure exactly), the single largest
+   function in the kernel, ahead
    of `supervisor.rs`'s `supervise` (460) and `job.rs`'s `run_now`
    (452). All three are measured every week and none is compared
    against anything.
