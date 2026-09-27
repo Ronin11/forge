@@ -44,7 +44,10 @@ pub use stats::{
     HumanAttentionProjectStat, HumanAttentionStat, JournalStat, RoleStat, StatsFilter, StepStat,
     TaskTtl, WorkflowStat,
 };
-pub use tasks::{RoleRouting, Routed, Task, TaskState, TaskUpdate, Trust};
+pub use tasks::{
+    REQUEUE_ABORT, REQUEUE_ENV, REQUEUE_ORPHAN, REQUEUE_REASONS, RoleRouting, Routed, Task,
+    TaskState, TaskUpdate, Trust,
+};
 pub use workers::WorkerRow;
 
 /// Forward-only. Index = version - 1. Never edit a shipped entry; append.

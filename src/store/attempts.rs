@@ -187,9 +187,9 @@ pub struct Op {
 
 /// Every column of the `attempts` table (`store::column_tests::
 /// the_column_lists_agree_with_the_schema` enforces the two agree).
-/// `repriced_at` has no field on `Attempt`: `Store::reprice_attempts` is
-/// the only reader, and it queries the column directly rather than going
-/// through this struct.
+/// `refunded` and `repriced_at` have no field on `Attempt`: `refunded_attempts`
+/// and `Store::reprice_attempts` are their only readers, and they query the
+/// columns directly rather than going through this struct.
 pub(super) const ATTEMPT_COLUMNS: &[&str] = &[
     "id",
     "task_id",
@@ -233,6 +233,7 @@ pub(super) const ATTEMPT_COLUMNS: &[&str] = &[
     "provider",
     "repriced_at",
     "cli_cost_usd",
+    "refunded",
 ];
 
 pub(super) const OP_COLUMNS: &[&str] = &[
@@ -454,6 +455,21 @@ impl Store {
         ))?;
         let rows = stmt.query_map(params![task_id], op_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Mark an attempt the run did not count against its directive.
+    pub fn refund_attempt(&self, id: i64) -> Result<()> {
+        self.lock()
+            .execute("UPDATE attempts SET refunded=1 WHERE id=?1", params![id])?;
+        Ok(())
+    }
+
+    /// Ids of a task's attempts marked by `refund_attempt`.
+    pub fn refunded_attempts(&self, task_id: i64) -> Result<std::collections::HashSet<i64>> {
+        let c = self.lock();
+        let mut stmt = c.prepare("SELECT id FROM attempts WHERE task_id=?1 AND refunded=1")?;
+        let rows = stmt.query_map(params![task_id], |r| r.get("id"))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn attempts(&self, task_id: i64) -> Result<Vec<Attempt>> {

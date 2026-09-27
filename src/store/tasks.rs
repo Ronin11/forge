@@ -1,6 +1,13 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
+/// Why `Store::requeue` was called; the attempt it closes carries the text
+/// as its reason, which is how a resumed run knows the worker ended it.
+pub const REQUEUE_ENV: &str = "worker environment error";
+pub const REQUEUE_ORPHAN: &str = "previous worker exited";
+pub const REQUEUE_ABORT: &str = "worker aborted by operator";
+pub const REQUEUE_REASONS: [&str; 3] = [REQUEUE_ENV, REQUEUE_ORPHAN, REQUEUE_ABORT];
+
 /// One resolved value on `Task::routing`, and which layer decided it:
 /// `"flag"`, `"project"`, `"operator"`, `"default"`, or `"experiment"`
 /// (see `ctx::resolve_provider_routed` and docs/ECONOMIST.md, "The

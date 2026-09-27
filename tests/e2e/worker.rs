@@ -452,6 +452,36 @@ fn an_orphaned_task_is_requeued_and_resumes_at_the_next_attempt() {
 }
 
 #[test]
+fn a_requeued_task_keeps_the_attempts_already_spent() {
+    let e = Env::new();
+    assert!(!e.run("crash.sh", &["--retries", "0"]).status.success());
+    assert_eq!(e.task(1).0, "failed");
+    let c = e.db();
+    let seq: i64 = c
+        .query_row("SELECT step_seq FROM attempts WHERE task_id=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    // The worker died mid-way through a second attempt at the same step.
+    c.execute(
+        "UPDATE tasks SET state='running', worker_pid=999999999 WHERE id=1",
+        [],
+    )
+    .unwrap();
+    c.execute(
+        "INSERT INTO attempts(task_id, attempt_no, step_seq, state, started_at) VALUES (1, 2, ?1, 'running', 0)",
+        [seq],
+    )
+    .unwrap();
+    // `ok.sh` would succeed if it were launched again.
+    assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2, "no further agent launch: {a:?}");
+    assert_eq!(a[1].2, "previous worker exited");
+    assert_eq!(e.task(1).0, "failed");
+}
+
+#[test]
 fn an_unrecorded_clone_does_not_stop_the_next_worker() {
     let e = Env::new();
     let id = e.add(&[]);

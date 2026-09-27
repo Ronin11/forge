@@ -152,7 +152,7 @@ pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
             Ok(TaskState::Failed)
         }
         Err(Fault::Env(e)) => {
-            f.store.requeue(id, "worker environment error")?;
+            f.store.requeue(id, crate::store::REQUEUE_ENV)?;
             Err(e.context(format!(
                 "worker cannot run task {id}; it is back in the queue"
             )))
@@ -851,7 +851,7 @@ fn recover_orphans(f: &Forge) -> Result<()> {
         if let Some(t) = f.store.task(id)? {
             crate::git::clear_recorded_overlay(&t.worktree);
         }
-        f.store.requeue(id, "previous worker exited")?;
+        f.store.requeue(id, crate::store::REQUEUE_ORPHAN)?;
         eprintln!("requeued task {id}: its previous worker exited");
     }
     for (id, owner) in f.store.orphan_jobs(pid_alive)? {
@@ -1063,7 +1063,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     running.abort_all();
                     while running.join_next().await.is_some() {}
                     for id in ids.drain(..) {
-                        f.store.requeue(id, "worker aborted by operator")?;
+                        f.store.requeue(id, crate::store::REQUEUE_ABORT)?;
                     }
                     for id in job_ids.drain(..) {
                         crate::job::recover_interrupted(&f, id, Some(pid))?;
