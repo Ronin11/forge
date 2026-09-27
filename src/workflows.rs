@@ -2617,6 +2617,27 @@ mod tests {
             "actions/code.toml",
             "name = \"code\"\nkind = \"directive\"\ndescription = \"x\"\nconsumes = [\"branch\"]\nproduces = [\"branch\"]\nmax_turns = 50\n",
         );
+        // Only an operator commit makes a copy of a built-in win.
+        for args in [
+            &["add", "actions/code.toml"][..],
+            &[
+                "-c",
+                "user.name=op",
+                "-c",
+                "user.email=op@x",
+                "commit",
+                "-qm",
+                "tune code",
+            ],
+        ] {
+            let st = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path().join("workflows"))
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(st.success());
+        }
         let after = resolve(dir.path(), "direct").unwrap();
         assert_ne!(before.pins, after.pins);
         assert_eq!(
