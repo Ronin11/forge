@@ -841,3 +841,104 @@ fn file_into_initiative_without_an_initiative_id_runs_code_as_usual() {
         .unwrap();
     assert_eq!(count, 1, "no siblings without an initiative id");
 }
+
+#[test]
+fn a_dependent_of_a_filing_task_follows_the_last_filed_task_and_is_released_once_it_lands() {
+    let e = Env::new();
+    write_filer_workflow(&e);
+    let repo = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "chainwriter.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo],
+        )
+        .status
+        .success()
+    );
+    let o = e.forge(
+        "chainwriter.sh",
+        &[
+            "initiative",
+            "new",
+            "demo",
+            "--outcome",
+            "the plan's steps are all filed",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let iid = created_id(&o);
+
+    let origin = e.add(&[
+        "--workflow",
+        "filer",
+        "--initiative",
+        &iid.to_string(),
+        "--retries",
+        "0",
+    ]);
+    let o = e.forge(
+        "chainwriter.sh",
+        &[
+            "add",
+            repo,
+            "Add dep-file.txt at the repository root, any content",
+            "--after",
+            &origin.to_string(),
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let dep: i64 = String::from_utf8_lossy(&o.stdout)
+        .split_whitespace()
+        .nth(2)
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // Task `origin` files its plan (three chained tasks) instead of
+    // running its own code step and ends succeeded, unlanded; its
+    // dependent must be re-pointed at the last of the three, not left
+    // waiting forever on a task that will never land.
+    let o = e
+        .with_role("chainwriter.sh", "INVESTIGATE_FILER", "planner-chain.sh")
+        .args(["work", "--once", "--max-tasks", "1"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, pushed) = e.task(origin);
+    assert_eq!(state, "succeeded");
+    assert!(!pushed, "nothing to push: the plan step changed nothing");
+    assert!(reason.contains("filed 3 task(s)"), "{reason}");
+
+    let last: i64 = e
+        .db()
+        .query_row("SELECT MAX(id) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_ne!(last, origin, "three tasks were filed after origin");
+    let after: String = e
+        .db()
+        .query_row(
+            &format!("SELECT after_json FROM tasks WHERE id={dep}"),
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        after,
+        format!("[{last}]"),
+        "the dependent follows the last filed task, not the task that filed them"
+    );
+    assert_eq!(
+        e.task(dep).0,
+        "queued",
+        "not blocked: the task it now follows hasn't finished yet"
+    );
+
+    // Drain the filed tasks; once the last one lands, the dependent is
+    // released and runs too.
+    let o = e.forge("chainwriter.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(e.task(last).0, "succeeded");
+    assert_eq!(e.task(dep).0, "succeeded", "{:?}", e.task(dep));
+}
