@@ -71,6 +71,9 @@ documentation.
 - **REVIEW-3.md** — the third review, of the concurrent paths: defects
   confirmed at their lines, each with a task text, and what was read
   and found sound.
+- **REVIEW-4.md** — the fourth review, triggered by engineering-weekly's
+  size threshold crossing on `src/workflows.rs`, and what was found
+  reading the file and the job that caught it.
 - **LATER.md** — ideas from Forge 1's backlog worth revisiting later, and
   which of them have already been ported.
 - **CONTEXT.md** — a running status note on what a coding agent is told
