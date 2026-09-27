@@ -2136,6 +2136,7 @@ mod tests_fault_tests {
             timed_out: false,
             tail: tail.into(),
             failing_tests: vec![],
+            log_path: String::new(),
             stdout: String::new(),
         }
     }

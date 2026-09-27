@@ -19,6 +19,11 @@ pub struct RunOneCapped<'a> {
     pub timeout: Duration,
     pub env: &'a [(String, String)],
     pub cap_bytes: usize,
+    /// Directory a failed check's whole combined stdout and stderr is
+    /// written to, whatever its size — `cap_bytes` only bounds what stays
+    /// on the row. `None` skips the capture; nothing is written and
+    /// `CheckResult::log_path` stays empty.
+    pub full_log_dir: Option<&'a Path>,
 }
 
 use crate::executor::Execution;
@@ -50,6 +55,11 @@ pub struct CheckResult {
     pub tail: String,
     #[serde(default)]
     pub failing_tests: Vec<String>,
+    /// Where the check's whole combined stdout and stderr was written,
+    /// when the caller asked for that (`RunOneCapped::full_log_dir`);
+    /// empty when it did not, or nothing was written.
+    #[serde(default)]
+    pub log_path: String,
     /// Stdout alone, same bound as the tail: what an operation that
     /// produces a value hands on. Not serialized with the verdict.
     #[serde(skip)]
@@ -91,6 +101,7 @@ async fn drain(
     mut r: impl AsyncReadExt + Unpin,
     tail: Arc<Mutex<Tail>>,
     own: Option<Arc<Mutex<Tail>>>,
+    full: Option<Arc<Mutex<Vec<u8>>>>,
 ) {
     let mut buf = [0u8; 8192];
     while let Ok(n) = r.read(&mut buf).await {
@@ -102,6 +113,11 @@ async fn drain(
             .write(&buf[..n]);
         if let Some(o) = &own {
             o.lock().unwrap_or_else(|p| p.into_inner()).write(&buf[..n]);
+        }
+        if let Some(f) = &full {
+            f.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .extend_from_slice(&buf[..n]);
         }
     }
 }
@@ -132,6 +148,7 @@ pub async fn run_one(
         timeout,
         env,
         cap_bytes: TAIL_BYTES,
+        full_log_dir: None,
     })
     .await
 }
@@ -149,6 +166,7 @@ pub async fn run_one_capped(args: RunOneCapped<'_>) -> CheckResult {
         timeout,
         env,
         cap_bytes,
+        full_log_dir,
     } = args;
     let start = Instant::now();
     let mut r = CheckResult {
@@ -177,12 +195,15 @@ pub async fn run_one_capped(args: RunOneCapped<'_>) -> CheckResult {
     let pid = child.id();
     let tail = Arc::new(Mutex::new(Tail::new(cap_bytes)));
     let stdout = Arc::new(Mutex::new(Tail::new(cap_bytes)));
+    // Only allocated when a caller wants the whole output kept; every
+    // other check still bounds its capture at `cap_bytes` in `tail`.
+    let full = full_log_dir.map(|_| Arc::new(Mutex::new(Vec::<u8>::new())));
     let mut readers = tokio::task::JoinSet::new();
     if let Some(out) = child.stdout.take() {
-        readers.spawn(drain(out, tail.clone(), Some(stdout.clone())));
+        readers.spawn(drain(out, tail.clone(), Some(stdout.clone()), full.clone()));
     }
     if let Some(err) = child.stderr.take() {
-        readers.spawn(drain(err, tail.clone(), None));
+        readers.spawn(drain(err, tail.clone(), None, full.clone()));
     }
 
     match tokio::time::timeout(timeout, child.wait()).await {
@@ -214,11 +235,41 @@ pub async fn run_one_capped(args: RunOneCapped<'_>) -> CheckResult {
     }
     let text = tail.lock().unwrap_or_else(|p| p.into_inner()).string();
     r.stdout = stdout.lock().unwrap_or_else(|p| p.into_inner()).string();
-    r.failing_tests = failing_tests(&text);
+    let full_bytes = full.map(|f| f.lock().unwrap_or_else(|p| p.into_inner()).clone());
+    // The names come from the whole output when it was kept, not the
+    // bounded tail: a failure printed early in a run longer than
+    // `cap_bytes` would otherwise never be named.
+    let full_text = full_bytes
+        .as_deref()
+        .map(|b| String::from_utf8_lossy(b).into_owned());
+    r.failing_tests = failing_tests(full_text.as_deref().unwrap_or(&text));
     if r.timed_out {
         r.tail = format!("{text}\n[forge] timed out after {}s", timeout.as_secs());
     } else if r.tail.is_empty() {
         r.tail = text;
+    }
+    if !r.ok {
+        // A failed check with nothing to show is a gap in the capture,
+        // not a clean run: never leave the record silent about why.
+        if r.tail.trim().is_empty() {
+            r.tail = format!(
+                "[forge] no output captured; the check exited {} with nothing on stdout or stderr",
+                r.exit
+                    .map_or("with no exit status".to_string(), |c| format!("code {c}"))
+            );
+        }
+        if let (Some(dir), Some(bytes)) = (full_log_dir, &full_bytes)
+            && std::fs::create_dir_all(dir).is_ok()
+        {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default();
+            let path = dir.join(format!("{level}-{name}-{}-{stamp}.log", std::process::id()));
+            if std::fs::write(&path, bytes).is_ok() {
+                r.log_path = path.display().to_string();
+            }
+        }
     }
     r.ms = start.elapsed().as_millis();
     r
@@ -300,5 +351,46 @@ mod tests {
             "{}",
             r.tail
         );
+    }
+
+    #[tokio::test]
+    async fn a_failed_check_that_prints_10mb_keeps_a_capped_tail_and_the_whole_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs = tempfile::tempdir().unwrap();
+        const PAYLOAD: usize = 10 * 1024 * 1024;
+        let argv = vec![
+            "bash".into(),
+            "-c".into(),
+            format!(
+                "echo '--- FAIL: TestBig (0.00s)'; head -c {PAYLOAD} /dev/zero | tr '\\0' 'a'; exit 1"
+            ),
+        ];
+        let cap_bytes = 4 * 1024;
+        let r = run_one_capped(RunOneCapped {
+            level: "L1",
+            name: "big",
+            argv: &argv,
+            cwd: dir.path(),
+            sandbox: None,
+            timeout: Duration::from_secs(30),
+            env: &[],
+            cap_bytes,
+            full_log_dir: Some(logs.path()),
+        })
+        .await;
+        assert_eq!(r.exit, Some(1));
+        assert!(!r.ok);
+        assert_eq!(r.failing_tests, vec!["TestBig".to_string()]);
+        // Only the last `cap_bytes` is kept on the row, and it is all
+        // padding: the failure marker, printed first, is long gone.
+        assert!(r.tail.len() <= cap_bytes, "{}", r.tail.len());
+        assert!(!r.tail.contains("TestBig"), "{}", r.tail);
+        assert!(r.tail.chars().all(|c| c == 'a'), "{}", r.tail);
+        // The whole output, unbounded, is on disk at the recorded path.
+        assert!(!r.log_path.is_empty());
+        let logged = std::fs::read(&r.log_path).unwrap();
+        assert_eq!(logged.len(), "--- FAIL: TestBig (0.00s)\n".len() + PAYLOAD);
+        assert!(logged.starts_with(b"--- FAIL: TestBig (0.00s)\n"));
+        assert!(logged.ends_with(&vec![b'a'; 100]));
     }
 }

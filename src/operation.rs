@@ -221,6 +221,7 @@ pub(crate) async fn run_operation(
             timeout,
             env: &env,
             cap_bytes: checks::FULL_OUTPUT_BYTES,
+            full_log_dir: None,
         })
         .await
     } else {
