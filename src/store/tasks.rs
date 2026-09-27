@@ -486,52 +486,88 @@ pub(super) fn backfill_task_shape(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Insert `t`, `conn` already holding the write lock a caller may have
+/// taken as part of a larger transaction.
+fn insert_task_row(conn: &Connection, t: &Task) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO tasks (repo, task, title, base_branch, model, provider, max_turns, max_attempts, timeout_secs, checks_json,
+                            state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm, explore_json,
+                            shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json, trust)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)",
+        params![
+            t.repo,
+            t.task,
+            t.title,
+            t.base_branch,
+            t.model,
+            t.provider,
+            t.max_turns,
+            t.max_attempts,
+            t.timeout_secs,
+            serde_json::to_string(&t.checks)?,
+            t.state.as_str(),
+            t.created_at,
+            t.budget_usd,
+            t.allow_protected as i64,
+            t.workflow,
+            t.show_checks as i64,
+            t.workflow_hash,
+            t.workflow_text,
+            t.land as i64,
+            serde_json::to_string(&t.after)?,
+            t.retry_of,
+            t.journal as i64,
+            t.context_enabled as i64,
+            t.resume_on_failure as i64,
+            t.journal_arm,
+            serde_json::to_string(&t.explore)?,
+            t.shape_text_len,
+            t.shape_path_tokens,
+            t.shape_tdd as i64,
+            t.shape_declared_checks,
+            t.model_source,
+            t.workflow_source,
+            serde_json::to_string(&t.routing)?,
+            t.trust.as_str(),
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+fn count_filed_since(conn: &Connection, trust: Trust, since: i64) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE trust=?1 AND created_at >= ?2",
+        params![trust.as_str(), since],
+        |r| r.get(0),
+    )?)
+}
+
 impl Store {
     pub fn insert_task(&self, t: &Task) -> Result<i64> {
-        let c = self.lock();
-        c.execute(
-            "INSERT INTO tasks (repo, task, title, base_branch, model, provider, max_turns, max_attempts, timeout_secs, checks_json,
-                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm, explore_json,
-                                shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json, trust)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)",
-            params![
-                t.repo,
-                t.task,
-                t.title,
-                t.base_branch,
-                t.model,
-                t.provider,
-                t.max_turns,
-                t.max_attempts,
-                t.timeout_secs,
-                serde_json::to_string(&t.checks)?,
-                t.state.as_str(),
-                t.created_at,
-                t.budget_usd,
-                t.allow_protected as i64,
-                t.workflow,
-                t.show_checks as i64,
-                t.workflow_hash,
-                t.workflow_text,
-                t.land as i64,
-                serde_json::to_string(&t.after)?,
-                t.retry_of,
-                t.journal as i64,
-                t.context_enabled as i64,
-                t.resume_on_failure as i64,
-                t.journal_arm,
-                serde_json::to_string(&t.explore)?,
-                t.shape_text_len,
-                t.shape_path_tokens,
-                t.shape_tdd as i64,
-                t.shape_declared_checks,
-                t.model_source,
-                t.workflow_source,
-                serde_json::to_string(&t.routing)?,
-                t.trust.as_str(),
-            ],
-        )?;
-        Ok(c.last_insert_rowid())
+        insert_task_row(&self.lock(), t)
+    }
+
+    /// Insert `t` only if fewer than `cap` tasks at `t.trust` were filed
+    /// since `since` (unix seconds): the count and the insert share one
+    /// `BEGIN IMMEDIATE` transaction, so two connections racing to file at
+    /// the cap cannot both win the way a separate count-then-insert could
+    /// (`queue::apply_trust_policy`'s old check, and the same race
+    /// `Store::create_job_within` closes for a job's own `per_day`).
+    /// Refuses with the text `apply_trust_policy` used to produce from
+    /// the same numbers.
+    pub fn insert_task_capped(&self, t: &Task, cap: i64, since: i64) -> Result<i64> {
+        let mut c = self.lock();
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let filed_today = count_filed_since(&tx, t.trust, since)?;
+        if filed_today >= cap {
+            bail!(
+                "trust {}: {filed_today} task(s) filed at this level in the last 24 hours and its per_day limit is {cap}; it can file again when the oldest of those is a day old",
+                t.trust.as_str()
+            );
+        }
+        let id = insert_task_row(&tx, t)?;
+        tx.commit()?;
+        Ok(id)
     }
 
     /// Persist every column the struct carries, except the id, the
@@ -906,18 +942,6 @@ impl Store {
             .query_row("SELECT COUNT(*) FROM tasks WHERE state='queued'", [], |r| {
                 r.get(0)
             })?)
-    }
-
-    /// How many tasks at `trust` were filed (`created_at`) since `since`
-    /// (a unix second): what `queue::apply_trust_policy` checks a level's
-    /// own `per_day` against, the way `Store::jobs_started_since` backs a
-    /// job's own `per_day`.
-    pub fn tasks_filed_since(&self, trust: Trust, since: i64) -> Result<i64> {
-        Ok(self.lock().query_row(
-            "SELECT COUNT(*) FROM tasks WHERE trust=?1 AND created_at >= ?2",
-            params![trust.as_str(), since],
-            |r| r.get(0),
-        )?)
     }
 
     /// Put a running task back in the queue, closing its open attempt as
@@ -1309,5 +1333,48 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(store.task(id).unwrap().unwrap().max_turns, 60);
+    }
+
+    #[test]
+    fn insert_task_capped_lets_exactly_one_concurrent_insert_through_at_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let since = crate::unix_now() - 3600;
+        let cap = 3i64;
+        let task = || Task {
+            repo: "r".into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 1,
+            timeout_secs: 1,
+            created_at: crate::unix_now(),
+            trust: Trust::Public,
+            ..Default::default()
+        };
+        {
+            let store = Store::open(&path).unwrap();
+            for _ in 0..cap - 1 {
+                store.insert_task(&task()).unwrap();
+            }
+        }
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let results: Vec<Result<i64>> = (0..2)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let store = Store::open(&path).unwrap();
+                    barrier.wait();
+                    store.insert_task_capped(&task(), cap, since)
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect();
+        let ok = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(ok, 1, "{results:?}");
     }
 }

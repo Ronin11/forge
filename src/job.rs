@@ -561,20 +561,6 @@ pub async fn start(args: Start<'_>) -> Result<i64> {
     let input_fields = string_fields(&input_json)?;
 
     let started_at = unix_now();
-    if let Some(l) = wf.limits.as_ref()
-        && l.per_day > 0
-        && !dry_run
-    {
-        let n = f
-            .store
-            .jobs_started_since(project, workflow, started_at - 24 * 3600)?;
-        if n >= i64::from(l.per_day) {
-            anyhow::bail!(
-                "{workflow} has started {n} time(s) in the last 24 hours and its per_day limit is {}; it can start again when the oldest of those is a day old (asking instead is docs/JOBS.md step 5)",
-                l.per_day
-            );
-        }
-    }
     let job = Job {
         id: 0,
         project: project.to_string(),
@@ -597,7 +583,15 @@ pub async fn start(args: Start<'_>) -> Result<i64> {
         due_at,
         retry_count: 0,
     };
-    let job_id = f.store.create_job(&job)?;
+    let job_id = match wf.limits.as_ref().filter(|l| l.per_day > 0 && !dry_run) {
+        Some(l) => f.store.create_job_within(
+            &job,
+            i64::from(l.per_day),
+            started_at - 24 * 3600,
+            "; it can start again when the oldest of those is a day old (asking instead is docs/JOBS.md step 5)",
+        )?,
+        None => f.store.create_job(&job)?,
+    };
     if !now {
         // Persist the input for whenever the worker claims this job
         // (`drive`, below); `run_now` writes the same file again once it
@@ -891,19 +885,6 @@ fn queue_triggered(args: QueueTriggered<'_>) -> Result<i64> {
         input_text,
     } = args;
     let started_at = unix_now();
-    if let Some(l) = wf.limits.as_ref()
-        && l.per_day > 0
-    {
-        let n = f
-            .store
-            .jobs_started_since(project, workflow, started_at - 24 * 3600)?;
-        if n >= i64::from(l.per_day) {
-            anyhow::bail!(
-                "{workflow} has started {n} time(s) in the last 24 hours and its per_day limit is {}",
-                l.per_day
-            );
-        }
-    }
     let due_at = wf
         .trigger
         .as_ref()
@@ -927,7 +908,13 @@ fn queue_triggered(args: QueueTriggered<'_>) -> Result<i64> {
         due_at,
         retry_count: 0,
     };
-    let job_id = f.store.create_job(&job)?;
+    let job_id = match wf.limits.as_ref().filter(|l| l.per_day > 0) {
+        Some(l) => {
+            f.store
+                .create_job_within(&job, i64::from(l.per_day), started_at - 24 * 3600, "")?
+        }
+        None => f.store.create_job(&job)?,
+    };
     let idir = input_dir(f, job_id);
     std::fs::create_dir_all(&idir)?;
     std::fs::write(idir.join("input.json"), input_text)?;

@@ -1139,6 +1139,7 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
                         return Ok(StepFlow::End(End::Filed {
                             n: filed.len(),
                             initiative: iid,
+                            last: *filed.last().unwrap_or(&id),
                         }));
                     }
                 }
@@ -1580,6 +1581,20 @@ async fn finish(
     if t.state == TaskState::Succeeded && (!t.land || !t.landed_sha.is_empty()) {
         crate::queue::settle_superseded(f, id).env()?;
     }
+    // A filing task never lands: the work its dependents waited for now
+    // happens in the tasks it filed, so they follow the last of those
+    // instead (the same reroute a retry carries its own dependents
+    // through, see `queue::enqueue`).
+    if let End::Filed { last, .. } = end {
+        for d in f.store.reroute_dependents(id, *last).env()? {
+            f.report.emit(
+                d,
+                Event::Note {
+                    text: &format!("waits on task {last} now (task {id} filed its plan)"),
+                },
+            );
+        }
+    }
     // A dependent waiting on this task, blocked with a stale reason
     // because its after list has since been re-pointed here, is released
     // or given a fresh reason now that this task itself has landed,
@@ -1711,8 +1726,14 @@ enum End {
     Budget(String),
     /// A plan step with `file_into_initiative` filed its items as
     /// sibling tasks in the task's initiative; nothing changed the tree,
-    /// so nothing is pushed.
-    Filed { n: usize, initiative: i64 },
+    /// so nothing is pushed. `last` is the last filed task, chained
+    /// after every other: `finish` re-points this task's own dependents
+    /// at it, since the work they waited for now happens there.
+    Filed {
+        n: usize,
+        initiative: i64,
+        last: i64,
+    },
 }
 
 /// Names the L0 rows the last attempt's verdict failed, the same shape
@@ -1762,7 +1783,7 @@ impl End {
             End::Landed(sha) => {
                 format!("landed {} @ {}", t.base_branch, &sha[..sha.len().min(8)])
             }
-            End::Filed { n, initiative } => {
+            End::Filed { n, initiative, .. } => {
                 format!("filed {n} task(s) into initiative {initiative}")
             }
             End::Unverified(r) | End::Blocked { reason: r, .. } | End::Budget(r) => r.clone(),
