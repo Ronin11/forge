@@ -598,7 +598,7 @@ ALTER TABLE attempts ADD COLUMN repriced_at INTEGER;
     // name. SQLite has no `ALTER COLUMN`, so the table is rebuilt;
     // `decisions_task` is recreated after, same as it was defined
     // (`CREATE INDEX decisions_task ON decisions(task_id, id)`, above).
-    "
+    "-- contract
 CREATE TABLE decisions_new (
   id INTEGER PRIMARY KEY,
   task_id INTEGER REFERENCES tasks(id),
@@ -609,10 +609,11 @@ CREATE TABLE decisions_new (
   answered_by TEXT NOT NULL DEFAULT 'operator',
   citations TEXT NOT NULL DEFAULT '',
   retry_id INTEGER,
-  answered_for TEXT
+  answered_for TEXT,
+  kind TEXT NOT NULL DEFAULT ''
 );
-INSERT INTO decisions_new (id, task_id, repo, question, answer, created_at, answered_by, citations, retry_id, answered_for)
-  SELECT id, task_id, repo, question, answer, created_at, answered_by, citations, retry_id, answered_for FROM decisions;
+INSERT INTO decisions_new (id, task_id, repo, question, answer, created_at, answered_by, citations, retry_id, answered_for, kind)
+  SELECT id, task_id, repo, question, answer, created_at, answered_by, citations, retry_id, answered_for, kind FROM decisions;
 DROP TABLE decisions;
 ALTER TABLE decisions_new RENAME TO decisions;
 CREATE INDEX decisions_task ON decisions(task_id, id);
@@ -667,4 +668,98 @@ CREATE TABLE workers (
     // A jev judgment's probabilities over the outcomes, as JSON, beside the
     // outcome it led to (docs/EXECUTION.md, "The judgment tier").
     "ALTER TABLE job_steps ADD COLUMN probabilities TEXT NOT NULL DEFAULT '';",
+    // When each contract step (see `CONTRACT_MARKER`) was applied; the
+    // additive ladder above advances `user_version`, these record their own.
+    "
+CREATE TABLE contract_steps (
+  version INTEGER PRIMARY KEY,
+  applied_at INTEGER NOT NULL
+);
+-- Databases that applied step 60 as an ordinary step already have the
+-- nullable `task_id`; record it so the contract does not run again.
+INSERT INTO contract_steps (version, applied_at)
+  SELECT 60, strftime('%s','now')
+  WHERE (SELECT \"notnull\" FROM pragma_table_info('decisions') WHERE name='task_id') = 0;
+",
 ];
+
+/// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs
+/// a column type). `migrate` skips its SQL but still advances
+/// `user_version`; `Store::apply_contracts` runs it once no live worker
+/// is on an older version (docs/OPS.md, "The running binary").
+pub const CONTRACT_MARKER: &str = "-- contract";
+
+pub fn is_contract(sql: &str) -> bool {
+    sql.trim_start().starts_with(CONTRACT_MARKER)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The statement's leading words, upper-cased, comments removed.
+    fn statements(sql: &str) -> Vec<String> {
+        let code: String = sql
+            .lines()
+            .map(|l| l.split("--").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join(" ");
+        code.split(';')
+            .map(|st| {
+                st.split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .to_uppercase()
+            })
+            .filter(|st| !st.is_empty())
+            .collect()
+    }
+
+    fn additive(st: &str) -> bool {
+        let w: Vec<&str> = st.split(' ').collect();
+        matches!(
+            w.as_slice(),
+            ["CREATE", "TABLE", ..]
+                | ["CREATE", "INDEX", ..]
+                | ["CREATE", "UNIQUE", "INDEX", ..]
+                | ["INSERT", ..]
+                | ["UPDATE", ..]
+                | ["ALTER", "TABLE", _, "ADD", ..]
+        )
+    }
+
+    #[test]
+    fn every_migration_is_additive_or_marked_contract() {
+        for (i, sql) in MIGRATIONS.iter().enumerate() {
+            if is_contract(sql) {
+                continue;
+            }
+            for st in statements(sql) {
+                assert!(
+                    additive(&st),
+                    "migration {} has a non-additive statement without `{CONTRACT_MARKER}`: {st}",
+                    i + 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn step_60_the_decisions_rebuild_is_a_contract() {
+        assert!(is_contract(MIGRATIONS[59]));
+        assert!(MIGRATIONS[59].contains("DROP TABLE decisions;"));
+    }
+
+    #[test]
+    fn a_drop_or_rename_is_not_additive() {
+        for st in [
+            "DROP TABLE X",
+            "ALTER TABLE A RENAME TO B",
+            "ALTER TABLE A RENAME COLUMN X TO Y",
+            "ALTER TABLE A DROP COLUMN X",
+        ] {
+            assert!(!additive(st), "{st}");
+        }
+        assert!(additive("ALTER TABLE A ADD COLUMN X INTEGER"));
+    }
+}

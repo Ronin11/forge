@@ -1194,6 +1194,7 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     out.extend(check_egress(&paths, &store));
     out.extend(check_environment_grants(&store));
     out.extend(check_workflows(&paths));
+    out.push(workflows::shadow::doctor_check(&paths.home));
     out.extend(check_plugins(&paths, &store));
     out.extend(check_learning(&paths, &store));
     out.extend(check_worker(&paths, &store));

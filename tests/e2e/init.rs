@@ -63,7 +63,10 @@ fn forge_init_sets_up_a_fresh_home_and_prints_the_systemd_commands() {
 
     let catalog = e.home.join("workflows");
     assert!(catalog.join(".git").exists());
-    assert!(catalog.join("actions/code.toml").exists());
+    assert!(
+        !catalog.join("actions/code.toml").exists(),
+        "built-in actions are not seeded into the catalog"
+    );
     // Everything the catalog holds after init is committed: `git status`
     // is clean, matching workflows::uncommitted's own porcelain check.
     let status = git(&catalog, &["status", "--porcelain"]);

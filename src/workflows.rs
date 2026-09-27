@@ -21,6 +21,7 @@ use std::str::FromStr;
 pub mod edges;
 mod judgment;
 mod library;
+pub mod shadow;
 pub use judgment::{OUTCOME_QUESTION, Question};
 pub use library::{FRAGMENTS_DIR, Include, UNTRUSTED_DATA, text_hash};
 use library::{fragment_problems, load_prompt_file};
@@ -994,16 +995,11 @@ fn ensure(home: &Path) -> Result<PathBuf> {
             );
         }
     }
-    // Built-ins are written when missing and never overwritten: an existing
-    // install gains new built-ins on upgrade and keeps its own edits.
+    // Built-in workflows are written when missing and never overwritten.
+    // Built-in actions and operations are never written: the catalog holds
+    // only the ones the operator authored (see `shadow`).
     for (file, text) in BUILTIN_WORKFLOWS {
         let p = dir.join(file);
-        if !p.exists() {
-            std::fs::write(&p, text)?;
-        }
-    }
-    for (file, text) in BUILTIN_ACTIONS.iter().chain(BUILTIN_OPERATIONS) {
-        let p = actions.join(file);
         if !p.exists() {
             std::fs::write(&p, text)?;
         }
@@ -1471,8 +1467,12 @@ fn load_dir<T>(
 
 pub fn load_catalog(home: &Path) -> Result<Catalog> {
     let dir = ensure(home)?;
+    let stale = shadow::stale_seeds(&dir);
     let (raw_actions, mut problems) = load_dir(
-        toml_files(&dir.join("actions"))?,
+        toml_files(&dir.join("actions"))?
+            .into_iter()
+            .filter(|p| !stale.contains(p.file_name().unwrap().to_string_lossy().as_ref()))
+            .collect(),
         |p| format!("actions/{}", p.file_name().unwrap().to_string_lossy()),
         |p, t| {
             let mut a = parse_action(p, t, blob_hash(&dir, p)?)?;
@@ -1491,6 +1491,16 @@ pub fn load_catalog(home: &Path) -> Result<Catalog> {
             });
         }
         actions.insert(a.name.clone(), a);
+    }
+    // A built-in the catalog does not override (or only shadows with a
+    // stale seed) applies as it is in this binary.
+    for (file, text) in BUILTIN_ACTIONS.iter().chain(BUILTIN_OPERATIONS) {
+        let name = file.trim_end_matches(".toml");
+        if !actions.contains_key(name) {
+            let a = parse_action(Path::new(file), text, shadow::text_blob_hash(text)?)
+                .with_context(|| format!("built-in {file}"))?;
+            actions.insert(a.name.clone(), a);
+        }
     }
 
     let (raw_workflows, wf_problems) = load_dir(
@@ -2630,6 +2640,27 @@ mod tests {
             "actions/code.toml",
             "name = \"code\"\nkind = \"directive\"\ndescription = \"x\"\nconsumes = [\"branch\"]\nproduces = [\"branch\"]\nmax_turns = 50\n",
         );
+        // Only an operator commit makes a copy of a built-in win.
+        for args in [
+            &["add", "actions/code.toml"][..],
+            &[
+                "-c",
+                "user.name=op",
+                "-c",
+                "user.email=op@x",
+                "commit",
+                "-qm",
+                "tune code",
+            ],
+        ] {
+            let st = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path().join("workflows"))
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(st.success());
+        }
         let after = resolve(dir.path(), "direct").unwrap();
         assert_ne!(before.pins, after.pins);
         assert_eq!(

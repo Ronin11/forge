@@ -394,9 +394,10 @@ fn operations_are_told_the_task_facts_and_diff_size_caps_the_change() {
     // The caps are the last two elements of `run`; a cap of zero lines fails
     // with the measurement as the reason.
     let p = e.home.join("workflows/actions/diff-size.toml");
-    let text = std::fs::read_to_string(&p).unwrap();
+    let text = include_str!("../../src/builtins/operations/diff-size.toml");
     assert!(text.contains("\"800\", \"25\"]"), "{text}");
     std::fs::write(&p, text.replace("\"800\", \"25\"]", "\"0\", \"25\"]")).unwrap();
+    commit_catalog_edit(&e);
     let o = e.forge(
         "ok.sh",
         &[

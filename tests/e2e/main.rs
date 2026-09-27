@@ -30,6 +30,7 @@ mod questions;
 mod refs;
 mod reload;
 mod resume;
+mod shadowing;
 mod signal;
 mod statusline;
 mod successor;

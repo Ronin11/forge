@@ -39,6 +39,18 @@ pub(super) enum WorkflowsCmd {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Remove catalog copies of built-in actions that only shadow the
+    /// built-in (stale seeds). An operator-edited copy is shown as a diff
+    /// and refused unless `--take-builtin` (drop the copy) or `--keep`
+    /// (leave it) says which
+    Refresh {
+        /// Drop operator-edited copies too, so the built-in applies
+        #[arg(long, conflicts_with = "keep")]
+        take_builtin: bool,
+        /// Keep operator-edited copies as they are
+        #[arg(long)]
+        keep: bool,
+    },
     /// Write a candidate workflow file into the operator's catalog once
     /// it lints clean, commit it in the catalog's own git, and print the
     /// new commit hash; or, with `--repo`, file a direct task on that
@@ -569,6 +581,44 @@ fn list_providers(json: bool) -> Result<()> {
     Ok(())
 }
 
+/// `forge workflows refresh`: see `workflows::shadow`.
+async fn refresh_workflows(take_builtin: bool, keep: bool) -> Result<()> {
+    use workflows::shadow::{self, Origin};
+    let f = Forge::open(false, false)?;
+    let dir = workflows::catalog_dir(&f.paths.home)?;
+    let mut refused = Vec::new();
+    for s in shadow::scan(&dir) {
+        match (s.origin, take_builtin, keep) {
+            (Origin::StaleSeed, ..) | (Origin::OperatorEdit, true, _) => {
+                shadow::remove(&dir, &s.file).await?;
+                out!(
+                    "removed {} ({}); the built-in applies",
+                    s.file,
+                    s.origin.as_str()
+                );
+            }
+            (Origin::OperatorEdit, false, true) => out!("kept {} (operator edit)", s.file),
+            (Origin::OperatorEdit, false, false) => {
+                out!(
+                    "{} is an operator edit ({} diff line(s), {} old):\n{}",
+                    s.file,
+                    s.diff_lines(),
+                    shadow::age_text(s.age_secs),
+                    s.diff
+                );
+                refused.push(s.file);
+            }
+        }
+    }
+    if !refused.is_empty() {
+        bail!(
+            "{} differ(s) from the built-in and were edited by the operator: rerun with --take-builtin to drop the copy or --keep to keep it",
+            refused.join(", ")
+        );
+    }
+    Ok(())
+}
+
 async fn dispatch_workflows(cmd: Cmd) -> Result<()> {
     match cmd {
         Cmd::Workflows { cmd, project, json } => match cmd {
@@ -579,6 +629,9 @@ async fn dispatch_workflows(cmd: Cmd) -> Result<()> {
                 json,
             }) => show_workflow(name, project, json).await,
             Some(WorkflowsCmd::Lint { stdin, name }) => lint_workflow(stdin, name),
+            Some(WorkflowsCmd::Refresh { take_builtin, keep }) => {
+                refresh_workflows(take_builtin, keep).await
+            }
             Some(WorkflowsCmd::Put {
                 name,
                 stdin,

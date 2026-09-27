@@ -168,9 +168,10 @@ fn a_resumed_task_keeps_the_versions_it_resolved() {
     let code = e.home.join("workflows/actions/code.toml");
     std::fs::write(
         &code,
-        std::fs::read_to_string(&code).unwrap() + "max_turns = 7\n",
+        include_str!("../../src/builtins/actions/code.toml").to_string() + "max_turns = 7\n",
     )
     .unwrap();
+    commit_catalog_edit(&e);
     // The worker is dead: the next worker requeues and resumes from the recorded resolution.
     assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
     let pins_after: String = e
@@ -256,6 +257,7 @@ fn a_directory_broken_after_queueing_stops_the_worker_and_keeps_the_task() {
         "name = \"code\"\nkind = \"directive\"\nrun = [\"x\"]\n",
     )
     .unwrap();
+    commit_catalog_edit(&e);
     let o = e.forge("ok.sh", &["work", "--once"]);
     assert!(!o.status.success(), "the worker stops");
     assert!(String::from_utf8_lossy(&o.stderr).contains("workflow directory is broken"));

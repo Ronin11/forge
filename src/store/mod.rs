@@ -349,10 +349,17 @@ impl Store {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;",
         )?;
+        let fresh: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         migrate(&conn)?;
-        Ok(Store {
+        let store = Store {
             conn: Mutex::new(conn),
-        })
+        };
+        if fresh == 0 {
+            // A brand-new database is shared with no older worker, so its
+            // contract steps run now.
+            store.apply_contracts(env!("CARGO_PKG_VERSION"), |_| false)?;
+        }
+        Ok(store)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -695,6 +702,56 @@ fn seed_projects_from_tasks(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+impl Store {
+    /// Apply contract steps (see `migrations::CONTRACT_MARKER`) not yet
+    /// applied, but only when every live worker runs `version`: none on an
+    /// older one shares the store. A dead pid does not count. Each step
+    /// records its own `applied_at`. Returns how many were applied.
+    pub fn apply_contracts(&self, version: &str, alive: impl Fn(i64) -> bool) -> Result<usize> {
+        if self
+            .live_workers(alive)?
+            .iter()
+            .any(|w| w.version != version)
+        {
+            return Ok(0);
+        }
+        let c = self.lock();
+        let mut applied = 0;
+        for (i, sql) in MIGRATIONS.iter().enumerate() {
+            let v = i as i64 + 1;
+            if !migrations::is_contract(sql) {
+                continue;
+            }
+            let done: bool = c
+                .query_row("SELECT 1 FROM contract_steps WHERE version=?1", [v], |_| {
+                    Ok(())
+                })
+                .optional()?
+                .is_some();
+            if done {
+                continue;
+            }
+            c.execute_batch("BEGIN")?;
+            let r = c.execute_batch(sql).and_then(|()| {
+                c.execute(
+                    "INSERT INTO contract_steps (version, applied_at) VALUES (?1, ?2)",
+                    params![v, crate::unix_now()],
+                )
+                .map(|_| ())
+            });
+            match r {
+                Ok(()) => c.execute_batch("COMMIT")?,
+                Err(e) => {
+                    c.execute_batch("ROLLBACK").ok();
+                    bail!("contract step {v} failed: {e}");
+                }
+            }
+            applied += 1;
+        }
+        Ok(applied)
+    }
+}
+
 fn migrate(conn: &Connection) -> Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let target = MIGRATIONS.len() as i64;
@@ -707,7 +764,9 @@ fn migrate(conn: &Connection) -> Result<()> {
         let v = i as i64 + 1;
         conn.execute_batch("BEGIN")?;
         let r: rusqlite::Result<()> = (|| {
-            conn.execute_batch(sql)?;
+            if !migrations::is_contract(sql) {
+                conn.execute_batch(sql)?;
+            }
             if v == PROJECTS_MIGRATION_VERSION {
                 seed_projects_from_tasks(conn)?;
             }
@@ -740,6 +799,29 @@ mod tests {
         drop(s);
         let s = Store::open(&path).unwrap();
         assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
+    }
+
+    #[test]
+    fn a_fresh_store_has_a_nullable_decisions_task_id_and_a_kind_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        let c = s.lock();
+        let notnull: i64 = c
+            .query_row(
+                "SELECT \"notnull\" FROM pragma_table_info('decisions') WHERE name='task_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(notnull, 0);
+        let kind: i64 = c
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('decisions') WHERE name='kind'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, 1);
     }
 
     #[test]

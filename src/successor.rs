@@ -58,6 +58,11 @@ impl Succession {
                 take_over(&root, &version);
             }
             notify(&format!("MAINPID={pid}\nREADY=1"));
+            match f.store.apply_contracts(&version, crate::worker::pid_alive) {
+                Ok(0) => {}
+                Ok(n) => eprintln!("applied {n} contract migration step(s)"),
+                Err(e) => eprintln!("contract migration failed: {e:#}"),
+            }
         }
         Ok(Succession {
             daemon,
