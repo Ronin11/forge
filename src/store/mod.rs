@@ -352,9 +352,13 @@ impl Store {
     pub fn open(path: &Path) -> Result<Store> {
         let mut conn =
             Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=60000; PRAGMA foreign_keys=ON;",
-        )?;
+        conn.execute_batch("PRAGMA busy_timeout=60000;")?;
+        // SQLite's busy handler does not cover the exclusive lock that
+        // journal_mode=WAL itself needs, so a connection racing this one can
+        // still see "database is locked" here even with busy_timeout set;
+        // retry it by hand like every other statement that can hit that lock.
+        conn.retry_query_row("PRAGMA journal_mode=WAL", [], |r| r.get::<_, String>(0))?;
+        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         let fresh: i64 = conn.retry_query_row("PRAGMA user_version", [], |r| r.get(0))?;
         migrate(&mut conn)?;
         let store = Store {
