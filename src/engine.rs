@@ -72,7 +72,7 @@ use anyhow::Context;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 pub enum Fault {
     Task(anyhow::Error),
@@ -312,6 +312,10 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     end = Some(e);
                     break;
                 }
+                StepFlow::Requeue(reason) => {
+                    f.store.requeue(id, &reason).env()?;
+                    return Ok(TaskState::Queued);
+                }
             }
         }
         if end.is_some() {
@@ -480,11 +484,16 @@ fn blocked_on(reason: String) -> StepFlow {
 }
 
 /// What one step of the run decided: move to the next step, go round
-/// again from wherever the cursor now points (a rewind), or end the run.
+/// again from wherever the cursor now points (a rewind), end the run, or
+/// give up the slot: the step's own provider is held, so the task goes
+/// back to `queued` with the hold as its reason rather than sleep out the
+/// window inside this attempt (the claim loop's own hold logic waits for
+/// the reset).
 enum StepFlow {
     Next,
     Again,
     End(End),
+    Requeue(String),
 }
 
 /// The workflow resolved once, at start: the latest versions of every
@@ -883,17 +892,13 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
     // clean, no result: the checks can still judge the code.
     let mut capped_committed = false;
     while run.used_at(seq) < t.max_attempts {
-        // A subscription window at its cap: wait for the reset
-        // rather than start an attempt that would be rate limited.
-        while let Some((msg, until)) = crate::worker::window_hold(f, &ts.provider).env()? {
-            f.report.emit(
-                id,
-                Event::Note {
-                    text: &format!("rate     {msg}; waiting"),
-                },
-            );
-            let wait = (until - unix_now()).clamp(1, 3600) as u64;
-            tokio::time::sleep(Duration::from_secs(wait)).await;
+        // A subscription window at its cap: give up the slot rather than
+        // sleep it out here, deaf to shutdown, for as long as an hour at a
+        // turn. The claim loop's own hold logic (`worker::first_role`,
+        // read against this same record) waits for the reset and claims
+        // this task again once it is free.
+        if let Some((msg, _)) = crate::worker::window_hold(f, &ts.provider).env()? {
+            return Ok(StepFlow::Requeue(msg));
         }
         let spent = f.store.task_cost(id).env()?;
         if spent >= task_cap {
@@ -1134,6 +1139,7 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
                         return Ok(StepFlow::End(End::Filed {
                             n: filed.len(),
                             initiative: iid,
+                            last: *filed.last().unwrap_or(&id),
                         }));
                     }
                 }
@@ -1575,6 +1581,20 @@ async fn finish(
     if t.state == TaskState::Succeeded && (!t.land || !t.landed_sha.is_empty()) {
         crate::queue::settle_superseded(f, id).env()?;
     }
+    // A filing task never lands: the work its dependents waited for now
+    // happens in the tasks it filed, so they follow the last of those
+    // instead (the same reroute a retry carries its own dependents
+    // through, see `queue::enqueue`).
+    if let End::Filed { last, .. } = end {
+        for d in f.store.reroute_dependents(id, *last).env()? {
+            f.report.emit(
+                d,
+                Event::Note {
+                    text: &format!("waits on task {last} now (task {id} filed its plan)"),
+                },
+            );
+        }
+    }
     // A dependent waiting on this task, blocked with a stale reason
     // because its after list has since been re-pointed here, is released
     // or given a fresh reason now that this task itself has landed,
@@ -1634,7 +1654,7 @@ struct Run {
 /// succeeded with no later attempt at an earlier step. An attempt at an
 /// earlier step after it means the run was rewound past it, so the old
 /// success no longer verifies what the tree now holds.
-fn resume_done(prior: &[crate::store::Attempt]) -> HashSet<i64> {
+pub(crate) fn resume_done(prior: &[crate::store::Attempt]) -> HashSet<i64> {
     let mut done = HashSet::new();
     let mut floor = i64::MAX;
     for a in prior.iter().rev() {
@@ -1706,8 +1726,14 @@ enum End {
     Budget(String),
     /// A plan step with `file_into_initiative` filed its items as
     /// sibling tasks in the task's initiative; nothing changed the tree,
-    /// so nothing is pushed.
-    Filed { n: usize, initiative: i64 },
+    /// so nothing is pushed. `last` is the last filed task, chained
+    /// after every other: `finish` re-points this task's own dependents
+    /// at it, since the work they waited for now happens there.
+    Filed {
+        n: usize,
+        initiative: i64,
+        last: i64,
+    },
 }
 
 /// Names the L0 rows the last attempt's verdict failed, the same shape
@@ -1757,7 +1783,7 @@ impl End {
             End::Landed(sha) => {
                 format!("landed {} @ {}", t.base_branch, &sha[..sha.len().min(8)])
             }
-            End::Filed { n, initiative } => {
+            End::Filed { n, initiative, .. } => {
                 format!("filed {n} task(s) into initiative {initiative}")
             }
             End::Unverified(r) | End::Blocked { reason: r, .. } | End::Budget(r) => r.clone(),

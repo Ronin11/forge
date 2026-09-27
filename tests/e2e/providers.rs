@@ -401,10 +401,13 @@ fn a_task_routed_to_another_provider_runs_while_anthropics_window_is_at_its_cap(
 /// workflow's first directive is `investigate` (contract "plan"); routed
 /// via `[roles]` to a provider with no samples of its own, it must be
 /// claimed at once even while anthropic's window sits at its cap from an
-/// earlier attempt. Its own later `code` step still resolves to anthropic
-/// (no `[roles]` entry for "code"), so that step waits inside the engine
-/// once anthropic is held — the bug this covers left the task unclaimable
-/// at the queue instead.
+/// earlier attempt — the bug this covers left the task unclaimable at the
+/// queue instead. Its own later `code` step still resolves to anthropic
+/// (no `[roles]` entry for "code"): once its plan step succeeds,
+/// `worker::first_role` judges it by that next step and finds it held, so
+/// the engine puts it back `queued` (never sleeps out the window inside
+/// the run) until the claim loop's own hold logic waits for the reset and
+/// claims it again.
 #[test]
 fn a_task_routed_by_role_runs_while_anthropics_window_is_at_its_cap() {
     let e = Env::new();
@@ -432,19 +435,29 @@ fn a_task_routed_by_role_runs_while_anthropics_window_is_at_its_cap() {
         "its first step is routed by role to a provider with no samples of its own"
     );
 
-    // The worker's queue-level hold line (src/worker.rs) never fires for
-    // the planned task: with the bug, its role always resolved to "code"
-    // (-> anthropic), so it sat unclaimable behind anthropic's held window
-    // and this line would appear.
+    // The worker's queue-level hold line (src/worker.rs) never gates the
+    // planned task's *first* claim: with the bug, its role always
+    // resolved to "code" (-> anthropic), so it sat unclaimable behind
+    // anthropic's held window before ever starting.
+    let claimed = format!("task {planned_task} starting");
+    let before_first_claim = stderr.split_once(&claimed).map_or(&*stderr, |(b, _)| b);
     assert!(
-        !stderr.contains("; holding,"),
+        !before_first_claim.contains("; holding,"),
         "the planned task should be claimed at once, never held at the queue: {stderr}"
     );
-    // Its own code step (role "code" -> anthropic, no [roles] entry) still
-    // waits inside the engine once anthropic's window is at its cap.
+    // Once its plan step succeeds, its next step (code, on anthropic) is
+    // found held: the engine ends the run by putting it back `queued`
+    // (never sleeping out the window inside the attempt), and the claim
+    // loop's own hold logic waits for the reset before claiming it again.
     assert!(
-        stderr.contains("rate     ") && stderr.contains("; waiting"),
-        "the planned task's code step should still wait inside the engine: {stderr}"
+        stderr.contains(&format!("task {planned_task} queued")),
+        "the planned task should be requeued once its own code step's \
+         provider is found held: {stderr}"
+    );
+    assert!(
+        stderr.contains("; holding,"),
+        "the claim loop should hold and wait for the reset rather than \
+         reclaim the requeued task at once: {stderr}"
     );
 
     let started: i64 = e
@@ -468,6 +481,75 @@ fn a_task_routed_by_role_runs_while_anthropics_window_is_at_its_cap() {
         "the planned task's first (plan) attempt started before anthropic's \
          recorded reset, so the unrelated anthropic window never held it \
          (started {started}, anthropic resets {resets})"
+    );
+}
+
+/// A resumed task is judged by its *next* directive, not its first
+/// (`worker::first_role`): once a `reviewed` task's code step succeeds,
+/// its review step's own held provider ends the run by putting the task
+/// back `queued` with the hold as its reason, instead of sleeping out the
+/// window inside the attempt and sitting on the worker's slot.
+#[test]
+fn a_reviewed_tasks_held_review_step_requeues_it_rather_than_occupying_the_worker() {
+    let e = Env::new();
+    let anthropic_task = e.add(&["--no-land"]);
+    let reviewed_task = e.add(&["--no-land", "--workflow", "reviewed"]);
+
+    // Both tasks' code steps run on the default anthropic provider, and
+    // `ratelimited.sh` reports its window at cap on every call; either
+    // one's attempt is enough to hold it before the reviewed task's
+    // review step (also on anthropic) is checked. The review step itself
+    // runs under a plain confirming reviewer once the hold resets.
+    let mut cmd = e.cmd("ratelimited.sh");
+    cmd.env(
+        "FORGE_CLAUDE_BIN_REVIEW",
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fakes")
+            .join("reviewer-ok.sh"),
+    );
+    cmd.args(["work", "--once"]);
+    let o = cmd.output().expect("forge work");
+    let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+    eprintln!("--- forge work --once (review step held) ---\n{stdout}{stderr}");
+    assert!(o.status.success(), "{stderr}");
+
+    assert_eq!(e.task(anthropic_task).0, "succeeded");
+    assert_eq!(e.task(reviewed_task).0, "succeeded");
+
+    assert!(
+        stderr.contains(&format!("task {reviewed_task} queued")),
+        "the reviewed task should be requeued once its review step's own \
+         provider (anthropic) is found held, rather than sleep out the \
+         window inside the attempt: {stderr}"
+    );
+    assert!(
+        stderr.contains("; holding,"),
+        "the claim loop should hold and wait for the reset rather than \
+         reclaim the requeued task at once: {stderr}"
+    );
+
+    // The review step's own attempt is a real, later attempt on the
+    // resumed task, not a retry of the code step it already verified.
+    let review_step: i64 = e
+        .db()
+        .query_row(
+            "SELECT step_seq FROM attempts WHERE task_id=?1 ORDER BY id DESC LIMIT 1",
+            [reviewed_task],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let code_step: i64 = e
+        .db()
+        .query_row(
+            "SELECT step_seq FROM attempts WHERE task_id=?1 ORDER BY id ASC LIMIT 1",
+            [reviewed_task],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        review_step > code_step,
+        "review_step={review_step} code_step={code_step}"
     );
 }
 
