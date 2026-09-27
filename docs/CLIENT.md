@@ -1222,7 +1222,7 @@ One row of `forge plugin list --json`: a plugin as discovered.
 | `description` | string | From its `plugin.toml`. |
 | `dir` | string | Absolute path to the plugin's directory. |
 | `source` | string | Absolute path to the root it was discovered under: `<FORGE_HOME>/plugins`, or one of the operator's `plugin_dirs`. |
-| `capabilities` | array of string | any combination of `events`, `intake`, `annotate`. |
+| `capabilities` | array of string | any combination of `events`, `intake`, `annotate`, `message`, `system`. |
 | `restart` | string | `always`, `on-failure`, or `never`. |
 | `enabled` | bool | Whether the operator has enabled it. |
 

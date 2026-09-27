@@ -28,6 +28,7 @@ mod listing;
 mod messages;
 mod ops;
 mod plugins;
+mod presence;
 mod providers;
 mod provision;
 mod questions;

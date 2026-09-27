@@ -127,6 +127,8 @@ pub(crate) fn ymd(unix_secs: i64) -> String {
 
 mod binaries;
 use binaries::check_binaries;
+mod presence;
+use presence::check_presence;
 
 /// What an attempt can reach: whether bwrap can give it a network namespace
 /// at all, the model endpoints that are always allowed, and each project's
@@ -1242,6 +1244,7 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     out.extend(check_workflows(&paths));
     out.push(workflows::shadow::doctor_check(&paths.home));
     out.extend(check_plugins(&paths, &store));
+    out.extend(check_presence(&paths, &store));
     out.extend(check_learning(&paths, &store));
     out.extend(check_worker(&paths, &store));
     out.extend(check_queue(&store));
