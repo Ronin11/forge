@@ -303,3 +303,78 @@ fn forge_demo_fake_overrides_a_configured_codex_provider_and_roles() {
     let origin = e.home.join("demo/origin.git");
     assert_eq!(git(&origin, &["show", "main:answer.txt"]), "42");
 }
+
+#[test]
+fn forge_init_bakes_the_shell_path_into_the_units_and_prints_it() {
+    let e = Env::new();
+    let agents = e.home.parent().unwrap().join("agent-cli-dir");
+    std::fs::create_dir_all(&agents).unwrap();
+    write_fake(&agents.join("claude"), "#!/bin/sh\nexit 0\n");
+    let shell_path = format!("{}:/usr/bin:/bin", agents.display());
+    let mut cmd = e.cmd("ok.sh");
+    cmd.env_remove("XDG_RUNTIME_DIR")
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        .env("PATH", &shell_path)
+        .arg("init");
+    let o = cmd.output().expect("forge init");
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{out}");
+    let unit_dir = e.xdg_config.join("systemd/user");
+    for name in ["forge-worker.service", "forge-web.service"] {
+        let unit = std::fs::read_to_string(unit_dir.join(name)).unwrap();
+        let line = unit
+            .lines()
+            .find(|l| l.starts_with("Environment=PATH="))
+            .unwrap();
+        let dirs: Vec<&str> = line["Environment=PATH=".len()..].split(':').collect();
+        assert_eq!(
+            &dirs[1..],
+            [agents.to_str().unwrap(), "/usr/bin", "/bin"],
+            "{line}"
+        );
+    }
+    let worker = std::fs::read_to_string(unit_dir.join("forge-worker.service")).unwrap();
+    assert!(worker.contains("StartLimitBurst="), "{worker}");
+    assert!(
+        out.contains(&agents.display().to_string()),
+        "PATH is printed: {out}"
+    );
+}
+
+#[test]
+fn doctor_fails_when_the_worker_units_path_cannot_find_claude() {
+    let e = Env::new();
+    assert!(e.run("ok.sh", &[]).status.success());
+    let agents = e.home.parent().unwrap().join("agent-cli-dir");
+    std::fs::create_dir_all(&agents).unwrap();
+    write_fake(&agents.join("claude"), "#!/bin/sh\nexit 0\n");
+    let unit_dir = e.xdg_config.join("systemd/user");
+    std::fs::create_dir_all(&unit_dir).unwrap();
+    std::fs::write(
+        unit_dir.join("forge-worker.service"),
+        "[Service]\nEnvironment=PATH=/usr/local/bin:/usr/bin:/bin\n",
+    )
+    .unwrap();
+    let mut cmd = e.cmd("ok.sh");
+    cmd.env("FORGE_CLAUDE_BIN", "claude")
+        .env(
+            "PATH",
+            format!("{}:/usr/local/bin:/usr/bin:/bin", agents.display()),
+        )
+        .arg("doctor");
+    let o = cmd.output().expect("forge doctor");
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(!o.status.success(), "{out}");
+    let row = out
+        .lines()
+        .find(|l| l.contains("binary.claude"))
+        .expect(&out);
+    assert!(
+        row.contains("FAIL") && row.contains("forge-worker.service"),
+        "{out}"
+    );
+    assert!(
+        out.contains("forge init --relink"),
+        "the fix is named: {out}"
+    );
+}
