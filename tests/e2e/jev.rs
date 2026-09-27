@@ -39,9 +39,67 @@ on_failure = "drop"
 
 const ASK: &str = "name = \"ask-april\"\nkind = \"operation\"\ndescription = \"hand it to a person\"\nrun = [\"true\"]\n";
 
-/// A loopback endpoint answering each request with a Jev result for
-/// `choice` at `confidence`; the receiver carries (path, authorization,
-/// body) per request.
+/// Jev's answer to one question of the request, in the shape the real API
+/// returns for its type: a `choice` of `choice` at `confidence`, a `noul`
+/// of 0.22, a `score` whose most probable level is the second; `Err` is the
+/// API's refusal of a score whose criteria are not an array of level names.
+fn answer(
+    name: &str,
+    q: &serde_json::Value,
+    choice: &str,
+    confidence: f64,
+) -> Result<serde_json::Value, String> {
+    match q["type"].as_str() {
+        Some("choice") => {
+            let options = q["criteria"].as_object().cloned().unwrap_or_default();
+            let rest = (1.0 - confidence) / (options.len().max(2) - 1) as f64;
+            let probabilities: serde_json::Map<String, serde_json::Value> = options
+                .keys()
+                .map(|k| {
+                    (
+                        k.clone(),
+                        if k == choice { confidence } else { rest }.into(),
+                    )
+                })
+                .collect();
+            Ok(serde_json::json!({"type": "choice", "choice": choice,
+                "probabilities": probabilities, "confidence": confidence}))
+        }
+        Some("noul") => Ok(serde_json::json!({"type": "noul", "noul": 0.22})),
+        Some("score") => {
+            let Some(levels) = q["criteria"].as_array() else {
+                return Err(format!(
+                    "Invalid value at questions.{name}.criteria: Invalid input: expected array, received object"
+                ));
+            };
+            let legend: serde_json::Map<String, serde_json::Value> = levels
+                .iter()
+                .enumerate()
+                .map(|(i, l)| (i.to_string(), l.clone()))
+                .collect();
+            let probabilities: serde_json::Map<String, serde_json::Value> = (0..levels.len())
+                .map(|i| {
+                    let p = match i {
+                        1 => 0.78,
+                        2 => 0.22,
+                        _ => 0.0,
+                    };
+                    (i.to_string(), p.into())
+                })
+                .collect();
+            Ok(
+                serde_json::json!({"type": "score", "score": 1.21, "legend": legend,
+                "probabilities": probabilities, "confidence": 0.67}),
+            )
+        }
+        other => Err(format!("unknown question type {other:?}")),
+    }
+}
+
+/// A loopback endpoint answering each request as Workers AI answers Jev's:
+/// each question in the shape its type takes (see `answer`), a choice
+/// being `choice` at `confidence`; the receiver carries (path,
+/// authorization, body) per request.
 fn fake_jev(
     choice: &'static str,
     confidence: f64,
@@ -59,22 +117,33 @@ fn fake_jev(
                 .find(|h| h.field.equiv("Authorization"))
                 .map(|h| h.value.to_string())
                 .unwrap_or_default();
-            let _ = tx.send((
-                req.url().to_string(),
-                auth,
-                serde_json::from_str(&body).unwrap(),
-            ));
-            let other = if choice == "reply" { "ignore" } else { "reply" };
-            let answer = serde_json::json!({"result": {"result": {
-                "model": "jev-1.13.0",
-                "answers": {"outcome": {
-                    "type": "choice", "choice": choice, "confidence": confidence,
-                    "probabilities": {choice: confidence, other: 1.0 - confidence},
-                    "legend": {},
-                }},
-                "usage": {"input_tokens": 500, "output_tokens": 12},
-            }}, "success": true});
-            let _ = req.respond(tiny_http::Response::from_string(answer.to_string()));
+            let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let _ = tx.send((req.url().to_string(), auth, body.clone()));
+            let answers: Result<serde_json::Map<String, serde_json::Value>, String> = body["input"]
+                ["questions"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(name, q)| Ok((name.clone(), answer(name, q, choice, confidence)?)))
+                .collect();
+            let response = match answers {
+                Ok(answers) => tiny_http::Response::from_string(
+                    serde_json::json!({"success": true, "result": {
+                        "state": "Completed",
+                        "result": {
+                            "model": "jev-1.13.0",
+                            "answers": answers,
+                            "usage": {"input_tokens": 500, "output_tokens": 87},
+                        },
+                    }})
+                    .to_string(),
+                ),
+                Err(why) => tiny_http::Response::from_string(
+                    serde_json::json!({"success": false, "errors": [{"message": why}]}).to_string(),
+                )
+                .with_status_code(400),
+            };
+            let _ = req.respond(response);
         }
     });
     (url, rx)
@@ -178,7 +247,13 @@ fn eval_jev_replays_a_fixture_and_reports_accuracy_calibration_latency_and_cost(
         &fixture,
         r#"{"concierge": [
               {"state": "make the quote say usually same day", "label": "request"},
-              {"state": "did the reminder go out?", "label": "question"}]}"#,
+              {"state": "did the reminder go out?", "label": "question"}],
+            "demotions": [
+              {"state": "cargo test parse::edge fails with left 3, right 4", "label": "yes"},
+              {"state": "should this also cover the legacy path?", "label": "no"}],
+            "size": [
+              {"state": "fix the typo in the quote footer", "label": "small"},
+              {"state": "add a reminders page with its own settings", "label": "medium"}]}"#,
     )
     .unwrap();
     let report = e.home.join("report.md");
@@ -202,14 +277,54 @@ fn eval_jev_replays_a_fixture_and_reports_accuracy_calibration_latency_and_cost(
         std::fs::read_to_string(&report).unwrap().trim_end(),
         out.trim_end()
     );
-    assert!(out.contains("## Concierge decisions"), "{out}");
-    assert!(out.contains("accuracy: 50.0% (1 of 2 answered)"), "{out}");
-    assert!(out.contains("| 0.9-1.0 | 2 | 0.90 | 50.0% |"), "{out}");
-    assert!(out.contains("mean latency:"), "{out}");
+    let section = |title: &str| {
+        let at = out
+            .find(&format!("## {title}"))
+            .unwrap_or_else(|| panic!("no {title} in {out}"));
+        let rest = &out[at + 3..];
+        rest[..rest.find("## ").unwrap_or(rest.len())].to_string()
+    };
+    let concierge = section("Concierge decisions");
+    assert!(
+        concierge.contains("accuracy: 50.0% (1 of 2 answered)"),
+        "{out}"
+    );
+    assert!(
+        concierge.contains("| 0.9-1.0 | 2 | 0.90 | 50.0% |"),
+        "{out}"
+    );
+    assert!(concierge.contains("mean latency:"), "{out}");
     // Two calls of 500 input tokens at $0.042 per million.
-    assert!(out.contains("total cost: $0.000042"), "{out}");
-    assert!(out.contains("No labeled items in the record."), "{out}");
-    let (_, _, body) = rx.recv().unwrap();
-    assert_eq!(body["input"]["questions"]["outcome"]["type"], "choice");
-    assert!(body["input"]["questions"]["outcome"]["criteria"]["need"].is_string());
+    assert!(concierge.contains("total cost: $0.000042"), "{out}");
+    // A noul of 0.22 is `no` at confidence 0.56.
+    let demotions = section("Review demotions");
+    assert!(
+        demotions.contains("accuracy: 50.0% (1 of 2 answered)"),
+        "{out}"
+    );
+    assert!(
+        demotions.contains("| 0.5-0.6 | 2 | 0.56 | 50.0% |"),
+        "{out}"
+    );
+    // The most probable level is `medium`, at the answer's confidence.
+    let size = section("Task size");
+    assert!(size.contains("accuracy: 50.0% (1 of 2 answered)"), "{out}");
+    assert!(size.contains("| 0.6-0.7 | 2 | 0.67 | 50.0% |"), "{out}");
+    for s in [&concierge, &demotions, &size] {
+        assert!(s.contains("- errors: 0\n"), "{out}");
+    }
+    let bodies: Vec<serde_json::Value> = rx.try_iter().map(|(_, _, b)| b).collect();
+    assert_eq!(bodies.len(), 6);
+    let q = &bodies[0]["input"]["questions"]["outcome"];
+    assert_eq!(q["type"], "choice");
+    assert!(q["criteria"]["need"].is_string());
+    let q = &bodies[2]["input"]["questions"]["outcome"];
+    assert_eq!(q["type"], "noul");
+    assert!(q["criteria"]["true"].is_string() && q["criteria"]["false"].is_string());
+    let q = &bodies[4]["input"]["questions"]["outcome"];
+    assert_eq!(q["type"], "score");
+    assert_eq!(
+        q["criteria"],
+        serde_json::json!(["small", "medium", "large"])
+    );
 }

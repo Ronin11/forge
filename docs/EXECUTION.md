@@ -207,7 +207,12 @@ become one `choice` question named `outcome`, its criteria the
 descriptions; each `[[questions]]` entry is asked beside it. The result is
 the directive's structured envelope: `outcome` (after the floor),
 `confidence`, `probabilities`, and any other question's answer under
-`answers`. The floor's names are outcomes like any other, so an edge
+`answers`. Each answer type is read the same way: a `choice` names its
+label; a `noul` comes back as a bare `{"type":"noul","noul":0.22}`, true at
+0.5 or above, with confidence `|noul - 0.5| * 2` and probabilities
+`{true: noul, false: 1 - noul}`; a `score` is the most probable level of
+its `probabilities`, named through its `legend`, and its criteria go out as
+an array of level names (an object's keys are sent in that form). The floor's names are outcomes like any other, so an edge
 routes on them (`on = { uncertain = "ask-april" }`); the choice the floor
 overrode stays in the envelope as `choice`. The step's row in `job_steps`
 records the probabilities (`forge job show --json`'s
@@ -226,11 +231,13 @@ what the record already knows. It changes no routing; it measures. Three sets ar
 pulled from the store and each item is sent to the provider as one question named
 `outcome`:
 
-1. **Concierge decisions**: every message the concierge sorted (its recorded
-   `concierge_json`, plus the questions it answered) as state, labeled with its
-   decision; a `choice` over `request`, `question`, `need`, `unclear`, whose criteria
+1. **Concierge decisions**: every message the concierge sorted as state, labeled
+   with the kind it recorded: each of its own runs (whose plan is the decision), the
+   `decisions` it answered (`answered_by = 'concierge'`) and every task filed through
+   it (`concierge_json`), each message once; a `choice` over `request`, `question`, `need`, `unclear`, whose criteria
    are docs/INTAKE.md's definitions.
-2. **Review demotions**: each demotion's text as state, one `noul`: names a
+2. **Review demotions**: each demotion's text as state, one `noul` (criteria
+   `true` and `false`, read as `yes` and `no`): names a
    reproducible defect with a command or steps. Labeled `yes` when the
    demotion-as-task rule filed a follow-up (or the answer was "do it as stated"),
    `no` when it blocked as a question.
