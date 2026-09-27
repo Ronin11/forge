@@ -110,7 +110,7 @@ impl Store {
             answered_for,
         } = args;
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "INSERT INTO decisions (task_id, repo, question, answer, created_at, answered_by, citations, answered_for) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![task_id, repo, question, answer, crate::unix_now(), answered_by, citations, answered_for],
         )?;
@@ -118,7 +118,7 @@ impl Store {
     }
 
     pub fn set_decision_retry(&self, decision_id: i64, retry_id: i64) -> Result<()> {
-        self.lock().execute(
+        self.lock().retry_execute(
             "UPDATE decisions SET retry_id=?2 WHERE id=?1",
             params![decision_id, retry_id],
         )?;
@@ -127,7 +127,7 @@ impl Store {
 
     /// Mark a decision as the kernel's own ruling of `kind`.
     pub fn set_decision_kind(&self, decision_id: i64, kind: &str) -> Result<()> {
-        self.lock().execute(
+        self.lock().retry_execute(
             "UPDATE decisions SET kind=?2 WHERE id=?1",
             params![decision_id, kind],
         )?;
@@ -144,7 +144,7 @@ impl Store {
         let ids: Vec<i64> = self.lineage(task_id)?.iter().map(|l| l.id).collect();
         let c = self.lock();
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let n: i64 = c.query_row(
+        let n: i64 = c.retry_query_row(
             &format!(
                 "SELECT COUNT(*) FROM decisions WHERE task_id IN ({placeholders}) AND answered_by='supervisor'"
             ),
@@ -180,7 +180,7 @@ impl Store {
     /// when disabling).
     pub fn set_plugin_enabled(&self, name: &str, enabled: bool, at: i64) -> Result<()> {
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "INSERT INTO plugins (name, enabled, enabled_at) VALUES (?1, ?2, ?3)
              ON CONFLICT(name) DO UPDATE SET enabled = excluded.enabled, enabled_at = excluded.enabled_at",
             params![name, enabled as i64, enabled.then_some(at)],
@@ -246,7 +246,7 @@ impl Store {
     /// none, so it names no single one.
     pub fn insert_reprice_decision(&self, question: &str, answer: &str) -> Result<i64> {
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "INSERT INTO decisions (task_id, repo, question, answer, created_at, answered_by, citations, answered_for)
              VALUES (NULL, '', ?1, ?2, ?3, 'operator', '', NULL)",
             params![question, answer, crate::unix_now()],
@@ -265,7 +265,7 @@ impl Store {
         by: &str,
     ) -> Result<i64> {
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "INSERT INTO task_refs (task_id, kind, url, label, by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![task_id, kind, url, label, by, crate::unix_now()],
         )?;

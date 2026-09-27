@@ -16,7 +16,7 @@ impl Store {
     pub fn event_cursor(&self, project: &str, workflow: &str) -> Result<Option<i64>> {
         Ok(self
             .lock()
-            .query_row(
+            .retry_query_row(
                 "SELECT event_offset FROM event_cursors WHERE project=?1 AND workflow=?2",
                 params![project, workflow],
                 |r| r.get(0),
@@ -28,7 +28,7 @@ impl Store {
     /// `offset`. Not monotonic: the worker sets it back to 0 when the log
     /// has rolled to a shorter file.
     pub fn set_event_cursor(&self, project: &str, workflow: &str, offset: i64) -> Result<()> {
-        self.lock().execute(
+        self.lock().retry_execute(
             "INSERT INTO event_cursors (project, workflow, event_offset) VALUES (?1, ?2, ?3)
              ON CONFLICT(project, workflow) DO UPDATE SET event_offset=excluded.event_offset",
             params![project, workflow, offset],

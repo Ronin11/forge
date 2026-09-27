@@ -354,7 +354,7 @@ impl Store {
 
     pub fn insert_attempt(&self, a: &Attempt) -> Result<i64> {
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "INSERT INTO attempts (task_id, attempt_no, state, started_at, log_path, step, start_sha, inputs_json, step_seq, runner, provider)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![a.task_id, a.attempt_no, a.state.as_str(), a.started_at, a.log_path, a.step, a.start_sha, a.inputs_json, a.step_seq, a.runner, a.provider],
@@ -363,7 +363,7 @@ impl Store {
     }
 
     pub fn finish_attempt(&self, a: &FinishAttempt) -> Result<()> {
-        self.lock().execute(
+        self.lock().retry_execute(
             "UPDATE attempts SET state=?2, reason=?3, finished_at=?4, agent_exit=?5, timed_out=?6, num_turns=?7,
              tool_calls=?8, cost_usd=?9, agent_ms=?10, commits=?11, files_changed=?12, dirty=?13, verdict_json=?14,
              result_text=?15, envelope_json=?16, rl_five_hour=?17, rl_seven_day=?18, rl_five_hour_resets=?19,
@@ -420,7 +420,7 @@ impl Store {
     pub fn latest_rate_limit(&self, provider: &str) -> Result<Option<RateLimitSample>> {
         Ok(self
             .lock()
-            .query_row(
+            .retry_query_row(
                 "SELECT COALESCE(finished_at, started_at) AS seen_at, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets FROM attempts
                  WHERE provider = ?1 AND (rl_five_hour IS NOT NULL OR rl_seven_day IS NOT NULL) ORDER BY id DESC LIMIT 1",
                 params![provider],
@@ -439,7 +439,7 @@ impl Store {
 
     pub fn insert_op(&self, o: &Op) -> Result<i64> {
         let c = self.lock();
-        c.execute(
+        c.retry_execute(
             "INSERT INTO ops (task_id, seq, name, kernel, started_at, ms, ok, exit, detail, attempt_id, output)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![o.task_id, o.seq, o.name, o.kernel as i64, o.started_at, o.ms, o.ok as i64, o.exit, o.detail, o.attempt_id, o.output],
@@ -460,7 +460,7 @@ impl Store {
     /// Mark an attempt the run did not count against its directive.
     pub fn refund_attempt(&self, id: i64) -> Result<()> {
         self.lock()
-            .execute("UPDATE attempts SET refunded=1 WHERE id=?1", params![id])?;
+            .retry_execute("UPDATE attempts SET refunded=1 WHERE id=?1", params![id])?;
         Ok(())
     }
 
@@ -608,7 +608,7 @@ impl Store {
             } else {
                 cli_cost
             };
-            c.execute(
+            c.retry_execute(
                 "UPDATE attempts SET cost_usd=?2, repriced_at=?3, cli_cost_usd=?4 WHERE id=?1",
                 params![id, cost, now, cli],
             )?;
@@ -620,7 +620,7 @@ impl Store {
 
     /// Total cost of a task's attempts so far, from the CLI's accounting.
     pub fn task_cost(&self, task_id: i64) -> Result<f64> {
-        Ok(self.lock().query_row(
+        Ok(self.lock().retry_query_row(
             "SELECT COALESCE(SUM(cost_usd), 0) FROM attempts WHERE task_id=?1",
             params![task_id],
             |r| r.get(0),
@@ -657,7 +657,7 @@ impl Store {
     }
 
     pub fn spent_since(&self, since: i64) -> Result<f64> {
-        Ok(self.lock().query_row(
+        Ok(self.lock().retry_query_row(
             "SELECT COALESCE(SUM(cost_usd), 0) FROM attempts WHERE started_at >= ?1",
             params![since],
             |r| r.get(0),
@@ -676,7 +676,7 @@ impl Store {
     }
 
     pub fn mark_worktree_removed(&self, id: i64) -> Result<()> {
-        self.lock().execute(
+        self.lock().retry_execute(
             "UPDATE tasks SET worktree_removed_at=?2 WHERE id=?1",
             params![id, crate::unix_now()],
         )?;

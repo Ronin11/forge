@@ -910,87 +910,99 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         if !stopping && let Some(next) = reloader.check(&f, std::mem::take(&mut hup)) {
             f = next;
         }
-        let runs = tick_run_workflows(&f).await?;
-        schedule_tick(&f, &runs).await?;
-        event_tick(&f, &runs).await?;
-        let superseded = succession.superseded(&f)?;
-        if !stopping && succession.stop_requested() {
-            stopping = true;
-            eprintln!(
-                "stopping: the unit has a stop job; {} running attempt(s) will finish",
-                running.len()
-            );
-        }
-        if superseded && let Some(p) = plugins.take() {
-            p.stop().await;
-        }
-
-        // Fill free slots.
-        while !stopping
-            && !superseded
-            && env_error.is_none()
-            && running.len() < jobs
-            && opts.max_tasks.is_none_or(|m| claimed < m)
-        {
-            if let Some(msg) = day_budget_reached(&f)? {
-                eprintln!("{msg}; {} task(s) left queued", f.store.queued_count()?);
+        let mut superseded = false;
+        let pass: Result<()> = async {
+            let runs = tick_run_workflows(&f).await?;
+            schedule_tick(&f, &runs).await?;
+            event_tick(&f, &runs).await?;
+            superseded = succession.superseded(&f)?;
+            if !stopping && succession.stop_requested() {
                 stopping = true;
-                break;
-            }
-            for t in f.store.release_dependents()? {
-                eprintln!("task {t} unblocked: its dependencies landed or were withdrawn");
-            }
-            for (t, d, why) in f.store.block_dependents()? {
-                eprintln!("task {t} blocked: {why} (task {d})");
-            }
-            let held = held_initiatives(&f)?;
-            for line in new_holds(&f, &held, &mut announced_holds) {
-                eprintln!("{line}");
-            }
-            if let Some(t) = f.store.claim_next(pid, &held, |t| {
-                provider_is_held(&f, t) || intake_is_held(&f, t)
-            })? {
-                hold_until = None;
-                claimed += 1;
                 eprintln!(
-                    "======== task {} starting ({} queued, {} running)",
-                    t.id,
-                    f.store.queued_count()?,
-                    running.len() + 1
+                    "stopping: the unit has a stop job; {} running attempt(s) will finish",
+                    running.len()
                 );
-                ids.push(t.id);
-                let fc = f.clone();
-                running.spawn(async move { WorkResult::Task(t.id, drive(fc, t.id).await) });
-            } else if let Some(j) = f.store.claim_next_job()? {
-                // A job carries no provider or initiative hold (it runs
-                // no directive step yet), so it is claimed only once
-                // every queued task has already been tried this pass.
-                hold_until = None;
-                claimed += 1;
-                eprintln!(
-                    "======== job {} starting ({} queued, {} running)",
-                    j.id,
-                    f.store.queued_jobs()?.len(),
-                    running.len() + 1
-                );
-                job_ids.push(j.id);
-                let fc = f.clone();
-                running.spawn(async move { WorkResult::Job(j.id, job::drive(fc, j.id).await) });
-            } else {
-                // Nothing claimable: either the queue is empty/blocked, or
-                // every queued candidate's own provider is at its cap.
-                // Only the latter is a hold worth waiting out.
-                if let Some((msg, until)) = tightest_provider_hold(&f, &held)? {
-                    if f.store.queued_count()? > 0 && hold_until != Some(until) {
-                        eprintln!("{msg}; holding, {} task(s) queued", f.store.queued_count()?);
-                    }
-                    hold_until = Some(until);
-                } else {
-                    hold_until = None;
+            }
+            if superseded && let Some(p) = plugins.take() {
+                p.stop().await;
+            }
+
+            // Fill free slots.
+            while !stopping
+                && !superseded
+                && env_error.is_none()
+                && running.len() < jobs
+                && opts.max_tasks.is_none_or(|m| claimed < m)
+            {
+                if let Some(msg) = day_budget_reached(&f)? {
+                    eprintln!("{msg}; {} task(s) left queued", f.store.queued_count()?);
+                    stopping = true;
+                    break;
                 }
-                break;
+                for t in f.store.release_dependents()? {
+                    eprintln!("task {t} unblocked: its dependencies landed or were withdrawn");
+                }
+                for (t, d, why) in f.store.block_dependents()? {
+                    eprintln!("task {t} blocked: {why} (task {d})");
+                }
+                let held = held_initiatives(&f)?;
+                for line in new_holds(&f, &held, &mut announced_holds) {
+                    eprintln!("{line}");
+                }
+                if let Some(t) = f.store.claim_next(pid, &held, |t| {
+                    provider_is_held(&f, t) || intake_is_held(&f, t)
+                })? {
+                    hold_until = None;
+                    claimed += 1;
+                    eprintln!(
+                        "======== task {} starting ({} queued, {} running)",
+                        t.id,
+                        f.store.queued_count().unwrap_or(0),
+                        running.len() + 1
+                    );
+                    ids.push(t.id);
+                    let fc = f.clone();
+                    running.spawn(async move { WorkResult::Task(t.id, drive(fc, t.id).await) });
+                } else if let Some(j) = f.store.claim_next_job()? {
+                    // A job carries no provider or initiative hold (it runs
+                    // no directive step yet), so it is claimed only once
+                    // every queued task has already been tried this pass.
+                    hold_until = None;
+                    claimed += 1;
+                    eprintln!(
+                        "======== job {} starting ({} queued, {} running)",
+                        j.id,
+                        f.store.queued_jobs().map_or(0, |jobs| jobs.len()),
+                        running.len() + 1
+                    );
+                    job_ids.push(j.id);
+                    let fc = f.clone();
+                    running.spawn(async move { WorkResult::Job(j.id, job::drive(fc, j.id).await) });
+                } else {
+                    // Nothing claimable: either the queue is empty/blocked, or
+                    // every queued candidate's own provider is at its cap.
+                    // Only the latter is a hold worth waiting out.
+                    if let Some((msg, until)) = tightest_provider_hold(&f, &held)? {
+                        if f.store.queued_count()? > 0 && hold_until != Some(until) {
+                            eprintln!("{msg}; holding, {} task(s) queued", f.store.queued_count()?);
+                        }
+                        hold_until = Some(until);
+                    } else {
+                        hold_until = None;
+                    }
+                    break;
+                }
             }
+
+            Ok(())
         }
+        .await;
+        let pass_failed = if let Err(error) = pass {
+            eprintln!("worker pass failed; retrying: {error:#}");
+            true
+        } else {
+            false
+        };
 
         if running.is_empty() {
             if superseded {
@@ -1014,6 +1026,12 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                         _ = tokio::time::sleep(Duration::from_secs(wait)) => continue,
                         _ = hangup.recv() => { hup = true; continue }
                         _ = shutdown.recv() => { eprintln!("stopping"); break }
+                    }
+                }
+                (None, _) if pass_failed && !stopping => {
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(opts.poll.unwrap_or(10))) => continue,
+                        _ = shutdown.recv() => break,
                     }
                 }
                 (None, Some(secs)) if !stopping && env_error.is_none() && !exhausted => {
