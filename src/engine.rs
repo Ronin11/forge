@@ -793,6 +793,20 @@ async fn run_operation_step(args: RunOperationStep<'_>) -> Result<StepFlow, Faul
     }))
 }
 
+/// Consecutive provider refusals a directive tolerates before giving up the
+/// slot rather than relaunching forever on a provider that never relents.
+const REFUSAL_LIMIT: u32 = 5;
+
+/// A provider kept refusing past `REFUSAL_LIMIT`: the task fails without
+/// spending an attempt, since none of the refusals counted as one.
+fn refusal_exhausted() -> End {
+    End::Failed {
+        reason: format!("the provider refused {REFUSAL_LIMIT} times in a row without a window"),
+        counted: false,
+        pushes: false,
+    }
+}
+
 /// One directive step of the run: attempts until one verifies or the
 /// directive is out of them, with the window hold, the budget, the resume
 /// of a capped session, the tests-fault rewind, and what each contract
@@ -893,6 +907,7 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
     // The last attempt ran out of turns after committing, tree
     // clean, no result: the checks can still judge the code.
     let mut capped_committed = false;
+    let mut consecutive_refusals = 0u32;
     while run.used_at(seq) < t.max_attempts {
         // A subscription window at its cap: give up the slot rather than
         // sleep it out here, deaf to shutdown, for as long as an hour at a
@@ -1005,6 +1020,10 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
         // spent. The hold at the top of the loop waits for the
         // window; the same feedback and session go again.
         if outcome.rate_limited && a.state != AttemptState::Unverified {
+            consecutive_refusals += 1;
+            if consecutive_refusals > REFUSAL_LIMIT {
+                return Ok(StepFlow::End(refusal_exhausted()));
+            }
             f.report.emit(
                 id,
                 Event::Note {
@@ -1014,6 +1033,7 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
             run.refund(f, seq, a.id)?;
             continue;
         }
+        consecutive_refusals = 0;
         // An environment need the policy covers (a host the proxy
         // refused, a host cache) is applied and the attempt runs again;
         // it does not count against the directive. What the table does

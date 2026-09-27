@@ -83,8 +83,8 @@ fn landing_lands_on_the_remotes_tip_even_when_the_checkouts_tracking_ref_cannot_
             ("repo-map".into(), true),
             ("verify".into(), true),
             ("integrate".into(), true),
-            ("push".into(), true),
-            ("land".into(), true)
+            ("land".into(), true),
+            ("push".into(), true)
         ]
     );
     assert_eq!(
