@@ -479,7 +479,11 @@ pub async fn common_l0(s: &Subject<'_>, agent: &Outcome) -> Result<Common> {
     rows.push(l0(
         Rule::CleanTree,
         dirty.is_empty(),
-        format!("uncommitted: {}", dirty.join(", ")),
+        format!(
+            "uncommitted: {}{}",
+            dirty.join(", "),
+            overlay_note(&dirty, &cfg.namespace)
+        ),
     ));
     rows.push(no_stray_files(worktree, start_sha).await?);
     let touched = changed
@@ -562,12 +566,44 @@ pub async fn overlay(
     if namespace.is_empty() {
         return Ok(placed);
     }
+    let mut listed = Vec::new();
     for r in refs {
-        let files = crate::git::ls_tree(repo, r, namespace).await?;
-        crate::git::archive_into(repo, r, &files, dest).await?;
+        listed.push((r, crate::git::ls_tree(repo, r, namespace).await?));
+    }
+    let names: Vec<&String> = listed.iter().flat_map(|(_, f)| f.iter()).collect();
+    record_overlay(dest, namespace, &names)?;
+    for (r, files) in &listed {
+        crate::git::archive_into(repo, r, files, dest).await?;
         placed.extend(files.iter().map(|f| dest.join(f)));
     }
     Ok(placed)
+}
+
+/// Where the overlay's manifest lives: inside the worktree's git directory,
+/// so it is never part of the tree and survives a crash with it.
+fn manifest_path(dest: &Path) -> PathBuf {
+    dest.join(".git").join("forge-overlay")
+}
+
+/// Written before the first overlay file is: the namespace directories
+/// (`D`) and every file about to be placed (`F`), one per line.
+fn record_overlay(dest: &Path, namespace: &[String], files: &[&String]) -> Result<()> {
+    let path = manifest_path(dest);
+    if !path.parent().is_some_and(Path::is_dir) {
+        return Ok(());
+    }
+    let mut text = String::new();
+    for d in namespace {
+        text.push_str(&format!("D {}\n", d.trim_end_matches('/')));
+    }
+    for f in files {
+        text.push_str(&format!("F {f}\n"));
+    }
+    if let Ok(old) = std::fs::read_to_string(&path) {
+        text = format!("{old}{text}");
+    }
+    std::fs::write(&path, text)?;
+    Ok(())
 }
 
 pub fn remove_overlay(placed: &[PathBuf], namespace: &[String], dest: &Path) {
@@ -578,6 +614,57 @@ pub fn remove_overlay(placed: &[PathBuf], namespace: &[String], dest: &Path) {
         let dir = dest.join(d.trim_end_matches('/'));
         let _ = remove_empty_dirs(&dir);
     }
+    let _ = std::fs::remove_file(manifest_path(dest));
+}
+
+/// Removes what an interrupted overlay left in `dest`, from the manifest
+/// written before it was placed. Returns how many files were removed.
+pub fn clear_recorded_overlay(worktree: &str) -> usize {
+    if worktree.is_empty() {
+        return 0;
+    }
+    let dest = Path::new(worktree);
+    let path = manifest_path(dest);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return 0;
+    };
+    let mut removed = 0;
+    let mut dirs = Vec::new();
+    for line in text.lines() {
+        match line.split_once(' ') {
+            Some(("F", f)) if !f.split('/').any(|c| c == "..") && !f.starts_with('/') => {
+                if std::fs::remove_file(dest.join(f)).is_ok() {
+                    removed += 1;
+                }
+            }
+            Some(("D", d)) if !d.split('/').any(|c| c == "..") && !d.starts_with('/') => {
+                dirs.push(d.to_string())
+            }
+            _ => {}
+        }
+    }
+    for d in dirs {
+        let _ = remove_empty_dirs(&dest.join(d));
+    }
+    let _ = std::fs::remove_file(path);
+    removed
+}
+
+/// Names the kernel's own verification overlay among dirty paths, so the
+/// clean-tree failure does not read as the agent's mess.
+fn overlay_note(dirty: &[String], namespace: &[String]) -> String {
+    let ours: Vec<&str> = dirty
+        .iter()
+        .filter(|p| in_namespace(namespace, p))
+        .map(String::as_str)
+        .collect();
+    if ours.is_empty() {
+        return String::new();
+    }
+    format!(
+        " (Forge's own verification overlay, not the agent's: {}; a worker that died between overlay and cleanup leaves it, and Forge removes it when the next attempt starts)",
+        ours.join(", ")
+    )
 }
 
 fn remove_empty_dirs(dir: &Path) -> std::io::Result<()> {
@@ -899,7 +986,11 @@ pub async fn verify_operation(s: Subject<'_>) -> Result<Verdict> {
     v.checks.push(l0(
         Rule::CleanTree,
         dirty.is_empty(),
-        format!("left uncommitted by the operation: {}", dirty.join(", ")),
+        format!(
+            "left uncommitted by the operation: {}{}",
+            dirty.join(", "),
+            overlay_note(dirty, &s.cfg.namespace)
+        ),
     ));
     v.checks
         .push(no_stray_files(s.worktree, s.start_sha).await?);
@@ -936,7 +1027,11 @@ pub async fn verify_integration(s: &Subject<'_>) -> Result<Verdict> {
     v.checks.push(l0(
         Rule::CleanTree,
         dirty.is_empty(),
-        format!("uncommitted after the merge: {}", dirty.join(", ")),
+        format!(
+            "uncommitted after the merge: {}{}",
+            dirty.join(", "),
+            overlay_note(dirty, &s.cfg.namespace)
+        ),
     ));
     let touched = changed.iter().any(|p| p == s.cfg.config_path.as_str());
     v.checks.push(l0(
