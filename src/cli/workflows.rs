@@ -599,13 +599,20 @@ async fn refresh_workflows(take_builtin: bool, keep: bool) -> Result<()> {
             }
             (Origin::OperatorEdit, false, true) => out!("kept {} (operator edit)", s.file),
             (Origin::OperatorEdit, false, false) => {
-                out!(
-                    "{} is an operator edit ({} diff line(s), {} old):\n{}",
-                    s.file,
-                    s.diff_lines(),
-                    shadow::age_text(s.age_secs),
-                    s.diff
-                );
+                match &s.diff {
+                    Ok(diff) => out!(
+                        "{} is an operator edit ({} diff line(s), {} old):\n{}",
+                        s.file,
+                        s.diff_lines(),
+                        shadow::age_text(s.age_secs),
+                        diff
+                    ),
+                    Err(e) => out!(
+                        "{} is an operator edit ({} old): diff failed: {e}",
+                        s.file,
+                        shadow::age_text(s.age_secs)
+                    ),
+                }
                 refused.push(s.file);
             }
         }

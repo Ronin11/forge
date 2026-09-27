@@ -3,6 +3,7 @@
 //! refresh` removes the seed (docs/WORKFLOWS.md, "Authoring").
 
 use crate::support::*;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 const FMT: &str = include_str!("../../src/builtins/operations/fmt.toml");
@@ -111,4 +112,53 @@ fn an_identical_seed_is_a_stale_seed_and_refresh_deletes_it() {
     let o = e.forge("ok.sh", &["workflows", "refresh"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(!cat.join("actions/fmt.toml").exists());
+}
+
+/// A `git diff --no-index` that dies (here, of `SIGBUS`, the failure that
+/// motivated `diff_of`'s unique-per-call temp file) must make the doctor's
+/// shadowing row state the failure, not `0 diff line(s)` — indistinguishable
+/// from "no differences", the exact silent symptom this guards against.
+#[test]
+fn a_git_diff_that_dies_reports_the_failure_not_zero_diff_lines() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let cat = e.home.join("workflows");
+    std::fs::write(cat.join("actions/fmt.toml"), FMT).unwrap();
+
+    let fakebin = e._dir.path().join("fakebin");
+    std::fs::create_dir_all(&fakebin).unwrap();
+    let git_path = fakebin.join("git");
+    std::fs::write(
+        &git_path,
+        "#!/bin/bash\nif [ \"$1\" = diff ] && [ \"$2\" = --no-index ]; then\n  kill -BUS $$\nfi\nexec /usr/bin/git \"$@\"\n",
+    )
+    .unwrap();
+    let mut perm = std::fs::metadata(&git_path).unwrap().permissions();
+    perm.set_mode(0o755);
+    std::fs::set_permissions(&git_path, perm).unwrap();
+    let path = format!(
+        "{}:{}",
+        fakebin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", &path)
+        .args(["doctor"])
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    let row = out.lines().find(|l| l.contains("shadowing")).unwrap_or("");
+    assert!(row.contains("fmt.toml"), "{out}");
+    assert!(row.contains("diff failed"), "{out}");
+    assert!(!row.contains("0 diff line(s)"), "{out}");
+
+    // Real git again: the failure must not have been cached into a stuck
+    // placeholder that a later, healthy `git diff` can no longer replace.
+    let o = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    let row = out.lines().find(|l| l.contains("shadowing")).unwrap_or("");
+    assert!(row.contains("diff line(s)"), "{out}");
+    assert!(!row.contains("diff failed"), "{out}");
 }
