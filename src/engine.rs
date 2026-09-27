@@ -544,6 +544,7 @@ async fn prepare_worktree(
     // surfaces at the setup step, and that failure belongs to the coder,
     // not to the task, since a fresh clone would never see it.
     let mut merged_base_retry = false;
+    crate::git::clear_recorded_overlay(&t.worktree);
     if t.worktree.is_empty() {
         let base_name = format!("forge/{}-{}", t.id, slug(&t.task));
         t.branch = base_name.clone();

@@ -848,6 +848,9 @@ impl Shutdown {
 /// Tasks and jobs a dead worker left running go back in the queue.
 fn recover_orphans(f: &Forge) -> Result<()> {
     for id in f.store.orphans(pid_alive)? {
+        if let Some(t) = f.store.task(id)? {
+            crate::git::clear_recorded_overlay(&t.worktree);
+        }
         f.store.requeue(id, "previous worker exited")?;
         eprintln!("requeued task {id}: its previous worker exited");
     }
