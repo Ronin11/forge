@@ -1724,7 +1724,11 @@ enum End {
     /// so nothing is pushed. `last` is the last filed task, chained
     /// after every other: `finish` re-points this task's own dependents
     /// at it, since the work they waited for now happens there.
-    Filed { n: usize, initiative: i64, last: i64 },
+    Filed {
+        n: usize,
+        initiative: i64,
+        last: i64,
+    },
 }
 
 /// Names the L0 rows the last attempt's verdict failed, the same shape
