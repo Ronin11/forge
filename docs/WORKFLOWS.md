@@ -401,6 +401,28 @@ may declare `outcomes = [...]`, which its schema then requires as an
 `outcome` field (docs/EXECUTION.md, docs/JOBS.md "Steps"). A workflow
 drafted here must carry both where they apply.
 
+### Where a built-in ends and an operator's copy begins
+
+Built-in actions and operations live in the binary, never in the catalog:
+`forge init` and every catalog load write only workflows, fragments and
+`experiment.toml`. The catalog's `actions/` holds the actions the operator
+authored, plus any copy of a built-in the operator chose to change.
+
+A catalog file named like a built-in shadows it, and the loader decides by
+the catalog's git history whether the copy is the operator's:
+
+- a copy that differs from the built-in and has a commit on that file
+  other than seeding ones (author `forge`, or a message starting
+  `catalog: built-in`) is an **operator edit** and wins;
+- any other differing copy is a **stale seed** (an old `ensure` wrote it):
+  the built-in is used, and one line on stderr says the copy was ignored.
+
+`forge doctor` has a `shadowing` row listing each shadowing file with its
+age, stale seed or operator edit, and the diff's line count; stale seeds
+point at `forge workflows refresh`, which deletes them. For an operator
+edit it prints the diff and refuses unless given `--take-builtin` (drop
+the copy) or `--keep` (leave it).
+
 ### The page
 
 `/workflows/new` is the operator's front door to `author-workflow`: a
