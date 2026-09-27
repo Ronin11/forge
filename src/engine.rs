@@ -539,10 +539,8 @@ async fn prepare_worktree(
 ) -> Result<bool, Fault> {
     let id = t.id;
     let seq: i64 = 0;
-    // Set when this retry starts from a verified branch with the current
-    // base merged into it: a textually clean merge that does not build
-    // surfaces at the setup step, and that failure belongs to the coder,
-    // not to the task, since a fresh clone would never see it.
+    // A verified-branch retry merged with the current base may fail setup;
+    // that failure belongs to the coder, since a fresh clone would build.
     let mut merged_base_retry = false;
     crate::git::clear_recorded_overlay(&t.worktree);
     if t.worktree.is_empty() {
@@ -618,10 +616,8 @@ async fn prepare_worktree(
             .unwrap_or_default();
         t.worktree = dir.display().to_string();
         f.store.update_task(t).env()?;
-        // A retry of a task whose branch passed the checks starts from
-        // that branch, not from scratch: the review's finding or the
-        // operator's answer is the only thing left to act on. Three fresh
-        // rebuilds of one verified split cost ten dollars before this.
+        // Reuse a verified branch: only the review finding or operator's
+        // answer remains to address, avoiding repeated rebuilds from scratch.
         if let Some(old) = t.retry_of
             && let Some(from) = verified_branch_of(f, old).await
         {
@@ -633,10 +629,8 @@ async fn prepare_worktree(
                     if git::is_ancestor(&dir, &t.base_sha, "HEAD").await {
                         f.report.emit(id, Event::Note { text: &format!("start    from task {old}'s verified branch {} @ {short}", from.branch) });
                     } else {
-                        // Main moved while the branch was verified: merge the
-                        // current base into it, as the integrator would at
-                        // landing, rather than throw the verified work away.
-                        // Only a conflict sends the retry back to scratch.
+                        // Main moved: merge the current base as at landing,
+                        // preserving verified work unless the merge fails.
                         let msg = format!("Merge the current base into {}", from.branch);
                         match git::merge(&dir, &t.base_sha, &msg).await {
                             Ok(git::Merge::Merged(_)) | Ok(git::Merge::UpToDate) => {
