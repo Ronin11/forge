@@ -21,6 +21,7 @@ mod initiatives;
 mod intake;
 mod jev;
 mod jobs;
+mod jobs_schedule_retry;
 mod knownfixes;
 mod landing;
 mod landing_assess;
