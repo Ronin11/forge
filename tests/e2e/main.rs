@@ -23,6 +23,7 @@ mod knownfixes;
 mod landing;
 mod landing_assess;
 mod landing_concurrency;
+mod landing_fetch;
 mod listing;
 mod messages;
 mod ops;
