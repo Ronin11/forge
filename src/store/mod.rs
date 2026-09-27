@@ -350,12 +350,13 @@ fn lineage_ids(conn: &Connection, id: i64) -> rusqlite::Result<Vec<i64>> {
 
 impl Store {
     pub fn open(path: &Path) -> Result<Store> {
-        let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let mut conn =
+            Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=60000; PRAGMA foreign_keys=ON;",
         )?;
         let fresh: i64 = conn.retry_query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        migrate(&conn)?;
+        migrate(&mut conn)?;
         let store = Store {
             conn: Mutex::new(conn),
         };
@@ -757,8 +758,13 @@ impl Store {
     }
 }
 
-fn migrate(conn: &Connection) -> Result<()> {
-    let current: i64 = conn.retry_query_row("PRAGMA user_version", [], |r| r.get(0))?;
+/// `BEGIN IMMEDIATE` before re-reading `user_version`, so a second process
+/// racing this one blocks here (on the connection's `busy_timeout`) until
+/// the first commits, then sees its version and skips what it already
+/// applied instead of re-running a migration the first just committed.
+fn migrate(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let current: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let target = MIGRATIONS.len() as i64;
     if current > target {
         bail!(
@@ -767,33 +773,69 @@ fn migrate(conn: &Connection) -> Result<()> {
     }
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
         let v = i as i64 + 1;
-        conn.execute_batch("BEGIN")?;
         let r: rusqlite::Result<()> = (|| {
             if !migrations::is_contract(sql) {
-                conn.execute_batch(sql)?;
+                tx.execute_batch(sql)?;
             }
             if v == PROJECTS_MIGRATION_VERSION {
-                seed_projects_from_tasks(conn)?;
+                seed_projects_from_tasks(&tx)?;
             }
             if v == TASK_SHAPE_MIGRATION_VERSION {
-                tasks::backfill_task_shape(conn)?;
+                tasks::backfill_task_shape(&tx)?;
             }
-            conn.execute_batch(&format!("PRAGMA user_version={v}"))
+            tx.execute_batch(&format!("PRAGMA user_version={v}"))
         })();
-        match r {
-            Ok(()) => conn.execute_batch("COMMIT")?,
-            Err(e) => {
-                conn.execute_batch("ROLLBACK").ok();
-                bail!("migration to schema version {v} failed: {e}");
-            }
+        if let Err(e) = r {
+            bail!("migration to schema version {v} failed: {e}");
         }
     }
+    tx.commit()?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every migration but the last, applied by hand exactly as `migrate`
+    /// would (skipping contract SQL, still bumping `user_version`), to
+    /// leave one migration pending for a test to race two opens over.
+    fn fixture_one_migration_short(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        let upto = MIGRATIONS.len() - 1;
+        for sql in &MIGRATIONS[..upto] {
+            if !migrations::is_contract(sql) {
+                conn.execute_batch(sql).unwrap();
+            }
+        }
+        conn.execute_batch(&format!("PRAGMA user_version={upto}"))
+            .unwrap();
+    }
+
+    #[test]
+    fn two_threads_racing_the_same_pending_migration_both_succeed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        fixture_one_migration_short(&path);
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    Store::open(&path)
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap().unwrap();
+        }
+
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
+    }
 
     #[test]
     fn migrates_fresh_db_to_latest_and_is_idempotent() {
