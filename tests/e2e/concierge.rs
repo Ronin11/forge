@@ -391,6 +391,22 @@ fn unclear_blocks_a_placeholder_task_with_the_question_addressed_to_the_contact(
     assert_eq!(question_to.as_deref(), Some("alice"));
     assert!(concierge_json.is_some());
 
+    // A task born `blocked` (the concierge's "unclear" placeholder) still
+    // gets its journal arm and explore draw, the same as any other newly
+    // enqueued task (see docs/REVIEW-3.md, defect 1).
+    let arm: String = e
+        .db()
+        .query_row(
+            "SELECT journal_arm FROM tasks WHERE id=?1",
+            [blocked],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        matches!(arm.as_str(), "treatment" | "control" | "explicit"),
+        "blocked-born task has no journal arm: {arm:?}"
+    );
+
     let reqs: serde_json::Value = e.requests_json();
     let r = reqs
         .as_array()

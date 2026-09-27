@@ -313,6 +313,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   migrations.rs     MIGRATIONS: every forward-only schema migration, in order
   retry.rs          statement retries for SQLite busy and locked errors, with backoff up to one minute
   tasks.rs          tasks: claim, queue, dependents, lineage
+  arms.rs           insert_task_armed: insert a task and draw its journal/explore arms in one transaction
   attempts.rs       attempts and ops: insert, finish, rate limits, tool facts
   jobs.rs           jobs, job_steps, job_effects
   deploys.rs        deploys, deploy_targets, assessments

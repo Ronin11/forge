@@ -61,6 +61,21 @@ pub struct TaskRequest {
     /// `None` is the CLI's own default, operator. A retry propagates the
     /// task it retries' own trust rather than resolving this again.
     pub trust: Option<String>,
+    /// The concierge or escalator already knows this task starts
+    /// blocked, with a question (`concierge::ask`'s "unclear" branch and
+    /// `file_proposal`): `enqueue` inserts it straight into `Blocked`
+    /// with this reason and contact, never briefly `queued` and
+    /// claimable, so a worker can never start a run meant to wait for an
+    /// answer (see docs/REVIEW-3.md, defect 1). `None` inserts `Queued`,
+    /// as every other request does.
+    pub blocked: Option<BlockedInit>,
+}
+
+/// See `TaskRequest::blocked`.
+#[derive(Debug, Clone)]
+pub struct BlockedInit {
+    pub reason: String,
+    pub question_to: Option<String>,
 }
 
 /// The task's journal flag and how it got that value. An explicit
@@ -139,7 +154,7 @@ pub struct TaskShape {
 /// The level's own `[trust.<level>]` policy, applied at enqueue: a
 /// workflow outside `policy.workflows` is refused naming the level and
 /// the list; `allow_protected` is refused where the level forbids it.
-/// `per_day` is enforced separately, inside `Store::insert_task_capped`'s
+/// `per_day` is enforced separately, inside `Store::insert_task_armed`'s
 /// transaction, so two concurrent filers cannot both pass a check made
 /// here and then both insert. Returns the budget to actually record:
 /// `budget` capped at `policy.budget_usd` when both are set,
@@ -608,7 +623,15 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         max_attempts: args.retries as i64 + 1,
         timeout_secs: args.timeout_secs as i64,
         checks: args.checks.clone(),
-        state: TaskState::Queued,
+        state: match &args.blocked {
+            Some(_) => TaskState::Blocked,
+            None => TaskState::Queued,
+        },
+        reason: args
+            .blocked
+            .as_ref()
+            .map_or(String::new(), |b| b.reason.clone()),
+        question_to: args.blocked.as_ref().and_then(|b| b.question_to.clone()),
         created_at: unix_now(),
         budget_usd: budget,
         allow_protected: args.allow_protected,
@@ -638,31 +661,39 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
     for &dep in &t.after {
         dependency_fits(f, dep).await?;
     }
-    t.id = match per_day_cap {
-        Some(cap) => f
-            .store
-            .insert_task_capped(&t, i64::from(cap), unix_now() - 24 * 3600)?,
-        None => f.store.insert_task(&t)?,
-    };
-    let (journal, arm) = assign_journal_arm(t.id, args.journal_choice, f.measure.journal_control);
-    t.journal = journal;
-    t.journal_arm = arm.to_string();
-    let mut explore = assign_explore(t.id, args.provider.is_some(), &f.measure.explore);
     // The operator's `experiment.toml` (piece 4, docs/ECONOMIST.md, "What
     // is built") draws a provider per role for a task that pins no
     // provider of its own; a `--provider` shows deliberate intent, not the
     // default routing the experiment measures. The workflow's source does
     // not matter: the factors are roles, and a task that names its
     // workflow (every initiative-filed task does) still gets its providers
-    // drawn. Until 2026-09-22 the draw also required the default workflow,
-    // and so never fired on a real task.
-    if args.provider.is_none() {
-        let catalog = workflows::catalog_dir(&f.paths.home)?;
-        let exp = crate::experiment::load(&catalog)?;
-        crate::experiment::extend_explore(&mut explore, t.id, &project_roles, exp.as_ref());
-    }
+    // drawn. Loaded before the insert, since it only needs the config, not
+    // the task's id. Until 2026-09-22 the draw also required the default
+    // workflow, and so never fired on a real task.
+    let exp = match &args.provider {
+        Some(_) => None,
+        None => crate::experiment::load(&workflows::catalog_dir(&f.paths.home)?)?,
+    };
+    let journal_choice = args.journal_choice;
+    let journal_fraction = f.measure.journal_control;
+    let explicit_provider = args.provider.is_some();
+    let explore_cfg = &f.measure.explore;
+    let cap = per_day_cap.map(|cap| (t.trust, i64::from(cap), unix_now() - 24 * 3600));
+    // Insert and draw the journal and explore arms in one transaction
+    // (see docs/REVIEW-3.md, defect 1): the row is claimable, or for a
+    // task inserted `Blocked` visible at all, only once its arms are on
+    // it, so a claim racing this insert never sees one with an empty
+    // `journal_arm`.
+    let (id, journal, arm, explore) = f.store.insert_task_armed(&t, cap, |id| {
+        let (journal, arm) = assign_journal_arm(id, journal_choice, journal_fraction);
+        let mut explore = assign_explore(id, explicit_provider, explore_cfg);
+        crate::experiment::extend_explore(&mut explore, id, &project_roles, exp.as_ref());
+        Ok((journal, arm.to_string(), explore))
+    })?;
+    t.id = id;
+    t.journal = journal;
+    t.journal_arm = arm;
     t.explore = explore;
-    f.store.update_task(&t)?;
     f.report.emit(
         t.id,
         Event::TaskQueued {
@@ -1016,6 +1047,7 @@ pub fn retry_request(
         // running `forge retry` did not file the original request.
         trust: Some(t.trust.as_str().to_string()),
         after,
+        blocked: None,
     }
 }
 

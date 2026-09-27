@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 
+mod arms;
 mod attempts;
 mod daily;
 mod deploys;
