@@ -1135,6 +1135,17 @@ pub async fn remote_branch_exists(url: &str, branch: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The commit `branch` names on the remote at `url`, read with
+/// `ls-remote`; `None` when it has no such branch or cannot be read.
+pub async fn remote_branch_sha(url: &str, branch: &str) -> Option<String> {
+    let full = format!("refs/heads/{branch}");
+    let out = Git::new(".")
+        .line(&["ls-remote", "--heads", url, &full])
+        .await
+        .ok()?;
+    out.split_whitespace().next().map(str::to_string)
+}
+
 /// Where the overlay's manifest lives: inside the worktree's git directory,
 /// so it is never part of the tree and survives a crash with it.
 pub fn overlay_manifest_path(dest: &Path) -> PathBuf {
@@ -1256,6 +1267,7 @@ mod tests {
         "identity:git_dir",
         "hand_commit_count:repo",
         "remote_branch_exists:\".\"",
+        "remote_branch_sha:\".\"",
     ];
 
     fn call_sites() -> Vec<String> {

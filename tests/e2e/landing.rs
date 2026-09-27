@@ -1712,3 +1712,57 @@ fn a_cheap_task_whose_formatter_commits_still_lands() {
     let log = git(&e.origin, &["log", "-1", "--format=%s", "main"]);
     assert_eq!(log.trim(), "forge: fmt");
 }
+
+#[test]
+fn a_base_push_the_remote_refuses_with_the_base_unmoved_ends_the_landing_once_as_the_environments()
+{
+    // A non-bare remote pushed into with `updateInstead` refuses the base
+    // push while its checkout is dirty, and the base does not move: going
+    // round again cannot fix that, so the merged tree is verified once and
+    // the code is not blamed.
+    let e = Env::new();
+    let live = e._dir.path().join("live");
+    let o = Command::new("git")
+        .args(["clone", "-q"])
+        .arg(&e.repo)
+        .arg(&live)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    git(
+        &live,
+        &["config", "receive.denyCurrentBranch", "updateInstead"],
+    );
+    std::fs::write(live.join("hello.sh"), "#!/bin/bash\necho dirty\n").unwrap();
+    git(
+        &e.repo,
+        &["remote", "set-url", "origin", live.to_str().unwrap()],
+    );
+    let before = git(&live, &["rev-parse", "main"]);
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--retries",
+            "0",
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "{stderr}");
+    assert!(stderr.contains("unstaged changes"), "{stderr}");
+    assert_eq!(git(&live, &["rev-parse", "main"]), before, "main unmoved");
+    let (state, reason, _) = e.task(1);
+    assert_ne!(state, "failed", "{reason}");
+    let ops = op_names(&e, 1);
+    let count = |name: &str| ops.iter().filter(|(n, _)| n == name).count();
+    assert_eq!(count("integrate"), 1, "{ops:?}");
+    assert_eq!(count("land"), 1, "{ops:?}");
+    assert_eq!(ops.last(), Some(&("land".to_string(), false)), "{ops:?}");
+    let a = e.attempts(1);
+    assert!(
+        a.iter().all(|x| x.1 == "succeeded"),
+        "no attempt at the code failed: {a:?}"
+    );
+}

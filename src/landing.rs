@@ -576,6 +576,17 @@ pub async fn integrate(
                     output: "",
                 },
             )?;
+            // Only a base that actually moved goes round again: a refusal
+            // with the base where it was (a dirty checkout behind
+            // `updateInstead`, a hook, a permission) is the environment's,
+            // and verifying again cannot change it.
+            let now = git::remote_branch_sha(url, &t.base_branch).await;
+            if !now.is_some_and(|s| s != main_sha) {
+                return Err(Fault::Env(anyhow::anyhow!(
+                    "{d}; {} did not move, so the remote refused it",
+                    t.base_branch
+                )));
+            }
             if round < 2 {
                 f.report.emit(
                     t.id,
