@@ -579,16 +579,10 @@ pub async fn overlay(
     Ok(placed)
 }
 
-/// Where the overlay's manifest lives: inside the worktree's git directory,
-/// so it is never part of the tree and survives a crash with it.
-fn manifest_path(dest: &Path) -> PathBuf {
-    dest.join(".git").join("forge-overlay")
-}
-
 /// Written before the first overlay file is: the namespace directories
 /// (`D`) and every file about to be placed (`F`), one per line.
 fn record_overlay(dest: &Path, namespace: &[String], files: &[&String]) -> Result<()> {
-    let path = manifest_path(dest);
+    let path = crate::git::overlay_manifest_path(dest);
     if !path.parent().is_some_and(Path::is_dir) {
         return Ok(());
     }
@@ -612,42 +606,9 @@ pub fn remove_overlay(placed: &[PathBuf], namespace: &[String], dest: &Path) {
     }
     for d in namespace {
         let dir = dest.join(d.trim_end_matches('/'));
-        let _ = remove_empty_dirs(&dir);
+        let _ = crate::git::remove_empty_dirs(&dir);
     }
-    let _ = std::fs::remove_file(manifest_path(dest));
-}
-
-/// Removes what an interrupted overlay left in `dest`, from the manifest
-/// written before it was placed. Returns how many files were removed.
-pub fn clear_recorded_overlay(worktree: &str) -> usize {
-    if worktree.is_empty() {
-        return 0;
-    }
-    let dest = Path::new(worktree);
-    let path = manifest_path(dest);
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return 0;
-    };
-    let mut removed = 0;
-    let mut dirs = Vec::new();
-    for line in text.lines() {
-        match line.split_once(' ') {
-            Some(("F", f)) if !f.split('/').any(|c| c == "..") && !f.starts_with('/') => {
-                if std::fs::remove_file(dest.join(f)).is_ok() {
-                    removed += 1;
-                }
-            }
-            Some(("D", d)) if !d.split('/').any(|c| c == "..") && !d.starts_with('/') => {
-                dirs.push(d.to_string())
-            }
-            _ => {}
-        }
-    }
-    for d in dirs {
-        let _ = remove_empty_dirs(&dest.join(d));
-    }
-    let _ = std::fs::remove_file(path);
-    removed
+    let _ = std::fs::remove_file(crate::git::overlay_manifest_path(dest));
 }
 
 /// Names the kernel's own verification overlay among dirty paths, so the
@@ -665,22 +626,6 @@ fn overlay_note(dirty: &[String], namespace: &[String]) -> String {
         " (Forge's own verification overlay, not the agent's: {}; a worker that died between overlay and cleanup leaves it, and Forge removes it when the next attempt starts)",
         ours.join(", ")
     )
-}
-
-fn remove_empty_dirs(dir: &Path) -> std::io::Result<()> {
-    if !dir.is_dir() {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(dir)? {
-        let p = entry?.path();
-        if p.is_dir() {
-            remove_empty_dirs(&p)?;
-        }
-    }
-    if std::fs::read_dir(dir)?.next().is_none() {
-        std::fs::remove_dir(dir)?;
-    }
-    Ok(())
 }
 
 /// The commit L1 and L2 judge is the commit that lands: nothing a check

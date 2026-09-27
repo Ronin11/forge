@@ -849,7 +849,7 @@ impl Shutdown {
 fn recover_orphans(f: &Forge) -> Result<()> {
     for id in f.store.orphans(pid_alive)? {
         if let Some(t) = f.store.task(id)? {
-            crate::verify::clear_recorded_overlay(&t.worktree);
+            crate::git::clear_recorded_overlay(&t.worktree);
         }
         f.store.requeue(id, "previous worker exited")?;
         eprintln!("requeued task {id}: its previous worker exited");
