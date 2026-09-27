@@ -870,6 +870,13 @@ fn write_pid_file(paths: &Paths, pid: i64) {
 
 pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut shutdown = Shutdown::install();
+    // Directories of workers that are gone; a live one's (a draining
+    // predecessor's) is never touched. This worker removes its own at exit.
+    let swept = crate::egress::sweep_dead(&std::env::temp_dir());
+    if swept > 0 {
+        eprintln!("egress: swept {swept} proxy director(ies) of dead pids");
+    }
+    let _own_egress_dir = crate::egress::OwnDirGuard;
     // SIGHUP: re-read `config.toml` before the next claim, whatever its
     // mtime says (`crate::reload`).
     let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())

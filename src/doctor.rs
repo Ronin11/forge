@@ -133,6 +133,8 @@ use binaries::check_binaries;
 /// declared `[sandbox] egress`. Unsandboxed, none of it is enforced.
 fn check_egress(paths: &Paths, store: &Store) -> Vec<Check> {
     let mut out = Vec::new();
+    // Dead workers' proxy directories, which a crashed worker leaves behind.
+    let swept = crate::egress::sweep_dead(&std::env::temp_dir());
     let model: Vec<String> = match config::load_home(&paths.home) {
         Ok(c) => crate::egress::model_rules(&c.providers)
             .iter()
@@ -183,6 +185,10 @@ fn check_egress(paths: &Paths, store: &Store) -> Vec<Check> {
         }
     });
     note_refused(store, out.last_mut());
+    if let Some(row) = out.last_mut() {
+        row.detail
+            .push_str(&format!("; swept {swept} proxy dir(s) of dead pids"));
+    }
     if let Ok(c) = config::load_home(&paths.home) {
         let model_only = [&c.trust.operator, &c.trust.contact, &c.trust.public]
             .iter()

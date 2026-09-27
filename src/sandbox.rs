@@ -396,6 +396,22 @@ impl Sandbox {
         self.command(worktree, argv, env, &self.policy_for(worktree))
     }
 
+    /// Whether the proxy socket this worktree's launch will bind in is
+    /// there: an error naming it when not, so the launch is an environment
+    /// fault rather than a `bwrap` failure the agent is blamed for.
+    pub fn check_socket(&self, worktree: &Path) -> Result<()> {
+        // No runtime means no route, which `command` already tolerates.
+        let Ok(socket) = self.proxies.socket_for(&self.policy_for(worktree)) else {
+            return Ok(());
+        };
+        anyhow::ensure!(
+            socket.exists(),
+            "egress proxy socket {} is missing",
+            socket.display()
+        );
+        Ok(())
+    }
+
     fn wrapper_script(&self, relay_enabled: bool, refused: Option<&Path>) -> String {
         // The claude CLI's own config file, not the credential-bearing
         // config directory: seed it into the tmpfs $HOME as a real, private
