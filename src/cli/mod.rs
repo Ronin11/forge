@@ -700,6 +700,7 @@ impl From<&TaskArgs> for crate::queue::TaskRequest {
             no_context: a.no_context,
             resume_on_failure: a.resume_on_failure,
             trust: a.trust.clone(),
+            blocked: None,
         }
     }
 }

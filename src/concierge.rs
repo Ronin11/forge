@@ -187,10 +187,11 @@ pub async fn ask(
             let mut req = base(project, &repo, message.to_string(), Some("intake"));
             req.retries = 0;
             req.no_land = true;
+            req.blocked = Some(queue::BlockedInit {
+                reason: format!("needs input: {}", d.question),
+                question_to: from.map(str::to_string),
+            });
             let mut n = queue::enqueue(&f, &req, None).await?;
-            n.state = TaskState::Blocked;
-            n.reason = format!("needs input: {}", d.question);
-            n.question_to = from.map(str::to_string);
             n.concierge_json = Some(raw.clone());
             f.store.update_task(&n)?;
             Asked::Unclear {
@@ -254,10 +255,11 @@ async fn file_proposal(
     let mut req = base(project, repo, p.outcome.clone(), Some("intake"));
     req.retries = 0;
     req.no_land = true;
+    req.blocked = Some(queue::BlockedInit {
+        reason: format!("needs input: {question}"),
+        question_to: from.map(str::to_string),
+    });
     let mut n = queue::enqueue(f, &req, None).await?;
-    n.state = TaskState::Blocked;
-    n.reason = format!("needs input: {question}");
-    n.question_to = from.map(str::to_string);
     n.concierge_json = Some(raw.to_string());
     n.proposal_json = Some(serde_json::to_string(&crate::view::ProposalRecord {
         task_ids: p.task_ids.clone(),
