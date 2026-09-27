@@ -44,6 +44,7 @@ mod statusline;
 mod successor;
 mod supervisor;
 mod tdd;
+mod terminal;
 mod trust;
 mod upgrade;
 mod verdicts;
