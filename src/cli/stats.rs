@@ -187,6 +187,9 @@ fn events(since: Option<String>, follow: bool, task: Option<i64>) -> Result<()> 
             let Ok(mut event) = serde_json::from_str::<serde_json::Value>(&line) else {
                 continue;
             };
+            if !event.is_object() {
+                continue;
+            }
             if task.is_some_and(|id| event["task"].as_i64() != Some(id)) {
                 continue;
             }

@@ -508,22 +508,16 @@ fn doctor_json(forge: &Forge) -> Result<Value> {
     Ok(Value::Array(arr))
 }
 
-/// `forge events --since 0[, --task <id>]`, replayed once per request
-/// into a newest-first page for the `/activity` page's feed (web UI task
-/// 8, "activity" — "paged back through `forge events --since`"): every
-/// event currently in `events.jsonl` (the CLI only ever reads the live
-/// file, never its rotated `.1`/`.2` — the same bound a long-running
-/// `--follow` subscription already lives with, docs/CLIENT.md's
-/// "Events"), each tagged with the running byte offset right after its
-/// own line — the same accounting `forge events --since <offset>` itself
-/// resumes from — so a `before` cursor pages backward through it without
-/// this route ever needing to remember state between requests. `task`,
-/// when set, is passed straight to the CLI's own `--task` filter, so the
-/// subprocess itself does the narrowing instead of this route reading
-/// everything just to throw most of it away.
+/// Page retained history using the cursor supplied by the CLI, including
+/// when task filtering or rotation changes the output byte count.
+fn event_position(cursor: &str) -> Option<(u64, u64)> {
+    let (generation, offset) = cursor.split_once(':').unwrap_or(("0", cursor));
+    Some((generation.parse().ok()?, offset.parse().ok()?))
+}
+
 fn activity_json(
     forge: &Forge,
-    before: Option<u64>,
+    before: Option<String>,
     limit: usize,
     task: Option<i64>,
 ) -> Result<Value> {
@@ -534,20 +528,25 @@ fn activity_json(
     }
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let raw = forge.run(&argv)?;
-    let mut offset = 0u64;
-    let mut events: Vec<(u64, Value)> = Vec::new();
+    let before = before.as_deref().and_then(event_position);
+    let mut events: Vec<(String, Value)> = Vec::new();
     for line in raw.lines() {
-        offset += line.len() as u64 + 1;
-        if before.is_some_and(|b| offset >= b) {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(cursor) = v["cursor"].as_str() else {
+            continue;
+        };
+        if v["type"] == "resync"
+            || before.is_some_and(|b| event_position(cursor).is_none_or(|p| p >= b))
+        {
             continue;
         }
-        if let Ok(v) = serde_json::from_str::<Value>(line) {
-            events.push((offset, v));
-        }
+        events.push((cursor.to_string(), v));
     }
     let start = events.len().saturating_sub(limit);
     let page = events.split_off(start);
-    let next_before = page.first().map(|(off, _)| *off);
+    let next_before = page.first().map(|(off, _)| off.clone());
     let done = events.is_empty();
     Ok(serde_json::json!({
         "events": page.into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
@@ -1542,7 +1541,7 @@ fn handle(req: Request, forge: &Forge, secret: &str, tailscale_login: Option<&st
             return;
         }
         "/api/activity" => {
-            let before = query_param(&query, "before").and_then(|s| s.parse::<u64>().ok());
+            let before = query_param(&query, "before");
             let limit = query_param(&query, "limit")
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(200)

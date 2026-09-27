@@ -10,6 +10,7 @@ mod deploy;
 mod deploy_errors;
 mod economist;
 mod environment;
+mod event_cursors;
 mod execution;
 mod executors;
 mod fixtures;
