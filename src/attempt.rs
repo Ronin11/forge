@@ -352,6 +352,7 @@ pub async fn run_attempt(
             pending_main: pending_main.as_deref(),
             sandbox: f.sandbox.as_ref(),
             report: &f.report,
+            logs_dir: &f.paths.logs,
             scratch: spec.scratch.as_deref(),
             plan_rows: !matches!(step.action.name.as_str(), "interview" | "concierge"),
         },

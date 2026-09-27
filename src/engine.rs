@@ -1277,6 +1277,7 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
             pending_main: None,
             sandbox: f.sandbox.as_ref(),
             report: &f.report,
+            logs_dir: &f.paths.logs,
             scratch: None,
             plan_rows: true,
         })

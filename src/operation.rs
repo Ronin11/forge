@@ -366,6 +366,7 @@ pub(crate) async fn run_operation(
             pending_main: pending_main.as_deref(),
             sandbox: f.sandbox.as_ref(),
             report: &f.report,
+            logs_dir: &f.paths.logs,
             scratch: None,
             plan_rows: true,
         })
