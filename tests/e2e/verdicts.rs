@@ -394,6 +394,50 @@ fn failing_tests_are_named_in_the_feedback() {
     assert!(prompt2.contains("failing tests: TestAnswer"), "{prompt2}");
 }
 
+/// A failed L1 check's row on the attempt keeps the failing test's name
+/// even when the check printed far more than the row's own tail can hold:
+/// the name is read from the whole output, and the whole output itself is
+/// kept on disk at `log_path` (task 722 attempt 4: an empty tail left the
+/// operator guessing which test failed).
+#[test]
+fn a_failed_test_checks_tail_on_the_attempt_row_names_the_failing_test() {
+    let e = Env::new();
+    let mut toml = std::fs::read_to_string(e.repo.join("forge.toml")).unwrap();
+    toml.push_str(
+        "gotest = [\"bash\", \"-c\", \"echo '--- FAIL: TestAnswer (0.00s)'; head -c 8192 /dev/zero | tr '\\\\0' 'x'; exit 1\"]\n",
+    );
+    std::fs::write(e.repo.join("forge.toml"), toml).unwrap();
+    git(
+        &e.repo,
+        &["commit", "-qam", "add a go-style check with a lot of noise"],
+    );
+    assert!(!e.run("wrong.sh", &["--retries", "0"]).status.success());
+    let v: Vec<serde_json::Value> = serde_json::from_str(&e.attempts(1)[0].4).unwrap();
+    let row = v
+        .iter()
+        .find(|c| c["level"] == "L1" && c["name"] == "gotest")
+        .expect("a gotest row");
+    assert_eq!(
+        row["failing_tests"],
+        serde_json::json!(["TestAnswer"]),
+        "{row}"
+    );
+    // The marker is long gone from the row's own (capped) tail; only the
+    // full capture on disk still has it.
+    assert!(
+        !row["tail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("TestAnswer"),
+        "{row}"
+    );
+    let log_path = row["log_path"].as_str().unwrap_or_default();
+    assert!(!log_path.is_empty(), "{row}");
+    let logged = std::fs::read_to_string(log_path).unwrap();
+    assert!(logged.starts_with("--- FAIL: TestAnswer"), "{logged}");
+    assert!(logged.len() > 8192, "{}", logged.len());
+}
+
 #[test]
 fn setup_runs_first_and_gates_the_other_checks() {
     let e = Env::new();
