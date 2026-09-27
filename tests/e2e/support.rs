@@ -493,3 +493,23 @@ pub fn op_names(e: &Env, id: i64) -> Vec<(String, bool)> {
         })
         .collect()
 }
+
+/// Commit whatever the test changed in the operator catalog as the
+/// operator: only such a commit lets a copy of a built-in action win over
+/// the built-in (docs/WORKFLOWS.md, "Authoring").
+pub fn commit_catalog_edit(e: &Env) {
+    let cat = e.home.join("workflows");
+    git(&cat, &["add", "-A"]);
+    git(
+        &cat,
+        &[
+            "-c",
+            "user.name=operator",
+            "-c",
+            "user.email=operator@localhost",
+            "commit",
+            "-qm",
+            "operator edit",
+        ],
+    );
+}

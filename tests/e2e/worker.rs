@@ -958,3 +958,31 @@ fn a_bwrap_without_overlay_support_still_runs_the_attempt_with_no_overlay_flags(
     assert!(!logged.contains("--overlay-src"), "{logged}");
     assert!(!logged.contains("--tmp-overlay"), "{logged}");
 }
+
+#[test]
+fn an_overlay_left_by_a_dead_worker_is_removed_before_the_next_attempt() {
+    let e = Env::new();
+    let id = e.add(&[]);
+    assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
+    let wt: String = e
+        .db()
+        .query_row("SELECT worktree FROM tasks WHERE id=?1", [id], |r| r.get(0))
+        .unwrap();
+    let wt = std::path::PathBuf::from(wt);
+    std::fs::create_dir_all(wt.join("tests/hidden")).unwrap();
+    std::fs::write(wt.join("tests/hidden/leftover.rs"), "// overlay\n").unwrap();
+    std::fs::write(
+        wt.join(".git/forge-overlay"),
+        "D tests/hidden\nF tests/hidden/leftover.rs\n",
+    )
+    .unwrap();
+    let c = e.db();
+    c.execute(
+        "UPDATE tasks SET state='running', worker_pid=999999999 WHERE id=?1",
+        [id],
+    )
+    .unwrap();
+    assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
+    assert!(!wt.join("tests/hidden").exists());
+    assert_eq!(e.task(id).0, "succeeded", "{:?}", e.task(id));
+}

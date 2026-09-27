@@ -479,7 +479,11 @@ pub async fn common_l0(s: &Subject<'_>, agent: &Outcome) -> Result<Common> {
     rows.push(l0(
         Rule::CleanTree,
         dirty.is_empty(),
-        format!("uncommitted: {}", dirty.join(", ")),
+        format!(
+            "uncommitted: {}{}",
+            dirty.join(", "),
+            overlay_note(&dirty, &cfg.namespace)
+        ),
     ));
     rows.push(no_stray_files(worktree, start_sha).await?);
     let touched = changed
@@ -562,12 +566,38 @@ pub async fn overlay(
     if namespace.is_empty() {
         return Ok(placed);
     }
+    let mut listed = Vec::new();
     for r in refs {
-        let files = crate::git::ls_tree(repo, r, namespace).await?;
-        crate::git::archive_into(repo, r, &files, dest).await?;
+        listed.push((r, crate::git::ls_tree(repo, r, namespace).await?));
+    }
+    let names: Vec<&String> = listed.iter().flat_map(|(_, f)| f.iter()).collect();
+    record_overlay(dest, namespace, &names)?;
+    for (r, files) in &listed {
+        crate::git::archive_into(repo, r, files, dest).await?;
         placed.extend(files.iter().map(|f| dest.join(f)));
     }
     Ok(placed)
+}
+
+/// Written before the first overlay file is: the namespace directories
+/// (`D`) and every file about to be placed (`F`), one per line.
+fn record_overlay(dest: &Path, namespace: &[String], files: &[&String]) -> Result<()> {
+    let path = crate::git::overlay_manifest_path(dest);
+    if !path.parent().is_some_and(Path::is_dir) {
+        return Ok(());
+    }
+    let mut text = String::new();
+    for d in namespace {
+        text.push_str(&format!("D {}\n", d.trim_end_matches('/')));
+    }
+    for f in files {
+        text.push_str(&format!("F {f}\n"));
+    }
+    if let Ok(old) = std::fs::read_to_string(&path) {
+        text = format!("{old}{text}");
+    }
+    std::fs::write(&path, text)?;
+    Ok(())
 }
 
 pub fn remove_overlay(placed: &[PathBuf], namespace: &[String], dest: &Path) {
@@ -576,24 +606,26 @@ pub fn remove_overlay(placed: &[PathBuf], namespace: &[String], dest: &Path) {
     }
     for d in namespace {
         let dir = dest.join(d.trim_end_matches('/'));
-        let _ = remove_empty_dirs(&dir);
+        let _ = crate::git::remove_empty_dirs(&dir);
     }
+    let _ = std::fs::remove_file(crate::git::overlay_manifest_path(dest));
 }
 
-fn remove_empty_dirs(dir: &Path) -> std::io::Result<()> {
-    if !dir.is_dir() {
-        return Ok(());
+/// Names the kernel's own verification overlay among dirty paths, so the
+/// clean-tree failure does not read as the agent's mess.
+fn overlay_note(dirty: &[String], namespace: &[String]) -> String {
+    let ours: Vec<&str> = dirty
+        .iter()
+        .filter(|p| in_namespace(namespace, p))
+        .map(String::as_str)
+        .collect();
+    if ours.is_empty() {
+        return String::new();
     }
-    for entry in std::fs::read_dir(dir)? {
-        let p = entry?.path();
-        if p.is_dir() {
-            remove_empty_dirs(&p)?;
-        }
-    }
-    if std::fs::read_dir(dir)?.next().is_none() {
-        std::fs::remove_dir(dir)?;
-    }
-    Ok(())
+    format!(
+        " (Forge's own verification overlay, not the agent's: {}; a worker that died between overlay and cleanup leaves it, and Forge removes it when the next attempt starts)",
+        ours.join(", ")
+    )
 }
 
 /// The commit L1 and L2 judge is the commit that lands: nothing a check
@@ -899,7 +931,11 @@ pub async fn verify_operation(s: Subject<'_>) -> Result<Verdict> {
     v.checks.push(l0(
         Rule::CleanTree,
         dirty.is_empty(),
-        format!("left uncommitted by the operation: {}", dirty.join(", ")),
+        format!(
+            "left uncommitted by the operation: {}{}",
+            dirty.join(", "),
+            overlay_note(dirty, &s.cfg.namespace)
+        ),
     ));
     v.checks
         .push(no_stray_files(s.worktree, s.start_sha).await?);
@@ -936,7 +972,11 @@ pub async fn verify_integration(s: &Subject<'_>) -> Result<Verdict> {
     v.checks.push(l0(
         Rule::CleanTree,
         dirty.is_empty(),
-        format!("uncommitted after the merge: {}", dirty.join(", ")),
+        format!(
+            "uncommitted after the merge: {}{}",
+            dirty.join(", "),
+            overlay_note(dirty, &s.cfg.namespace)
+        ),
     ));
     let touched = changed.iter().any(|p| p == s.cfg.config_path.as_str());
     v.checks.push(l0(
