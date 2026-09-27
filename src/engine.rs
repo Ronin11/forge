@@ -553,7 +553,7 @@ async fn prepare_worktree(
         t.branch = base_name.clone();
         if let Some(url) = &remote_url {
             for k in 2.. {
-                if !git::remote_branch_exists(url, &t.branch).await {
+                if !git::remote_branch_exists(url, &t.branch).await.env()? {
                     break;
                 }
                 t.branch = format!("{base_name}-{k}");
@@ -567,7 +567,9 @@ async fn prepare_worktree(
         let timer = Timer::now();
         // The base is the remote's, so a task started after a landing sees it.
         let base_ref = match (&base_cfg.push_remote, &remote_url) {
-            (Some(name), Some(url)) if git::remote_branch_exists(url, &t.base_branch).await => {
+            (Some(name), Some(url))
+                if git::remote_branch_exists(url, &t.base_branch).await.env()? =>
+            {
                 match git::fetch_branch(repo, name, &t.base_branch).await {
                     Ok(_) => Some(format!("refs/remotes/{name}/{}", t.base_branch)),
                     Err(e) => {
