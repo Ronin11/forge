@@ -4,6 +4,8 @@
 //! under a per-repository lock; a conflict or a failing check goes back to
 //! the coder as a rewind. `forge land` runs the same function by hand.
 
+mod round;
+
 use crate::audit::{Inputs, Outputs};
 use crate::ctx::Forge;
 use crate::engine::{Classify, Fault, OpRow, Timer, op};
@@ -12,6 +14,7 @@ use crate::store::{Attempt, AttemptState, FinishAttempt, Task, TaskState};
 use crate::verify::{self, Subject, Verdict};
 use crate::{checks, config, git, unix_now};
 use anyhow::{Context, Result, bail};
+use round::BasePush;
 use std::path::{Path, PathBuf};
 
 /// Record the integrator's own check run as an attempts row, the way a
@@ -387,6 +390,15 @@ pub async fn integrate(
                     );
                 }
                 git::Merge::Conflict(files) => {
+                    // A round after the first merges on top of what an
+                    // earlier round already merged into this landing tree;
+                    // the clone never saw that, so `base_sha` (the base an
+                    // earlier round settled on) would name a commit it
+                    // does not contain. Adopt the landing tree first, the
+                    // way the verify-failure path already does.
+                    if git::head(wt).await.task()? != staged {
+                        git::adopt_tree(clone, wt).task()?;
+                    }
                     git::place_branch(home, repo, clone, &main_sha, &placed)
                         .await
                         .task()?;
@@ -556,12 +568,55 @@ pub async fn integrate(
             )?;
             return Ok(Integrate::Failed(d));
         }
+        // The base advances first: the task branch is a record of what
+        // landed, never an input the base push waits on. Pushing it first,
+        // the way landing once did, let a later round or a resumed run
+        // rewind it to a branch that no longer descended from what the
+        // remote already had (REVIEW-3 2.1#5).
+        *seq += 1;
+        let land_seq = *seq;
+        let timer = Timer::now();
+        if let Err(e) = git::push_sha(home, repo, &candidate, url, &t.base_branch).await {
+            let args = round::BasePushFailure {
+                t,
+                url,
+                main_sha: &main_sha,
+                seq: land_seq,
+                timer: &timer,
+                round,
+                error: e,
+            };
+            match round::on_base_push_failure(f, args).await? {
+                BasePush::Retry => continue,
+                BasePush::Failed(d) => return Ok(Integrate::Failed(d)),
+            }
+        }
+        let sha = candidate.clone();
+        let _ = git::fetch_branch(repo, remote, &t.base_branch).await;
+        op(
+            f,
+            t.id,
+            &timer,
+            OpRow {
+                seq: land_seq,
+                name: "land",
+                kernel: true,
+                ok: true,
+                exit: None,
+                detail: &format!("{} @ {}", t.base_branch, &sha[..8]),
+                attempt_id: None,
+                output: "",
+            },
+        )?;
+
+        *seq += 1;
+        let push_timer = Timer::now();
         if let Err(e) = git::push_sha(home, repo, &candidate, url, &t.branch).await {
             let d = format!("push of {} failed: {e:#}", t.branch);
             op(
                 f,
                 t.id,
-                &timer,
+                &push_timer,
                 OpRow {
                     seq: *seq,
                     name: "push",
@@ -586,7 +641,7 @@ pub async fn integrate(
         op(
             f,
             t.id,
-            &timer,
+            &push_timer,
             OpRow {
                 seq: *seq,
                 name: "push",
@@ -598,53 +653,6 @@ pub async fn integrate(
                 output: "",
             },
         )?;
-
-        *seq += 1;
-        let timer = Timer::now();
-        if let Err(e) = git::push_sha(home, repo, &candidate, url, &t.base_branch).await {
-            let d = format!("fast-forward of {} rejected: {e:#}", t.base_branch);
-            op(
-                f,
-                t.id,
-                &timer,
-                OpRow {
-                    seq: *seq,
-                    name: "land",
-                    kernel: true,
-                    ok: false,
-                    exit: None,
-                    detail: &d,
-                    attempt_id: None,
-                    output: "",
-                },
-            )?;
-            // Only a base that actually moved goes round again: a refusal
-            // with the base where it was (a dirty checkout behind
-            // `updateInstead`, a hook, a permission) is the environment's,
-            // and verifying again cannot change it.
-            let now = git::remote_branch_sha(url, &t.base_branch).await;
-            if !now.is_some_and(|s| s != main_sha) {
-                return Err(Fault::Env(anyhow::anyhow!(
-                    "{d}; {} did not move, so the remote refused it",
-                    t.base_branch
-                )));
-            }
-            if round < 2 {
-                f.report.emit(
-                    t.id,
-                    Event::Note {
-                        text: &format!(
-                            "land     {} moved underneath; integrating again",
-                            t.base_branch
-                        ),
-                    },
-                );
-                continue;
-            }
-            return Ok(Integrate::Failed(d));
-        }
-        let sha = candidate.clone();
-        let _ = git::fetch_branch(repo, remote, &t.base_branch).await;
         // The task's hidden tests join the standing suite.
         let folded = match fold_tests(f, t, repo, url, &cfg_now.namespace).await {
             Ok(detail) => detail,
@@ -654,21 +662,6 @@ pub async fn integrate(
                 format!("; {detail}")
             }
         };
-        op(
-            f,
-            t.id,
-            &timer,
-            OpRow {
-                seq: *seq,
-                name: "land",
-                kernel: true,
-                ok: true,
-                exit: None,
-                detail: &format!("{} @ {}{folded}", t.base_branch, &sha[..8]),
-                attempt_id: None,
-                output: "",
-            },
-        )?;
         f.report.emit(
             t.id,
             Event::Note {
