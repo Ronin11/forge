@@ -167,6 +167,9 @@ pub struct Forge {
     /// granted automatically (see `environment`).
     pub environment: crate::environment::Policy,
     pub sandbox: Option<Execution>,
+    /// Grants already applied per worktree when there is no sandbox to
+    /// remember them, so each applies once here too.
+    applied: std::sync::Mutex<Vec<(PathBuf, crate::environment::Grant)>>,
     pub report: Reporter,
 }
 
@@ -218,6 +221,7 @@ impl Forge {
             project_secrets: home.project_secrets,
             environment: home.environment,
             sandbox,
+            applied: Default::default(),
             report,
         })
     }
@@ -254,6 +258,7 @@ impl Forge {
             project_secrets: home.project_secrets,
             environment: home.environment,
             sandbox: None,
+            applied: Default::default(),
             report,
         })
     }
@@ -300,15 +305,23 @@ impl Forge {
             self.trust_policy(trust).egress,
             config::TrustEgress::Declared
         );
-        // Unsandboxed there is nothing to open, so the grant is recorded
-        // and the run repeats all the same.
+        // Unsandboxed there is nothing to open, so the grant is only
+        // remembered: the first time it is seen the run repeats, the
+        // second it would fail the same way.
         let fresh = match (&self.sandbox, &grant) {
             (_, Grant::Host(_)) if !declared => false,
             (Some(sb), Grant::Host(h)) => {
                 sb.grant_host(worktree, crate::egress::Rule::parse(h).ok()?)
             }
             (Some(sb), Grant::ReadOnly(p)) => sb.grant_ro(worktree, p.clone()),
-            (None, _) => true,
+            (None, _) => {
+                let mut seen = self.applied.lock().unwrap_or_else(|e| e.into_inner());
+                let key = (worktree.to_path_buf(), grant.clone());
+                !seen.contains(&key) && {
+                    seen.push(key);
+                    true
+                }
+            }
         };
         fresh.then_some(grant)
     }
@@ -479,6 +492,27 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn an_unsandboxed_grant_applies_once_per_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("forge.db")).unwrap();
+        let paths = Paths {
+            home: dir.path().to_path_buf(),
+            worktrees: dir.path().join("worktrees"),
+            logs: dir.path().join("logs"),
+        };
+        let f = Forge::open_with(paths, store).unwrap();
+        assert!(f.sandbox.is_none());
+        let g = crate::environment::Grant::ReadOnly(PathBuf::from("/home/x/.cache/pw"));
+        let t = crate::store::Trust::Operator;
+        assert_eq!(
+            f.apply_grant(Path::new("/w/1"), g.clone(), t),
+            Some(g.clone())
+        );
+        assert_eq!(f.apply_grant(Path::new("/w/1"), g.clone(), t), None);
+        assert_eq!(f.apply_grant(Path::new("/w/2"), g.clone(), t), Some(g));
     }
 
     #[test]
