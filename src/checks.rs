@@ -391,6 +391,6 @@ mod tests {
         let logged = std::fs::read(&r.log_path).unwrap();
         assert_eq!(logged.len(), "--- FAIL: TestBig (0.00s)\n".len() + PAYLOAD);
         assert!(logged.starts_with(b"--- FAIL: TestBig (0.00s)\n"));
-        assert!(logged.ends_with(&vec![b'a'; 100]));
+        assert!(logged.ends_with(&[b'a'; 100]));
     }
 }

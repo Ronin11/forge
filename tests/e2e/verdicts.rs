@@ -407,7 +407,10 @@ fn a_failed_test_checks_tail_on_the_attempt_row_names_the_failing_test() {
         "gotest = [\"bash\", \"-c\", \"echo '--- FAIL: TestAnswer (0.00s)'; head -c 8192 /dev/zero | tr '\\\\0' 'x'; exit 1\"]\n",
     );
     std::fs::write(e.repo.join("forge.toml"), toml).unwrap();
-    git(&e.repo, &["commit", "-qam", "add a go-style check with a lot of noise"]);
+    git(
+        &e.repo,
+        &["commit", "-qam", "add a go-style check with a lot of noise"],
+    );
     assert!(!e.run("wrong.sh", &["--retries", "0"]).status.success());
     let v: Vec<serde_json::Value> = serde_json::from_str(&e.attempts(1)[0].4).unwrap();
     let row = v
@@ -422,7 +425,10 @@ fn a_failed_test_checks_tail_on_the_attempt_row_names_the_failing_test() {
     // The marker is long gone from the row's own (capped) tail; only the
     // full capture on disk still has it.
     assert!(
-        !row["tail"].as_str().unwrap_or_default().contains("TestAnswer"),
+        !row["tail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("TestAnswer"),
         "{row}"
     );
     let log_path = row["log_path"].as_str().unwrap_or_default();
