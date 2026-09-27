@@ -40,20 +40,25 @@ pub struct Shadow {
     pub file: String,
     pub origin: Origin,
     pub age_secs: u64,
-    /// The unified diff, built-in to catalog copy.
-    pub diff: String,
+    /// The unified diff, built-in to catalog copy, or the reason `git diff`
+    /// could not produce one. `Err` must never be folded into an empty or
+    /// zero-line diff: that would look exactly like "no differences".
+    pub diff: Result<String, String>,
 }
 
 impl Shadow {
-    /// Added and removed lines in the diff.
+    /// Added and removed lines in the diff; `0` when the diff failed, so
+    /// callers that report a failure must check `diff` itself and not rely
+    /// on this alone.
     pub fn diff_lines(&self) -> usize {
-        self.diff
-            .lines()
-            .filter(|l| {
-                (l.starts_with('+') && !l.starts_with("+++"))
-                    || (l.starts_with('-') && !l.starts_with("---"))
-            })
-            .count()
+        self.diff.as_deref().map_or(0, |diff| {
+            diff.lines()
+                .filter(|l| {
+                    (l.starts_with('+') && !l.starts_with("+++"))
+                        || (l.starts_with('-') && !l.starts_with("---"))
+                })
+                .count()
+        })
     }
 }
 
@@ -191,9 +196,9 @@ fn scan_uncached(catalog: &Path) -> Vec<Shadow> {
             .ok()
             .and_then(|t| t.elapsed().ok())
             .map_or(0, |d| d.as_secs());
-        let diff = diff_of(builtin, &path).unwrap_or_else(|e| {
+        let diff = diff_of(builtin, &path).map_err(|e| {
             eprintln!("forge: diffing actions/{file} against its built-in failed: {e:#}");
-            format!("<diff unavailable: {e:#}>")
+            format!("{e:#}")
         });
         out.push(Shadow {
             file: file.to_string(),
@@ -212,6 +217,11 @@ fn scan_uncached(catalog: &Path) -> Vec<Shadow> {
 /// the same catalog state was being diffed several times a second; this
 /// caches the result in the process, keyed on `state_key`, so a load that
 /// finds nothing changed costs a hash comparison, not a diff per file.
+///
+/// A result holding a failed diff is never cached: the failure is meant to
+/// be transient (a killed `git diff`), and caching it would keep reporting
+/// the same failure until `HEAD` or an mtime changed, long after `git`
+/// itself had recovered.
 pub fn scan(catalog: &Path) -> Vec<Shadow> {
     static CACHE: Mutex<Option<(PathBuf, String, Vec<Shadow>)>> = Mutex::new(None);
     let key = state_key(catalog);
@@ -223,7 +233,9 @@ pub fn scan(catalog: &Path) -> Vec<Shadow> {
         return shadows.clone();
     }
     let out = scan_uncached(catalog);
-    *cache = Some((catalog.to_path_buf(), key, out.clone()));
+    if out.iter().all(|s| s.diff.is_ok()) {
+        *cache = Some((catalog.to_path_buf(), key, out.clone()));
+    }
     out
 }
 
@@ -296,12 +308,16 @@ pub fn report(catalog: &Path) -> (bool, String, String) {
     let detail = all
         .iter()
         .map(|s| {
+            let state = match &s.diff {
+                Ok(_) => format!("{} diff line(s)", s.diff_lines()),
+                Err(e) => format!("diff failed: {e}"),
+            };
             format!(
-                "{} ({}, {} old, {} diff line(s))",
+                "{} ({}, {} old, {})",
                 s.file,
                 s.origin.as_str(),
                 age_text(s.age_secs),
-                s.diff_lines()
+                state
             )
         })
         .collect::<Vec<_>>()
@@ -366,21 +382,52 @@ mod tests {
         }
     }
 
+    // `scan`'s cache is a single process-wide slot (see `scan`'s doc
+    // comment), so two tests calling `scan` on different catalogs at once
+    // can evict each other's cached entry; this one test exercises both
+    // the caching and the failed-diff behavior in sequence, on one thread,
+    // rather than risk that race across separate `#[test]` functions.
     #[test]
-    fn scan_caches_on_unchanged_catalog_state_and_reruns_after_a_write() {
+    fn scan_caches_on_success_but_never_on_a_failed_diff() {
+        use std::os::unix::fs::PermissionsExt;
         let home = tempfile::tempdir().unwrap();
         let catalog = crate::workflows::catalog_dir(home.path()).unwrap();
         assert!(scan(&catalog).is_empty());
-        std::fs::write(
-            catalog.join("actions/fmt.toml"),
-            "name = \"fmt\"\ndescription = \"catalog copy\"\n",
-        )
-        .unwrap();
+        let copy = catalog.join("actions/fmt.toml");
+        std::fs::write(&copy, "name = \"fmt\"\ndescription = \"catalog copy\"\n").unwrap();
         let first = scan(&catalog);
         assert_eq!(first.len(), 1, "{first:?}");
         assert!(first[0].diff_lines() > 0, "{first:?}");
         let second = scan(&catalog);
         assert_eq!(second.len(), first.len());
         assert_eq!(second[0].diff, first[0].diff);
+
+        // An unreadable copy makes real `git diff --no-index` exit 128.
+        // That failure must be reported, not folded into `0 diff line(s)`
+        // (indistinguishable from "no differences", the bug this guards
+        // against), and must not be cached: once the copy is readable
+        // again, the very next `scan` must see the real diff rather than
+        // the stuck failure. A fresh catalog, so the failure is the very
+        // first `scan` result for this `state_key` and not shadowed by the
+        // success just cached above (`chmod` alone leaves the mtime the
+        // `state_key` hashes on unchanged).
+        let home2 = tempfile::tempdir().unwrap();
+        let catalog2 = crate::workflows::catalog_dir(home2.path()).unwrap();
+        let copy2 = catalog2.join("actions/fmt.toml");
+        std::fs::write(&copy2, "name = \"fmt\"\ndescription = \"catalog copy\"\n").unwrap();
+        std::fs::set_permissions(&copy2, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let failed = scan(&catalog2);
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert!(failed[0].diff.is_err(), "{:?}", failed[0].diff);
+        assert_eq!(failed[0].diff_lines(), 0);
+        let (stale, detail, _hint) = report(&catalog2);
+        assert!(stale);
+        assert!(detail.contains("diff failed"), "{detail}");
+        assert!(!detail.contains("0 diff line(s)"), "{detail}");
+
+        std::fs::set_permissions(&copy2, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let recovered = scan(&catalog2);
+        assert!(recovered[0].diff.is_ok(), "{:?}", recovered[0].diff);
+        assert!(recovered[0].diff_lines() > 0, "{recovered:?}");
     }
 }
