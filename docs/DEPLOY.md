@@ -278,9 +278,20 @@ two landings never build over each other:
    than the live one, and require its `schema` check to be `ok` (a bare
    home fails other rows, such as the agent login, which do not count).
 3. Write `FORGE_HOME/bin/staged -> releases/<sha>` (a symlink renamed
-   into place). This is all a deploy will do once the worker starts a
-   successor on `staged` itself; until then, the method goes on to put
-   the release live exactly as before:
+   into place). When the running worker starts successors, this is all
+   the deploy does: the worker starts a successor on `staged`, which
+   flips `current`, restarts web and portal and takes `forge-worker`
+   over with `MAINPID=` (docs/OPS.md, "The running binary"), and the
+   worker unit is never restarted. `forge deploy` tells the method as
+   `FORGE_WORKER_SUCCESSORS=1` when a live worker is registered in the
+   `workers` table; the method also accepts a live pid in
+   `FORGE_HOME/bin/successor-capable`, which every daemon worker writes
+   once it has told systemd it is ready. Restarting the unit as well
+   left it `deactivating` for its whole `TimeoutStopSec` on 2026-09-26:
+   the stop's SIGTERM went to the old pid, and systemd never re-sends it
+   to the pid that took the unit over. Only for a worker too old to
+   start a successor does the method go on to put the release live
+   exactly as before:
 4. Flip `FORGE_HOME/bin/current` to `releases/<sha>`, with `previous`
    naming the release it replaced. `~/.local/bin` and the units must
    point through `current` (`forge init --relink`, once); the method

@@ -47,10 +47,10 @@ who holds the pointer: **the store and every running binary agree.**
   `deploy-self.toml`): the commit is resolved in the kernel repository's
   fetch of origin's base, the release is built into
   `FORGE_HOME/bin/releases/<sha>/`, checked by its own doctor against a
-  scratch home and written to `FORGE_HOME/bin/staged`; until the worker
-  acts on `staged`, deploy-self also flips `current` and restarts web,
-  portal and the worker as before (docs/DEPLOY.md, "Deploying Forge
-  itself").
+  scratch home and written to `FORGE_HOME/bin/staged`; only for a
+  worker too old to start a successor does deploy-self also flip
+  `current` and restart web, portal and the worker as before
+  (docs/DEPLOY.md, "Deploying Forge itself").
 - **A staged release starts a successor worker; the old one drains.**
   Deploy only stages: build, run the new binary's doctor-lite against a
   scratch home, write `staged`. The worker starts a successor on the new
@@ -76,9 +76,20 @@ who holds the pointer: **the store and every running binary agree.**
   Every worker sends `READY=1` when registered; a successor sends
   `MAINPID=<its pid>` too, so the unit's main pid moves to the worker that
   claims and `systemctl --user status forge-worker` names it, with the
-  draining worker listed beside it in the unit's cgroup. Restarting the
+  draining worker listed beside it in the unit's cgroup. Once it has
+  sent that, a worker writes its pid to `FORGE_HOME/bin/successor-capable`;
+  the old worker exits (0) only once that file names its successor, so
+  the unit is active on the new pid with no stop job. Restarting the
   unit instead would stop the old worker before the new one claimed, which
-  is the wait this removes. The moments both are alive, both run plugins
+  is the wait this removes; worse, a restart queued alongside a successor
+  (2026-09-26) sent SIGTERM to the old pid only and sat `deactivating`
+  for `TimeoutStopSec` while the successor kept claiming. So a successor
+  under systemd asks `systemctl --user is-active` of its own unit on every
+  pass and, when it says `deactivating` (an operator's own stop or
+  restart), drains and exits as on SIGTERM; `Restart` or the restart job
+  brings a fresh worker on `current`. `forge doctor`'s worker row FAILs on
+  a unit deactivating with a claiming worker, naming the `kill -TERM` that
+  ends it. The moments both are alive, both run plugins
   until the old one notices (one poll interval).
 - **Migrations are additive, or deferred.** Two versions share one
   SQLite while the old worker drains, so a release may only add tables,
