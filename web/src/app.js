@@ -1024,7 +1024,11 @@
         $('#main').innerHTML = '<div class="mute" style="margin:16px">loading…</div>';
         actions = await get('/api/drafts/actions').catch(() => []);
         picked = actions.length ? actions[0].name : '';
-        if (name) {
+        if (name && project) {
+          // A repository workflow: its file text becomes the draft.
+          const wf = await get(`/api/workflows/${encodeURIComponent(name)}?project=${encodeURIComponent(project)}`).catch(() => null);
+          if (wf) { annotated = await postBody('/api/drafts/import', wf.text, 'text/plain'); if (!annotated.error) draft = app.bare(annotated); }
+        } else if (name) {
           annotated = await get(`/api/drafts/${encodeURIComponent(name)}`).catch(() => null);
           if (annotated) draft = app.bare(annotated);
         }

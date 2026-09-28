@@ -284,6 +284,32 @@ and does not parse stdout.
   content, so a repository's own automation still lands through the
   normal build-and-verify path rather than a direct write; stdout is the
   new task's id instead of a hash. Not `--json`.
+- **`forge workflows draft`** — the draft editor's verbs (docs/WORKFLOWS.md,
+  "The draft editor"). A draft is one JSON document: `{name, kind,
+  description, project, steps, settings, status, tasks}`, where `steps` is
+  the step list (`{action, role, judgment, effect, on: {failure|outcome:
+  step|node id|end}, placeholder: {kind, inputs, outputs}}`) and `settings`
+  holds every section the step list does not model (`trigger`, `limits`,
+  ...). Every verb that takes one reads it on stdin, and every answer is
+  that document **annotated**: `toml` (the workflow file it renders to),
+  `problems` (`{line, step, message}` — the catalog linter's own, each
+  placed on its step when its line is one), `info` (per step: kind,
+  contract, description, whether a placeholder has landed), `clean`, and
+  `pending` (the placeholders whose action is still missing).
+  `check` lints and prints, writing nothing; `import` turns a workflow
+  file's text on stdin into a draft; `save` keeps it under
+  `<FORGE_HOME>/drafts/NAME.json` (`incomplete` while a placeholder is
+  pending); `put NAME --message TEXT [--repo PATH]` commits a clean draft
+  exactly as `forge workflows put` does (`{"result": "committed", "hash"}`
+  or `{"result": "filed", "task_id"}`), and a draft with placeholders is
+  saved `incomplete` and files one task per placeholder on the draft's
+  `project` (`{"result": "incomplete", "status", "tasks", "filed",
+  "pending"}`) — a refusal (any lint problem, a placeholder with no
+  project) is a non-zero exit with the problems on stdout; `list --json`,
+  `show NAME --json` (a saved draft, else the catalog workflow as a draft)
+  and `actions --json` (every action a step may name) read; `reconcile`
+  enables what has become complete. With just a `NAME` it is a terminal
+  session, one edit per line (`help` lists them), not a client verb.
 - **`forge stats --json [--tools] [--step S] [--quality] [--journal] [--by-role]`** —
   outcomes per workflow version and per step. One
   [`StatsDoc`](#statsdoc) object. `--quality` (text mode only; the JSON
@@ -1532,6 +1558,20 @@ across a rotation, not to the snapshot protocol itself.
   `repos[0].repo`) and runs `workflow_put` with `--repo`, filing a task
   instead (`{"result": "filed", "task_id": ...}`) — the editor labels this
   control "file as a task" rather than "save" when `source` is `"repo"`.
+  **The draft editor.** `/workflows/draft[?name=N&project=P]` is the Draft
+  view; its `web/src/drafts.js` holds the draft as data and renders the
+  step list and a simple SVG of the edges, and keeps no lint of its own.
+  `POST /api/drafts/check` and `/api/drafts/save` take the draft document
+  and run `forge workflows draft check|save --`; `POST /api/drafts/import`
+  takes a workflow file's text; `POST /api/drafts/<name>/put` takes `{draft,
+  message, to_repo}` and runs `forge workflows draft put NAME --message M`,
+  with `--repo` set to the draft's project's first repository when
+  `to_repo` is true; `GET /api/drafts`, `/api/drafts/actions` and
+  `/api/drafts/<name>` read. Answers are the verbs' JSON; a refusal is
+  **422** with `{"error"}`. "Suggest steps" is the prompter's own two calls
+  (`POST /api/workflows/draft`, `/api/job/<id>`) and then `import` of the
+  `toml` it returned: the proposal is shown for the operator to accept
+  step by step, never applied on its own.
   **The prompter.** `POST /api/workflows/draft` is `/workflows/new`'s
   "Draft it": a JSON body `{"description"}`, written as `{"description":
   ...}` to a private temporary file and handed to `forge job start forge
