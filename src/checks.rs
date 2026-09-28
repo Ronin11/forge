@@ -43,6 +43,9 @@ const TAIL_BYTES: usize = 16 * 1024;
 /// whole thing (`output = "full"` in the action file) rather than the tail.
 pub const FULL_OUTPUT_BYTES: usize = 1024 * 1024;
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
+/// How long a timed-out check has, after SIGTERM to its group, to run its
+/// own traps before SIGKILL.
+const TERM_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct CheckResult {
@@ -153,6 +156,26 @@ pub async fn run_one(
     .await
 }
 
+/// Send `signal` to the process group led by `pid`.
+async fn signal_group(signal: &str, pid: u32) {
+    let _ = Command::new("kill")
+        .args([&format!("-{signal}"), "--", &format!("-{pid}")])
+        .output()
+        .await;
+}
+
+/// Write a failed check's whole output under `dir`; the path, if it took.
+fn save_full_log(dir: &Path, level: &str, name: &str, bytes: &[u8]) -> Option<String> {
+    std::fs::create_dir_all(dir).ok()?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let path = dir.join(format!("{level}-{name}-{}-{stamp}.log", std::process::id()));
+    std::fs::write(&path, bytes).ok()?;
+    Some(path.display().to_string())
+}
+
 /// As `run_one`, keeping `cap_bytes` of merged and of stdout-alone output
 /// instead of the default tail. An operation with `output = "full"` asks
 /// for `FULL_OUTPUT_BYTES` here.
@@ -230,16 +253,23 @@ async fn run_one_capped_once(args: &RunOneCapped<'_>) -> CheckResult {
         Ok(Err(e)) => r.tail = e.to_string(),
         Err(_) => {
             r.timed_out = true;
-            child.kill().await.ok();
-            child.wait().await.ok();
+            // SIGTERM first, so an operation's EXIT trap can put things
+            // back; only what outlives the grace is killed.
+            if let Some(pid) = pid {
+                signal_group("TERM", pid).await;
+            }
+            if tokio::time::timeout(TERM_GRACE, child.wait())
+                .await
+                .is_err()
+            {
+                child.kill().await.ok();
+                child.wait().await.ok();
+            }
         }
     }
     // The check has exited; nothing it left behind may outlive it.
     if let Some(pid) = pid {
-        let _ = Command::new("kill")
-            .args(["-KILL", "--", &format!("-{pid}")])
-            .output()
-            .await;
+        signal_group("KILL", pid).await;
     }
     if tokio::time::timeout(DRAIN_GRACE, async {
         while readers.join_next().await.is_some() {}
@@ -274,17 +304,8 @@ async fn run_one_capped_once(args: &RunOneCapped<'_>) -> CheckResult {
                     .map_or("with no exit status".to_string(), |c| format!("code {c}"))
             );
         }
-        if let (Some(dir), Some(bytes)) = (full_log_dir, &full_bytes)
-            && std::fs::create_dir_all(dir).is_ok()
-        {
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default();
-            let path = dir.join(format!("{level}-{name}-{}-{stamp}.log", std::process::id()));
-            if std::fs::write(&path, bytes).is_ok() {
-                r.log_path = path.display().to_string();
-            }
+        if let (Some(dir), Some(bytes)) = (full_log_dir, &full_bytes) {
+            r.log_path = save_full_log(dir, level, name, bytes).unwrap_or_default();
         }
     }
     r.ms = start.elapsed().as_millis();
@@ -353,6 +374,29 @@ mod tests {
         let s = t.string();
         assert_eq!(s.len(), TAIL_BYTES);
         assert!(s.ends_with("END"));
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_check_gets_sigterm_and_its_trap_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mark = dir.path().join("trap-ran");
+        let script = format!(
+            "trap 'echo done > {}' EXIT; sleep 30 & wait",
+            mark.display()
+        );
+        let argv = vec!["bash".into(), "-c".into(), script];
+        let r = run_one(
+            "OP",
+            "trap",
+            &argv,
+            dir.path(),
+            None,
+            Duration::from_millis(500),
+            &[],
+        )
+        .await;
+        assert!(r.timed_out);
+        assert!(mark.exists(), "the EXIT trap did not run");
     }
 
     #[tokio::test]

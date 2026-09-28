@@ -266,16 +266,30 @@ fn local_bin_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/bin"))
 }
 
+/// The binaries of `release::BINS` a release adopted from `dir` needs but
+/// `dir` lacks: every one but `forge-test`, which `deploy-self` too treats
+/// as optional.
+fn missing_release_bins(dir: &Path) -> Vec<&'static str> {
+    release::BINS
+        .iter()
+        .copied()
+        .filter(|b| *b != "forge-test" && !dir.join(b).is_file())
+        .collect()
+}
+
 /// `--relink`: move the running install onto the release layout — copy the
-/// running binaries into `releases/<commit>/` and point `current` at it,
-/// unless `current` already exists. Never touches a live release.
+/// running binaries into `releases/<full commit>/` (the id `deploy-self`
+/// gives the same commit) and point `current` at it, unless `current`
+/// already exists. Refuses a directory missing any release binary, so a
+/// fresh `forge` beside stale siblings never becomes a release. Never
+/// touches a live release.
 fn adopt_running_binaries(home: &Path) -> Result<Vec<StepResult>> {
     let root = release::root(home);
     let exe = crate::binary::without_deleted_suffix(&std::env::current_exe()?);
     let src = exe
         .parent()
         .context("the running binary has no directory")?;
-    let sha = env!("FORGE_GIT_SHA");
+    let sha = env!("FORGE_GIT_SHA_FULL");
     let id = if sha.is_empty() {
         env!("CARGO_PKG_VERSION")
     } else {
@@ -286,7 +300,15 @@ fn adopt_running_binaries(home: &Path) -> Result<Vec<StepResult>> {
     match release::pointed_at(&root, "current") {
         Some(live) => steps.push(step("release", false, format!("current is already {live}"))),
         None => {
+            let missing = missing_release_bins(src);
+            anyhow::ensure!(
+                missing.is_empty(),
+                "--relink: {} lacks {}; build the whole workspace (cargo build --release --workspace) and run its forge",
+                src.display(),
+                missing.join(", ")
+            );
             let made = release::install(&lock, &root, src, id)?;
+            release::drop_staged(&lock, &root)?;
             release::flip(&lock, &root, id)?;
             let detail = format!(
                 "copied {} into {} and pointed {} at it{}",
@@ -330,6 +352,36 @@ fn link_local_bin(home: &Path) -> Result<Option<StepResult>> {
     Ok(Some(step("links", !changed.is_empty(), detail)))
 }
 
+/// Commit the catalog files `workflows::catalog_dir` wrote (the built-in
+/// workflows and the untrusted-data fragment): those the repository does not
+/// track yet and whose text is exactly what this binary writes. Whatever else
+/// sits in the catalog, an operator's uncommitted edit above all, is left as
+/// it is.
+async fn commit_written_catalog_files(catalog: &Path) -> Result<Option<String>> {
+    let written = workflows::BUILTIN_WORKFLOWS
+        .iter()
+        .map(|(file, text)| (file.to_string(), *text))
+        .chain([(
+            format!("{}/untrusted-data.md", workflows::FRAGMENTS_DIR),
+            workflows::UNTRUSTED_DATA,
+        )]);
+    let mut paths = Vec::new();
+    for (rel, text) in written {
+        let tracked = std::process::Command::new("git")
+            .arg("-C")
+            .arg(catalog)
+            .args(["ls-files", "--error-unmatch", "--", &rel])
+            .output()?
+            .status
+            .success();
+        if !tracked && std::fs::read_to_string(catalog.join(&rel)).is_ok_and(|t| t == text) {
+            paths.push(rel);
+        }
+    }
+    let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+    git::commit_paths(catalog, &paths, "forge init: built-in workflow catalog").await
+}
+
 /// Everything `forge init` does, in order. `home_override` is `--home`;
 /// `None` uses the usual resolution (`Paths::compute_home`).
 pub async fn run(home_override: Option<PathBuf>, relink: bool) -> Result<Report> {
@@ -353,7 +405,7 @@ pub async fn run(home_override: Option<PathBuf>, relink: bool) -> Result<Report>
     ));
 
     let catalog = workflows::catalog_dir(&home)?;
-    let commit = git::commit_all(&catalog, "forge init: built-in workflow catalog").await?;
+    let commit = commit_written_catalog_files(&catalog).await?;
     steps.push(match commit {
         Some(sha) => step(
             "workflows",
@@ -414,5 +466,19 @@ mod tests {
             )
         );
         assert!(!home.exists());
+    }
+
+    #[test]
+    fn a_directory_with_only_forge_is_missing_every_other_release_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("forge"), "").unwrap();
+        assert_eq!(
+            missing_release_bins(dir.path()),
+            ["forge-web", "forge-portal", "forge-repomap", "forge-tui"]
+        );
+        for b in release::BINS.iter().filter(|b| **b != "forge-test") {
+            std::fs::write(dir.path().join(b), "").unwrap();
+        }
+        assert!(missing_release_bins(dir.path()).is_empty());
     }
 }

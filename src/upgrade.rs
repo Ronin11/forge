@@ -429,6 +429,14 @@ pub fn run(source: Option<String>, check_only: bool, force: bool) -> Result<()> 
 
     let lock = release::lock(&root)?;
     release::install(&lock, &root, &extracted, &new_version)?;
+    // A stage left by a self-deploy would start a successor on it once the
+    // worker restarts, and that successor would flip `current` back.
+    if let Some(staged) = release::drop_staged(&lock, &root)? {
+        println!(
+            "dropped {} (it named {staged})",
+            root.join("staged").display()
+        );
+    }
     let was = release::flip(&lock, &root, &new_version)?;
     println!(
         "flipped {} to releases/{new_version}; previous is {}",

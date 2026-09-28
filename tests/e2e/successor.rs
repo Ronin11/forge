@@ -9,7 +9,7 @@ use std::time::Duration;
 
 /// Kills the successor, which runs in its own process group, whatever
 /// happens to the test.
-struct Reap(std::path::PathBuf);
+pub struct Reap(pub std::path::PathBuf);
 
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -88,7 +88,7 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
     )
     .env("PATH", &path)
     .env("SUCC_CALLS_LOG", &calls)
-    .args(["work", "--poll", "1"]);
+    .args(["work", "--jobs", "2", "--poll", "1"]);
     let mut old = Worker::spawn(&mut cmd);
     let _reap = Reap(e.home.clone());
     assert!(
@@ -127,7 +127,8 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
     assert!(
         row.contains("release new staged; successor pid")
             && row.contains(&format!("{new_pid} claiming"))
-            && row.contains("1 attempts draining on old"),
+            && row.contains("1 attempts draining on old")
+            && row.contains("2 of 2 slots: predecessor 1, successor 1"),
         "{out}"
     );
 
@@ -141,6 +142,8 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
         std::fs::read_link(root.join("current")).unwrap(),
         std::path::Path::new("releases/new")
     );
+    let staged = std::fs::symlink_metadata(root.join("staged"));
+    assert!(staged.is_err(), "the successor left staged behind");
     let calls = std::fs::read_to_string(&calls).unwrap_or_default();
     assert!(
         calls.contains("systemctl --user restart --no-block forge-web")
@@ -160,6 +163,111 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
         )
         .unwrap();
     assert_eq!(claimed, 2);
+}
+
+/// Running tasks by holder: (worker pid, how many it runs), in one read so
+/// the two sides of a sum come from the same moment.
+fn running_by_worker(e: &Env) -> Vec<(i64, i64)> {
+    let db = e.db();
+    let mut stmt = db
+        .prepare("SELECT worker_pid, COUNT(*) FROM tasks WHERE state='running' GROUP BY worker_pid")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect()
+}
+
+#[test]
+fn a_successor_beside_a_predecessor_holding_two_attempts_claims_at_most_jobs_minus_two() {
+    let e = Env::new();
+    let root = e.home.join("bin");
+    let fakes = e.home.join("fakebin");
+    std::fs::create_dir_all(&fakes).unwrap();
+    let systemctl = fakes.join("systemctl");
+    std::fs::write(
+        &systemctl,
+        "#!/bin/bash\nif [ \"$2\" = is-active ]; then echo active; fi\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &systemctl,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    for id in ["old", "new"] {
+        let dir = root.join("releases").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let built = std::path::Path::new(env!("CARGO_BIN_EXE_forge"))
+            .parent()
+            .unwrap();
+        for bin in ["forge", "forge-repomap"] {
+            std::fs::copy(built.join(bin), dir.join(bin)).unwrap();
+        }
+    }
+    std::os::unix::fs::symlink("releases/old", root.join("current")).unwrap();
+    let path = format!(
+        "{}:{}",
+        fakes.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let mut cmd = std::process::Command::new(root.join("releases/old/forge"));
+    cmd.envs(
+        e.cmd("slow-ok.sh")
+            .get_envs()
+            .filter_map(|(k, v)| Some((k, v?))),
+    )
+    .env("PATH", &path)
+    .args(["work", "--jobs", "3", "--poll", "1"]);
+    e.add(&["--retries", "0"]);
+    e.add(&["--retries", "0"]);
+    let mut old = Worker::spawn(&mut cmd);
+    let _reap = Reap(e.home.clone());
+    let old_pid = i64::from(old.id());
+    let held = |pid: i64| {
+        running_by_worker(&e)
+            .into_iter()
+            .find(|(p, _)| *p == pid)
+            .map_or(0, |(_, n)| n)
+    };
+    assert!(
+        wait_until(|| held(old_pid) == 2, Duration::from_secs(30)),
+        "the old worker never held two attempts: {:?}",
+        running_by_worker(&e)
+    );
+
+    std::os::unix::fs::symlink("releases/new", root.join("staged")).unwrap();
+    for _ in 0..3 {
+        e.add(&["--retries", "0"]);
+    }
+    // While the predecessor holds its two, no read of the store shows the
+    // box past three attempts, or the successor past one.
+    let mut successor_claimed = false;
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < Duration::from_secs(6) {
+        let by = running_by_worker(&e);
+        let old_held = by.iter().find(|(p, _)| *p == old_pid).map_or(0, |b| b.1);
+        let new_held: i64 = by.iter().filter(|(p, _)| *p != old_pid).map(|b| b.1).sum();
+        if old_held < 2 {
+            break;
+        }
+        assert!(
+            new_held <= 1,
+            "the successor took the box past its jobs: {by:?}"
+        );
+        successor_claimed |= new_held == 1;
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        successor_claimed,
+        "the successor claimed nothing: {:?}",
+        running_by_worker(&e)
+    );
+    let out = String::from_utf8_lossy(&e.forge("ok.sh", &["doctor"]).stdout).to_string();
+    let row = out.lines().find(|l| l.contains("worker")).unwrap_or("");
+    assert!(row.contains("of 3 slots: predecessor"), "{out}");
+    assert!(old.wait().success());
 }
 
 #[test]
@@ -330,6 +438,39 @@ fn worker_restarts(calls: &[String]) -> usize {
         .count()
 }
 
+/// `deploy`, with a stand-in for the successor a capable worker starts
+/// on a staged release: once `staged` names `sha` it registers a live
+/// worker on it (this test's own pid) and flips `current`. Without one,
+/// a self-deploy under a capable worker never goes live.
+fn deploy_taken_over(s: &SelfDeploy, sha: &str) -> std::process::Output {
+    let home = s.e.home.clone();
+    let bins = s.bins.clone();
+    let want = format!("releases/{sha}");
+    let version = sha.to_string();
+    let successor = std::thread::spawn(move || {
+        for _ in 0..600 {
+            let staged = std::fs::read_link(bins.join("staged")).unwrap_or_default();
+            if staged == std::path::Path::new(&want) {
+                let c = rusqlite::Connection::open(home.join("forge.db")).unwrap();
+                c.execute(
+                    "INSERT INTO workers (pid, version, started_at) VALUES (?1, ?2, 0)",
+                    rusqlite::params![i64::from(std::process::id()), version],
+                )
+                .unwrap();
+                let tmp = bins.join(".current.new.test");
+                let _ = std::fs::remove_file(&tmp);
+                std::os::unix::fs::symlink(&want, &tmp).unwrap();
+                std::fs::rename(&tmp, bins.join("current")).unwrap();
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    });
+    let o = s.deploy(sha);
+    successor.join().unwrap();
+    o
+}
+
 #[test]
 fn deploy_self_only_stages_for_a_successor_capable_worker_and_restarts_an_older_one() {
     // Not capable: no worker registered, no capability file. One restart.
@@ -348,11 +489,11 @@ fn deploy_self_only_stages_for_a_successor_capable_worker_and_restarts_an_older_
         )
         .unwrap();
     let sha = s.commit("good");
-    let o = s.deploy(&sha);
+    let o = deploy_taken_over(&s, &sha);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(s.link("staged"), format!("releases/{sha}"));
     // The successor flips current; the deploy leaves it alone.
-    assert_eq!(s.link("current"), "releases/old");
+    assert_eq!(s.link("current"), format!("releases/{sha}"));
     let calls = s.calls();
     assert_eq!(worker_restarts(&calls), 0, "{calls:?}");
     assert!(
@@ -371,7 +512,7 @@ fn deploy_self_only_stages_for_a_successor_capable_worker_and_restarts_an_older_
     )
     .unwrap();
     let sha = s.commit("good");
-    assert!(s.deploy(&sha).status.success());
+    assert!(deploy_taken_over(&s, &sha).status.success());
     assert_eq!(s.link("staged"), format!("releases/{sha}"));
     assert_eq!(worker_restarts(&s.calls()), 0, "{:?}", s.calls());
 
@@ -390,8 +531,8 @@ fn deploy_self_only_stages_for_a_successor_capable_worker_and_restarts_an_older_
 fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_ones() {
     let e = Env::new();
     let root = e.home.join("bin");
-    let tmp = e.home.join("tmp");
-    std::fs::create_dir_all(&tmp).unwrap();
+    let run = e.home.join("run");
+    std::fs::create_dir_all(&run).unwrap();
     for id in ["old", "new"] {
         let dir = root.join("releases").join(id);
         std::fs::create_dir_all(&dir).unwrap();
@@ -430,23 +571,26 @@ fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_o
             .filter_map(|(k, v)| Some((k, v?))),
     )
     .env("PATH", &path)
-    .env("TMPDIR", &tmp)
-    .args(["work", "--poll", "1"]);
+    .args(["work", "--jobs", "2", "--poll", "1"]);
     let mut old = Worker::spawn(&mut cmd);
     let _reap = Reap(e.home.clone());
     assert!(
         wait_until(|| running_pid(&e, first).is_some(), Duration::from_secs(30)),
         "the old worker never claimed task {first}"
     );
-    let old_pid = running_pid(&e, first).unwrap();
 
-    // The live predecessor's directory, and one left by a worker that died.
+    // A live worker's directory (a stand-in process, so the old worker's own
+    // `mkdir` of its directory cannot collide with ours), and one left by a
+    // worker that died.
+    let mut alive = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
     let mut gone = std::process::Command::new("true").spawn().unwrap();
     gone.wait().unwrap();
-    let live = tmp.join(format!("forge-egress-{old_pid}"));
-    let dead = tmp.join(format!("forge-egress-{}", gone.id()));
-    // The old worker makes its own once it starts the task: either may win.
-    std::fs::create_dir_all(&live).unwrap();
+    let live = run.join(format!("egress-{}", alive.id()));
+    let dead = run.join(format!("egress-{}", gone.id()));
+    std::fs::create_dir(&live).unwrap();
     std::fs::create_dir(&dead).unwrap();
 
     std::os::unix::fs::symlink("releases/new", root.join("staged")).unwrap();
@@ -464,6 +608,8 @@ fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_o
     );
     assert!(!dead.exists(), "the dead worker's directory was not swept");
     assert!(old.wait().success());
+    alive.kill().unwrap();
+    alive.wait().unwrap();
 }
 
 /// A fake `systemctl` with no `forge-portal` unit, whose other units
@@ -732,4 +878,185 @@ fn a_successor_that_dies_after_claiming_gives_the_plugins_back_to_the_worker_tha
         plugin_row(&e)
     );
     old.stop();
+}
+
+#[test]
+fn a_successor_that_claims_and_dies_is_not_started_again_by_a_restarted_worker() {
+    let e = Env::new();
+    let root = e.home.join("bin");
+    let starts = e.home.join("starts.log");
+    let bin = root.join("releases/new/forge");
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\necho start >> \"{}\"\necho $$ > \"$FORGE_HOME/bin/successor-capable\"\nsleep 1\nexit 1\n",
+            starts.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink("releases/new", root.join("staged")).unwrap();
+
+    // The worker hands over and exits 0; the successor dies a second later.
+    let restart = |cmd: &mut std::process::Command| {
+        cmd.env("FORGE_RELEASE", "old")
+            .env("NOTIFY_SOCKET", e.home.join("missing.sock"))
+            .env_remove("FORGE_SUCCESSOR_OF")
+            .args(["work", "--poll", "1"]);
+    };
+    let mut cmd = e.cmd("ok.sh");
+    restart(&mut cmd);
+    let output = cmd.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    // Then two `Restart=on-failure` restarts on `current`: they run until told to stop.
+    for _ in 0..2 {
+        let _ = std::fs::remove_file(root.join("successor-capable"));
+        let mut cmd = e.cmd("ok.sh");
+        restart(&mut cmd);
+        let mut w = Worker::spawn(&mut cmd);
+        std::thread::sleep(Duration::from_secs(3));
+        w.signal(libc::SIGTERM);
+        assert!(w.wait().success());
+    }
+    let started = std::fs::read_to_string(&starts).unwrap().lines().count();
+    assert_eq!(started, 1, "the failed release was started again");
+    let failed = std::fs::read_to_string(root.join("staged-failed")).unwrap();
+    assert_eq!(failed.split_whitespace().next(), Some("new"), "{failed}");
+    assert!(
+        std::fs::symlink_metadata(root.join("staged")).is_err(),
+        "staged was not retired"
+    );
+}
+
+#[test]
+fn a_successor_that_dies_after_a_restarted_worker_joined_is_not_started_again() {
+    let e = Env::new();
+    let root = e.home.join("bin");
+    let starts = e.home.join("starts.log");
+    let bin = root.join("releases/new/forge");
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\necho start >> \"{}\"\necho $$ > \"$FORGE_HOME/bin/successor-capable\"\nsleep 3\nexit 1\n",
+            starts.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink("releases/new", root.join("staged")).unwrap();
+
+    let restart = |cmd: &mut std::process::Command| {
+        cmd.env("FORGE_RELEASE", "old")
+            .env("NOTIFY_SOCKET", e.home.join("missing.sock"))
+            .env_remove("FORGE_SUCCESSOR_OF")
+            .args(["work", "--poll", "1"]);
+    };
+    let mut cmd = e.cmd("ok.sh");
+    restart(&mut cmd);
+    // Output goes to a file: the successor inherits it, and a pipe would
+    // hold `output()` until the successor died.
+    let log = std::fs::File::create(e.home.join("worker1.log")).unwrap();
+    let status = cmd
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "{}",
+        std::fs::read_to_string(e.home.join("worker1.log")).unwrap_or_default()
+    );
+    // No pause: the restarted workers join while the successor is still
+    // alive, and it dies a moment later.
+    for _ in 0..1 {
+        let _ = std::fs::remove_file(root.join("successor-capable"));
+        let mut cmd = e.cmd("ok.sh");
+        restart(&mut cmd);
+        let mut w = Worker::spawn(&mut cmd);
+        std::thread::sleep(Duration::from_secs(6));
+        w.signal(libc::SIGTERM);
+        assert!(w.wait().success());
+    }
+    let started = std::fs::read_to_string(&starts).unwrap().lines().count();
+    assert_eq!(started, 1, "the failed release was started again");
+    let failed = std::fs::read_to_string(root.join("staged-failed")).unwrap();
+    assert_eq!(failed.split_whitespace().next(), Some("new"), "{failed}");
+    assert!(
+        std::fs::symlink_metadata(root.join("staged")).is_err(),
+        "staged was not retired"
+    );
+}
+
+#[test]
+fn deploy_self_under_a_worker_that_never_takes_over_fails_staged_but_never_live() {
+    let s = SelfDeploy::new();
+    // A live worker on the old release that starts successors, and never
+    // does: the release is staged and nothing runs it.
+    s.e.db()
+        .execute(
+            "INSERT INTO workers (pid, version, started_at) VALUES (?1, 'old', 0)",
+            [i64::from(std::process::id())],
+        )
+        .unwrap();
+    let sha = s.commit("good");
+
+    let o = s.deploy(&sha);
+    assert_eq!(
+        o.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+
+    // Staged back to what current names, so no worker retries it.
+    assert_eq!(s.link("current"), "releases/old");
+    assert_eq!(s.link("staged"), "releases/old");
+
+    let rows = s.deploy_rows();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["check_ok"], false);
+    assert!(
+        rows[0]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("staged but never became live"),
+        "{:?}",
+        rows[0]
+    );
+    let calls = s.calls();
+    assert!(!calls.iter().any(|c| c.starts_with("curl ")), "{calls:?}");
+}
+
+#[test]
+fn deploy_self_says_staged_and_live_on_separate_lines_once_a_successor_took_over() {
+    let s = SelfDeploy::new();
+    s.e.db()
+        .execute(
+            "INSERT INTO workers (pid, version, started_at) VALUES (?1, 'old', 0)",
+            [i64::from(std::process::id())],
+        )
+        .unwrap();
+    let sha = s.commit("good");
+
+    let o = deploy_taken_over(&s, &sha);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let rows = s.deploy_rows();
+    assert_eq!(rows[0]["check_ok"], true, "{rows:?}");
+    let out = rows[0]["check_output"].as_str().unwrap_or_default();
+    let line = |word: &str| {
+        out.lines()
+            .any(|l| l.starts_with(&format!("{word} {}", &sha[..8])))
+    };
+    assert!(line("staged") && line("live"), "{out}");
+    // The check ran against the live release.
+    let calls = s.calls();
+    assert!(calls.iter().any(|c| c.starts_with("curl ")), "{calls:?}");
 }

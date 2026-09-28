@@ -39,6 +39,18 @@ const SUCCESSOR_OF: &str = "FORGE_SUCCESSOR_OF";
 /// the old worker waits for its successor's pid here before it exits.
 pub const CAPABILITY: &str = "successor-capable";
 
+/// `FORGE_HOME/bin/<STARTED>`: `<pid> <release>` of the successor this home's
+/// worker last started. The old worker exits 0 once the successor names
+/// itself in the capability file, and cannot watch it after that, so the
+/// record outlives it: a worker restarted on `current` finds the successor
+/// dead with `current` never flipped and marks the release failed.
+const STARTED: &str = "successor-started";
+
+/// `FORGE_HOME/bin/<FAILED>`: `<release> <unix seconds>` of a staged release
+/// whose successor died. `staged` naming it is not started again until a
+/// deploy stages a release anew.
+pub const FAILED: &str = "staged-failed";
+
 /// The unit a worker runs under when systemd does not say otherwise.
 pub const WORKER_UNIT: &str = "forge-worker";
 
@@ -68,7 +80,9 @@ impl Succession {
         let daemon = opts.poll.is_some();
         let pid = std::process::id() as i64;
         let id = if daemon {
-            f.store.register_worker(pid, &version)?
+            let id = f.store.register_worker(pid, &version)?;
+            f.store.set_worker_slots(id, opts.jobs.max(1))?;
+            id
         } else {
             0
         };
@@ -76,6 +90,9 @@ impl Succession {
             if let Ok(parent) = std::env::var(SUCCESSOR_OF) {
                 eprintln!("successor of worker {parent}: release {version} claims from here");
                 take_over(f, &root, &version);
+            } else {
+                settle_started(&root, &version);
+                acknowledge_staged(&root, &version);
             }
             notify(&format!("MAINPID={pid}\nREADY=1"));
             write_capability(&root, pid);
@@ -113,10 +130,21 @@ impl Succession {
             && let Ok(Some(status)) = child.try_wait()
         {
             eprintln!("successor {} exited ({status})", child.id());
+            let root = release::root(&f.paths.home);
+            if release::pointed_at(&root, "current").as_deref() != Some(id.as_str()) {
+                mark_failed(&root, id);
+            }
             self.failed.insert(std::mem::take(id));
             self.child = None;
         }
         let live = f.store.live_workers(pid_alive)?;
+        // After `live` is read: a successor that died since is seen dead here,
+        // and one that dies after is still in `live`, so it is not started
+        // again on this tick and is settled on a later one.
+        if self.child.is_none() {
+            settle_started(&release::root(&f.paths.home), &self.version);
+            acknowledge_staged(&release::root(&f.paths.home), &self.version);
+        }
         let newer: Vec<_> = live
             .iter()
             .filter(|w| w.id > self.id && w.version != self.version)
@@ -130,6 +158,7 @@ impl Succession {
         if let Some(next) = self.staged_successor(&f.paths, &live) {
             match self.spawn(&f.paths, &next) {
                 Ok(child) => {
+                    write_started(&release::root(&f.paths.home), i64::from(child.id()), &next);
                     f.store.register_worker(i64::from(child.id()), &next)?;
                     eprintln!(
                         "release {next} staged: successor pid {} started; this worker drains",
@@ -140,6 +169,7 @@ impl Succession {
                 }
                 Err(e) => {
                     eprintln!("release {next} staged but its worker did not start: {e:#}");
+                    mark_failed(&release::root(&f.paths.home), &next);
                     self.failed.insert(next);
                 }
             }
@@ -148,7 +178,8 @@ impl Succession {
     }
 
     /// The staged release to start a worker on: not this one, not one that
-    /// already has a live worker or already failed to start.
+    /// already has a live worker or already failed to start, and not one a
+    /// later flip of `current` overtook (`release::staged_overtaken`).
     fn staged_successor(&self, paths: &Paths, live: &[crate::store::WorkerRow]) -> Option<String> {
         let root = release::root(&paths.home);
         let staged = release::pointed_at(&root, "staged")?;
@@ -156,7 +187,9 @@ impl Succession {
         (staged != self.version
             && runnable
             && !self.failed.contains(&staged)
-            && !live.iter().any(|w| w.version == staged))
+            && failed_release(&root).as_deref() != Some(staged.as_str())
+            && !live.iter().any(|w| w.version == staged)
+            && !release::staged_overtaken(&root))
         .then_some(staged)
     }
 
@@ -187,20 +220,20 @@ impl Succession {
     /// own `systemctl --user stop` or `restart` queued while the old worker
     /// was the main pid, whose SIGTERM systemd never re-sends to the pid
     /// that took the unit over. The worker drains and exits as on SIGTERM.
-    pub fn stop_requested(&self) -> bool {
+    pub async fn stop_requested(&self) -> bool {
         if !self.daemon
             || std::env::var_os(SUCCESSOR_OF).is_none()
             || std::env::var_os("NOTIFY_SOCKET").is_none()
         {
             return false;
         }
-        unit_state(&own_unit()).as_deref() == Some("deactivating")
+        unit_state_async(&own_unit()).await.as_deref() == Some("deactivating")
     }
 
     /// Deregister; a worker that started a successor first waits (bounded)
     /// until the successor has taken the unit over, so systemd never sees
     /// the main pid exit before `MAINPID=` moved it.
-    pub fn leave(&mut self, f: &Forge) -> Result<()> {
+    pub async fn leave(&mut self, f: &Forge) -> Result<()> {
         if !self.daemon {
             return Ok(());
         }
@@ -213,9 +246,12 @@ impl Succession {
                 && matches!(child.try_wait(), Ok(None))
                 && start.elapsed() < HANDOVER_WAIT
             {
-                std::thread::sleep(std::time::Duration::from_millis(200));
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
             if read_capability(&root) != Some(want) {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    mark_failed(&root, id);
+                }
                 result = Err(match child.try_wait() {
                     Ok(Some(status)) => anyhow::anyhow!(
                         "successor pid {want} for release {id} exited ({status}) without taking the unit over"
@@ -241,6 +277,88 @@ pub fn capable(home: &std::path::Path, store: &crate::store::Store) -> bool {
         .live_workers(pid_alive)
         .is_ok_and(|live| !live.is_empty())
         || read_capability(&release::root(home)).is_some_and(pid_alive)
+}
+
+/// A worker running the release `staged` names has answered the request:
+/// remove it, so it never outlives the deploy that wrote it. Skipped for
+/// this tick while a release writer holds the lock.
+fn acknowledge_staged(root: &std::path::Path, version: &str) {
+    if release::pointed_at(root, "staged").as_deref() != Some(version) {
+        return;
+    }
+    let Some(lock) = release::try_lock(root) else {
+        return;
+    };
+    match release::acknowledge_staged(&lock, root, version) {
+        Ok(true) => eprintln!("release {version} runs: staged acknowledged and removed"),
+        Ok(false) => {}
+        Err(e) => eprintln!("could not remove staged for release {version}: {e:#}"),
+    }
+}
+
+/// The release recorded in `staged-failed`, if any.
+fn failed_release(root: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(root.join(FAILED)).ok()?;
+    text.split_whitespace().next().map(str::to_string)
+}
+
+/// Write `name` under `root` through a temporary file renamed into place.
+fn write_record(root: &std::path::Path, name: &str, text: &str) {
+    let tmp = root.join(format!(".{name}.{}", std::process::id()));
+    let written = std::fs::create_dir_all(root)
+        .and_then(|()| std::fs::write(&tmp, text))
+        .and_then(|()| std::fs::rename(&tmp, root.join(name)));
+    if let Err(e) = written {
+        eprintln!("could not write {}: {e}", root.join(name).display());
+    }
+}
+
+fn write_started(root: &std::path::Path, pid: i64, release: &str) {
+    write_record(root, STARTED, &format!("{pid} {release}\n"));
+}
+
+fn read_started(root: &std::path::Path) -> Option<(i64, String)> {
+    let text = std::fs::read_to_string(root.join(STARTED)).ok()?;
+    let mut words = text.split_whitespace();
+    Some((words.next()?.parse().ok()?, words.next()?.to_string()))
+}
+
+/// The successor this home's worker started and that is still alive:
+/// `(pid, release)`.
+pub fn starting(root: &std::path::Path) -> Option<(i64, String)> {
+    read_started(root).filter(|(pid, _)| pid_alive(*pid))
+}
+
+/// Record `release` as one whose successor died, and retire `staged` when
+/// it still names it, so no worker starts it again.
+fn mark_failed(root: &std::path::Path, release: &str) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    write_record(root, FAILED, &format!("{release} {now}\n"));
+    if release::pointed_at(root, "staged").as_deref() == Some(release) {
+        let _ = std::fs::remove_file(root.join("staged"));
+    }
+    eprintln!("release {release} failed as a successor: not started again (bin/{FAILED})");
+}
+
+/// What became of the successor the last worker started: gone, with
+/// `current` never moved to its release, it failed after taking over (or
+/// before) and this restarted worker records it; one that flipped `current`
+/// or is this release needs no record any more. Checked at join and on every
+/// tick of `superseded`, so a successor that dies while this worker runs is
+/// settled too.
+fn settle_started(root: &std::path::Path, version: &str) {
+    let Some((pid, release)) = read_started(root) else {
+        return;
+    };
+    if pid_alive(pid) && release != version {
+        return;
+    }
+    if release != version && release::pointed_at(root, "current").as_deref() != Some(&release) {
+        mark_failed(root, &release);
+    }
+    let _ = std::fs::remove_file(root.join(STARTED));
 }
 
 fn read_capability(root: &std::path::Path) -> Option<i64> {
@@ -273,6 +391,28 @@ fn own_unit() -> String {
                 .map(|seg| seg.trim_end_matches(".service").to_string())
         })
         .unwrap_or_else(|| WORKER_UNIT.to_string())
+}
+
+async fn bounded_output(
+    command: &mut tokio::process::Command,
+    timeout: std::time::Duration,
+) -> Option<std::process::Output> {
+    command.kill_on_drop(true);
+    tokio::time::timeout(timeout, command.output())
+        .await
+        .ok()?
+        .ok()
+}
+
+async fn unit_state_async(unit: &str) -> Option<String> {
+    let mut command = tokio::process::Command::new("systemctl");
+    command
+        .args(["--user", "is-active", unit])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    let out = bounded_output(&mut command, std::time::Duration::from_secs(2)).await?;
+    let word = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!word.is_empty()).then_some(word)
 }
 
 /// `systemctl --user is-active <unit>`'s word for it: active,
@@ -403,7 +543,8 @@ fn restart_all(units: &[String], tries: u32) -> Vec<(String, Unit)> {
         .collect()
 }
 
-/// The successor is live: `current` moves to its release and the units
+/// The successor is live: `staged` is acknowledged (removed while it names
+/// this release), `current` moves to its release and the units
 /// the self deploy target declares restart on it, each reported on its own.
 /// A unit that does not exist here is a note; one that does not come back
 /// active in the bounded wait puts `current` back and restarts the units
@@ -417,6 +558,9 @@ fn take_over(f: &Forge, root: &std::path::Path, version: &str) {
             return;
         }
     };
+    if let Err(e) = release::acknowledge_staged(&lock, root, version) {
+        eprintln!("could not remove staged for release {version}: {e:#}");
+    }
     if release::pointed_at(root, "current").as_deref() == Some(version) {
         return;
     }
@@ -583,5 +727,33 @@ mod tests {
             down.describe("forge-web"),
             "forge-web: did not become active within 4 tries"
         );
+    }
+}
+
+#[cfg(test)]
+mod bounded_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn bounded_call_times_out_without_blocking_runtime() {
+        let mut command = tokio::process::Command::new("sleep");
+        command.arg("30");
+        let started = std::time::Instant::now();
+        let (result, ()) = tokio::join!(
+            bounded_output(&mut command, std::time::Duration::from_millis(50)),
+            async { tokio::time::sleep(std::time::Duration::from_millis(10)).await }
+        );
+        assert!(result.is_none());
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn bounded_call_returns_output() {
+        let mut command = tokio::process::Command::new("printf");
+        command.arg("deactivating\n");
+        let out = bounded_output(&mut command, std::time::Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(out.stdout, b"deactivating\n");
     }
 }
