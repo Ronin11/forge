@@ -77,8 +77,8 @@ fn collect(dir: &Path, rel: &str, out: &mut Vec<ReviewNote>) {
         } else if kind.is_file()
             && let Ok(bytes) = std::fs::read(&path)
         {
-            let mut content = String::from_utf8_lossy(&bytes[..bytes.len().min(NOTE_BYTES)])
-                .into_owned();
+            let mut content =
+                String::from_utf8_lossy(&bytes[..bytes.len().min(NOTE_BYTES)]).into_owned();
             if bytes.len() > NOTE_BYTES {
                 content.push_str("\n[truncated]");
             }
@@ -179,7 +179,14 @@ fn demotion_prose(envelope: Option<&Envelope>) -> String {
 /// so it is not a citation.
 pub fn sandbox_refs(text: &str, uncommitted: &dyn Fn(&str) -> bool) -> Vec<String> {
     const ROOTS: &[&str] = &[
-        "/tmp", "/var/tmp", "/dev/shm", "$TMPDIR", "${TMPDIR}", "~", "$HOME", "${HOME}",
+        "/tmp",
+        "/var/tmp",
+        "/dev/shm",
+        "$TMPDIR",
+        "${TMPDIR}",
+        "~",
+        "$HOME",
+        "${HOME}",
     ];
     const HOMES: &[&str] = &["/home/", "/root/", "/Users/"];
     let tokens: Vec<(bool, String)> = tokens(text);
@@ -245,7 +252,10 @@ pub fn reask(checks: &[CheckResult], previous: Option<&str>, task_id: i64) -> Op
     if asked(previous).is_some() {
         return None;
     }
-    let failed: Vec<&CheckResult> = checks.iter().filter(|c| !c.ok && c.level != "note").collect();
+    let failed: Vec<&CheckResult> = checks
+        .iter()
+        .filter(|c| !c.ok && c.level != "note")
+        .collect();
     let [row] = failed.as_slice() else {
         return None;
     };
@@ -287,18 +297,31 @@ mod tests {
             sandbox_refs("output went to '/var/tmp/out.log'.", &none),
             vec!["/var/tmp/out.log"]
         );
-        assert_eq!(sandbox_refs("cat >/tmp/a.txt then read /tmp/b.txt", &none), vec!["/tmp/b.txt"]);
+        assert_eq!(
+            sandbox_refs("cat >/tmp/a.txt then read /tmp/b.txt", &none),
+            vec!["/tmp/b.txt"]
+        );
     }
 
     #[test]
     fn an_inline_reproduction_is_self_contained() {
         let heredoc = "`forge show 3` omits the reason:\n```\ncat > /tmp/r.py <<'EOF'\nprint(1)\nEOF\npython3 /tmp/r.py\n```";
-        assert!(sandbox_refs(heredoc, &none).is_empty(), "{:?}", sandbox_refs(heredoc, &none));
+        assert!(
+            sandbox_refs(heredoc, &none).is_empty(),
+            "{:?}",
+            sandbox_refs(heredoc, &none)
+        );
         let piped = "python3 - <<'EOF'\nimport json; print(json.dumps({}))\nEOF\nprints {} but cargo test store::tasks fails";
         assert!(sandbox_refs(piped, &none).is_empty());
         let tee = "printf 'x' | tee /tmp/in.txt; ./target/debug/forge add /tmp/in.txt";
         assert!(sandbox_refs(tee, &none).is_empty());
-        assert!(sandbox_refs("answer.txt is 42; `xxd answer.txt` shows no newline, see https://x.io/a/b", &none).is_empty());
+        assert!(
+            sandbox_refs(
+                "answer.txt is 42; `xxd answer.txt` shows no newline, see https://x.io/a/b",
+                &none
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -324,7 +347,10 @@ mod tests {
             ..Default::default()
         };
         let ask = reask(&[row("reproduction-self-contained")], None, 7).unwrap();
-        assert!(ask.starts_with(REPRODUCTION_ASK) && ask.contains("/tmp/x.py"), "{ask}");
+        assert!(
+            ask.starts_with(REPRODUCTION_ASK) && ask.contains("/tmp/x.py"),
+            "{ask}"
+        );
         assert!(ask.contains("tests/review-notes/7/"), "{ask}");
         assert_eq!(asked(Some(&ask)), Some(ask.as_str()));
         assert!(reask(&[row("reproduction-self-contained")], Some(&ask), 7).is_none());

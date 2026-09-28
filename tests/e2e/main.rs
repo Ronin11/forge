@@ -43,6 +43,7 @@ mod questions;
 mod refs;
 mod reload;
 mod resume;
+mod review_notes;
 mod shadowing;
 mod signal;
 mod statusline;
