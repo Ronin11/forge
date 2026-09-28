@@ -6,7 +6,7 @@
 
 use crate::ctx::Forge;
 use crate::report::Event;
-use crate::store::{DeployTarget, Task, TaskState};
+use crate::store::{Deploy, DeployTarget, Task, TaskState};
 use crate::{config, git, operation, unix_now};
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -21,6 +21,36 @@ fn scratch_dir(f: &Forge, deploy_id: i64, suffix: &str) -> PathBuf {
     f.paths
         .worktrees
         .join(format!("deploy-{deploy_id}{suffix}"))
+}
+
+/// Serializes every `run` on one target across processes: two deploys of
+/// any method on the same target (not only `deploy-self`) must never run
+/// their method at once, since `deploy-command` and `deploy-user-service`
+/// both rsync `--delete` into the same directory and the last to finish
+/// would otherwise win (docs/REVIEW-4.md, E3-12). `flock` on
+/// `FORGE_HOME/deploys/<project>-<target>.lock`, held for all of `run`
+/// after target resolution, the same shape as `git::kernel_lock` for one
+/// kernel-owned repository.
+async fn target_lock(home: &Path, project: &str, target: &str) -> Result<std::fs::File> {
+    let dir = home.join("deploys");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{project}-{target}.lock"));
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    Ok(tokio::task::spawn_blocking(move || lock.lock().map(|_| lock)).await??)
+}
+
+/// The deploy to fall back to when `sha`'s check fails: the newest passing
+/// row (`rows` newest first, as `Store::deploys` returns them) whose sha
+/// differs from `sha`. `None` when there isn't one. A redeploy of a commit
+/// that passed before and now fails must not roll back to itself
+/// (docs/REVIEW-4.md, E3-12).
+fn rollback_target<'a>(rows: &'a [Deploy], sha: &str) -> Option<&'a Deploy> {
+    rows.iter()
+        .find(|d| d.check_ok == Some(true) && d.sha != sha)
 }
 
 /// Check out `sha` into a scratch directory and run the target's method
@@ -515,6 +545,7 @@ pub async fn run(
         .store
         .deploy_target(project, name)?
         .with_context(|| format!("no deploy target {name} in project {project}"))?;
+    let _lock = target_lock(&f.paths.home, project, name).await?;
     let action = operation::resolve_deploy_method(f, &target.method)?;
     if let Some(text) =
         crate::workflows::shadow::copy_note(&f.paths.home.join("workflows"), &target.method)
@@ -628,15 +659,12 @@ pub async fn run(
         // The check failed: redeploy the last commit that passed its check on
         // this target (a target has one method for its whole life, so "the
         // same target" already means "the same method").
-        let previous = f
-            .store
-            .deploys(project, Some(name))?
-            .into_iter()
-            .find(|d| d.id != deploy_id && d.check_ok == Some(true));
+        let rows = f.store.deploys(project, Some(name))?;
+        let previous = rollback_target(&rows, &sha);
 
         let Some(previous) = previous else {
             let reason = format!(
-                "the deploy of {} failed its check; there is no previous deploy to roll back to",
+                "the deploy of {} failed its check; nothing else to roll back to",
                 short(&sha)
             );
             f.store.finish_deploy(crate::store::FinishDeploy {
@@ -913,6 +941,69 @@ pub fn set_target(
 
     f.store.update_deploy_target(&t)?;
     Ok(t)
+}
+
+#[cfg(test)]
+mod rollback_target_tests {
+    use super::{Deploy, rollback_target};
+
+    fn mk(id: i64, sha: &str, check_ok: Option<bool>) -> Deploy {
+        Deploy {
+            id,
+            project: "demo".into(),
+            target: "prod".into(),
+            sha: sha.into(),
+            started_at: 0,
+            finished_at: None,
+            check_ok,
+            check_output: String::new(),
+            rolled_back_to: None,
+            reason: String::new(),
+            task_id: None,
+            smoke_ok: None,
+            smoke_json: None,
+            look_ok: None,
+            look_json: None,
+        }
+    }
+
+    #[test]
+    fn rollback_target_picks_the_newest_passing_row_with_a_different_sha() {
+        // Newest first, as Store::deploys returns them.
+        let rows = vec![
+            mk(3, "ccc", Some(false)),
+            mk(2, "bbb", Some(true)),
+            mk(1, "aaa", Some(true)),
+        ];
+        let previous = rollback_target(&rows, "ccc").unwrap();
+        assert_eq!(previous.id, 2);
+        assert_eq!(previous.sha, "bbb");
+    }
+
+    #[test]
+    fn rollback_target_skips_a_passing_row_that_is_the_same_commit_being_redeployed() {
+        // The commit being redeployed passed before (id 2) and is failing
+        // again now; the only other passing row is an older commit (id 1).
+        let rows = vec![
+            mk(3, "aaa", Some(false)),
+            mk(2, "aaa", Some(true)),
+            mk(1, "bbb", Some(true)),
+        ];
+        let previous = rollback_target(&rows, "aaa").unwrap();
+        assert_eq!(previous.id, 1);
+        assert_eq!(previous.sha, "bbb");
+    }
+
+    #[test]
+    fn rollback_target_is_none_when_nothing_else_ever_passed() {
+        let rows = vec![mk(2, "aaa", Some(false)), mk(1, "aaa", Some(true))];
+        assert!(rollback_target(&rows, "aaa").is_none());
+
+        let rows = vec![mk(1, "aaa", None)];
+        assert!(rollback_target(&rows, "aaa").is_none());
+
+        assert!(rollback_target(&[], "aaa").is_none());
+    }
 }
 
 #[cfg(test)]

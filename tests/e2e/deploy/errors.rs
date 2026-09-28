@@ -128,8 +128,10 @@ fn commit_flag(repo: &Path, flag: &str) -> String {
 }
 
 /// A smoke step that cannot even run (here: its output directory cannot be
-/// created, since `FORGE_HOME/deploys` is a file) is a failed smoke result,
-/// not an error: the deploy rolls back to the last passing commit and asks.
+/// created, since a file already sits where it would go) is a failed smoke
+/// result, not an error: the deploy rolls back to the last passing commit
+/// and asks. `FORGE_HOME/deploys` itself stays a real directory now that
+/// deploy::run's per-target lock lives there too.
 #[test]
 fn a_smoke_step_that_errors_rolls_back_and_asks() {
     let e = Env::new();
@@ -151,8 +153,11 @@ fn a_smoke_step_that_errors_rolls_back_and_asks() {
         ],
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let _ = std::fs::remove_dir_all(e.home.join("deploys"));
-    std::fs::write(e.home.join("deploys"), "not a directory").unwrap();
+    // The next deploy row is id 2 (the only prior row, `good`, is id 1): put
+    // a file where its smoke output directory would go, so only that
+    // `mkdir` fails.
+    std::fs::create_dir_all(e.home.join("deploys")).unwrap();
+    std::fs::write(e.home.join("deploys").join("2"), "not a directory").unwrap();
 
     let bad = commit_flag(&e.repo, "bad");
     let o = t.deploy(&bad);

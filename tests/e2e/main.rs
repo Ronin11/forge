@@ -10,6 +10,7 @@ mod concierge;
 mod contracts;
 mod deploy;
 mod deploy_errors;
+mod deploy_lock;
 mod drafts;
 mod economist;
 mod environment;
