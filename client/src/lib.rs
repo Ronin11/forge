@@ -500,9 +500,20 @@ impl Forge {
     /// events. The subordinate process is killed when the iterator is
     /// dropped.
     pub fn subscribe(&self, offset: impl std::fmt::Display) -> Result<Subscription> {
+        let offset = offset.to_string();
+        self.follow(&["events", "--since", &offset, "--follow"])
+    }
+
+    /// `forge <args>` with its stdout followed line by line as it is
+    /// printed: for a verb that answers as it works (`forge chat
+    /// --stream`) or one that never ends (`forge events --follow`). The
+    /// process is not held to [`Forge::timeout`]; it is killed when the
+    /// [`Subscription`] is dropped, or by its [`Killer`]. Reads that
+    /// reach the end of stdout mean the verb has exited.
+    pub fn follow(&self, args: &[&str]) -> Result<Subscription> {
         let mut command = Command::new(&self.bin);
         command
-            .args(["events", "--since", &offset.to_string(), "--follow"])
+            .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         // Drop cannot run when the owning process is killed. Linux also
@@ -522,8 +533,8 @@ impl Forge {
             });
         }
         let mut child = retry_on_etxtbsy(|| command.spawn())
-            .with_context(|| format!("running {} events --follow", self.bin))?;
-        let stdout = child.stdout.take().context("events stdout")?;
+            .with_context(|| format!("running {} {}", self.bin, args.join(" ")))?;
+        let stdout = child.stdout.take().context("stdout")?;
         Ok(Subscription {
             child: Arc::new(Mutex::new(child)),
             lines: std::io::BufReader::new(stdout).lines(),

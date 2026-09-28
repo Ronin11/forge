@@ -23,6 +23,7 @@ macro_rules! out {
     }};
 }
 
+mod chat;
 mod demo;
 mod deploy;
 mod eval;
@@ -39,6 +40,7 @@ mod web;
 mod workflows;
 mod workflows_draft;
 
+use chat::ChatCmd;
 use deploy::{DeployArgs, PluginCmd, ProvisionArgs};
 use eval::EvalCmd;
 use initiatives::InitiativeCmd;
@@ -165,6 +167,10 @@ enum Cmd {
         #[arg(long)]
         from: Option<String>,
     },
+    /// Ask Forge about its own state, or tell it to file work: a
+    /// sessionized conversation whose writes wait for your confirmation
+    /// (see docs/CHAT.md)
+    Chat(ChatCmd),
     /// Run queued tasks: stay up and poll, or drain and exit with --once
     Work {
         /// Tasks to run at the same time
@@ -687,6 +693,7 @@ pub async fn main() -> Result<()> {
         | Cmd::Job { .. }
         | Cmd::Economist { .. }
         | Cmd::Experiment { .. } => jobs::dispatch(cmd).await,
+        Cmd::Chat(..) => chat::dispatch(cmd).await,
         Cmd::Workflows { .. } | Cmd::Providers { .. } => workflows::dispatch(cmd).await,
         Cmd::Plugin { .. } | Cmd::Deploy(..) | Cmd::Provision(..) => deploy::dispatch(cmd).await,
         Cmd::Gc { .. }

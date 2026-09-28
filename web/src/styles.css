@@ -162,3 +162,23 @@ th.sortable:hover { color: var(--fg) }
 #stats-chart .chart-bar { fill: var(--run); opacity: .5 }
 #stats-chart .chart-line { stroke: var(--warn); stroke-width: 1.5 }
 #stats-chart .chart-dot { fill: var(--warn) }
+
+/* Chat (web/src/chat.js): sessions beside the transcript */
+#chat-page { display: flex; gap: 16px; margin: 16px; align-items: flex-start }
+.chat-side { width: 240px; flex: none }
+.chat-sessions { list-style: none; margin: 8px 0 0; padding: 0 }
+.chat-sessions li { padding: 4px 6px; border-radius: 4px }
+.chat-sessions li.active { background: var(--panel); border: 1px solid var(--line) }
+.chat-main { flex: 1; min-width: 0 }
+#chat-log { max-height: 65vh; overflow-y: auto; padding-right: 8px }
+.chat-turn { margin: 0 0 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel) }
+.chat-user { border-left: 3px solid var(--run) }
+.chat-action { border-style: dashed }
+.chat-who { font-size: var(--text-sm); color: var(--mute); margin-bottom: 4px }
+.chat-text { white-space: pre-wrap; overflow-wrap: anywhere }
+.chat-calls { margin: 0 0 6px; padding-left: 18px; font-size: var(--text-sm) }
+.chat-result { max-height: 240px; overflow: auto; white-space: pre-wrap }
+.chat-proposal { margin-top: 8px; padding: 6px 8px; border: 1px solid var(--warn); border-radius: 4px }
+.chat-proposal.decided { border-color: var(--line) }
+#chat-form { display: flex; gap: 8px; margin-top: 8px }
+#chat-input { flex: 1; font: inherit }
