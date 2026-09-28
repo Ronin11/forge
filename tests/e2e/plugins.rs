@@ -162,44 +162,45 @@ fn the_worker_supervises_a_failing_plugin_and_stops_it_when_disabled() {
             .success()
     );
 
-    // A task that takes a couple of seconds gives the plugin's supervisor
-    // enough wall-clock time to fail and restart at least once.
+    // `--once` drains the queue and exits without supervising anything.
     e.add(&[]);
-    let o = e
-        .cmd("ok.sh")
-        .env("FAKE_SLEEP", "1")
-        .args(["work", "--once"])
-        .output()
-        .unwrap();
+    let o = e.cmd("ok.sh").args(["work", "--once"]).output().unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-
     let count_file = e.home.join("plugins-state").join("flaky").join("count");
-    let lines = std::fs::read_to_string(&count_file)
-        .unwrap_or_default()
-        .lines()
-        .count();
-    assert!(lines > 1, "expected a restart, only ran {lines} time(s)");
+    assert!(!count_file.exists(), "work --once must not run plugins");
+
+    let count = || {
+        std::fs::read_to_string(&count_file)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    let mut worker = Worker::spawn(e.cmd("ok.sh").args(["work", "--poll", "1"]));
+    assert!(
+        wait_until(|| count() > 1, Duration::from_secs(30)),
+        "expected a restart, only ran {} time(s)",
+        count()
+    );
 
     let log_path = e.home.join("logs").join("plugins").join("flaky.log");
     assert!(log_path.exists(), "expected a plugin log at {log_path:?}");
 
-    // Disabled, a fresh worker run must not start it at all.
+    // Disabled, the running worker's next reconcile tick stops it for good.
     assert!(
         e.forge("ok.sh", &["plugin", "disable", "flaky"])
             .status
             .success()
     );
-    let before = std::fs::read_to_string(&count_file)
-        .unwrap()
-        .lines()
-        .count();
-    e.add(&[]);
-    assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
-    let after = std::fs::read_to_string(&count_file)
-        .unwrap()
-        .lines()
-        .count();
-    assert_eq!(before, after, "a disabled plugin must not run");
+    assert!(
+        wait_until(
+            || plugin_status_json(&e, "flaky")["state"] == "stopped",
+            Duration::from_secs(30)
+        ),
+        "a disabled plugin must be stopped"
+    );
+    let before = count();
+    worker.stop();
+    assert_eq!(before, count(), "a disabled plugin must not run");
 
     let o = e.forge("ok.sh", &["plugin", "status", "flaky", "--json"]);
     let status: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
@@ -382,14 +383,13 @@ fn the_reference_plugin_runs_its_command_on_task_done() {
     .unwrap();
     std::fs::set_permissions(&claude_fake, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let o = e
-        .cmd("ok.sh")
-        .env("FORGE_CLAUDE_BIN", &claude_fake)
-        .env("FAKE_SLEEP", "1")
-        .args(["work", "--once"])
-        .output()
-        .unwrap();
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // Only a daemon worker supervises plugins; `--once` never does.
+    let mut worker = Worker::spawn(
+        e.cmd("ok.sh")
+            .env("FORGE_CLAUDE_BIN", &claude_fake)
+            .env("FAKE_SLEEP", "1")
+            .args(["work", "--poll", "1"]),
+    );
 
     let want = format!("{id}|blocked|needs input: Which answer file: answer.txt or ANSWER.txt?");
     assert!(
@@ -398,12 +398,13 @@ fn the_reference_plugin_runs_its_command_on_task_done() {
                 .unwrap_or_default()
                 .lines()
                 .any(|l| l == want),
-            Duration::from_secs(5)
+            Duration::from_secs(30)
         ),
         "expected {want:?} in {}: {:?}",
         hits.display(),
         std::fs::read_to_string(&hits)
     );
+    worker.stop();
 }
 
 /// A fake `rsync` for a `host=local` deploy target: records nothing, just
@@ -423,6 +424,16 @@ dest="${args[1]}"
 mkdir -p "$dest"
 cp -a "$src"/. "$dest"/
 "#;
+
+fn deployed_sha(e: &Env) -> Option<String> {
+    e.db()
+        .query_row(
+            "SELECT sha FROM deploys WHERE project='demo' AND target='prod'",
+            [],
+            |r| r.get(0),
+        )
+        .ok()
+}
 
 /// notify.sh treats `deploy_finished` as a notification too (docs/DEPLOY.md,
 /// "When a deploy runs"): an on-landing target whose check always fails
@@ -517,23 +528,19 @@ fn the_notify_plugin_gets_a_deploy_finished_with_ok_false() {
     // FAKE_SLEEP gives the plugin time to subscribe from its offset
     // before the task lands and its on-landing deploy fires, exactly as
     // `the_reference_plugin_runs_its_command_on_task_done` does.
-    let o = e
-        .cmd("ok.sh")
-        .env("PATH", &path)
-        .env("FAKE_SLEEP", "1")
-        .args(["work", "--once"])
-        .output()
-        .unwrap();
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // Only a daemon worker supervises plugins; `--once` never does.
+    let mut worker = Worker::spawn(
+        e.cmd("ok.sh")
+            .env("PATH", &path)
+            .env("FAKE_SLEEP", "1")
+            .args(["work", "--poll", "1"]),
+    );
 
-    let sha: String = e
-        .db()
-        .query_row(
-            "SELECT sha FROM deploys WHERE project='demo' AND target='prod'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
+    assert!(
+        wait_until(|| deployed_sha(&e).is_some(), Duration::from_secs(60)),
+        "the on-landing deploy never ran"
+    );
+    let sha = deployed_sha(&e).unwrap();
 
     let want = format!("deploy|demo|prod|{sha}|failed");
     assert!(
@@ -542,12 +549,13 @@ fn the_notify_plugin_gets_a_deploy_finished_with_ok_false() {
                 .unwrap_or_default()
                 .lines()
                 .any(|l| l == want),
-            Duration::from_secs(10)
+            Duration::from_secs(30)
         ),
         "expected {want:?} in {}: {:?}",
         hits.display(),
         std::fs::read_to_string(&hits)
     );
+    worker.stop();
 }
 
 /// The github-issues plugin end to end, against a stub `gh`: intake files a
