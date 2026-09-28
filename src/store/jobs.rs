@@ -124,6 +124,8 @@ pub struct Job {
 /// it was an operation or a directive (see docs/JOBS.md, "Steps").
 #[derive(Default, Debug, Clone, Serialize)]
 pub struct JobStep {
+    /// Run assigned from the job row when appended; zero for the original run.
+    pub run: i64,
     pub id: i64,
     pub job_id: i64,
     /// Position in the workflow's `steps` array, from 0.
@@ -212,6 +214,7 @@ fn probabilities_json<S: serde::Serializer>(text: &str, s: S) -> Result<S::Ok, S
 }
 
 pub(super) const JOB_COLUMNS: &[&str] = &[
+    "run",
     "id",
     "project",
     "workflow",
@@ -232,6 +235,7 @@ pub(super) const JOB_COLUMNS: &[&str] = &[
 ];
 
 pub(super) const JOB_STEP_COLUMNS: &[&str] = &[
+    "run",
     "id",
     "job_id",
     "seq",
@@ -281,6 +285,7 @@ fn job_from_row(r: &Row) -> rusqlite::Result<Job> {
 
 fn job_step_from_row(r: &Row) -> rusqlite::Result<JobStep> {
     Ok(JobStep {
+        run: r.get("run")?,
         id: r.get("id")?,
         job_id: r.get("job_id")?,
         seq: r.get("seq")?,
@@ -437,8 +442,8 @@ impl Store {
     pub fn append_job_step(&self, s: &JobStep) -> Result<i64> {
         let c = self.lock();
         c.retry_execute(
-            "INSERT INTO job_steps (job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref, tail, outcome, node, probabilities)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            "INSERT INTO job_steps (run, job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref, tail, outcome, node, probabilities)
+             VALUES ((SELECT run FROM jobs WHERE id=?1), ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 s.job_id,
                 s.seq,
@@ -479,12 +484,12 @@ impl Store {
         id: i64,
         at: i64,
         state: JobState,
-        cost_usd: Option<f64>,
+        _cost_usd: Option<f64>,
         verdict_json: &str,
     ) -> Result<()> {
         self.lock().retry_execute(
-            "UPDATE jobs SET state=?2, finished_at=?3, cost_usd=?4, verdict_json=?5, worker_pid=NULL WHERE id=?1",
-            params![id, state.as_str(), at, cost_usd, verdict_json],
+            "UPDATE jobs SET state=?2, finished_at=?3, cost_usd=(SELECT COALESCE(SUM(cost_usd), 0.0) FROM job_steps WHERE job_id=?1), verdict_json=?4, worker_pid=NULL WHERE id=?1",
+            params![id, state.as_str(), at, verdict_json],
         )?;
         Ok(())
     }
@@ -517,7 +522,7 @@ impl Store {
     pub fn job_steps(&self, job_id: i64) -> Result<Vec<JobStep>> {
         let c = self.lock();
         let mut stmt = c.prepare(&format!(
-            "SELECT {} FROM job_steps WHERE job_id=?1 ORDER BY seq",
+            "SELECT {} FROM job_steps WHERE job_id=?1 ORDER BY run, seq, id",
             JOB_STEP_COLUMNS.join(", ")
         ))?;
         let rows = stmt.query_map(params![job_id], job_step_from_row)?;
@@ -670,7 +675,7 @@ impl Store {
     /// does the same for a running task's `requeue`).
     pub fn requeue_job(&self, id: i64) -> Result<()> {
         self.lock().retry_execute(
-            "UPDATE jobs SET state='queued', worker_pid=NULL WHERE id=?1 AND state='running' AND NOT EXISTS (SELECT 1 FROM job_effects WHERE job_id=?1)",
+            "UPDATE jobs SET state='queued', worker_pid=NULL, run=run+1 WHERE id=?1 AND state='running' AND NOT EXISTS (SELECT 1 FROM job_effects WHERE job_id=?1)",
             params![id],
         )?;
         Ok(())
@@ -817,6 +822,12 @@ mod tests {
         mk_project(&s, "equitizr");
         let id = mk_job(&s, "equitizr", "quote-by-text", 100);
 
+        s.append_job_step(&JobStep {
+            job_id: id,
+            cost_usd: Some(0.02),
+            ..Default::default()
+        })
+        .unwrap();
         s.finish_job(
             id,
             130,
@@ -1104,6 +1115,7 @@ mod tests {
             retry_count: 0,
         };
         let step = JobStep {
+            run: 0,
             id: 1,
             job_id: 7,
             seq: 0,
@@ -1137,7 +1149,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&step).unwrap(),
-            r#"{"id":1,"job_id":7,"seq":0,"action":"draft-quote","kind":"directive","provider":"anthropic","model":"claude","cost_usd":0.12,"started_at":101,"finished_at":110,"exit_code":null,"output_ref":"step-0.json","tail":""}"#,
+            r#"{"run":0,"id":1,"job_id":7,"seq":0,"action":"draft-quote","kind":"directive","provider":"anthropic","model":"claude","cost_usd":0.12,"started_at":101,"finished_at":110,"exit_code":null,"output_ref":"step-0.json","tail":""}"#,
         );
         assert_eq!(
             serde_json::to_string(&effect).unwrap(),
