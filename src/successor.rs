@@ -96,11 +96,6 @@ impl Succession {
             }
             notify(&format!("MAINPID={pid}\nREADY=1"));
             write_capability(&root, pid);
-            match f.store.apply_contracts(&version, crate::worker::pid_alive) {
-                Ok(0) => {}
-                Ok(n) => eprintln!("applied {n} contract migration step(s)"),
-                Err(e) => eprintln!("contract migration failed: {e:#}"),
-            }
         }
         Ok(Succession {
             daemon,
@@ -154,6 +149,15 @@ impl Succession {
         crate::plugins::handoff::settle(f, plugins, claimant).await;
         if !newer.is_empty() {
             return Ok(true);
+        }
+        // Not superseded: every live worker runs this version (or is this
+        // one), so any pending contract step is due. One SELECT once it is
+        // all applied; the actual work runs on the first pass after the
+        // last older-version worker is gone.
+        match f.store.apply_contracts(&self.version, pid_alive) {
+            Ok(0) => {}
+            Ok(n) => eprintln!("applied {n} contract migration step(s)"),
+            Err(e) => eprintln!("contract migration failed: {e:#}"),
         }
         if let Some(next) = self.staged_successor(&f.paths, &live) {
             match self.spawn(&f.paths, &next) {
