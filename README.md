@@ -79,6 +79,7 @@ forge version                                               # print the crate ve
 forge workflows                                             # list the workflows a task can run, with declared metadata and measured outcomes
 forge trace <id>                                            # everything about one task: every step's inputs, outputs, verdict rows, and a diagnosis
 forge requests                                              # blocked tasks: questions for the operator and workflow requests
+forge audit [--since 24h]                                   # every task lineage since the time, by outcome, with dangling tips named
 forge stats                                                 # outcomes per workflow version and per step
 forge events                                                # the event log as JSON lines: a client's subscription
 forge snapshot                                              # tasks, requests, the worker, and the event offset to subscribe from, as one JSON object
@@ -319,6 +320,7 @@ src/job.rs          forge job start: the executor for operation-only run workflo
 src/journal.rs      what earlier attempts in a piece of work said, and what the kernel found
 src/landing.rs      the integrator: merge base in, re-verify, push, fast-forward
 src/adopt.rs        forge adopt: a hand-made branch verified as it is and landed through the integrator, no agent run
+src/lineage.rs      forge audit's pure lineage walk: tip-of, classify, report
 src/main.rs         entry, unix_now
 src/operation.rs    a workflow step that is a command, not an agent
 src/plugins.rs      plugins: directories named for their plugin.toml, one broken manifest never stops the rest
@@ -353,6 +355,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   job_runs.rs       recovered job run numbers and cumulative step costs
   deploys.rs        deploys, deploy_targets, assessments
   descendants.rs    the live tasks below and beside a task in its retry lineage, and the `withdraw --abort` decision a worker reads
+  lineage.rs        task_ids_since/roots_since: which lineage roots had activity in a window, for forge audit and doctor's dangling row
   projects.rs       projects, project_repos, backlog, initiatives, portal_tokens
   record.rs         decisions, task_refs, plugins
   chat.rs           chat_sessions and chat_turns: every turn of Ask Forge, its tool calls and cost

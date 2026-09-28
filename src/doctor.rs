@@ -137,6 +137,8 @@ mod presence;
 use presence::check_presence;
 mod succession;
 use succession::check_succession;
+mod dangling;
+use dangling::check_dangling;
 
 /// What an attempt can reach: whether bwrap can give it a network namespace
 /// at all, the model endpoints that are always allowed, and each project's
@@ -1254,6 +1256,8 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     out.extend(check_queue(&store));
     out.extend(check_deliveries(&store, unix_now()));
     out.extend(capacity::disk(&paths, &store));
+    out.extend(check_dangling(&store));
+    out.extend(check_worktrees(&store));
     out.extend(check_logs(&paths));
 
     if let Ok(f) = Forge::open_with(paths, store) {
