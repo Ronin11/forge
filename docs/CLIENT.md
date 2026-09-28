@@ -1225,6 +1225,9 @@ One row of `forge plugin list --json`: a plugin as discovered.
 | `capabilities` | array of string | any combination of `events`, `intake`, `annotate`, `message`, `system`. |
 | `restart` | string | `always`, `on-failure`, or `never`. |
 | `enabled` | bool | Whether the operator has enabled it. |
+| `sync` | string or null | For a copy installed under `<FORGE_HOME>/plugins`: `current`, `behind`, `operator-edit`, `unrecorded`, or `source-missing`, comparing the installed `plugin.toml` and script with the directory it was installed from (docs/PLUGINS.md, "Drift"). Null for a plugin run in place from a `plugin_dirs` root. |
+| `diff_lines` | integer or null | Added plus removed lines between the installed files and the source's; null when there is no source to compare. |
+| `install_source` | string or null | The directory the installed copy was installed from. |
 
 ### `PluginStatusRow`
 
