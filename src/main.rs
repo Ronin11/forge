@@ -36,6 +36,7 @@ mod intake;
 mod job;
 mod journal;
 mod landing;
+mod login;
 mod operation;
 mod plugins;
 mod pricing;
