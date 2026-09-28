@@ -30,7 +30,7 @@ pub(super) fn check_plugins(paths: &Paths, store: &Store) -> Vec<Check> {
             .map(|name| {
                 format!(
                     "{name} ({})",
-                    crate::plugins::read_run_state(&paths.home, name).describe()
+                    crate::plugins::handoff::effective_run_state(&paths.home, name).describe()
                 )
             })
             .collect();
