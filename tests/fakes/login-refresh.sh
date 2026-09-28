@@ -9,7 +9,9 @@ f="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
 if grep -q '"refreshToken":"r1"' "$f"; then
   echo 42 >answer.txt
 else
-  printf '{"claudeAiOauth":{"accessToken":"a1","refreshToken":"r1","expiresAt":32503680001000}}' >"$f.new" && mv "$f.new" "$f"
+  # Six hours out: later than the seed's, and within the day the kernel accepts.
+  at=$(( $(date +%s) * 1000 + 6 * 3600 * 1000 ))
+  printf '{"claudeAiOauth":{"accessToken":"a1","refreshToken":"r1","expiresAt":%s}}' "$at" >"$f.new" && mv "$f.new" "$f"
   echo 41 >answer.txt
 fi
 git add -A && git commit -qm "attempt"

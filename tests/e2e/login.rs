@@ -7,6 +7,13 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::Duration;
 
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+}
+
 fn login(access: &str, refresh: &str, expires_at: i64) -> String {
     format!(
         r#"{{"claudeAiOauth":{{"accessToken":"{access}","refreshToken":"{refresh}","expiresAt":{expires_at}}}}}"#
@@ -50,16 +57,19 @@ fn a_token_a_sandbox_refreshed_is_written_back_and_seeds_the_next_attempt() {
         eprintln!("FORGE_TEST_NO_SANDBOX=1: skipping, bwrap unavailable");
         return;
     }
-    let config = config_dir(&e, &login("a0", "r0", 32503680000000));
+    let seeded_at = now_ms() + 3 * 3600 * 1000;
+    let config = config_dir(&e, &login("a0", "r0", seeded_at));
     // The first attempt is seeded with r0, refreshes to r1 in its private
     // copy and answers wrong; the kernel writes r1 back over the host file.
     assert!(!run(&e, "login-refresh.sh", &config).status.success());
     assert_eq!(e.attempts(1)[0].1, "checks_failed");
     let host = std::fs::read_to_string(config.join(".credentials.json")).unwrap();
     assert!(
-        host.contains("r1") && host.contains("32503680001000"),
+        host.contains("r1") && !host.contains(&seeded_at.to_string()),
         "the host seed carries the later stamp: {host}"
     );
+    let prev = std::fs::read_to_string(config.join(".credentials.json.forge-prev")).unwrap();
+    assert_eq!(prev, login("a0", "r0", seeded_at), "the replaced login is kept");
     assert!(
         std::fs::read_dir(&config)
             .unwrap()
@@ -71,6 +81,30 @@ fn a_token_a_sandbox_refreshed_is_written_back_and_seeds_the_next_attempt() {
     let o = run(&e, "login-refresh.sh", &config);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(e.task(2).0, "succeeded");
+}
+
+#[test]
+fn a_pair_a_sandbox_forged_never_replaces_the_host_login() {
+    let e = Env::new();
+    if e.sandbox_disabled() {
+        eprintln!("FORGE_TEST_NO_SANDBOX=1: skipping, bwrap unavailable");
+        return;
+    }
+    let seeded = login("a0", "r0", now_ms() + 3 * 3600 * 1000);
+    let config = config_dir(&e, &seeded);
+    let o = run(&e, "login-forge.sh", &config);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(e.task(1).0, "succeeded");
+    assert_eq!(
+        std::fs::read_to_string(config.join(".credentials.json")).unwrap(),
+        seeded,
+        "the host login is as the operator left it"
+    );
+    assert!(
+        !config.join(".credentials.json.forge-prev").exists(),
+        "nothing was accepted, so nothing was backed up"
+    );
+    assert!(!config.join(".forge-writeback").exists());
 }
 
 #[test]
