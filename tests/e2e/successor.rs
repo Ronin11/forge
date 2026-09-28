@@ -330,6 +330,39 @@ fn worker_restarts(calls: &[String]) -> usize {
         .count()
 }
 
+/// `deploy`, with a stand-in for the successor a capable worker starts
+/// on a staged release: once `staged` names `sha` it registers a live
+/// worker on it (this test's own pid) and flips `current`. Without one,
+/// a self-deploy under a capable worker never goes live.
+fn deploy_taken_over(s: &SelfDeploy, sha: &str) -> std::process::Output {
+    let home = s.e.home.clone();
+    let bins = s.bins.clone();
+    let want = format!("releases/{sha}");
+    let version = sha.to_string();
+    let successor = std::thread::spawn(move || {
+        for _ in 0..600 {
+            let staged = std::fs::read_link(bins.join("staged")).unwrap_or_default();
+            if staged == std::path::Path::new(&want) {
+                let c = rusqlite::Connection::open(home.join("forge.db")).unwrap();
+                c.execute(
+                    "INSERT INTO workers (pid, version, started_at) VALUES (?1, ?2, 0)",
+                    rusqlite::params![i64::from(std::process::id()), version],
+                )
+                .unwrap();
+                let tmp = bins.join(".current.new.test");
+                let _ = std::fs::remove_file(&tmp);
+                std::os::unix::fs::symlink(&want, &tmp).unwrap();
+                std::fs::rename(&tmp, bins.join("current")).unwrap();
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    });
+    let o = s.deploy(sha);
+    successor.join().unwrap();
+    o
+}
+
 #[test]
 fn deploy_self_only_stages_for_a_successor_capable_worker_and_restarts_an_older_one() {
     // Not capable: no worker registered, no capability file. One restart.
@@ -348,7 +381,7 @@ fn deploy_self_only_stages_for_a_successor_capable_worker_and_restarts_an_older_
         )
         .unwrap();
     let sha = s.commit("good");
-    let o = s.deploy_taken_over(&sha);
+    let o = deploy_taken_over(&s, &sha);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(s.link("staged"), format!("releases/{sha}"));
     // The successor flips current; the deploy leaves it alone.
@@ -371,7 +404,7 @@ fn deploy_self_only_stages_for_a_successor_capable_worker_and_restarts_an_older_
     )
     .unwrap();
     let sha = s.commit("good");
-    assert!(s.deploy_taken_over(&sha).status.success());
+    assert!(deploy_taken_over(&s, &sha).status.success());
     assert_eq!(s.link("staged"), format!("releases/{sha}"));
     assert_eq!(worker_restarts(&s.calls()), 0, "{:?}", s.calls());
 
@@ -851,4 +884,71 @@ fn a_successor_that_dies_after_a_restarted_worker_joined_is_not_started_again() 
         std::fs::symlink_metadata(root.join("staged")).is_err(),
         "staged was not retired"
     );
+}
+
+#[test]
+fn deploy_self_under_a_worker_that_never_takes_over_fails_staged_but_never_live() {
+    let s = SelfDeploy::new();
+    // A live worker on the old release that starts successors, and never
+    // does: the release is staged and nothing runs it.
+    s.e.db()
+        .execute(
+            "INSERT INTO workers (pid, version, started_at) VALUES (?1, 'old', 0)",
+            [i64::from(std::process::id())],
+        )
+        .unwrap();
+    let sha = s.commit("good");
+
+    let o = s.deploy(&sha);
+    assert_eq!(
+        o.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+
+    // Staged back to what current names, so no worker retries it.
+    assert_eq!(s.link("current"), "releases/old");
+    assert_eq!(s.link("staged"), "releases/old");
+
+    let rows = s.deploy_rows();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["check_ok"], false);
+    assert!(
+        rows[0]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("staged but never became live"),
+        "{:?}",
+        rows[0]
+    );
+    let calls = s.calls();
+    assert!(!calls.iter().any(|c| c.starts_with("curl ")), "{calls:?}");
+}
+
+#[test]
+fn deploy_self_says_staged_and_live_on_separate_lines_once_a_successor_took_over() {
+    let s = SelfDeploy::new();
+    s.e.db()
+        .execute(
+            "INSERT INTO workers (pid, version, started_at) VALUES (?1, 'old', 0)",
+            [i64::from(std::process::id())],
+        )
+        .unwrap();
+    let sha = s.commit("good");
+
+    let o = deploy_taken_over(&s, &sha);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let rows = s.deploy_rows();
+    assert_eq!(rows[0]["check_ok"], true, "{rows:?}");
+    let out = rows[0]["check_output"].as_str().unwrap_or_default();
+    let line = |word: &str| {
+        out.lines()
+            .any(|l| l.starts_with(&format!("{word} {}", &sha[..8])))
+    };
+    assert!(line("staged") && line("live"), "{out}");
+    // The check ran against the live release.
+    let calls = s.calls();
+    assert!(calls.iter().any(|c| c.starts_with("curl ")), "{calls:?}");
 }

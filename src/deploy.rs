@@ -158,6 +158,164 @@ async fn origin_truth(
     Ok((kernel, sha))
 }
 
+/// The deploy [`run`] is recording, for the helpers that finish its row.
+struct FinishedRun<'a> {
+    project: &'a str,
+    name: &'a str,
+    target: &'a DeployTarget,
+    deploy_id: i64,
+    event_task: i64,
+    sha: &'a str,
+}
+
+/// Split staged from live for a self-deploy that only staged: wait for the
+/// release to go live, then run the target's check against it. Both go into
+/// `r`'s output as their own lines, and `r.ok` becomes the check's. False
+/// when nothing ever took the release over: `staged` is put back to what
+/// `current` names, so no worker retries it, and `r.tail` says so.
+async fn go_live(
+    f: &Forge,
+    target: &DeployTarget,
+    sha: &str,
+    timeout: Duration,
+    r: &mut crate::checks::CheckResult,
+) -> bool {
+    let wait = live_wait(target);
+    let Some(pid) = wait_live(f, sha, wait).await else {
+        let root = crate::release::root(&f.paths.home);
+        let unstaged =
+            crate::release::lock(&root).and_then(|lock| crate::release::unstage(&lock, &root, sha));
+        r.tail = format!(
+            "{}\nnot live {}: no worker on it with current naming it within {} s{}",
+            r.tail.trim_end(),
+            short(sha),
+            wait.as_secs(),
+            match unstaged {
+                Ok(true) => "; staged put back to what current names".to_string(),
+                Ok(false) => String::new(),
+                Err(e) => format!("; could not put staged back: {e:#}"),
+            }
+        );
+        return false;
+    };
+    let check = operation::run_self_live_check(target, &f.paths.home, timeout).await;
+    r.tail = format!(
+        "{}\nlive {}: worker pid {pid} runs it and current names it\n{}",
+        r.tail.trim_end(),
+        short(sha),
+        check.tail
+    );
+    r.ok = check.ok;
+    true
+}
+
+/// Finish the row of a deploy that was staged and never went live: a
+/// failure with nothing to roll back (nothing changed what runs), and the
+/// project is asked.
+async fn never_live(f: &Forge, run: &FinishedRun<'_>, tail: &str) -> Result<bool> {
+    let reason = format!(
+        "staged but never became live: the deploy of {} was staged and no worker took it over",
+        short(run.sha)
+    );
+    f.store.finish_deploy(crate::store::FinishDeploy {
+        id: run.deploy_id,
+        at: unix_now(),
+        check_ok: false,
+        check_output: tail,
+        rolled_back_to: None,
+        reason: &reason,
+        smoke_ok: None,
+        smoke_json: None,
+        look_ok: None,
+        look_json: None,
+    })?;
+    f.report.emit(
+        run.event_task,
+        Event::DeployFinished {
+            project: run.project,
+            target: run.name,
+            sha: run.sha,
+            ok: false,
+            rolled_back_to: None,
+        },
+    );
+    ask(
+        f,
+        run.project,
+        &run.target.repo,
+        format!("{reason}:\n{tail}"),
+    )?;
+    Ok(false)
+}
+
+/// The smoke step and the deploy look of a deploy whose check passed (see
+/// docs/DEPLOY.md, "A deterministic smoke step" and "The deploy look"),
+/// each able to fail it in `r`: `(smoke ok, smoke json, look ok, look
+/// json)`, all `None` when the target declares no smoke url.
+async fn smoke_and_look(
+    f: &Forge,
+    run: &FinishedRun<'_>,
+    smoke_action: &Option<operation::RunAction>,
+    timeout: Duration,
+    r: &mut crate::checks::CheckResult,
+) -> Result<(Option<bool>, Option<String>, Option<bool>, Option<String>)> {
+    let (deploy_id, event_task, target) = (run.deploy_id, run.event_task, run.target);
+    let (Some(url), Some(smoke_action)) = (&target.smoke_url, smoke_action) else {
+        return Ok((None, None, None, None));
+    };
+    let out_dir = f.paths.home.join("deploys").join(deploy_id.to_string());
+    // A smoke step that cannot even run is a failed one: the
+    // method already succeeded, so the normal rollback and
+    // question must still follow.
+    let sr = operation::run_deploy_smoke(smoke_action, url, &out_dir, timeout)
+        .await
+        .unwrap_or_else(|e| crate::checks::CheckResult {
+            ok: false,
+            tail: format!("the smoke step could not run: {e:#}"),
+            ..Default::default()
+        });
+    let json = std::fs::read_to_string(out_dir.join("smoke.json")).ok();
+    if !sr.ok {
+        r.ok = false;
+        r.tail = format!("{}\n\n-- smoke check ({url}) --\n{}", r.tail, sr.tail);
+    }
+
+    // The last, human-shaped step (see docs/DEPLOY.md, "The
+    // deploy look"): whether or not the deterministic smoke
+    // check itself passed, look at what it caught.
+    let (look_ok, look_json) = match crate::deploy_look::run(f, target, deploy_id, &out_dir).await {
+        Ok(Some(v)) => {
+            f.report.emit(
+                event_task,
+                Event::Note {
+                    text: &format!(
+                        "deploy-look {}, {} finding(s)",
+                        if v.ok { "ok" } else { "not ok" },
+                        v.findings.len()
+                    ),
+                },
+            );
+            if let Some(blocking) = v.findings.iter().find(|fnd| fnd.severity == "blocking") {
+                r.ok = false;
+                r.tail = format!("{}\n\n-- deploy look --\n{}", r.tail, blocking.finding);
+            }
+            (Some(v.ok), Some(serde_json::to_string(&v.findings)?))
+        }
+        Ok(None) => (None, None),
+        Err(e) => {
+            f.report.emit(
+                event_task,
+                Event::Note {
+                    text: &format!("deploy-look failed: {e:#}"),
+                },
+            );
+            (None, None)
+        }
+    };
+
+    Ok((Some(sr.ok), json, look_ok, look_json))
+}
+
 /// Where a non-self target's tree comes from, and the commit to archive.
 /// On landing, the sha is the commit that just landed, staged in the
 /// kernel repository by `landing::try_land`'s `stage` of the task branch;
@@ -379,132 +537,31 @@ pub async fn run(
         // staged: the release is live once a worker runs it and `current`
         // names it, and only then do the check and the smoke step mean
         // anything.
-        if r.ok && successors {
-            let wait = live_wait(&target);
-            match wait_live(f, &sha, wait).await {
-                Some(pid) => {
-                    let check = operation::run_self_live_check(&target, &f.paths.home, timeout).await;
-                    r.tail = format!(
-                        "{}\nlive {}: worker pid {pid} runs it and current names it\n{}",
-                        r.tail.trim_end(),
-                        short(&sha),
-                        check.tail
-                    );
-                    r.ok = check.ok;
-                }
-                None => {
-                    let root = crate::release::root(&f.paths.home);
-                    let unstaged = crate::release::lock(&root)
-                        .and_then(|lock| crate::release::unstage(&lock, &root, &sha));
-                    let tail = format!(
-                        "{}\nnot live {}: no worker on it with current naming it within {} s{}",
-                        r.tail.trim_end(),
-                        short(&sha),
-                        wait.as_secs(),
-                        match unstaged {
-                            Ok(true) => "; staged put back to what current names".to_string(),
-                            Ok(false) => String::new(),
-                            Err(e) => format!("; could not put staged back: {e:#}"),
-                        }
-                    );
-                    let reason = format!(
-                        "staged but never became live: the deploy of {} was staged and no worker took it over",
-                        short(&sha)
-                    );
-                    f.store.finish_deploy(crate::store::FinishDeploy {
-                        id: deploy_id,
-                        at: unix_now(),
-                        check_ok: false,
-                        check_output: &tail,
-                        rolled_back_to: None,
-                        reason: &reason,
-                        smoke_ok: None,
-                        smoke_json: None,
-                        look_ok: None,
-                        look_json: None,
-                    })?;
-                    f.report.emit(
-                        event_task,
-                        Event::DeployFinished {
-                            project,
-                            target: name,
-                            sha: &sha,
-                            ok: false,
-                            rolled_back_to: None,
-                        },
-                    );
-                    ask(f, project, &target.repo, format!("{reason}:\n{tail}"))?;
-                    return Ok(false);
-                }
-            }
+        if r.ok && successors && !go_live(f, &target, &sha, timeout, &mut r).await {
+            let run = FinishedRun {
+                project,
+                name,
+                target: &target,
+                deploy_id,
+                event_task,
+                sha: &sha,
+            };
+            return never_live(f, &run, &r.tail).await;
         }
 
-        // A check that answers is not a site that works (see docs/DEPLOY.md,
-        // "A deterministic smoke step"): open the target's smoke url only once
-        // the check itself has passed, and let it fail the deploy too.
+        // A check that answers is not a site that works: open the target's
+        // smoke url only once the check itself has passed, and let it fail
+        // the deploy too.
         let (smoke_ok, smoke_json, look_ok, look_json) = if r.ok {
-            match (&target.smoke_url, &smoke_action) {
-                (Some(url), Some(smoke_action)) => {
-                    let out_dir = f.paths.home.join("deploys").join(deploy_id.to_string());
-                    // A smoke step that cannot even run is a failed one: the
-                    // method already succeeded, so the normal rollback and
-                    // question must still follow.
-                    let sr = operation::run_deploy_smoke(smoke_action, url, &out_dir, timeout)
-                        .await
-                        .unwrap_or_else(|e| crate::checks::CheckResult {
-                            ok: false,
-                            tail: format!("the smoke step could not run: {e:#}"),
-                            ..Default::default()
-                        });
-                    let json = std::fs::read_to_string(out_dir.join("smoke.json")).ok();
-                    if !sr.ok {
-                        r.ok = false;
-                        r.tail = format!("{}\n\n-- smoke check ({url}) --\n{}", r.tail, sr.tail);
-                    }
-
-                    // The last, human-shaped step (see docs/DEPLOY.md, "The
-                    // deploy look"): whether or not the deterministic smoke
-                    // check itself passed, look at what it caught.
-                    let (look_ok, look_json) =
-                        match crate::deploy_look::run(f, &target, deploy_id, &out_dir).await {
-                            Ok(Some(v)) => {
-                                f.report.emit(
-                                    event_task,
-                                    Event::Note {
-                                        text: &format!(
-                                            "deploy-look {}, {} finding(s)",
-                                            if v.ok { "ok" } else { "not ok" },
-                                            v.findings.len()
-                                        ),
-                                    },
-                                );
-                                if let Some(blocking) =
-                                    v.findings.iter().find(|fnd| fnd.severity == "blocking")
-                                {
-                                    r.ok = false;
-                                    r.tail = format!(
-                                        "{}\n\n-- deploy look --\n{}",
-                                        r.tail, blocking.finding
-                                    );
-                                }
-                                (Some(v.ok), Some(serde_json::to_string(&v.findings)?))
-                            }
-                            Ok(None) => (None, None),
-                            Err(e) => {
-                                f.report.emit(
-                                    event_task,
-                                    Event::Note {
-                                        text: &format!("deploy-look failed: {e:#}"),
-                                    },
-                                );
-                                (None, None)
-                            }
-                        };
-
-                    (Some(sr.ok), json, look_ok, look_json)
-                }
-                _ => (None, None, None, None),
-            }
+            let run = FinishedRun {
+                project,
+                name,
+                target: &target,
+                deploy_id,
+                event_task,
+                sha: &sha,
+            };
+            smoke_and_look(f, &run, &smoke_action, timeout, &mut r).await?
         } else {
             (None, None, None, None)
         };
