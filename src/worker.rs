@@ -518,8 +518,9 @@ fn event_project(f: &Forge, ev: &serde_json::Value) -> Option<String> {
     f.store.task(task).ok().flatten()?.project
 }
 
-/// The three ticks a live worker runs each pass: run-workflow resolution,
-/// then the schedule and event triggers over what it resolved. A worker
+/// The ticks a live worker runs each pass: run-workflow resolution, then
+/// the schedule and event triggers over what it resolved, then the drafts
+/// whose last missing action has landed (`workflows::draft::reconcile`). A worker
 /// that is superseded or stopping fires none of them: its older code would
 /// resolve workflows, queue jobs beside the successor and move the shared
 /// event cursor. Each tick is its own step: one that fails is logged and
@@ -543,6 +544,9 @@ async fn run_ticks(
     }
     if let Err(e) = event_tick(f, &runs).await {
         eprintln!("worker tick failed (event); continuing: {e:#}");
+    }
+    if let Err(e) = workflows::draft::reconcile(&f.paths.home).await {
+        eprintln!("worker tick failed (drafts); continuing: {e:#}");
     }
     Ok(true)
 }
