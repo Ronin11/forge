@@ -27,6 +27,9 @@ pub struct JobDoc {
     /// How many times `[limits] on_failure = "retry:N"` has already
     /// requeued this job's lineage (see `store::Job::retry_count`).
     pub retry_count: i64,
+    /// How its `needs_human` was closed, once an answer did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<crate::store::JobResolution>,
     pub steps: Vec<crate::store::JobStep>,
     pub effects: Vec<crate::store::JobEffect>,
 }
@@ -51,6 +54,7 @@ pub fn job_doc(f: &Forge, j: &crate::store::Job) -> Result<JobDoc> {
         verdict_json: j.verdict_json.clone(),
         due_at: j.due_at,
         retry_count: j.retry_count,
+        resolution: f.store.job_resolution(j.id)?,
         steps,
         effects,
     })

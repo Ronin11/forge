@@ -20,9 +20,15 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 
-/// The units that run this release's other binaries, restarted once the
-/// successor has flipped `current` under them.
-const UNITS: &[&str] = &["forge-web", "forge-portal"];
+/// The units restarted when the self deploy target does not declare any:
+/// its `units` arg is what `deploy-self` reads, and this is the one Forge
+/// cannot run without.
+const DEFAULT_UNITS: &str = "forge-web";
+
+/// How many half-second polls a restarted unit gets to report active when
+/// the target declares no `tries`, as in `deploy-self`.
+const DEFAULT_TRIES: u32 = 40;
+const ACTIVE_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Set on a successor: the pid of the worker that started it.
 const SUCCESSOR_OF: &str = "FORGE_SUCCESSOR_OF";
@@ -69,7 +75,7 @@ impl Succession {
         if daemon {
             if let Ok(parent) = std::env::var(SUCCESSOR_OF) {
                 eprintln!("successor of worker {parent}: release {version} claims from here");
-                take_over(&root, &version);
+                take_over(f, &root, &version);
             }
             notify(&format!("MAINPID={pid}\nREADY=1"));
             write_capability(&root, pid);
@@ -285,23 +291,166 @@ pub fn unit_state(unit: &str) -> Option<String> {
     (!word.is_empty()).then_some(word)
 }
 
+/// What became of one unit the successor restarted.
+#[derive(Debug, PartialEq)]
+enum Unit {
+    /// Restarted and, once waited on, active.
+    Restarted,
+    /// systemd has no such unit on this machine: a note, not a failure.
+    NotFound,
+    /// systemctl cannot be run at all (no systemd here): a note too.
+    NoSystemctl(String),
+    /// Refused the restart, or did not come back active in time.
+    Failed(String),
+}
+
+impl Unit {
+    /// The unit's own line in the successor's log.
+    fn describe(&self, unit: &str) -> String {
+        match self {
+            Unit::Restarted => format!("restarted {unit}"),
+            Unit::NotFound => format!("{unit}: unit not found"),
+            Unit::NoSystemctl(why) => format!("{unit}: not restarted, {why}"),
+            Unit::Failed(why) => format!("{unit}: {why}"),
+        }
+    }
+
+    /// Only a unit that did not come back is a failure.
+    fn failed(&self) -> bool {
+        matches!(self, Unit::Failed(_))
+    }
+}
+
+/// The units to restart and how long each gets to come back: the self
+/// deploy target's `units` and `tries` args, read the way `deploy-self`
+/// reads them (blanks or commas between names).
+fn declared_units(target: Option<&crate::store::DeployTarget>) -> (Vec<String>, u32) {
+    let arg = |k: &str| target.and_then(|t| t.args.get(k));
+    let list = arg("units").map_or(DEFAULT_UNITS, String::as_str);
+    let mut units: Vec<String> = list
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|u| !u.is_empty())
+        .map(str::to_string)
+        .collect();
+    if units.is_empty() {
+        units.push(DEFAULT_UNITS.to_string());
+    }
+    let tries = arg("tries")
+        .and_then(|t| t.trim().parse().ok())
+        .unwrap_or(DEFAULT_TRIES);
+    (units, tries)
+}
+
+/// Ask systemd to restart `unit` (without waiting for the job).
+fn restart_unit(unit: &str) -> Unit {
+    let out = match Command::new("systemctl")
+        .args(["--user", "restart", "--no-block", unit])
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(out) => out,
+        Err(e) => return Unit::NoSystemctl(format!("cannot run systemctl: {e}")),
+    };
+    if out.status.success() {
+        return Unit::Restarted;
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let why = stderr.trim();
+    // systemctl exits 5 for a unit that is not installed.
+    if out.status.code() == Some(5) || why.contains("not found") {
+        return Unit::NotFound;
+    }
+    Unit::Failed(if why.is_empty() {
+        format!("restart refused ({})", out.status)
+    } else {
+        format!("restart refused: {why}")
+    })
+}
+
+/// Poll `active` up to `tries` times, `pause` apart, until it says the
+/// restarted unit is up; `Failed` when it never does.
+fn await_active(mut active: impl FnMut() -> bool, tries: u32, pause: std::time::Duration) -> Unit {
+    for n in 0..tries.max(1) {
+        if active() {
+            return Unit::Restarted;
+        }
+        if n + 1 < tries {
+            std::thread::sleep(pause);
+        }
+    }
+    Unit::Failed(format!("did not become active within {tries} tries"))
+}
+
+/// Restart `units` one by one and wait, each on its own, for the restarted
+/// ones to report active; `(unit, what became of it)` in the order given.
+fn restart_all(units: &[String], tries: u32) -> Vec<(String, Unit)> {
+    units
+        .iter()
+        .map(|u| {
+            let restarted = restart_unit(u);
+            (u.clone(), restarted)
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|(u, restarted)| {
+            let outcome = match restarted {
+                Unit::Restarted => await_active(
+                    || unit_state(&u).as_deref() == Some("active"),
+                    tries,
+                    ACTIVE_POLL,
+                ),
+                other => other,
+            };
+            (u, outcome)
+        })
+        .collect()
+}
+
 /// The successor is live: `current` moves to its release and the units
-/// that run this release's other binaries restart on it. Nothing to do
-/// when a deploy already flipped `current`.
-fn take_over(root: &std::path::Path, version: &str) {
+/// the self deploy target declares restart on it, each reported on its own.
+/// A unit that does not exist here is a note; one that does not come back
+/// active in the bounded wait puts `current` back and restarts the units
+/// on the release it named, as `deploy-self` does. Nothing to do when a
+/// deploy already flipped `current`.
+fn take_over(f: &Forge, root: &std::path::Path, version: &str) {
     if release::pointed_at(root, "current").as_deref() == Some(version) {
         return;
     }
-    if let Err(e) = release::flip(root, version) {
-        eprintln!("could not flip current to {version}: {e:#}");
+    let was = match release::flip(root, version) {
+        Ok(was) => was,
+        Err(e) => {
+            eprintln!("could not flip current to {version}: {e:#}");
+            return;
+        }
+    };
+    let target = f
+        .store
+        .deploy_target_by_method(crate::deploy::SELF_METHOD)
+        .unwrap_or_else(|e| {
+            eprintln!("could not read the self deploy target: {e:#}");
+            None
+        });
+    let (units, tries) = declared_units(target.as_ref());
+    let results = restart_all(&units, tries);
+    for (unit, outcome) in &results {
+        eprintln!("{}", outcome.describe(unit));
+    }
+    if !results.iter().any(|(_, o)| o.failed()) {
         return;
     }
-    let restarted = Command::new("systemctl")
-        .args(["--user", "restart", "--no-block"])
-        .args(UNITS)
-        .status();
-    if !restarted.is_ok_and(|s| s.success()) {
-        eprintln!("could not restart {}", UNITS.join(", "));
+    match release::restore(root, &was) {
+        Ok(()) => {
+            eprintln!(
+                "putting current back to {}",
+                was.0.as_deref().unwrap_or("nothing")
+            );
+            if was.0.is_some() {
+                for unit in &units {
+                    let _ = restart_unit(unit);
+                }
+            }
+        }
+        Err(e) => eprintln!("could not put current back: {e:#}"),
     }
 }
 
@@ -327,5 +476,108 @@ fn notify(state: &str) {
     };
     if let Err(e) = sent {
         eprintln!("sd_notify: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn target(args: &[(&str, &str)]) -> crate::store::DeployTarget {
+        crate::store::DeployTarget {
+            project: "forge".into(),
+            name: "self".into(),
+            repo: "/r".into(),
+            scope: None,
+            method: "deploy-self".into(),
+            args: args
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            check_cmd: String::new(),
+            on_landing: true,
+            smoke_url: None,
+        }
+    }
+
+    #[test]
+    fn each_unit_is_reported_on_its_own_and_only_a_unit_that_did_not_come_back_fails() {
+        let lines = [
+            (Unit::Restarted.describe("forge-web"), "restarted forge-web"),
+            (
+                Unit::NotFound.describe("forge-portal"),
+                "forge-portal: unit not found",
+            ),
+            (
+                Unit::Failed("did not become active within 3 tries".into()).describe("forge-web"),
+                "forge-web: did not become active within 3 tries",
+            ),
+        ];
+        for (got, want) in lines {
+            assert_eq!(got, want);
+        }
+        assert!(!Unit::Restarted.failed());
+        assert!(!Unit::NotFound.failed());
+        assert!(!Unit::NoSystemctl("x".into()).failed());
+        assert!(Unit::Failed("x".into()).failed());
+    }
+
+    #[test]
+    fn the_units_come_from_the_self_target_and_default_to_forge_web() {
+        assert_eq!(declared_units(None), (vec!["forge-web".to_string()], 40));
+        assert_eq!(
+            declared_units(Some(&target(&[]))),
+            (vec!["forge-web".to_string()], 40)
+        );
+        let t = target(&[
+            ("units", "forge-web, forge-portal  forge-extra"),
+            ("tries", "3"),
+        ]);
+        assert_eq!(
+            declared_units(Some(&t)),
+            (
+                vec![
+                    "forge-web".to_string(),
+                    "forge-portal".to_string(),
+                    "forge-extra".to_string()
+                ],
+                3
+            )
+        );
+        assert_eq!(
+            declared_units(Some(&target(&[("units", " , ")]))).0,
+            vec!["forge-web".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_unit_gets_a_bounded_wait_to_report_active() {
+        let mut polls = 0;
+        let up = await_active(
+            || {
+                polls += 1;
+                polls == 3
+            },
+            5,
+            Duration::ZERO,
+        );
+        assert_eq!(up, Unit::Restarted);
+        assert_eq!(polls, 3);
+
+        let mut polls = 0;
+        let down = await_active(
+            || {
+                polls += 1;
+                false
+            },
+            4,
+            Duration::ZERO,
+        );
+        assert_eq!(polls, 4);
+        assert_eq!(
+            down.describe("forge-web"),
+            "forge-web: did not become active within 4 tries"
+        );
     }
 }

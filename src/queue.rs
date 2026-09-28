@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 mod duplicates;
+mod job_question;
 pub use duplicates::{refuse_live_descendant, withdraw_abort};
 
 /// What a new task is made from. Field names follow the CLI flags; the
@@ -1228,7 +1229,9 @@ fn check_answer_scope(
 /// decision at it. `by` is "operator" or "supervisor"; `citations` is
 /// what a supervisor's answer rests on. `scope` restricts the answer to
 /// one project and recipient (see `check_answer_scope`); pass `None` for
-/// the operator's own answers. Returns the decision and the new task.
+/// the operator's own answers. Returns the decision and the new task. A
+/// job's `job question` has no attempt to retry: its answer settles the
+/// task and the job instead (`job_question`), returning that task itself.
 pub async fn answer(
     f: &Forge,
     id: i64,
@@ -1246,6 +1249,9 @@ pub async fn answer(
         old.question_to.as_deref(),
         scope,
     )?;
+    if job_question::is_job_question(f, &old)? {
+        return job_question::answer(f, &old, text, by);
+    }
     let last = f
         .store
         .attempts(id)?

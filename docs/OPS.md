@@ -69,7 +69,14 @@ who holds the pointer: **the store and every running binary agree.**
   plugins, finishes its tasks and jobs and exits; if the successor dies
   before that, it claims again and does not restart the same release. The
   successor flips `current` to its release (when a deploy has not already)
-  and runs `systemctl --user restart --no-block forge-web forge-portal`.
+  and restarts the units the self deploy target declares (its `units`
+  arg, the one `deploy-self` reads; `forge-web` when it declares none),
+  one at a time with `systemctl --user restart --no-block <unit>`, logging
+  each on its own line (`restarted forge-web`, `forge-portal: unit not
+  found`). A unit this machine does not have is a note. A unit that is
+  not `active` within the target's `tries` (default 40, half a second
+  apart) is the failure: `current` goes back to the release it named and
+  the units restart on it, as `deploy-self` does.
   `forge work --once` does not take part.
   **systemd:** `forge-worker.service` is `Type=notify` with
   `NotifyAccess=all` (`forge init` writes it; re-run it once to adopt).
