@@ -1326,4 +1326,92 @@ mod tests {
             "the lock is released once the plugin is stopped"
         );
     }
+
+    fn running_pid(home: &Path, name: &str) -> Option<i64> {
+        match read_run_state(home, name) {
+            RunState::Running { pid, .. } => Some(pid),
+            _ => None,
+        }
+    }
+
+    /// docs/REVIEW-4.md §6 item 13: an invalid `config.toml` during a
+    /// reconcile tick leaves the running set unchanged. The plugin lives
+    /// under a `plugin_dirs` root, so a supervisor that re-read the file
+    /// would lose the root and stop it; it scans the worker's validated
+    /// config instead.
+    #[tokio::test]
+    async fn an_invalid_config_toml_during_a_tick_leaves_the_running_set_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let extra = dir.path().join("extra");
+        write_plugin(
+            &extra,
+            "steady",
+            "name = \"steady\"\nrun = [\"sleep\", \"1000\"]\ncapabilities = [\"events\"]\nrestart = \"never\"\n",
+        );
+        std::fs::write(
+            dir.path().join("config.toml"),
+            format!("plugin_dirs = [{:?}]\n", extra.display().to_string()),
+        )
+        .unwrap();
+        let f = forge_enabling(dir.path(), &[]);
+        assert_eq!(f.plugin_dirs, vec![extra.clone()]);
+        f.store
+            .set_plugin_enabled("steady", true, crate::unix_now())
+            .unwrap();
+        let sup = Supervisor::start_every(f.clone(), Duration::from_millis(50));
+        wait_running(dir.path(), "steady").await;
+        let pid = running_pid(dir.path(), "steady").unwrap();
+
+        std::fs::write(dir.path().join("config.toml"), "plugin_dirs = [\n").unwrap();
+        assert!(crate::config::load_home(dir.path()).is_err());
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert_eq!(
+            running_pid(dir.path(), "steady"),
+            Some(pid),
+            "the plugin was stopped or replaced over an invalid config.toml"
+        );
+        sup.stop().await;
+    }
+
+    /// docs/REVIEW-4.md §6 item 13: a plugin whose `plugin.toml` is being
+    /// rewritten is broken, not absent, and keeps running; one whose
+    /// directory is gone is absent and is stopped.
+    #[tokio::test]
+    async fn a_broken_manifest_keeps_its_plugin_running_and_an_absent_one_is_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = forge_enabling(
+            dir.path(),
+            &[("broken", "sleep 1000"), ("gone", "sleep 1000")],
+        );
+        let sup = Supervisor::start_every(f.clone(), Duration::from_millis(50));
+        wait_running(dir.path(), "broken").await;
+        wait_running(dir.path(), "gone").await;
+        let pid = running_pid(dir.path(), "broken").unwrap();
+
+        std::fs::write(
+            dir.path().join("plugins/broken/plugin.toml"),
+            "name = \"broken\"\nrun = [",
+        )
+        .unwrap();
+        let cat = load_catalog(dir.path(), &[]);
+        assert!(cat.broken.contains("broken"));
+        assert!(!cat.plugins.contains_key("broken"));
+        std::fs::remove_dir_all(dir.path().join("plugins/gone")).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while running_pid(dir.path(), "gone").is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "an absent plugin was not stopped"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            running_pid(dir.path(), "broken"),
+            Some(pid),
+            "a plugin mid-rewrite was stopped as if absent"
+        );
+        sup.stop().await;
+    }
 }
