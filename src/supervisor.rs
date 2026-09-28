@@ -580,7 +580,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     if let Some(why) = crate::directive::agent_failure(&outcome) {
         let mut verdict = Verdict::open(&GitFacts::default());
         verdict.settle(Some(&why), None, false);
-        crate::attempt::record(f, &mut a, wt, &verdict, &outcome, None, None).await?;
+        crate::attempt::record(f, &mut a, wt, &verdict, &outcome, Default::default()).await?;
         let why = format!("its run failed: {why}");
         f.report.emit(
             id,
@@ -699,7 +699,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     if ok {
         verdict.reason = format!("supervisor: {}", r.action);
     }
-    crate::attempt::record(f, &mut a, wt, &verdict, &outcome, None, None).await?;
+    crate::attempt::record(f, &mut a, wt, &verdict, &outcome, Default::default()).await?;
 
     let cited = r.citations.join(", ");
     let escalate = |why: String| -> Result<Ruled> {

@@ -4,6 +4,7 @@
 //! zero. It names the resolved workflow it was written against; a cursor
 //! for a different resolution is not trusted.
 
+use super::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -62,6 +63,61 @@ impl RunCursor {
             ..self.clone()
         }
     }
+}
+
+/// Where a claim's run starts, read from the stored cursor.
+pub(super) struct Resumed {
+    pub hash: String,
+    pub idx: usize,
+    pub owed: HashMap<i64, String>,
+    pub note: Option<String>,
+}
+
+/// Read the task's stored cursor against its resolution. A cursor is only
+/// trusted in the worktree it was written for; what the earlier steps handed
+/// the later ones comes back onto the task.
+pub(super) fn resume(
+    f: &Forge,
+    t: &mut Task,
+    resolved: &workflows::Resolved,
+    had_worktree: bool,
+) -> Result<Resumed, Fault> {
+    let hash = workflow_hash(&t.actions_json);
+    let stored = if had_worktree {
+        f.store.run_cursor(t.id).env()?
+    } else {
+        None
+    };
+    let mut out = Resumed {
+        hash: hash.clone(),
+        idx: 0,
+        owed: HashMap::new(),
+        note: None,
+    };
+    let steps = resolved.steps.len();
+    match start_from(stored.as_deref(), &hash, steps) {
+        Start::Fresh => {}
+        Start::Restart(why) => out.note = Some(format!("cursor   {why}; starting from step 1")),
+        Start::At(c) => {
+            if t.interface.is_empty() {
+                t.interface = c.interface;
+            }
+            if t.plan.is_empty() {
+                t.plan = c.plan;
+            }
+            out.idx = c.idx;
+            out.owed = c.owed.into_iter().collect();
+            out.note = Some(match resolved.steps.get(c.idx) {
+                Some(s) => format!(
+                    "cursor   resuming at step {} ({} of {steps})",
+                    s.action.name,
+                    c.idx + 1
+                ),
+                None => "cursor   resuming at landing".to_string(),
+            });
+        }
+    }
+    Ok(out)
 }
 
 /// The line `forge show` prints for a queued task whose stored cursor is

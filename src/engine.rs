@@ -16,7 +16,7 @@ mod capped;
 pub(crate) mod cursor;
 pub(crate) use capped::landable_capped;
 use capped::{check_abort, check_cap};
-use cursor::{RunCursor, Start, start_from, workflow_hash};
+use cursor::RunCursor;
 mod terminal;
 use terminal::finish;
 pub(crate) use terminal::{finish_fault, settle_ready_initiatives};
@@ -221,37 +221,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
 
     let had_worktree = !t.worktree.is_empty();
     let merged_base_retry = prepare_worktree(&f, &mut t, &repo, &base_cfg, &remote_url).await?;
-    let hash = workflow_hash(&t.actions_json);
-    let stored = if had_worktree {
-        f.store.run_cursor(id).env()?
-    } else {
-        None
-    };
-    let (mut resume_idx, mut owed) = (0, HashMap::new());
-    let mut resume_note = None;
-    match start_from(stored.as_deref(), &hash, resolved.steps.len()) {
-        Start::Fresh => {}
-        Start::Restart(why) => resume_note = Some(format!("cursor   {why}; starting from step 1")),
-        Start::At(c) => {
-            if t.interface.is_empty() {
-                t.interface = c.interface;
-            }
-            if t.plan.is_empty() {
-                t.plan = c.plan;
-            }
-            resume_idx = c.idx;
-            owed = c.owed.into_iter().collect();
-            resume_note = Some(match resolved.steps.get(c.idx) {
-                Some(s) => format!(
-                    "cursor   resuming at step {} ({} of {})",
-                    s.action.name,
-                    c.idx + 1,
-                    resolved.steps.len()
-                ),
-                None => "cursor   resuming at landing".to_string(),
-            });
-        }
-    }
+    let resumed = cursor::resume(&f, &mut t, &resolved, had_worktree)?;
     f.store.update_task(&t).env()?;
     let wt = PathBuf::from(&t.worktree);
     // Checks and rules come from the trusted base, never from the branch under test.
@@ -259,36 +229,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     cfg.protected = f.effective_protected(&t, &cfg.protected);
     f.allow_egress(&wt, &cfg, t.trust);
 
-    f.report.emit(
-        id,
-        Event::TaskStarted {
-            worktree: &t.worktree,
-            branch: &t.branch,
-            base_branch: &t.base_branch,
-            base_sha: &t.base_sha,
-            model: &t.model,
-            max_turns: t.max_turns,
-            max_attempts: t.max_attempts,
-            timeout_secs: t.timeout_secs,
-            sandboxed: f.sandboxed(&wt),
-        },
-    );
-    f.report.emit(
-        id,
-        Event::Note {
-            text: &format!(
-                "workflow {} {} ({})",
-                t.workflow,
-                &t.workflow_hash[..t.workflow_hash.len().min(8)],
-                resolved
-                    .steps
-                    .iter()
-                    .map(|s| s.action.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" → ")
-            ),
-        },
-    );
+    announce(&f, &t, &resolved, &wt);
 
     let task_cap = f.effective_per_task_usd(&t);
     let prior = f.store.attempts(id).env()?;
@@ -299,15 +240,15 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         .map(|o| o.seq)
         .collect();
     let mut attempt_no = prior.len() as i64;
-    if let Some(text) = &resume_note {
+    if let Some(text) = &resumed.note {
         f.report.emit(id, Event::Note { text });
     }
     let mut run = Run {
-        hash,
-        idx: resume_idx,
+        hash: resumed.hash,
+        idx: resumed.idx,
         seq: 0,
         used: crate::store::seed_used(&prior, &f.store.refunded_attempts(id).env()?),
-        owed,
+        owed: resumed.owed,
         done: resume_done(&prior),
     };
     // The cap is checked at claim as well as before every attempt.
@@ -425,6 +366,41 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         }
     }
     finish(&f, &mut t, &end, compare, &wt).await
+}
+
+/// The run's start on the report: where it works, and which workflow it runs.
+fn announce(f: &Forge, t: &Task, resolved: &workflows::Resolved, wt: &Path) {
+    let id = t.id;
+    f.report.emit(
+        id,
+        Event::TaskStarted {
+            worktree: &t.worktree,
+            branch: &t.branch,
+            base_branch: &t.base_branch,
+            base_sha: &t.base_sha,
+            model: &t.model,
+            max_turns: t.max_turns,
+            max_attempts: t.max_attempts,
+            timeout_secs: t.timeout_secs,
+            sandboxed: f.sandboxed(wt),
+        },
+    );
+    f.report.emit(
+        id,
+        Event::Note {
+            text: &format!(
+                "workflow {} {} ({})",
+                t.workflow,
+                &t.workflow_hash[..t.workflow_hash.len().min(8)],
+                resolved
+                    .steps
+                    .iter()
+                    .map(|s| s.action.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" → ")
+            ),
+        },
+    );
 }
 
 /// The environment path after a directive's attempt failed: a failed check
