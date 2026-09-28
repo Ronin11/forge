@@ -177,6 +177,20 @@ pub fn restore(lock: &Lock, root: &Path, was: &(Option<String>, Option<String>))
     Ok(())
 }
 
+/// Put `staged` back to what `current` names (gone when `current` names
+/// nothing), but only while it still names `id`, the release a deploy
+/// staged: a later deploy's stage is left alone. Returns whether it moved.
+pub fn unstage(lock: &Lock, root: &Path, id: &str) -> Result<bool> {
+    if pointed_at(root, "staged").as_deref() != Some(id) {
+        return Ok(false);
+    }
+    match pointed_at(root, "current") {
+        Some(live) => point(lock, root, "staged", &live)?,
+        None => std::fs::remove_file(root.join("staged"))?,
+    }
+    Ok(true)
+}
+
 /// Make the symlink `link` point at `target`, replacing whatever is there;
 /// false when it already did.
 pub fn relink(link: &Path, target: &Path) -> Result<bool> {

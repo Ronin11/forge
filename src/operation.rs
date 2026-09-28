@@ -509,6 +509,52 @@ pub(crate) async fn run_deploy_method(
     Ok(run_action(action, cwd, timeout, &env).await)
 }
 
+/// What `deploy-self` checks once its release is live: the target's own
+/// check command, else the web client's `/tasks` with the token from
+/// `FORGE_HOME/web.token`, expecting 200 -- the check the script itself
+/// runs only in its legacy branch -- retried `FORGE_ARG_TRIES` times, half
+/// a second apart.
+const SELF_LIVE_CHECK: &str = r#"
+tries="${FORGE_ARG_TRIES:-40}"
+url="${FORGE_ARG_URL:-http://127.0.0.1:7788/tasks}"
+check() {
+  if [ -n "${FORGE_CHECK:-}" ]; then
+    bash -c "$FORGE_CHECK"
+    return
+  fi
+  code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $(cat "$FORGE_HOME/web.token")" "$url" || true)"
+  echo "GET $url: ${code:-no answer}"
+  [ "$code" = "200" ]
+}
+n=0
+until check; do
+  n=$((n + 1))
+  if [ "$n" -ge "$tries" ]; then
+    echo "the check did not pass after $n tries" >&2
+    exit 1
+  fi
+  sleep 0.5
+done
+"#;
+
+/// Run the `deploy-self` target's check against the live release (see
+/// [`SELF_LIVE_CHECK`]).
+pub(crate) async fn run_self_live_check(
+    target: &DeployTarget,
+    home: &Path,
+    timeout: Duration,
+) -> checks::CheckResult {
+    let mut env = arg_env(&target.args);
+    env.push(("FORGE_CHECK".to_string(), target.check_cmd.clone()));
+    env.push(("FORGE_HOME".to_string(), home.display().to_string()));
+    let argv = [
+        "bash".to_string(),
+        "-c".to_string(),
+        SELF_LIVE_CHECK.to_string(),
+    ];
+    checks::run_one("OP", "deploy-self-check", &argv, home, None, timeout, &env).await
+}
+
 /// The `deploy-smoke` operation, resolved once up front like the method,
 /// so a target that declares a smoke url fails before its deploy row
 /// starts if the operation is somehow missing.

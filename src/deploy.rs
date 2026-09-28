@@ -27,7 +27,8 @@ fn scratch_dir(f: &Forge, deploy_id: i64, suffix: &str) -> PathBuf {
 /// there, cleaning the directory up either way. `deploy-self` is also told
 /// whether the running worker starts successors
 /// (`FORGE_WORKER_SUCCESSORS=1`), so it only stages and leaves the worker
-/// unit alone.
+/// unit alone; the answer is returned beside the result, for [`run`] to
+/// split staged from live.
 async fn deploy_at(
     action: &operation::RunAction,
     target: &DeployTarget,
@@ -36,12 +37,13 @@ async fn deploy_at(
     f: &Forge,
     timeout: Duration,
     scratch: &Path,
-) -> Result<crate::checks::CheckResult> {
+) -> Result<(crate::checks::CheckResult, bool)> {
     git::fresh_archive(repo, sha, scratch).await?;
     let home = &f.paths.home;
     let mut extra = Vec::new();
+    let mut successors = false;
     if target.method == SELF_METHOD {
-        let successors = crate::successor::capable(home, &f.store);
+        successors = crate::successor::capable(home, &f.store);
         extra.push((
             "FORGE_WORKER_SUCCESSORS".to_string(),
             if successors { "1" } else { "0" }.to_string(),
@@ -49,7 +51,42 @@ async fn deploy_at(
     }
     let r = operation::run_deploy_method(action, target, sha, home, scratch, timeout, &extra).await;
     let _ = std::fs::remove_dir_all(scratch);
-    r
+    Ok((r?, successors))
+}
+
+/// How long a self-deploy waits for its staged release to go live: the
+/// target's `tries` (default 40) at three seconds each, since a successor
+/// starts on the running worker's next poll and then takes the unit over.
+fn live_wait(target: &DeployTarget) -> Duration {
+    let tries: u64 = target
+        .args
+        .get("tries")
+        .and_then(|t| t.trim().parse().ok())
+        .unwrap_or(40);
+    Duration::from_secs(tries.max(1) * 3)
+}
+
+/// Wait, bounded, for a live worker on release `sha` in the workers table
+/// and for `current` to name it; the worker's pid once both hold.
+async fn wait_live(f: &Forge, sha: &str, wait: Duration) -> Option<i64> {
+    let root = crate::release::root(&f.paths.home);
+    let start = std::time::Instant::now();
+    loop {
+        let worker = f
+            .store
+            .live_workers(crate::worker::pid_alive)
+            .ok()
+            .and_then(|live| live.into_iter().find(|w| w.version == sha));
+        if let Some(w) = worker
+            && crate::release::pointed_at(&root, "current").as_deref() == Some(sha)
+        {
+            return Some(w.pid);
+        }
+        if start.elapsed() >= wait {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 /// The method that deploys Forge itself through the release layout.
@@ -327,7 +364,7 @@ pub async fn run(
     // deliberately recorded outcome (ok, a failed check, or a failed
     // rollback) returns from this block without one.
     let outcome: Result<bool> = async {
-        let mut r = deploy_at(
+        let (mut r, successors) = deploy_at(
             &action,
             &target,
             &src,
@@ -337,6 +374,70 @@ pub async fn run(
             &scratch_dir(f, deploy_id, ""),
         )
         .await?;
+
+        // A self-deploy under a worker that starts successors has only
+        // staged: the release is live once a worker runs it and `current`
+        // names it, and only then do the check and the smoke step mean
+        // anything.
+        if r.ok && successors {
+            let wait = live_wait(&target);
+            match wait_live(f, &sha, wait).await {
+                Some(pid) => {
+                    let check = operation::run_self_live_check(&target, &f.paths.home, timeout).await;
+                    r.tail = format!(
+                        "{}\nlive {}: worker pid {pid} runs it and current names it\n{}",
+                        r.tail.trim_end(),
+                        short(&sha),
+                        check.tail
+                    );
+                    r.ok = check.ok;
+                }
+                None => {
+                    let root = crate::release::root(&f.paths.home);
+                    let unstaged = crate::release::lock(&root)
+                        .and_then(|lock| crate::release::unstage(&lock, &root, &sha));
+                    let tail = format!(
+                        "{}\nnot live {}: no worker on it with current naming it within {} s{}",
+                        r.tail.trim_end(),
+                        short(&sha),
+                        wait.as_secs(),
+                        match unstaged {
+                            Ok(true) => "; staged put back to what current names".to_string(),
+                            Ok(false) => String::new(),
+                            Err(e) => format!("; could not put staged back: {e:#}"),
+                        }
+                    );
+                    let reason = format!(
+                        "staged but never became live: the deploy of {} was staged and no worker took it over",
+                        short(&sha)
+                    );
+                    f.store.finish_deploy(crate::store::FinishDeploy {
+                        id: deploy_id,
+                        at: unix_now(),
+                        check_ok: false,
+                        check_output: &tail,
+                        rolled_back_to: None,
+                        reason: &reason,
+                        smoke_ok: None,
+                        smoke_json: None,
+                        look_ok: None,
+                        look_json: None,
+                    })?;
+                    f.report.emit(
+                        event_task,
+                        Event::DeployFinished {
+                            project,
+                            target: name,
+                            sha: &sha,
+                            ok: false,
+                            rolled_back_to: None,
+                        },
+                    );
+                    ask(f, project, &target.repo, format!("{reason}:\n{tail}"))?;
+                    return Ok(false);
+                }
+            }
+        }
 
         // A check that answers is not a site that works (see docs/DEPLOY.md,
         // "A deterministic smoke step"): open the target's smoke url only once
@@ -480,7 +581,7 @@ pub async fn run(
         };
 
         let rb_src = rollback_src(&f.paths.home, &src, &repo, &previous.sha).await?;
-        let rb = deploy_at(
+        let (rb, _) = deploy_at(
             &action,
             &target,
             &rb_src,

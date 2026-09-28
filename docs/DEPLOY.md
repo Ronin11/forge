@@ -303,7 +303,17 @@ successor's take-over around every write to the pointers and
    once it has told systemd it is ready. Restarting the unit as well
    left it `deactivating` for its whole `TimeoutStopSec` on 2026-09-26:
    the stop's SIGTERM went to the old pid, and systemd never re-sends it
-   to the pid that took the unit over. Only for a worker too old to
+   to the pid that took the unit over. Staged is not live, so `forge
+   deploy` does not stop there: after the method returns under such a
+   worker it waits, bounded (the target's `tries` arg, default 40, at
+   three seconds each), for a live worker on the deployed sha in the
+   `workers` table and for `current` to name it, and only then runs the
+   target's check (default: the web client's `/tasks`) and the smoke
+   step against that. The row's output says `staged` and `live` on
+   separate lines. When the wait times out the deploy fails with the
+   reason "staged but never became live", `staged` is put back to what
+   `current` names so no worker retries it, nothing is rolled back (nothing
+   went live), and the project is asked. Only for a worker too old to
    start a successor does the method go on to put the release live
    exactly as before:
 4. Flip `FORGE_HOME/bin/current` to `releases/<sha>`, with `previous`

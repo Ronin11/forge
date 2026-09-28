@@ -348,11 +348,11 @@ fn deploy_self_only_stages_for_a_successor_capable_worker_and_restarts_an_older_
         )
         .unwrap();
     let sha = s.commit("good");
-    let o = s.deploy(&sha);
+    let o = s.deploy_taken_over(&sha);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(s.link("staged"), format!("releases/{sha}"));
     // The successor flips current; the deploy leaves it alone.
-    assert_eq!(s.link("current"), "releases/old");
+    assert_eq!(s.link("current"), format!("releases/{sha}"));
     let calls = s.calls();
     assert_eq!(worker_restarts(&calls), 0, "{calls:?}");
     assert!(
@@ -371,7 +371,7 @@ fn deploy_self_only_stages_for_a_successor_capable_worker_and_restarts_an_older_
     )
     .unwrap();
     let sha = s.commit("good");
-    assert!(s.deploy(&sha).status.success());
+    assert!(s.deploy_taken_over(&sha).status.success());
     assert_eq!(s.link("staged"), format!("releases/{sha}"));
     assert_eq!(worker_restarts(&s.calls()), 0, "{:?}", s.calls());
 
