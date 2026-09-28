@@ -236,7 +236,8 @@ plugin that runs an old script keeps running it: an old `notify.sh` that
 still computes byte-offset cursors replays the whole event log after a
 restart. So `install` records, in `<FORGE_HOME>/plugins/<name>/.forge-install.json`,
 the directory it copied from and a hash of the plugin's `plugin.toml` and
-the script its `run` names. `forge plugin list` (and `--json`, and the
+the script its `run` names (`["./notify.sh"]`, or `["sh", "./notify.sh"]`
+through an interpreter). `forge plugin list` (and `--json`, and the
 `plugins` row of `forge doctor`) compare three hashes, the installed
 files', the recorded one, and the source's current one:
 

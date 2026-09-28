@@ -108,7 +108,8 @@ impl Standing {
 }
 
 /// The files that make up "the plugin" for drift: its manifest and the
-/// script its `run` names, when that is a file inside the directory.
+/// scripts its `run` names (as the command or an argument to an
+/// interpreter), when they are files inside the directory.
 fn tracked_files(dir: &Path) -> Vec<String> {
     let mut files = vec!["plugin.toml".to_string()];
     let name = dir
@@ -119,9 +120,17 @@ fn tracked_files(dir: &Path) -> Vec<String> {
         .ok()
         .and_then(|t| parse_manifest(&dir.join("plugin.toml"), &t, &name).ok());
     if let Some(m) = manifest {
-        let script = m.run[0].trim_start_matches("./").to_string();
-        if !script.starts_with('/') && !script.contains("..") && dir.join(&script).is_file() {
-            files.push(script);
+        // Any element of `run` may be the script: `["./demo.sh"]` launches
+        // it directly, `["sh", "./demo.sh"]` through an interpreter.
+        for arg in &m.run {
+            let script = arg.trim_start_matches("./").to_string();
+            if !script.starts_with('/')
+                && !script.contains("..")
+                && dir.join(&script).is_file()
+                && !files.contains(&script)
+            {
+                files.push(script);
+            }
         }
     }
     files
@@ -467,6 +476,23 @@ mod tests {
             "name = \"demo\"\nrun = [\"./demo.sh\"]\ncapabilities = [\"events\", \"intake\"]\n",
         )
         .unwrap();
+        assert_ne!(tracked_hash(&dir), base);
+    }
+
+    #[test]
+    fn a_script_run_through_an_interpreter_is_tracked() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join("demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("plugin.toml"),
+            "name = \"demo\"\nrun = [\"sh\", \"./demo.sh\"]\ncapabilities = [\"events\"]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("demo.sh"), "echo 1\n").unwrap();
+        assert_eq!(tracked_files(&dir), vec!["plugin.toml", "demo.sh"]);
+        let base = tracked_hash(&dir);
+        std::fs::write(dir.join("demo.sh"), "echo 2\n").unwrap();
         assert_ne!(tracked_hash(&dir), base);
     }
 
