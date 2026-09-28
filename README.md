@@ -193,7 +193,10 @@ asked a question or for another workflow). Attempt states:
 workflow, budget, and flags, on a fresh branch; everything that had been
 queued `--after` it now waits on the new task instead, and anything that
 had been blocked by its failure is queued again (`--chain` is accepted
-and no longer needed). `forge answer <id> <text>` answers a task blocked on a
+and no longer needed). A task that already has a live descendant (a
+retry or a review demotion's follow-up still queued, running or
+unverified) is not retried: the refusal names it, and `--again` retries
+anyway; `forge show` lists a task's live descendants. `forge answer <id> <text>` answers a task blocked on a
 question (state `blocked` with its last attempt `needs_input`; anything
 else is refused, naming why): it records the question and answer in a
 `decisions` table and re-queues the task through the same retry path
