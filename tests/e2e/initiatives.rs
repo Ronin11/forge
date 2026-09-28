@@ -942,3 +942,144 @@ fn a_dependent_of_a_filing_task_follows_the_last_filed_task_and_is_released_once
     assert_eq!(e.task(last).0, "succeeded");
     assert_eq!(e.task(dep).0, "succeeded", "{:?}", e.task(dep));
 }
+
+/// An initiative of four independent tasks whose L1 `test` check fails
+/// once `extra.txt` is committed (what `addfile.sh` does), cargo-style,
+/// naming `test_name`'s output as the failing test; `$BR` in it is the
+/// task's branch, so each task can fail a test of its own. Held after 3
+/// same-rule failures. Returns the initiative's id.
+fn flaky_initiative(e: &Env, test_name: &str) -> i64 {
+    let repo = e.repo.to_str().unwrap();
+    let script = format!(
+        "test -f extra.txt || exit 0; BR=$(git rev-parse --abbrev-ref HEAD | tr -c 'a-z0-9\\n' _); \
+         printf 'running 1 test\\n\\nfailures:\\n    %s\\n\\ntest result: FAILED\\n' \"{test_name}\"; exit 101"
+    );
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        format!("[checks]\ntest = [\"bash\", \"-c\", {script:?}]\n"),
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "a flaky suite"]);
+    assert!(
+        e.forge(
+            "addfile.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo],
+        )
+        .status
+        .success()
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("tasks.txt");
+    std::fs::write(&file, "first\n\nsecond\n\nthird\n\nfourth").unwrap();
+    let o = e.forge(
+        "addfile.sh",
+        &[
+            "initiative",
+            "new",
+            "demo",
+            "--outcome",
+            "four independent things",
+            "--from",
+            file.to_str().unwrap(),
+            "--stop-after",
+            "3",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    created_id(&o)
+}
+
+fn initiative_held_events(e: &Env) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(e.home.join("events.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["type"] == "initiative_held")
+        .collect()
+}
+
+/// Initiative 56, 2026-09-28: three tasks failed L1 `test` on three
+/// different tests, all load flakes. That is three rules, not a streak:
+/// nothing holds, and the fourth task is claimed.
+#[test]
+fn three_check_failures_on_different_tests_do_not_hold_the_initiative() {
+    let e = Env::new();
+    let id = flaky_initiative(&e, "suite::flake_on_$BR");
+
+    let o = e.forge("addfile.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    for t in 1..=4 {
+        let (state, reason, _) = e.task(t);
+        assert_eq!(state, "failed", "task {t}: {reason}");
+        assert!(reason.starts_with("L1 failed: test"), "task {t}: {reason}");
+    }
+    assert!(initiative_held_events(&e).is_empty());
+    let o = e.forge("addfile.sh", &["initiative", "show", &id.to_string()]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(!out.contains("held"), "{out}");
+}
+
+/// Three tasks failing L1 `test` on the same test is a streak: the
+/// initiative holds its fourth task, the worker says so once with the
+/// remedy, an `initiative_held` event for a person carries it to the
+/// plugins, `initiative show` prints it under state, and raising
+/// `--stop-after` says the hold is released and what resumes.
+#[test]
+fn three_check_failures_on_one_test_hold_the_initiative_and_say_so() {
+    let e = Env::new();
+    let id = flaky_initiative(&e, "suite::flaky_under_load");
+
+    let o = e.forge("addfile.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    for t in 1..=3 {
+        let (state, reason, _) = e.task(t);
+        assert_eq!(state, "failed", "task {t}: {reason}");
+    }
+    assert_eq!(e.task(4).0, "queued");
+
+    let rule = "L1 test: suite::flaky_under_load";
+    let reason = format!("stop rule: {rule} (streak 3)");
+    let announced = format!(
+        "initiative {id} held: {reason}; 1 task(s) queued behind it; \
+         forge initiative set {id} --stop-after <n> to continue, or fix the rule"
+    );
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(stderr.matches(&announced).count(), 1, "{stderr}");
+
+    let events = initiative_held_events(&e);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["id"], id);
+    assert_eq!(events[0]["project"], "demo");
+    assert_eq!(events[0]["reason"], reason.as_str());
+    assert_eq!(events[0]["queued"], 1);
+    assert_eq!(events[0]["audience"], "person");
+    assert_eq!(events[0]["text"], announced.as_str());
+
+    let o = e.forge("addfile.sh", &["initiative", "show", &id.to_string()]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains(&format!("state      open, held: {reason}")),
+        "{out}"
+    );
+    let o = e.forge(
+        "addfile.sh",
+        &["initiative", "show", &id.to_string(), "--json"],
+    );
+    let row: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(row["state"], "held");
+    assert_eq!(row["held_rule"], rule);
+    assert_eq!(row["held_reason"], reason.as_str());
+
+    let o = e.forge(
+        "addfile.sh",
+        &["initiative", "set", &id.to_string(), "--stop-after", "5"],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains(&format!(
+            "hold released ({reason}): 1 queued task(s) resume"
+        )),
+        "{out}"
+    );
+}

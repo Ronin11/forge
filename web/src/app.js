@@ -1101,7 +1101,7 @@
       ]);
       const iniRows = initiatives.map(i => `
         <tr><td><a href="/initiatives/${i.id}">${i.id}</a></td>
-          <td>${esc(i.state)}${i.held_rule ? ' (' + esc(i.held_rule) + ')' : ''}</td>
+          <td>${esc(i.state)}${i.held_rule ? ' (' + esc(i.held_reason || i.held_rule) + ')' : ''}</td>
           <td>${esc(i.outcome)}</td>
           <td class="num">${usd(i.cost_usd)}</td></tr>`).join('');
       const backlogRows = backlog.map(b => `

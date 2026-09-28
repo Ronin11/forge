@@ -33,13 +33,16 @@
     </div>`;
   }
 
-  // The state line: state plus, while held, the reason (`held_rule` is
-  // `"budget"` or the L0 rule name whose repeated failure tripped the
-  // stop rule — docs/CLIENT.md's `InitiativeDoc.held_rule`).
+  // The state line: a held initiative is still open, and says why it is
+  // held (`held_reason`, "stop rule: <rule> (streak n)" or "budget: $x of
+  // $y"; else `held_rule`, `"budget"` or the rule's name — docs/CLIENT.md's
+  // `InitiativeDoc`): "open, held: stop rule: …".
   function renderStateLine(d) {
-    const held = d.state === 'held' && d.held_rule
-      ? ` <span class="warn">— held: ${esc(d.held_rule)}</span>` : '';
-    return `<span class="state ${esc(d.state)}">${esc(d.state)}</span>${held}`;
+    const why = d.held_reason || d.held_rule;
+    if (d.state === 'held' && why) {
+      return `<span class="state held">open</span><span class="warn">, held: ${esc(why)}</span>`;
+    }
+    return `<span class="state ${esc(d.state)}">${esc(d.state)}</span>`;
   }
 
   // The budget/stop-after control (`POST /api/initiatives/<id>`, `forge
