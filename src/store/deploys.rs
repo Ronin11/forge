@@ -311,6 +311,19 @@ impl Store {
     /// (`None`, `None` otherwise), and `deploy-look`'s verdict on the same
     /// terms (`None`, `None` when it never ran).
     pub fn finish_deploy(&self, args: FinishDeploy<'_>) -> Result<()> {
+        self.finish_deploy_where(args, "WHERE id=?1")?;
+        Ok(())
+    }
+
+    /// `finish_deploy`, but only while the row is still open: a row that
+    /// already has `finished_at` (an outcome `deploy::run` deliberately
+    /// recorded, such as a rollback) is left exactly as it is. Returns
+    /// whether the row was finished here.
+    pub fn finish_open_deploy(&self, args: FinishDeploy<'_>) -> Result<bool> {
+        Ok(self.finish_deploy_where(args, "WHERE id=?1 AND finished_at IS NULL")? > 0)
+    }
+
+    fn finish_deploy_where(&self, args: FinishDeploy<'_>, filter: &str) -> Result<usize> {
         let FinishDeploy {
             id,
             at,
@@ -323,9 +336,11 @@ impl Store {
             look_ok,
             look_json,
         } = args;
-        self.lock().retry_execute(
-            "UPDATE deploys SET finished_at=?2, check_ok=?3, check_output=?4, rolled_back_to=?5, reason=?6, smoke_ok=?7, smoke_json=?8, look_ok=?9, look_json=?10
-             WHERE id=?1",
+        let n = self.lock().retry_execute(
+            &format!(
+                "UPDATE deploys SET finished_at=?2, check_ok=?3, check_output=?4, rolled_back_to=?5, reason=?6, smoke_ok=?7, smoke_json=?8, look_ok=?9, look_json=?10
+             {filter}"
+            ),
             params![
                 id,
                 at,
@@ -339,7 +354,7 @@ impl Store {
                 look_json
             ],
         )?;
-        Ok(())
+        Ok(n)
     }
 
     /// A project's deploys, newest first; only `target`'s when given: what
