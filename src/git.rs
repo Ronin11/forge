@@ -975,6 +975,33 @@ pub async fn remote_url(repo: &Path, remote: &str) -> Option<String> {
         .ok()
 }
 
+/// Whether `dir` is a bare repository.
+pub async fn is_bare(dir: &Path) -> bool {
+    Git::new(dir)
+        .line(&["rev-parse", "--is-bare-repository"])
+        .await
+        .is_ok_and(|l| l == "true")
+}
+
+/// The hooks directory git runs `dir`'s hooks from (`core.hooksPath`
+/// honored), absolute.
+pub async fn hooks_dir(dir: &Path) -> Result<PathBuf> {
+    let p = Git::new(dir)
+        .line(&["rev-parse", "--git-path", "hooks"])
+        .await?;
+    Ok(dir.join(p))
+}
+
+/// `git config --get key` in `dir`'s own config, `None` when unset.
+pub async fn config_get(dir: &Path, key: &str) -> Option<String> {
+    Git::new(dir).line(&["config", "--get", key]).await.ok()
+}
+
+/// `git config key value` in `dir`'s own config.
+pub async fn config_set(dir: &Path, key: &str, value: &str) -> Result<()> {
+    Git::new(dir).line(&["config", key, value]).await.map(drop)
+}
+
 /// Whether the clone's HEAD is exactly what the remote holds for `branch`,
 /// i.e. every commit it added has been published.
 pub async fn published(

@@ -33,6 +33,7 @@ mod landing_rewind;
 mod listing;
 mod login;
 mod messages;
+mod mirror;
 mod ops;
 mod plugin_lock;
 mod plugin_refresh;

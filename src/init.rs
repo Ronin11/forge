@@ -330,9 +330,109 @@ fn link_local_bin(home: &Path) -> Result<Option<StepResult>> {
     Ok(Some(step("links", !changed.is_empty(), detail)))
 }
 
+/// The bare origin's post-update hook, as reviewed: mirrors `main` and
+/// `v*` tags to `git config forge.mirror` in the background, bounded, and
+/// never fails the push (see the file's own header).
+pub const MIRROR_HOOK: &str = include_str!("../deploy/post-update.mirror");
+
+/// The remote a registered repository pushes to (`[defaults] remote`,
+/// `origin` when its config cannot be read), or `None` for `push = false`.
+async fn origin_remote(repo: &Path) -> Option<String> {
+    match config::load_working(repo).await {
+        Ok(cfg) => cfg.push_remote,
+        Err(_) => Some("origin".to_string()),
+    }
+}
+
+/// The bare repository a remote URL names on this machine, if it is one:
+/// a network URL (or a missing path) is somebody else's to hook.
+async fn local_bare(url: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(url.strip_prefix("file://").unwrap_or(url));
+    if !path.is_absolute() || !path.is_dir() {
+        return None;
+    }
+    if !git::is_bare(&path).await {
+        return None;
+    }
+    Some(path.canonicalize().unwrap_or(path))
+}
+
+/// Install `MIRROR_HOOK` as `bare`'s post-update hook (honoring its
+/// `core.hooksPath`) and point it at `mirror`. A different hook already
+/// there is kept once as `post-update.before-forge`. Returns whether
+/// anything changed.
+async fn install_mirror_hook(bare: &Path, mirror: &str) -> Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+    let hooks = git::hooks_dir(bare).await?;
+    let hook = hooks.join("post-update");
+    let mut changed = false;
+    let old = std::fs::read_to_string(&hook).ok();
+    if old.as_deref() != Some(MIRROR_HOOK) {
+        let backup = hooks.join("post-update.before-forge");
+        if old.is_some() && !backup.exists() {
+            std::fs::rename(&hook, &backup)?;
+        }
+        write_if_changed(&hook, MIRROR_HOOK)?;
+        changed = true;
+    }
+    let mode = std::fs::metadata(&hook)?.permissions().mode();
+    if mode & 0o111 != 0o111 {
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(mode | 0o755))?;
+        changed = true;
+    }
+    if git::config_get(bare, "forge.mirror").await.as_deref() != Some(mirror) {
+        git::config_set(bare, "forge.mirror", mirror).await?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
+/// `--mirror <remote>`: the mirror hook in the bare origin of every
+/// registered repository whose push remote is a bare repository on this
+/// machine. None found is an error: the operator asked for a mirror.
+async fn install_mirrors(home: &Path, mirror: &str) -> Result<Vec<StepResult>> {
+    let store = crate::store::Store::open(&home.join("forge.db"))?;
+    let mut bares = std::collections::BTreeSet::new();
+    for p in store.list_projects()? {
+        for r in store.project_repos(&p.name)? {
+            let repo = Path::new(&r.repo);
+            let Some(remote) = origin_remote(repo).await else {
+                continue;
+            };
+            let Some(url) = git::remote_url(repo, &remote).await else {
+                continue;
+            };
+            if let Some(bare) = local_bare(&url).await {
+                bares.insert(bare);
+            }
+        }
+    }
+    anyhow::ensure!(
+        !bares.is_empty(),
+        "--mirror {mirror}: no registered repository has a bare origin on this machine"
+    );
+    let mut steps = Vec::new();
+    for bare in bares {
+        let changed = install_mirror_hook(&bare, mirror)
+            .await
+            .with_context(|| format!("installing the mirror hook in {}", bare.display()))?;
+        let detail = format!(
+            "{} post-update mirrors main and v* tags to {mirror}",
+            bare.display()
+        );
+        steps.push(step("mirror", changed, detail));
+    }
+    Ok(steps)
+}
+
 /// Everything `forge init` does, in order. `home_override` is `--home`;
-/// `None` uses the usual resolution (`Paths::compute_home`).
-pub async fn run(home_override: Option<PathBuf>, relink: bool) -> Result<Report> {
+/// `None` uses the usual resolution (`Paths::compute_home`). `mirror` is
+/// `--mirror`: install the mirror hook into the registered bare origins.
+pub async fn run(
+    home_override: Option<PathBuf>,
+    relink: bool,
+    mirror: Option<&str>,
+) -> Result<Report> {
     let home = match home_override {
         Some(h) => h,
         None => Paths::compute_home()?,
@@ -380,6 +480,9 @@ pub async fn run(home_override: Option<PathBuf>, relink: bool) -> Result<Report>
         steps.extend(adopt_running_binaries(&home)?);
     }
     steps.extend(link_local_bin(&home)?);
+    if let Some(m) = mirror {
+        steps.extend(install_mirrors(&home, m).await?);
+    }
     steps.push(install_units(&home)?);
     let (_, bin_dir) = forge_binary(&home)?;
     steps.push(step("unit PATH", false, unit_path(&bin_dir)));

@@ -1,0 +1,62 @@
+#!/bin/sh
+# post-update: mirror `main` and `v*` tags from this bare origin to the
+# remote named by `git config forge.mirror` (a remote name or a URL).
+#
+# Installed by `forge init --mirror <remote>` into the bare origin of every
+# registered repository; the reviewed text is deploy/post-update.mirror in
+# the forge repository. Edit it there and re-run `forge init`.
+#
+# The push that ran this hook has already been accepted: post-update runs
+# after the refs are updated, and its exit status cannot undo them. It
+# still runs inside `receive-pack`, which waits for the hook and for
+# anything holding its stdout or stderr open, so the mirror runs in the
+# background with every descriptor redirected, bounded by `timeout`, and
+# this script exits 0 whatever happens. A slow or unreachable mirror
+# costs the pusher nothing; its output lands in `mirror.log` in this
+# repository.
+#
+# Refspecs are explicit: `main` (forced, so the mirror follows origin
+# even across a rewind) and `v*` tags (never forced: a published release
+# tag is not rewritten). Nothing else is pushed, and nothing is deleted.
+
+set -f # the refspecs below hold globs for git, never for the shell
+
+mirror=$(git config --get forge.mirror 2>/dev/null) || exit 0
+[ -n "$mirror" ] || exit 0
+
+# Only a push that touched main or a v* tag has anything to mirror.
+wanted=
+for ref in "$@"; do
+	case "$ref" in
+	refs/heads/main | refs/tags/v*) wanted=1 ;;
+	esac
+done
+[ -n "$wanted" ] || exit 0
+
+specs=
+if git rev-parse --verify --quiet refs/heads/main >/dev/null; then
+	specs='+refs/heads/main:refs/heads/main'
+fi
+if [ -n "$(git for-each-ref --count=1 --format=x 'refs/tags/v*')" ]; then
+	specs="$specs refs/tags/v*:refs/tags/v*"
+fi
+[ -n "$specs" ] || exit 0
+
+bound=
+if command -v timeout >/dev/null 2>&1; then
+	bound='timeout -k 10 120'
+fi
+
+log="$(git rev-parse --absolute-git-dir 2>/dev/null || pwd)/mirror.log"
+# Keep the log's last lines only, so a mirror that fails forever stays small.
+if [ -f "$log" ] && [ "$(wc -c <"$log")" -gt 1048576 ]; then
+	tail -n 2000 "$log" >"$log.tmp" && mv "$log.tmp" "$log"
+fi
+(
+	echo "--- $(date -u +%Y-%m-%dT%H:%M:%SZ) mirror to $mirror:$specs"
+	# shellcheck disable=SC2086 # $bound and $specs are word lists by design
+	GIT_TERMINAL_PROMPT=0 $bound git push --porcelain "$mirror" $specs
+	echo "--- exit $?"
+) </dev/null >>"$log" 2>&1 &
+
+exit 0
