@@ -10,6 +10,17 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// A private staging path for one operation, including concurrent calls in one process.
+pub(crate) fn temporary_path(parent: &Path, name: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    parent.join(format!(
+        ".{name}.tmp.{}.{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
 /// The workspace's own release binaries, in the order `scripts/release.sh`
 /// packs them (see `tests/release.rs`).
 pub const BINS: &[&str] = &[
@@ -114,11 +125,8 @@ pub fn install(_lock: &Lock, root: &Path, src: &Path, id: &str) -> Result<bool> 
         "{} has no forge",
         src.display()
     );
-    let tmp = root
-        .join("releases")
-        .join(format!(".{id}.tmp.{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp)?;
+    let tmp = temporary_path(&root.join("releases"), id);
+    std::fs::create_dir(&tmp)?;
     for b in BINS {
         let from = src.join(b);
         if from.is_file() {
@@ -132,10 +140,9 @@ pub fn install(_lock: &Lock, root: &Path, src: &Path, id: &str) -> Result<bool> 
 }
 
 /// Make `<root>/<name>` a symlink to `releases/<id>`, atomically. The
-/// temporary name carries the pid, as the script's does.
+/// temporary name carries the pid and a per-process counter.
 fn point(_lock: &Lock, root: &Path, name: &str, id: &str) -> Result<()> {
-    let tmp = root.join(format!(".{name}.new.{}", std::process::id()));
-    let _ = std::fs::remove_file(&tmp);
+    let tmp = temporary_path(root, name);
     std::os::unix::fs::symlink(Path::new("releases").join(id), &tmp)?;
     std::fs::rename(&tmp, root.join(name))?;
     Ok(())
@@ -376,5 +383,35 @@ mod tests {
         assert!(lock_within(&root, Duration::from_millis(100)).is_err());
         drop(held);
         assert!(lock_within(&root, Duration::from_millis(100)).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod temporary_tests {
+    #[test]
+    fn temporary_names_are_unique_across_threads() {
+        let threads: Vec<_> = (0..16)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    (0..100)
+                        .map(|_| super::temporary_path(std::path::Path::new("/tmp"), "current"))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let paths: std::collections::HashSet<_> = threads
+            .into_iter()
+            .flat_map(|t| t.join().unwrap())
+            .collect();
+        assert_eq!(paths.len(), 1600);
+        for path in paths {
+            assert!(
+                path.file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .contains(&format!(".tmp.{}.", std::process::id()))
+            );
+        }
     }
 }

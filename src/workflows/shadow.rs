@@ -2,9 +2,10 @@
 //! built-in (docs/WORKFLOWS.md, "Authoring"). A copy that is only a stale
 //! seed (written by an old `ensure`, never edited by the operator) must not
 //! shadow later changes to the built-in, so it is told apart from an
-//! operator edit by the catalog's git history: an edit is a commit on that
-//! file that is not a seeding one (author `forge`, or a message starting
-//! `catalog: built-in`).
+//! operator edit by its content, never by who committed it or whether it is
+//! committed: a stale seed is a copy whose text is a built-in text this or an
+//! earlier release shipped (`BUILTIN_HISTORY`), or says nothing the built-in
+//! does not (`equivalent`). Anything else is an operator edit.
 
 use super::{BUILTIN_ACTIONS, BUILTIN_OPERATIONS};
 use anyhow::{Context, Result, bail};
@@ -56,7 +57,7 @@ pub struct Shadow {
     /// Such a copy is always a stale seed, whatever its history says.
     pub equivalent: bool,
     /// An operator edit of a built-in whose text changed after the copy's
-    /// last commit, and the copy is not any past version of that built-in:
+    /// last commit (the copy is not any past version of that built-in):
     /// the copy was tuned against text this binary no longer carries.
     pub outdated: bool,
     /// The unified diff, built-in to catalog copy, or the reason `git diff`
@@ -129,31 +130,23 @@ pub(super) fn text_blob_hash(text: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
-/// Whether the file's history holds a commit that is not a seeding one.
-fn has_operator_commit(dir: &Path, rel: &str) -> bool {
-    let Ok(o) = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["log", "--format=%an%x09%s", "--", rel])
-        .output()
-    else {
+/// Whether `copy` is, byte for byte, a text the built-in `file` has shipped in
+/// this or an earlier release.
+fn is_historical(file: &str, copy: &str) -> bool {
+    let Some((_, _, hashes)) = BUILTIN_HISTORY.iter().find(|(f, _, _)| *f == file) else {
         return false;
     };
-    String::from_utf8_lossy(&o.stdout).lines().any(|l| {
-        let (author, subject) = l.split_once('\t').unwrap_or((l, ""));
-        !author.eq_ignore_ascii_case("forge") && !subject.starts_with(SEED_MESSAGE)
-    })
+    text_blob_hash(copy).is_ok_and(|h| hashes.contains(&h.as_str()))
 }
 
-/// Whether the copy at `rel` was last committed before the built-in `file`
-/// changed, and is not a version the built-in has had.
-fn outdated(dir: &Path, rel: &str, file: &str, copy: &str) -> bool {
-    let Some((_, changed, hashes)) = BUILTIN_HISTORY.iter().find(|(f, _, _)| *f == file) else {
+/// Whether the copy at `rel` (an operator edit, so not a version the built-in
+/// has had) was last committed before the built-in `file` changed. A copy with
+/// no commit was edited after the built-in's last change as far as anyone can
+/// tell, so it is not outdated.
+fn outdated(dir: &Path, rel: &str, file: &str) -> bool {
+    let Some((_, changed, _)) = BUILTIN_HISTORY.iter().find(|(f, _, _)| *f == file) else {
         return false;
     };
-    if text_blob_hash(copy).is_ok_and(|h| hashes.contains(&h.as_str())) {
-        return false;
-    }
     let committed = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -262,12 +255,12 @@ fn scan_uncached(catalog: &Path) -> Vec<Shadow> {
         let rel = format!("actions/{file}");
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let equivalent = equivalent(builtin, &text);
-        let origin = if !equivalent && has_operator_commit(catalog, &rel) {
-            Origin::OperatorEdit
-        } else {
+        let origin = if equivalent || is_historical(file, &text) {
             Origin::StaleSeed
+        } else {
+            Origin::OperatorEdit
         };
-        let outdated = origin == Origin::OperatorEdit && outdated(catalog, &rel, file, &text);
+        let outdated = origin == Origin::OperatorEdit && outdated(catalog, &rel, file);
         let age_secs = std::fs::metadata(&path)
             .and_then(|m| m.modified())
             .ok()
@@ -371,25 +364,37 @@ pub fn age_text(secs: u64) -> String {
 }
 
 /// Delete a catalog copy so the built-in applies again, committing the
-/// removal when the file was tracked.
+/// removal. Refuses a file git does not track, or one changed since its last
+/// commit: deleting it would leave no trace of it anywhere.
 pub async fn remove(catalog: &Path, file: &str) -> Result<()> {
     let rel = format!("actions/{file}");
-    let tracked = Command::new("git")
-        .arg("-C")
-        .arg(catalog)
-        .args(["ls-files", "--error-unmatch", "--", &rel])
-        .output()?
-        .status
-        .success();
-    std::fs::remove_file(catalog.join(&rel))?;
-    if tracked {
-        crate::git::commit_path(
-            catalog,
-            &rel,
-            &format!("{SEED_MESSAGE} {file}: catalog copy removed by forge workflows refresh"),
-        )
-        .await?;
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(catalog)
+            .args(args)
+            .arg("--")
+            .arg(&rel)
+            .output()
+    };
+    if !git(&["ls-files", "--error-unmatch"])?.status.success() {
+        bail!(
+            "{rel} is not tracked by the catalog's git repository; not removing it: commit it first (or delete it by hand)"
+        );
     }
+    let status = git(&["status", "--porcelain"])?;
+    if !status.status.success() || !status.stdout.is_empty() {
+        bail!(
+            "{rel} has uncommitted changes; not removing it: commit them first (or delete it by hand)"
+        );
+    }
+    std::fs::remove_file(catalog.join(&rel))?;
+    crate::git::commit_path(
+        catalog,
+        &rel,
+        &format!("{SEED_MESSAGE} {file}: catalog copy removed by forge workflows refresh"),
+    )
+    .await?;
     Ok(())
 }
 
@@ -652,7 +657,7 @@ mod tests {
         assert!(failed[0].diff.is_err(), "{:?}", failed[0].diff);
         assert_eq!(failed[0].diff_lines(), 0);
         let (stale, detail, _hint) = report(&catalog2);
-        assert_eq!(stale, crate::doctor::Status::Warn);
+        assert_eq!(stale, crate::doctor::Status::Ok);
         assert!(detail.contains("diff failed"), "{detail}");
         assert!(!detail.contains("0 diff line(s)"), "{detail}");
 

@@ -482,8 +482,13 @@ pub fn request_restart(home: &Path, name: &str) -> Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let next = read_restart_gen(home, name) + 1;
-    let tmp = path.with_extension("restart.tmp");
-    std::fs::write(&tmp, next.to_string())?;
+    let tmp = crate::release::temporary_path(path.parent().unwrap(), &format!("{name}.restart"));
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)?;
+    file.write_all(next.to_string().as_bytes())?;
     std::fs::rename(&tmp, &path)?;
     Ok(())
 }
@@ -907,7 +912,14 @@ impl Supervisor {
             let mut failing: Option<String> = None;
             loop {
                 let f = forge_rx.borrow().clone();
-                let enabled = match enabled_plugins_now(&f) {
+                let reader = f.clone();
+                let read = tokio::task::spawn_blocking(move || enabled_plugins_now(&reader));
+                let result = tokio::select! {
+                    biased;
+                    _ = stop_rx.changed() => break,
+                    result = read => result.context("joining plugin catalog reader").and_then(|r| r),
+                };
+                let enabled = match result {
                     Ok(e) => {
                         failing = None;
                         Some(e)
@@ -979,6 +991,27 @@ impl Supervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_restart_requests_use_private_temporary_files() {
+        let home = tempfile::tempdir().unwrap();
+        std::thread::scope(|scope| {
+            for _ in 0..16 {
+                let home = home.path();
+                scope.spawn(move || {
+                    for _ in 0..20 {
+                        request_restart(home, "example").unwrap();
+                    }
+                });
+            }
+        });
+        assert!(read_restart_gen(home.path(), "example") > 0);
+        let path = restart_request_path(home.path(), "example");
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            1
+        );
+    }
 
     /// Writes `<root>/<name>/plugin.toml`; `root` is a root directory
     /// itself (what `load_catalog` scans directly, e.g. a `plugin_dirs`
