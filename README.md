@@ -328,6 +328,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   messages.rs       messages: one row per inbound/outbound message on a channel, so a rule can ask "has this contact replied since"
   webhooks.rs       webhook_tokens: per-hook tokens (only their hashes) that let `forge job fire` start a webhook-triggered job
   events.rs         event_cursors: per project and run workflow, the events.jsonl offset its event trigger has examined up to
+  schedule.rs       schedule_refusals: the schedules a per_day cap holds back, which the worker's tick records and `forge job list` prints
   stats.rs          forge stats: workflow/step/role/human-attention/time-to-live queries
   questions.rs      forge stats --questions: every task that blocked with a question, and how it was settled
   factors.rs        forge stats --factors: factor levels, the main-effects fit, size classes
