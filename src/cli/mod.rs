@@ -186,7 +186,7 @@ enum Cmd {
         /// Machine-readable
         #[arg(long)]
         json: bool,
-        /// Only tasks in this state (queued, running, succeeded, failed, blocked, unverified, withdrawn)
+        /// Only tasks in this state (queued, running, succeeded, failed, blocked, unverified, withdrawn, capped)
         #[arg(long)]
         state: Option<String>,
         /// Only tasks in this repository

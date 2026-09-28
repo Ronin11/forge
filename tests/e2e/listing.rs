@@ -1812,11 +1812,8 @@ fn a_projects_per_task_budget_applies_unless_the_task_overrides_it() {
     // `--budget 0.005` would (see `task_budget_stops_retries`).
     assert!(!e.run("flaky.sh", &["--retries", "3"]).status.success());
     assert_eq!(e.attempts(1).len(), 1);
-    assert!(
-        e.task(1).1.starts_with("task budget reached"),
-        "{}",
-        e.task(1).1
-    );
+    assert_eq!(e.task(1).0, "capped", "{}", e.task(1).1);
+    assert!(e.task(1).1.contains(" of $0.0"), "{}", e.task(1).1);
 
     // The task's own --budget wins over the project's default, so it
     // affords the second attempt `flaky.sh` needs to get it right.

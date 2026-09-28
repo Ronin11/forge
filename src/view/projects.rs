@@ -37,6 +37,7 @@ pub struct ProjectRow {
     pub unverified: i64,
     pub blocked: i64,
     pub withdrawn: i64,
+    pub capped: i64,
     pub cost_usd: f64,
     /// Jobs (`kind = "run"` workflow runs) started in the last rolling
     /// 24h, counted separately from the task rollup above (docs/JOBS.md
@@ -94,6 +95,7 @@ pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
             TaskState::Unverified => stats.unverified += 1,
             TaskState::Blocked => stats.blocked += 1,
             TaskState::Withdrawn => stats.withdrawn += 1,
+            TaskState::Capped => stats.capped += 1,
         }
     }
     Ok(ProjectRow {
@@ -108,6 +110,7 @@ pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
         unverified: stats.unverified,
         blocked: stats.blocked,
         withdrawn: stats.withdrawn,
+        capped: stats.capped,
         cost_usd: cost,
         jobs_today: job_stats.today,
         jobs_ok: job_stats.ok,
@@ -360,6 +363,7 @@ pub struct InitiativeRow {
     pub unverified: i64,
     pub blocked: i64,
     pub withdrawn: i64,
+    pub capped: i64,
     pub cost_usd: f64,
     pub budget_usd: Option<f64>,
     pub stop_after_same_rule: i64,
@@ -385,6 +389,7 @@ pub fn initiative_row(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
             TaskState::Unverified => stats.unverified += 1,
             TaskState::Blocked => stats.blocked += 1,
             TaskState::Withdrawn => stats.withdrawn += 1,
+            TaskState::Capped => stats.capped += 1,
         }
     }
     Ok(InitiativeRow {
@@ -400,6 +405,7 @@ pub fn initiative_row(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
         unverified: stats.unverified,
         blocked: stats.blocked,
         withdrawn: stats.withdrawn,
+        capped: stats.capped,
         cost_usd: f.store.initiative_cost(ini.id)?,
         budget_usd: ini.budget_usd,
         stop_after_same_rule: ini.stop_after_same_rule,
@@ -1228,7 +1234,14 @@ fn job_reason(j: &crate::store::Job) -> Option<String> {
 /// state it's in — the "n pieces of work" beside its outcome on
 /// `PortalDoc` (see docs/PORTAL.md).
 fn initiative_pieces(r: &InitiativeRow) -> i64 {
-    r.queued + r.running + r.succeeded + r.failed + r.unverified + r.blocked + r.withdrawn
+    r.queued
+        + r.running
+        + r.succeeded
+        + r.failed
+        + r.unverified
+        + r.blocked
+        + r.withdrawn
+        + r.capped
 }
 
 #[cfg(test)]

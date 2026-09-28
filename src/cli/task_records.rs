@@ -213,7 +213,7 @@ pub(super) fn log(args: LogArgs, json: bool) -> Result<()> {
         .map(|s| {
             TaskState::try_from(s.as_str()).map_err(|_| {
                 anyhow::anyhow!(
-                    "unknown state {s:?}; valid states are queued, running, succeeded, failed, blocked, unverified"
+                    "unknown state {s:?}; valid states are queued, running, succeeded, failed, blocked, unverified, withdrawn, capped"
                 )
             })
         })

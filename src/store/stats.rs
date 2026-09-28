@@ -8,6 +8,9 @@ pub struct WorkflowStat {
     pub failed: i64,
     pub blocked: i64,
     pub unverified: i64,
+    /// Tasks that stopped at their budget cap: a decision for a human,
+    /// counted apart from `failed`.
+    pub capped: i64,
     pub cost: f64,
     pub attempts: i64,
     pub landed: i64,
@@ -629,7 +632,7 @@ impl Store {
             let mut stmt = c.prepare(
                 "SELECT t.workflow AS workflow, t.workflow_hash AS hash, COUNT(*) AS tasks,
                     SUM(t.state='succeeded') AS succeeded, SUM(t.state='failed') AS failed,
-                    SUM(t.state='blocked') AS blocked, SUM(t.state='unverified') AS unverified,
+                    SUM(t.state='blocked') AS blocked, SUM(t.state='unverified') AS unverified, SUM(t.state='capped') AS capped,
                     COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN (
                         SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash
                           AND (?1 IS NULL OR t2.project = ?1) AND (?2 IS NULL OR t2.initiative = ?2)
@@ -653,7 +656,7 @@ impl Store {
                     SUM(t.landed_sha != '' AND EXISTS (
                         SELECT 1 FROM task_refs r WHERE r.kind = 'repairs' AND r.url = 'forge://task/' || t.id
                     )) AS repaired
-             FROM tasks t WHERE t.state IN ('succeeded','failed','blocked','unverified') AND t.started_at IS NOT NULL
+             FROM tasks t WHERE t.state IN ('succeeded','failed','blocked','unverified','capped') AND t.started_at IS NOT NULL
                AND (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
              GROUP BY t.workflow, t.workflow_hash ORDER BY t.workflow, t.workflow_hash",
             )?;
@@ -666,6 +669,7 @@ impl Store {
                     failed: r.get("failed")?,
                     blocked: r.get("blocked")?,
                     unverified: r.get("unverified")?,
+                    capped: r.get("capped")?,
                     cost: r.get("cost")?,
                     attempts: r.get("attempts")?,
                     landed: r.get("landed")?,
@@ -724,6 +728,7 @@ impl Store {
                 failed: r.get("failed")?,
                 blocked: r.get("needs_human")?,
                 unverified: 0,
+                capped: 0,
                 cost: r.get("cost")?,
                 attempts: 0,
                 landed: 0,
