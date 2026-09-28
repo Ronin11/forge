@@ -1,3 +1,4 @@
+use super::workflows_draft::DraftArgs;
 use super::*;
 use crate::workflows;
 
@@ -76,6 +77,13 @@ pub(super) enum WorkflowsCmd {
         #[arg(long)]
         repo: Option<PathBuf>,
     },
+    /// Compose a workflow from the catalog in one sitting: add actions,
+    /// set roles, judgments and effects, add failure edges, and see the
+    /// catalog's own lint after every change. An action that does not
+    /// exist yet is a placeholder with a one-line contract; `put` files
+    /// one build task per placeholder and the draft enables itself once
+    /// they have landed (docs/WORKFLOWS.md, "The draft editor")
+    Draft(DraftArgs),
 }
 
 fn measure(f: &Forge, w: &workflows::Workflow) -> Result<profile::Measured> {
@@ -200,18 +208,7 @@ async fn put_workflow(
     match repo {
         Some(repo) => {
             let f = Forge::open(false, false)?;
-            let req = crate::queue::TaskRequest {
-                repo,
-                task: format!(
-                    "Add or replace the file `.forge/workflows/{name}.toml` in this repository with exactly this content, byte for byte (create it if it doesn't exist, overwrite it if it does):\n\n```toml\n{text}\n```"
-                ),
-                max_turns: 100,
-                retries: 1,
-                timeout_secs: 1800,
-                ..Default::default()
-            };
-            let t = crate::queue::enqueue(&f, &req, None).await?;
-            out!("{}", t.id);
+            out!("{}", file_workflow_task(&f, repo, &name, &text).await?);
         }
         None => {
             let dir = workflows::catalog_dir(&paths.home)?;
@@ -226,6 +223,27 @@ async fn put_workflow(
         }
     }
     Ok(())
+}
+
+/// File a direct task on `repo`'s project that lands `text` as
+/// `.forge/workflows/NAME.toml` through review; the task's id.
+pub(super) async fn file_workflow_task(
+    f: &Forge,
+    repo: PathBuf,
+    name: &str,
+    text: &str,
+) -> Result<i64> {
+    let req = crate::queue::TaskRequest {
+        repo,
+        task: format!(
+            "Add or replace the file `.forge/workflows/{name}.toml` in this repository with exactly this content, byte for byte (create it if it doesn't exist, overwrite it if it does):\n\n```toml\n{text}\n```"
+        ),
+        max_turns: 100,
+        retries: 1,
+        timeout_secs: 1800,
+        ..Default::default()
+    };
+    Ok(crate::queue::enqueue(f, &req, None).await?.id)
 }
 
 async fn show_workflow(name: String, project: Option<String>, json: bool) -> Result<()> {
@@ -706,6 +724,7 @@ async fn dispatch_workflows(cmd: Cmd) -> Result<()> {
             Some(WorkflowsCmd::Refresh { take_builtin, keep }) => {
                 refresh_workflows(take_builtin, keep).await
             }
+            Some(WorkflowsCmd::Draft(args)) => super::workflows_draft::dispatch(args).await,
             Some(WorkflowsCmd::Put {
                 name,
                 stdin,

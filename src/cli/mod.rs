@@ -37,6 +37,7 @@ mod task_records;
 mod tasks;
 mod web;
 mod workflows;
+mod workflows_draft;
 
 use deploy::{DeployArgs, PluginCmd, ProvisionArgs};
 use eval::EvalCmd;
