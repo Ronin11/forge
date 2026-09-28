@@ -1102,3 +1102,39 @@ fn a_directive_stops_after_too_many_consecutive_refusals() {
         "{a:?}"
     );
 }
+
+#[test]
+fn a_run_reusing_a_pid_with_a_leftover_proxy_dir_still_has_a_route() {
+    let e = Env::new();
+    if e.sandbox_disabled() {
+        return;
+    }
+    let c = e.cmd("ok.sh");
+    let mut sh = std::process::Command::new("sh");
+    sh.arg("-c")
+        .arg("mkdir -p -m 700 \"$FORGE_HOME/run\" && mkdir -m 700 \"$FORGE_HOME/run/egress-$$\" && exec \"$@\"")
+        .arg("sh")
+        .arg(c.get_program())
+        .args(["run", e.repo.to_str().unwrap(), "write 42 to answer.txt", "--no-land"]);
+    for (k, v) in c.get_envs() {
+        if let Some(v) = v {
+            sh.env(k, v);
+        }
+    }
+    let o = sh.output().unwrap();
+    let err = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+    assert!(!err.contains("no route out"), "{err}");
+}
+
+#[test]
+fn forge_run_removes_its_proxy_dir_at_exit() {
+    let e = Env::new();
+    if e.sandbox_disabled() {
+        return;
+    }
+    assert!(e.run("ok.sh", &[]).status.success());
+    let left: Vec<_> = std::fs::read_dir(e.home.join("run"))
+        .map(|r| r.flatten().map(|x| x.file_name()).collect())
+        .unwrap_or_default();
+    assert!(left.is_empty(), "left behind after `forge run`: {left:?}");
+}

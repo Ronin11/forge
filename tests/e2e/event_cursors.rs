@@ -151,3 +151,89 @@ fn a_followed_subscription_resumes_after_a_kill_without_replaying_delivered_even
     assert_eq!(again.len(), 1);
     assert!(again[0].contains("\"new\""), "{again:?}");
 }
+
+/// Runs a reference plugin once against a stub `forge` whose `snapshot`
+/// and `events` do what the given shell bodies say, and returns whether
+/// it exited successfully. Output goes nowhere: github-issues' intake
+/// loop leaves a `sleep` behind that would otherwise hold a pipe open.
+fn run_plugin_with_stub(script: &str, dir: &std::path::Path, snapshot: &str, events: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::{Command, Stdio};
+    let fake = dir.join("forge");
+    fs::write(
+        &fake,
+        format!("#!/bin/sh\ncase \"$1\" in\nsnapshot) {snapshot} ;;\nevents) {events} ;;\nesac\n"),
+    )
+    .unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        dir.join("config"),
+        "GH_REPO=o/r\nTARGET_REPO=/nonexistent\nPOLL_SECONDS=30\n",
+    )
+    .unwrap();
+    Command::new("sh")
+        .arg(format!("{}/plugins/{script}", env!("CARGO_MANIFEST_DIR")))
+        .env("FORGE_BIN", &fake)
+        .env("FORGE_PLUGIN_STATE", dir)
+        .env("FORGE_PLUGIN_DIR", dir)
+        .env("PATH", format!("{}:/usr/bin:/bin", dir.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+/// REVIEW-4 E2-16: a failed first snapshot, an empty cursor file, or a
+/// failed `events` must end the plugin non-zero so restart = "on-failure"
+/// restarts it, not with the trailing loop's 0.
+#[test]
+fn reference_plugins_exit_non_zero_on_an_empty_offset_or_a_failed_events() {
+    for script in ["notify/notify.sh", "github-issues/github-issues.sh"] {
+        let ok_events = "echo '{\"type\":\"note\",\"cursor\":\"8:42\"}'";
+
+        // The first snapshot fails: no offset to start from.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            !run_plugin_with_stub(script, dir.path(), "exit 1", ok_events),
+            "{script}: failed snapshot"
+        );
+        assert!(!dir.path().join("cursor").exists(), "{script}");
+
+        // A cursor file left empty by a kill mid-write: fail, and drop it
+        // so the restart takes a fresh snapshot and recovers.
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("cursor"), "").unwrap();
+        let snapshot = "echo '{\"events_offset\":\"7:999\"}'";
+        assert!(
+            !run_plugin_with_stub(script, dir.path(), snapshot, ok_events),
+            "{script}: empty cursor"
+        );
+        assert!(!dir.path().join("cursor").exists(), "{script}");
+        assert!(
+            run_plugin_with_stub(script, dir.path(), snapshot, ok_events),
+            "{script}: restart after an empty cursor"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("cursor")).unwrap(),
+            "8:42\n",
+            "{script}"
+        );
+        assert!(!dir.path().join("cursor.tmp").exists(), "{script}");
+
+        // The events process itself fails after delivering a line: the
+        // cursor keeps what was delivered and the plugin exits non-zero.
+        let dir = tempfile::tempdir().unwrap();
+        let failing = "echo '{\"type\":\"note\",\"cursor\":\"8:42\"}'; exit 3";
+        assert!(
+            !run_plugin_with_stub(script, dir.path(), snapshot, failing),
+            "{script}: failed events"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("cursor")).unwrap(),
+            "8:42\n",
+            "{script}"
+        );
+    }
+}

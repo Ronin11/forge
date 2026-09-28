@@ -862,7 +862,6 @@ pub fn clear_refused(dir: &Path) {
 /// own socket in a private directory that goes away with the process.
 #[derive(Default)]
 pub struct Proxies {
-    dir: Mutex<Option<PathBuf>>,
     running: Mutex<BTreeMap<Policy, (PathBuf, tokio::task::JoinHandle<()>)>>,
 }
 
@@ -879,25 +878,7 @@ impl Proxies {
         {
             return Ok(path.clone());
         }
-        let dir = {
-            let mut d = self.dir.lock().unwrap();
-            match &*d {
-                Some(d) => d.clone(),
-                None => {
-                    // The process's one directory, shared by every `Proxies`
-                    // in it: never wiped here, only removed at exit.
-                    let path = own_dir();
-                    use std::os::unix::fs::DirBuilderExt;
-                    std::fs::DirBuilder::new()
-                        .recursive(true)
-                        .mode(0o700)
-                        .create(&path)
-                        .with_context(|| format!("creating {}", path.display()))?;
-                    *d = Some(path.clone());
-                    path
-                }
-            }
-        };
+        let dir = own_dir_ready()?;
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = dir.join(format!("p{n}.sock"));
@@ -922,9 +903,97 @@ impl Drop for Proxies {
     }
 }
 
+static RUN_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Name the home whose `run` directory holds the proxy directories: the
+/// first home a process opens (`ctx::Paths::for_home`) is the one it uses.
+pub fn set_run_root(home: &Path) {
+    let _ = RUN_ROOT.set(home.join("run"));
+}
+
+/// The directory proxy directories live in: `$FORGE_HOME/run` (as named to
+/// `set_run_root`), else `$XDG_RUNTIME_DIR/forge`, else a per-user name in
+/// the temp directory, which `create_private` refuses unless it is ours and
+/// private (another user can pre-create it, but not use it).
+pub fn run_root() -> PathBuf {
+    if let Some(root) = RUN_ROOT.get() {
+        return root.clone();
+    }
+    match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(d) if !d.is_empty() => PathBuf::from(d).join("forge"),
+        _ => std::env::temp_dir().join(format!("forge-run-{}", unsafe { libc::geteuid() })),
+    }
+}
+
 /// This process's proxy directory.
 pub fn own_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("forge-egress-{}", std::process::id()))
+    run_root().join(format!("egress-{}", std::process::id()))
+}
+
+/// `path` is a real directory (not a link) of this user that no one else
+/// can enter or write: nothing to trust in it but us.
+fn verify_private(path: &Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let m =
+        std::fs::symlink_metadata(path).with_context(|| format!("checking {}", path.display()))?;
+    let euid = unsafe { libc::geteuid() };
+    if !m.file_type().is_dir() {
+        bail!("{} is not a directory", path.display());
+    }
+    if m.uid() != euid {
+        bail!("{} is owned by uid {}, not {euid}", path.display(), m.uid());
+    }
+    if m.mode() & 0o077 != 0 {
+        bail!(
+            "{} has mode {:04o}: group or other can reach it",
+            path.display(),
+            m.mode() & 0o7777
+        );
+    }
+    Ok(())
+}
+
+/// Create `path` afresh, private to this user: `mkdir` that fails on an
+/// existing name (planted or stale), then `verify_private` before anything
+/// is bound in it. The parents are made 0700 if missing and verified too.
+fn create_private(path: &Path) -> Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    if let Some(parent) = path.parent() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+        verify_private(parent)?;
+    }
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(path)
+        .with_context(|| format!("creating {}", path.display()))?;
+    verify_private(path)
+}
+
+/// The directory this process made, if it has.
+static MADE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// The process's one proxy directory, shared by every `Proxies` in it: made
+/// on first use, never wiped here, only removed at exit.
+fn own_dir_ready() -> Result<PathBuf> {
+    let mut made = MADE.lock().unwrap();
+    if let Some(path) = &*made
+        && path.is_dir()
+    {
+        verify_private(path)?;
+        return Ok(path.clone());
+    }
+    // Nothing of this process has made its directory yet, so one under its
+    // pid is a dead process's whose pid was reused; dead pids' are swept.
+    remove_own_dir();
+    sweep_dead_in_run_root();
+    let path = own_dir();
+    create_private(&path)?;
+    *made = Some(path.clone());
+    Ok(path)
 }
 
 /// Remove this process's proxy directory: a worker does it once, at exit.
@@ -935,17 +1004,29 @@ pub fn remove_own_dir() {
 /// Removes the process's proxy directory when dropped.
 pub struct OwnDirGuard;
 
+/// Removes the proxy directory when dropped, if this process made one: held
+/// by `main` so that every command that ran a sandboxed step cleans up.
+pub struct MadeDirGuard;
+
+impl Drop for MadeDirGuard {
+    fn drop(&mut self) {
+        if MADE.lock().is_ok_and(|m| m.is_some()) {
+            remove_own_dir();
+        }
+    }
+}
+
 impl Drop for OwnDirGuard {
     fn drop(&mut self) {
         remove_own_dir();
     }
 }
 
-/// Remove the `forge-egress-<pid>` directories under `tmp` whose pid is
+/// Remove the `egress-<pid>` directories under `root` whose pid is
 /// dead (`kill(pid, 0)` says `ESRCH`) and no others: not a live worker's,
 /// not this process's, however old. Returns how many it removed.
-pub fn sweep_dead(tmp: &Path) -> usize {
-    let Ok(entries) = std::fs::read_dir(tmp) else {
+pub fn sweep_dead(root: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(root) else {
         return 0;
     };
     let me = std::process::id() as i64;
@@ -954,7 +1035,7 @@ pub fn sweep_dead(tmp: &Path) -> usize {
         let name = e.file_name();
         let Some(pid) = name
             .to_str()
-            .and_then(|n| n.strip_prefix("forge-egress-"))
+            .and_then(|n| n.strip_prefix("egress-"))
             .and_then(|p| p.parse::<i64>().ok())
         else {
             continue;
@@ -974,475 +1055,10 @@ pub fn sweep_dead(tmp: &Path) -> usize {
     swept
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn rule(s: &str) -> Rule {
-        Rule::parse(s).unwrap()
-    }
-
-    #[test]
-    fn the_sweep_removes_dead_pids_and_keeps_live_ones() {
-        let tmp = tempfile::tempdir().unwrap();
-        let live = tmp
-            .path()
-            .join(format!("forge-egress-{}", std::process::id()));
-        // pid_max is at most 2^22: this pid cannot exist.
-        let dead = tmp.path().join("forge-egress-2147483646");
-        let other = tmp.path().join("forge-egress-refused.jsonl");
-        for d in [&live, &dead] {
-            std::fs::create_dir(d).unwrap();
-        }
-        std::fs::write(&other, "").unwrap();
-        assert_eq!(sweep_dead(tmp.path()), 1);
-        assert!(live.exists() && !dead.exists() && other.exists());
-    }
-
-    #[test]
-    fn a_host_matches_itself_on_the_web_ports_only() {
-        let r = rule("registry.npmjs.org");
-        assert_eq!(r.matches("registry.npmjs.org", 443), Some(Matched::Exact));
-        assert_eq!(r.matches("Registry.NPMJS.org.", 80), Some(Matched::Exact));
-        assert_eq!(r.matches("registry.npmjs.org", 22), None);
-        assert_eq!(r.matches("evil-registry.npmjs.org", 443), None);
-        assert_eq!(r.matches("registry.npmjs.org.evil.com", 443), None);
-    }
-
-    #[test]
-    fn a_port_pins_the_port() {
-        let r = rule("dev.home:11434");
-        assert_eq!(r.matches("dev.home", 11434), Some(Matched::Exact));
-        assert_eq!(r.matches("dev.home", 443), None);
-    }
-
-    #[test]
-    fn a_suffix_matches_below_the_domain_and_not_the_domain() {
-        let r = rule("*.crates.io");
-        assert_eq!(r.matches("static.crates.io", 443), Some(Matched::Suffix));
-        assert_eq!(r.matches("a.b.crates.io", 443), Some(Matched::Suffix));
-        assert_eq!(r.matches("crates.io", 443), None);
-        assert_eq!(r.matches("evilcrates.io", 443), None);
-        assert_eq!(r.matches("static.crates.io.evil.com", 443), None);
-    }
-
-    #[test]
-    fn what_is_not_a_host_is_refused() {
-        for bad in [
-            "",
-            "*",
-            "*.com",
-            "*.",
-            "https://x.io",
-            "x.io/path",
-            "user@x.io",
-            "x.io:0",
-            "x.io:http",
-            "x .io",
-            "-x.io",
-            "a..b",
-            "::1",
-            "*x.io",
-            "x.*.io",
-        ] {
-            assert!(Rule::parse(bad).is_err(), "{bad:?} should be refused");
-        }
-    }
-
-    #[test]
-    fn display_round_trips() {
-        for s in [
-            "registry.npmjs.org",
-            "*.github.com",
-            "dev.home:11434",
-            "*.x.io:8443",
-            "10.0.0.5",
-        ] {
-            assert_eq!(rule(s).to_string(), s);
-        }
-        assert_eq!(rule("  Example.COM ").to_string(), "example.com");
-    }
-
-    /// A proxy on a socket in a temp dir, allowing `rules`.
-    fn start(rules: &[&str]) -> (tempfile::TempDir, PathBuf, tokio::task::JoinHandle<()>) {
-        let dir = tempfile::tempdir().unwrap();
-        let sock = dir.path().join("p.sock");
-        let policy = Policy::new(rules.iter().map(|r| rule(r)));
-        let task = tokio::spawn(serve(bind(&sock).unwrap(), Arc::new(policy)));
-        (dir, sock, task)
-    }
-
-    /// Send `req`, read until the proxy closes, return everything it said.
-    async fn ask(sock: &Path, req: &str) -> String {
-        let mut s = UnixStream::connect(sock).await.unwrap();
-        s.write_all(req.as_bytes()).await.unwrap();
-        let mut out = Vec::new();
-        tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut out))
-            .await
-            .expect("the proxy answers")
-            .ok();
-        String::from_utf8_lossy(&out).into_owned()
-    }
-
-    /// A local server that answers one connection with what `reply` makes
-    /// of the bytes it received first.
-    async fn upstream(reply: fn(&str) -> String) -> u16 {
-        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = l.local_addr().unwrap().port();
-        tokio::spawn(async move {
-            loop {
-                let (mut c, _) = l.accept().await.unwrap();
-                tokio::spawn(async move {
-                    let mut buf = [0u8; 4096];
-                    let n = c.read(&mut buf).await.unwrap_or(0);
-                    let got = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    c.write_all(reply(&got).as_bytes()).await.ok();
-                });
-            }
-        });
-        port
-    }
-
-    #[tokio::test]
-    async fn a_proxy_with_a_limit_of_two_refuses_the_third_concurrent_connection_with_a_503() {
-        let dir = tempfile::tempdir().unwrap();
-        let sock = dir.path().join("p.sock");
-        let policy = Arc::new(Policy::new([rule("example.com")]));
-        let task = tokio::spawn(serve_limited(bind(&sock).unwrap(), policy, 2));
-        // Two connections held open without a request.
-        let _a = UnixStream::connect(&sock).await.unwrap();
-        let _b = UnixStream::connect(&sock).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let third = ask(&sock, "").await;
-        assert!(third.starts_with("HTTP/1.1 503"), "{third}");
-        drop(_a);
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let again = ask(&sock, "GET http://forge-egress.invalid/ HTTP/1.1\r\n\r\n").await;
-        assert!(again.starts_with("HTTP/1.1 200"), "{again}");
-        task.abort();
-    }
-
-    #[tokio::test]
-    async fn a_connect_target_with_a_newline_is_a_400() {
-        let (_d, sock, task) = start(&["example.com"]);
-        let got = ask(&sock, "CONNECT a\nb:443 HTTP/1.1\r\n\r\n").await;
-        assert!(got.starts_with("HTTP/1.1 400"), "{got}");
-        assert_eq!(split_authority("a\nb:443", 443), None);
-        assert_eq!(split_authority("a\rb", 443), None);
-        task.abort();
-    }
-
-    /// A listener whose every accept fails, counting the calls.
-    struct Failing(Arc<std::sync::atomic::AtomicUsize>);
-
-    impl Accept for Failing {
-        async fn accept(&self) -> std::io::Result<UnixStream> {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Err(std::io::Error::from_raw_os_error(libc::EMFILE))
-        }
-    }
-
-    #[tokio::test]
-    async fn the_accept_loop_backs_off_when_accept_errors() {
-        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let task = tokio::spawn(serve_limited(
-            Failing(calls.clone()),
-            Arc::new(Policy::new([])),
-            2,
-        ));
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        task.abort();
-        let n = calls.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            (2..=12).contains(&n),
-            "{n} accepts in 500ms at a 50ms backoff"
-        );
-    }
-
-    #[test]
-    fn refusals_are_logged_at_most_a_burst_per_window() {
-        let log = RefusalLog::new();
-        let admitted = (0..100).filter(|_| log.admit().is_some()).count();
-        assert_eq!(admitted, REFUSAL_LOG_BURST as usize);
-    }
-
-    #[tokio::test]
-    async fn a_host_off_the_list_gets_a_403_that_names_it_for_connect_and_for_http() {
-        let (_d, sock, task) = start(&["registry.npmjs.org"]);
-        let r = ask(
-            &sock,
-            "CONNECT evil.example:443 HTTP/1.1\r\nHost: evil.example:443\r\n\r\n",
-        )
-        .await;
-        assert!(r.starts_with("HTTP/1.1 403"), "{r}");
-        assert!(r.contains("evil.example:443"), "{r}");
-        assert!(
-            r.contains("registry.npmjs.org"),
-            "the refusal lists what is allowed: {r}"
-        );
-        let r = ask(
-            &sock,
-            "GET http://evil.example/x HTTP/1.1\r\nHost: evil.example\r\n\r\n",
-        )
-        .await;
-        assert!(r.starts_with("HTTP/1.1 403"), "{r}");
-        // An allowed host on a port the rule does not cover is refused too.
-        let r = ask(&sock, "CONNECT registry.npmjs.org:22 HTTP/1.1\r\n\r\n").await;
-        assert!(r.starts_with("HTTP/1.1 403"), "{r}");
-        task.abort();
-    }
-
-    #[tokio::test]
-    async fn the_policy_host_answers_with_the_rules_and_needs_no_network() {
-        let (_d, sock, task) = start(&["registry.npmjs.org", "*.crates.io"]);
-        let r = ask(
-            &sock,
-            &format!("GET http://{POLICY_HOST}/ HTTP/1.1\r\nHost: {POLICY_HOST}\r\n\r\n"),
-        )
-        .await;
-        assert!(r.starts_with("HTTP/1.1 200"), "{r}");
-        assert!(r.contains("forge-egress: ok"), "{r}");
-        assert!(r.contains("allow registry.npmjs.org"), "{r}");
-        assert!(r.contains("allow *.crates.io"), "{r}");
-        task.abort();
-    }
-
-    #[tokio::test]
-    async fn connect_to_an_allowed_host_tunnels_bytes_both_ways() {
-        let port = upstream(|got| format!("echo:{got}")).await;
-        let (_d, sock, task) = start(&[&format!("127.0.0.1:{port}")]);
-        let mut s = UnixStream::connect(&sock).await.unwrap();
-        s.write_all(format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\n\r\n").as_bytes())
-            .await
-            .unwrap();
-        let mut head = [0u8; 39];
-        s.read_exact(&mut head).await.unwrap();
-        assert!(String::from_utf8_lossy(&head).starts_with("HTTP/1.1 200 Connection Established"));
-        s.write_all(b"hello").await.unwrap();
-        let mut out = Vec::new();
-        tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut out))
-            .await
-            .unwrap()
-            .ok();
-        assert_eq!(String::from_utf8_lossy(&out), "echo:hello");
-        task.abort();
-    }
-
-    #[tokio::test]
-    async fn an_allowed_http_request_is_forwarded_origin_form_and_closed() {
-        let port = upstream(|got| {
-            format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{got}",
-                got.len()
-            )
-        })
-        .await;
-        let (_d, sock, task) = start(&[&format!("127.0.0.1:{port}")]);
-        let r = ask(
-            &sock,
-            &format!("GET http://127.0.0.1:{port}/a/b?c=1 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nProxy-Connection: keep-alive\r\nAccept: */*\r\n\r\n"),
-        )
-        .await;
-        assert!(r.starts_with("HTTP/1.1 200 OK"), "{r}");
-        assert!(
-            r.contains("GET /a/b?c=1 HTTP/1.1\r\n"),
-            "the target is origin-form: {r}"
-        );
-        assert!(r.contains("Accept: */*"), "{r}");
-        assert!(r.contains("Connection: close"), "{r}");
-        assert!(!r.contains("Proxy-Connection"), "{r}");
-        task.abort();
-    }
-
-    #[tokio::test]
-    async fn the_relay_pipes_loopback_to_the_proxy_socket() {
-        let (dir, sock, task) = start(&["registry.npmjs.org"]);
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap().to_string();
-        let ready = dir.path().join("ready");
-        let r = ready.clone();
-        let relay_task =
-            tokio::spawn(async move { relay_on(listener, &sock, Some(&r), None).await });
-        for _ in 0..100 {
-            if ready.exists() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert!(ready.exists(), "the relay signals it is listening");
-        let mut s = TcpStream::connect(&addr).await.unwrap();
-        s.write_all(format!("GET http://{POLICY_HOST}/ HTTP/1.1\r\n\r\n").as_bytes())
-            .await
-            .unwrap();
-        let mut out = Vec::new();
-        tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut out))
-            .await
-            .unwrap()
-            .ok();
-        assert!(String::from_utf8_lossy(&out).contains("allow registry.npmjs.org"));
-        relay_task.abort();
-        task.abort();
-    }
-
-    #[tokio::test]
-    async fn the_relay_records_each_refusal_beside_the_attempt() {
-        let (dir, sock, task) = start(&["registry.npmjs.org"]);
-        let clone = dir.path().join("clone");
-        std::fs::create_dir_all(clone.join(".git")).unwrap();
-        let record = refused_path(&clone).unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap().to_string();
-        let ready = dir.path().join("ready");
-        let (r, rec) = (ready.clone(), record.clone());
-        let relay_task =
-            tokio::spawn(async move { relay_on(listener, &sock, Some(&r), Some(&rec)).await });
-        for _ in 0..100 {
-            if ready.exists() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let requests = [
-            "CONNECT http-intake.logs.example.com:443 HTTP/1.1\r\n\r\n".to_string(),
-            "CONNECT http-intake.logs.example.com:443 HTTP/1.1\r\n\r\n".to_string(),
-            "GET http://evil.example/x HTTP/1.1\r\nHost: evil.example\r\n\r\n".to_string(),
-            // The policy host answers 200: not a refusal.
-            format!("GET http://{POLICY_HOST}/ HTTP/1.1\r\n\r\n"),
-        ];
-        for req in requests {
-            let mut s = TcpStream::connect(&addr).await.unwrap();
-            s.write_all(req.as_bytes()).await.unwrap();
-            let mut out = Vec::new();
-            tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut out))
-                .await
-                .unwrap()
-                .ok();
-            assert!(!out.is_empty(), "the answer still reaches the client");
-        }
-        let got: Vec<String> = read_refused(&clone).iter().map(|r| r.to_string()).collect();
-        assert_eq!(
-            got,
-            ["http-intake.logs.example.com:443 x2", "evil.example:80 x1"]
-        );
-        // Carried across a new `.git`, and forgotten at the next attempt.
-        let refused = read_refused(&clone);
-        clear_refused(&clone);
-        assert!(read_refused(&clone).is_empty());
-        restore_refused(&clone, &refused);
-        assert_eq!(read_refused(&clone), refused);
-        relay_task.abort();
-        task.abort();
-    }
-
-    #[test]
-    fn a_403_counts_as_a_refusal_only_when_the_proxy_names_the_host_asked_for() {
-        let ask = b"CONNECT a.example:443 HTTP/1.1\r\n\r\n";
-        assert_eq!(requested(ask), Some(("a.example".into(), 443)));
-        assert_eq!(
-            requested(b"GET http://b.example:8080/x HTTP/1.1\r\n\r\n"),
-            Some(("b.example".into(), 8080))
-        );
-        assert_eq!(requested(b""), None);
-        let refused = format!("HTTP/1.1 403 Forbidden\r\n{REFUSED_HEADER}: a.example:443\r\n\r\n");
-        assert_eq!(
-            refused_in(refused.as_bytes()),
-            Some(("a.example".into(), 443))
-        );
-        // An upstream server's own 403 carries no header.
-        assert_eq!(refused_in(b"HTTP/1.1 403 Forbidden\r\n\r\n"), None);
-        let ok = format!("HTTP/1.1 200 OK\r\n{REFUSED_HEADER}: a.example:443\r\n\r\n");
-        assert_eq!(refused_in(ok.as_bytes()), None);
-    }
-
-    #[test]
-    fn a_directory_that_is_not_a_clone_records_nothing() {
-        let d = tempfile::tempdir().unwrap();
-        assert!(refused_path(d.path()).is_none());
-        assert!(read_refused(d.path()).is_empty());
-    }
-
-    #[test]
-    fn only_public_addresses_pass_for_a_suffix_match() {
-        for private in [
-            "127.0.0.1",
-            "10.1.2.3",
-            "172.16.0.9",
-            "192.168.1.1",
-            "169.254.169.254",
-            "0.0.0.0",
-            "100.64.0.1",
-            "::1",
-            "fc00::1",
-            "fe80::1",
-            "::ffff:127.0.0.1",
-            "::ffff:10.0.0.1",
-        ] {
-            assert!(!is_public(private.parse().unwrap()), "{private}");
-        }
-        for public in ["1.1.1.1", "93.184.216.34", "2606:4700::1111"] {
-            assert!(is_public(public.parse().unwrap()), "{public}");
-        }
-    }
-
-    #[test]
-    fn a_url_becomes_the_rule_for_its_host_and_port() {
-        let r = |u: &str| rule_for_url(u).map(|r| r.to_string());
-        assert_eq!(
-            r("https://api.openai.com/v1"),
-            Some("api.openai.com".into())
-        );
-        assert_eq!(r("http://dev.home:11434/v1"), Some("dev.home:11434".into()));
-        assert_eq!(r("http://dev.home/v1"), Some("dev.home:80".into()));
-        assert_eq!(r("https://u:p@x.io:8443/a?b"), Some("x.io:8443".into()));
-        assert_eq!(r("file:///etc"), None);
-        assert_eq!(r("not a url"), None);
-    }
-
-    #[test]
-    fn the_model_endpoint_is_always_in_the_rules() {
-        let mut providers = BTreeMap::new();
-        providers.insert("anthropic".to_string(), crate::agent::Provider::default());
-        let rules: Vec<String> = model_rules(&providers)
-            .iter()
-            .map(|r| r.to_string())
-            .collect();
-        assert!(rules.iter().any(|r| r == "*.anthropic.com"), "{rules:?}");
-        let p = crate::agent::Provider {
-            name: "devhome".into(),
-            runner: crate::agent::Runner::CodexCli,
-            env: vec![("OLLAMA_HOST".into(), "http://dev.home:11434".into())],
-            ..crate::agent::Provider::default()
-        };
-        providers.insert("devhome".to_string(), p);
-        let rules: Vec<String> = model_rules(&providers)
-            .iter()
-            .map(|r| r.to_string())
-            .collect();
-        assert!(rules.iter().any(|r| r == "dev.home:11434"), "{rules:?}");
-    }
-
-    #[test]
-    fn a_jev_provider_opens_the_workers_ai_host() {
-        let mut providers = BTreeMap::new();
-        providers.insert(
-            "jev".to_string(),
-            crate::agent::Provider {
-                runner: crate::agent::Runner::Jev,
-                ..crate::agent::Provider::default()
-            },
-        );
-        let rules: Vec<String> = model_rules(&providers)
-            .iter()
-            .map(|r| r.to_string())
-            .collect();
-        assert!(rules.iter().any(|r| r == "api.cloudflare.com"), "{rules:?}");
-    }
-
-    #[test]
-    fn a_policy_is_the_same_whatever_order_its_rules_came_in() {
-        let a = Policy::new([rule("b.io"), rule("a.io"), rule("a.io")]);
-        let b = Policy::new([rule("a.io"), rule("b.io")]);
-        assert_eq!(a, b);
-        assert_eq!(a.rules().len(), 2);
-    }
+/// `sweep_dead` over `run_root()`.
+pub fn sweep_dead_in_run_root() -> usize {
+    sweep_dead(&run_root())
 }
+
+#[cfg(test)]
+mod tests;
