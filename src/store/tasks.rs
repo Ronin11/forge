@@ -205,6 +205,10 @@ pub struct Task {
     pub verify_base: String,
     /// The task this one re-queues, when it was made by `forge retry`.
     pub retry_of: Option<i64>,
+    /// The earlier failed or blocked task this one replaces, when made by
+    /// `forge add --supersedes` (see `store::supersede`); `None` for every
+    /// other way in.
+    pub supersedes: Option<i64>,
     /// Show the agents the journal of earlier attempts (the default);
     /// false for the control arm of a measurement.
     pub journal: bool,
@@ -521,8 +525,8 @@ pub(super) fn insert_task_row(conn: &Connection, t: &Task) -> Result<i64> {
     conn.retry_execute(
         "INSERT INTO tasks (repo, task, title, base_branch, model, provider, max_turns, max_attempts, timeout_secs, checks_json,
                             state, reason, question_to, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm, explore_json,
-                            project, initiative, shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json, trust, origin, adoption_json, priority, deploy_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42)",
+                            project, initiative, shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json, trust, origin, adoption_json, priority, deploy_id, supersedes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43)",
         params![
             t.repo,
             t.task,
@@ -566,6 +570,7 @@ pub(super) fn insert_task_row(conn: &Connection, t: &Task) -> Result<i64> {
             super::adoption::to_column(t.adoption.as_ref())?,
             t.priority,
             t.deploy_id,
+            t.supersedes,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -600,7 +605,7 @@ impl Store {
              concierge_json=?43, proposal_json=?44, proposal_answer=?45, proposal_initiative=?46,
              title=?47, landed_at=?48, hand_landed=?49, shape_text_len=?50, shape_path_tokens=?51,
              shape_tdd=?52, shape_declared_checks=?53, model_source=?54, workflow_source=?55,
-             routing_json=?56, session_id=?57, handoff=?58, deploy_id=?59 WHERE id=?1",
+             routing_json=?56, session_id=?57, handoff=?58, deploy_id=?59, supersedes=?60 WHERE id=?1",
             params![
                 t.id,
                 t.repo,
@@ -661,6 +666,7 @@ impl Store {
                 t.session_id,
                 t.handoff,
                 t.deploy_id,
+                t.supersedes,
             ],
         )?;
         Ok(())
