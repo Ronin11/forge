@@ -485,6 +485,7 @@ impl Sandbox {
         Sandbox {
             bwrap,
             config_dir: home.join(".claude"),
+            forge_home: home.join("forge-home"),
             codex_dir: home.join(".codex"),
             copilot_dir: home.join(".copilot"),
             claude_json_seed: home.join(".claude.json"),

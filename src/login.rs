@@ -245,13 +245,45 @@ fn unrotating_fields(text: &str) -> Option<Value> {
     Some(v)
 }
 
-/// A token as the CLI writes one: a single run of URL-safe characters.
-fn token_shaped(v: &Value) -> bool {
-    v.as_str().is_some_and(|s| {
-        (1..=4096).contains(&s.len())
-            && s.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-._~+/=".contains(&b))
-    })
+/// Which of the CLI's two OAuth tokens a string is checked against: they
+/// have distinct prefixes, so one can never pass as the other.
+#[derive(Clone, Copy)]
+enum TokenKind {
+    Access,
+    Refresh,
+}
+
+/// A token as the claude CLI writes one: `sk-ant-oat` (access) or
+/// `sk-ant-ort` (refresh), two digits, a `-`, then a body of at least 32
+/// `[A-Za-z0-9_-]` characters, at most 4096 bytes in all. No `=`, `+`, `/`,
+/// `.`, `~`, whitespace or escape is ever part of one.
+fn token_shaped(kind: TokenKind, v: &Value) -> bool {
+    let Some(s) = v.as_str() else {
+        return false;
+    };
+    if s.len() > 4096
+        || !s
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return false;
+    }
+    let prefix = match kind {
+        TokenKind::Access => "sk-ant-oat",
+        TokenKind::Refresh => "sk-ant-ort",
+    };
+    let Some(rest) = s.strip_prefix(prefix) else {
+        return false;
+    };
+    let digits = rest.as_bytes();
+    if digits.len() < 3
+        || !digits[0].is_ascii_digit()
+        || !digits[1].is_ascii_digit()
+        || digits[2] != b'-'
+    {
+        return false;
+    }
+    rest[3..].len() >= 32
 }
 
 impl Seed {
@@ -317,8 +349,8 @@ impl Seed {
             return false;
         };
         let o = &v["claudeAiOauth"];
-        token_shaped(&o["accessToken"])
-            && token_shaped(&o["refreshToken"])
+        token_shaped(TokenKind::Access, &o["accessToken"])
+            && token_shaped(TokenKind::Refresh, &o["refreshToken"])
             && sha256_hex(o["refreshToken"].as_str().unwrap_or_default()) != self.refresh_sha256
             && Creds::parse(text).expires_at_ms <= now_ms + MAX_LIFETIME_MS
             && unrotating_fields(text).is_some_and(|rest| rest == self.rest)
@@ -439,6 +471,17 @@ pub fn seed(dir: &Path, state: &Path, worktree: &Path, private: &Path) {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// An access token shaped as the CLI writes one, tagged so a test's
+    /// assertion can still find a distinguishing substring.
+    fn oat(tag: &str) -> String {
+        format!("sk-ant-oat01-{tag:x<32}")
+    }
+
+    /// A refresh token shaped as the CLI writes one, likewise tagged.
+    fn ort(tag: &str) -> String {
+        format!("sk-ant-ort01-{tag:x<32}")
+    }
 
     fn login(access: &str, refresh: &str, expires_at: i64) -> String {
         format!(
@@ -572,7 +615,7 @@ mod tests {
             login("old-a", "old-r", far())
         );
         let host = dir.join(FILE);
-        std::fs::write(&private, login("new-a", "new-r", far() + 1000)).unwrap();
+        std::fs::write(&private, login(&oat("new-a"), &ort("new-r"), far() + 1000)).unwrap();
         assert!(write_back(&dir, &state, &private).unwrap());
         assert!(std::fs::read_to_string(&host).unwrap().contains("new-r"));
         assert!(last_write_back(&dir).is_some());
@@ -589,7 +632,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let seed_text = login("a0", "r0", far());
         let (_root, dir, state, _wt, private) = seeded(&seed_text);
-        std::fs::write(&private, login("a1", "r1", far() + 1000)).unwrap();
+        std::fs::write(&private, login(&oat("a1"), &ort("r1"), far() + 1000)).unwrap();
         assert!(write_back(&dir, &state, &private).unwrap());
         let prev = dir.join(PREV);
         assert_eq!(std::fs::read_to_string(&prev).unwrap(), seed_text);
@@ -597,7 +640,7 @@ mod tests {
             std::fs::metadata(&prev).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        std::fs::write(&private, login("a2", "r2", far() + 2000)).unwrap();
+        std::fs::write(&private, login(&oat("a2"), &ort("r2"), far() + 2000)).unwrap();
         assert!(write_back(&dir, &state, &private).unwrap());
         assert!(
             std::fs::read_to_string(&prev).unwrap().contains("r1"),
@@ -641,7 +684,7 @@ mod tests {
         assert!(!took);
         assert_eq!(host, seed_text);
         let (took, _) = offered(&seed_text, |p| {
-            std::fs::write(p, login("a1", "r1", far() + 1000)).unwrap();
+            std::fs::write(p, login(&oat("a1"), &ort("r1"), far() + 1000)).unwrap();
         });
         assert!(took, "a pair within the day is taken");
     }
@@ -662,7 +705,7 @@ mod tests {
         let seed_text = login("a0", "r0", far());
         let (took, host) = offered(&seed_text, |p| {
             let good = p.with_file_name("elsewhere.json");
-            std::fs::write(&good, login("a1", "r1", far() + 1000)).unwrap();
+            std::fs::write(&good, login(&oat("a1"), &ort("r1"), far() + 1000)).unwrap();
             std::os::unix::fs::symlink(&good, p).unwrap();
         });
         assert!(!took);
@@ -671,9 +714,10 @@ mod tests {
 
     #[test]
     fn a_private_pair_with_changed_scopes_or_subscription_is_rejected() {
+        let access = oat("a1");
         let with = |scopes: &str, sub: &str, refresh: &str, at: i64| {
             format!(
-                r#"{{"claudeAiOauth":{{"accessToken":"a","refreshToken":"{refresh}","expiresAt":{at},"scopes":[{scopes}],"subscriptionType":"{sub}"}}}}"#
+                r#"{{"claudeAiOauth":{{"accessToken":"{access}","refreshToken":"{refresh}","expiresAt":{at},"scopes":[{scopes}],"subscriptionType":"{sub}"}}}}"#
             )
         };
         let seed_text = with(r#""user:inference""#, "pro", "r0", far());
@@ -681,7 +725,7 @@ mod tests {
             let widened = with(
                 r#""user:inference","user:admin""#,
                 "pro",
-                "r1",
+                &ort("r1"),
                 far() + 1000,
             );
             std::fs::write(p, widened).unwrap();
@@ -689,11 +733,19 @@ mod tests {
         assert!(!took, "changed scopes");
         assert_eq!(host, seed_text);
         let (took, _) = offered(&seed_text, |p| {
-            std::fs::write(p, with(r#""user:inference""#, "max", "r1", far() + 1000)).unwrap();
+            std::fs::write(
+                p,
+                with(r#""user:inference""#, "max", &ort("r1"), far() + 1000),
+            )
+            .unwrap();
         });
         assert!(!took, "changed subscriptionType");
         let (took, host) = offered(&seed_text, |p| {
-            std::fs::write(p, with(r#""user:inference""#, "pro", "r1", far() + 1000)).unwrap();
+            std::fs::write(
+                p,
+                with(r#""user:inference""#, "pro", &ort("r1"), far() + 1000),
+            )
+            .unwrap();
         });
         assert!(took, "the same fields with a rotated token are taken");
         assert!(host.contains("r1"));
@@ -702,9 +754,32 @@ mod tests {
     #[test]
     fn a_private_pair_with_tokens_the_cli_would_not_write_is_rejected() {
         let seed_text = login("a0", "r0", far());
-        for (access, refresh) in [("a 1", "r1"), ("a1", "r\\n1"), ("a1", ""), ("", "r1")] {
+        let short_body = "x".repeat(31);
+        let eq_body = format!("{}=", "x".repeat(31));
+        let slash_body = format!("{}/{}", "x".repeat(15), "x".repeat(16));
+        let cases: [(String, String); 12] = [
+            ("a 1".into(), ort("r1")),
+            (oat("a1"), "r\\n1".into()),
+            (oat("a1"), "".into()),
+            ("".into(), ort("r1")),
+            // The demonstrated defect: both tokens equal to '='.
+            ("=".into(), "=".into()),
+            // No prefix at all, whatever the body looks like.
+            ("x".repeat(32), ort("r1")),
+            // A refresh-shaped token where the access token belongs.
+            (ort("swap"), ort("r1")),
+            // An access-shaped token where the refresh token belongs.
+            (oat("a1"), oat("swap")),
+            // A prefixed token with too short a body.
+            (format!("sk-ant-oat01-{short_body}"), ort("r1")),
+            (oat("a1"), format!("sk-ant-ort01-{short_body}")),
+            // A body containing '=' or '/'.
+            (format!("sk-ant-oat01-{eq_body}"), ort("r1")),
+            (format!("sk-ant-oat01-{slash_body}"), ort("r1")),
+        ];
+        for (access, refresh) in cases {
             let (took, host) = offered(&seed_text, |p| {
-                std::fs::write(p, login(access, refresh, far() + 1000)).unwrap();
+                std::fs::write(p, login(&access, &refresh, far() + 1000)).unwrap();
             });
             assert!(!took, "{access:?} {refresh:?}");
             assert_eq!(host, seed_text);
@@ -802,7 +877,7 @@ mod tests {
         let other = root.path().join("work/other-provider/claude").join(FILE);
         std::fs::create_dir_all(other.parent().unwrap()).unwrap();
         seed(&dir, &state, &worktree, &other);
-        std::fs::write(&other, login("b", "live", far() + 5000)).unwrap();
+        std::fs::write(&other, login(&oat("b"), &ort("live"), far() + 5000)).unwrap();
         std::fs::remove_file(&private).unwrap();
         seed(&dir, &state, &worktree, &private);
         assert!(
