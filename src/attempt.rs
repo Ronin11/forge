@@ -47,6 +47,7 @@ use crate::audit::{Inputs, Outputs};
 use crate::ctx::Forge;
 use crate::engine::{Classify, Fault};
 use crate::landing::overlay_refs;
+use crate::verify::review::asked;
 use crate::prompts::{
     code_prompt, concierge_prompt, interview_prompt, plan_prompt, review_prompt, tests_prompt,
 };
@@ -241,9 +242,10 @@ pub async fn run_attempt(
         },
         Contract::Review => Spec {
             dir: PathBuf::from(&t.worktree),
-            prompt: review_prompt(t, cfg, step, outcome.as_deref()),
+            prompt: review_prompt(t, cfg, step, outcome.as_deref(), asked(feedback)),
             // A review is told nothing of earlier attempts: it judges the
-            // branch as it stands. Feedback owed to it is recorded, not shown.
+            // branch as it stands. Feedback owed to it is recorded, not
+            // shown, but for the one ask to inline a reproduction.
             inputs: Inputs {
                 journal: None,
                 context: None,

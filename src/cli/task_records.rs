@@ -306,6 +306,24 @@ fn failed_suffix(failures: &[crate::store::FailedAttempt]) -> String {
     format!(" (failed: {})", names.join(", "))
 }
 
+/// An attempt's question, and for a review demotion its reproduction
+/// block in full: the question, its context, and every review note
+/// attached to it, verbatim (`Envelope::demotion_text`).
+fn print_question(e: &crate::envelope::Envelope) {
+    let Some(q) = &e.needs_input else { return };
+    out!("    QUESTION {}", q.question);
+    if q.kind != crate::envelope::Kind::Review {
+        return;
+    }
+    if !q.context.trim().is_empty() {
+        out!("    context  {}", q.context);
+    }
+    out!("    reproduction:");
+    for line in e.demotion_text().unwrap_or_default().lines() {
+        out!("      {line}");
+    }
+}
+
 pub(super) fn show(id: i64, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let Some(t) = f.store.task(id)? else {
@@ -620,9 +638,7 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
             for c in &e.claims {
                 out!("    claim   {} [{}]", c.claim, c.evidence);
             }
-            if let Some(q) = &e.needs_input {
-                out!("    QUESTION {}", q.question);
-            }
+            print_question(&e);
         }
         if a.rate_limits.five_hour.is_some() || a.rate_limits.seven_day.is_some() {
             out!(
