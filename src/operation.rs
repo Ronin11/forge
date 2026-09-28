@@ -222,6 +222,7 @@ pub(crate) async fn run_operation(
             env: &env,
             cap_bytes: checks::FULL_OUTPUT_BYTES,
             full_log_dir: None,
+            egress: None,
         })
         .await
     } else {
@@ -413,6 +414,7 @@ pub(crate) async fn run_job_operation(
     cwd: &Path,
     env: &[(String, String)],
     timeout: Duration,
+    egress: &crate::egress::Policy,
 ) -> anyhow::Result<checks::CheckResult> {
     let argv: Vec<String> = match (&action.run, &action.check) {
         (Some(run), _) => run.clone(),
@@ -426,7 +428,7 @@ pub(crate) async fn run_job_operation(
             anyhow::bail!("job step {:?} has neither run nor check", action.name)
         }
     };
-    Ok(checks::run_one("OP", &action.name, &argv, cwd, None, timeout, env).await)
+    Ok(checks::run_one_under("OP", &action.name, &argv, cwd, timeout, env, egress).await)
 }
 
 /// An operation resolved from the operator's catalog with its run command

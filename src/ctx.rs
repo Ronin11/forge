@@ -164,6 +164,9 @@ pub struct Forge {
     pub roles: std::collections::BTreeMap<String, String>,
     /// A project's secrets, by project name (see `config::load_home`).
     pub project_secrets: BTreeMap<String, BTreeMap<String, String>>,
+    /// `[secrets]`: name to the worker's environment variable (see
+    /// `crate::secrets`).
+    pub secrets: BTreeMap<String, String>,
     /// `[environment]`: what a failed attempt's environment need may be
     /// granted automatically (see `environment`).
     pub environment: crate::environment::Policy,
@@ -223,6 +226,7 @@ impl Forge {
             providers: home.providers,
             roles: home.roles,
             project_secrets: home.project_secrets,
+            secrets: home.secrets,
             environment: home.environment,
             plugin_dirs: home.plugin_dirs,
             sandbox,
@@ -261,6 +265,7 @@ impl Forge {
             providers: home.providers,
             roles: home.roles,
             project_secrets: home.project_secrets,
+            secrets: home.secrets,
             environment: home.environment,
             plugin_dirs: home.plugin_dirs,
             sandbox: None,

@@ -365,6 +365,19 @@ pub fn command_in(
     argv: &[String],
     extra_env: &[(String, String)],
 ) -> std::process::Command {
+    command_under(sandbox, worktree, argv, extra_env, None)
+}
+
+/// As `command_in`, with the egress policy of this command alone when the
+/// caller has one; unsandboxed it is handed to the host executor, which
+/// cannot bound a network, and a sandboxed command keeps its worktree's.
+pub fn command_under(
+    sandbox: Option<&Execution>,
+    worktree: &Path,
+    argv: &[String],
+    extra_env: &[(String, String)],
+    egress: Option<&crate::egress::Policy>,
+) -> std::process::Command {
     let env = env_with(extra_env);
     match sandbox {
         Some(sb) => sb.command(worktree, argv, &env),
@@ -373,7 +386,7 @@ pub fn command_in(
             worktree,
             argv,
             &env,
-            &crate::egress::Policy::new([]),
+            &egress.cloned().unwrap_or_default(),
         ),
     }
 }

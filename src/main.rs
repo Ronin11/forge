@@ -52,6 +52,7 @@ mod reload;
 mod render;
 mod report;
 mod sandbox;
+mod secrets;
 mod store;
 mod successor;
 mod supervisor;

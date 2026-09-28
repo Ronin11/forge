@@ -111,6 +111,7 @@ mod failure;
 mod fixture;
 mod flow;
 mod input;
+mod operation_step;
 mod recovery;
 #[cfg(test)]
 mod recovery_tests;
@@ -121,9 +122,9 @@ pub use fixture::{bench, require_fixture_pass, test};
 
 use crate::ctx::Forge;
 use crate::report::Event;
-use crate::store::{Job, JobEffect, JobState, JobStep, Message, Owner};
+use crate::store::{Job, JobEffect, JobState, JobStep, Message, Owner, Trust};
 use crate::workflows::{self, Kind};
-use crate::{checks, config, git, operation, unix_now};
+use crate::{checks, config, git, unix_now};
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -244,6 +245,21 @@ fn step_env(args: StepEnv<'_>) -> Vec<(String, String)> {
         env.push((k.clone(), v.clone()));
     }
     env
+}
+
+/// The verdict row of a run whose spend passed its `[limits] budget` at
+/// `action`, which is a question for the operator rather than a failure.
+fn over_budget(action: &str, total_cost: f64, budget_usd: f64) -> checks::CheckResult {
+    checks::CheckResult {
+        level: "L0".to_string(),
+        name: "budget".to_string(),
+        ok: false,
+        tail: format!(
+            "step {action} brought the run to ${total_cost:.4}, over the ${budget_usd:.2} \
+             per-run budget; asking the operator"
+        ),
+        ..Default::default()
+    }
 }
 
 /// Lines an effect log holds right now; a fresh log (or one not yet
@@ -695,6 +711,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
     std::fs::write(&effect_log, "")?;
 
     let secrets = f.project_secrets.get(project).cloned().unwrap_or_default();
+    let trust = f.store.job_trust(job_id)?.unwrap_or(Trust::Operator);
     let timeout = Duration::from_secs(check_timeout_secs);
     let input_bytes = limits.map_or(workflows::default_input_bytes(), |l| l.input_bytes);
 
@@ -822,7 +839,6 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
         'step: {
             match action.kind {
                 Kind::Operation => {
-                    let before = log_lines(&effect_log).len();
                     let env = step_env(StepEnv {
                         job_id,
                         step_name: &action.name,
@@ -837,69 +853,34 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
                         secrets: &secrets,
                         dry_run,
                     });
-                    let started_at = unix_now();
-                    let r = match operation::run_job_operation(
-                        action,
-                        &repo_checks,
-                        &scratch,
-                        &env,
-                        timeout,
-                    )
-                    .await
-                    {
-                        Ok(r) => r,
-                        Err(e) => {
-                            failed = true;
-                            verdict.push(checks::CheckResult {
-                                level: "OP".to_string(),
-                                name: action.name.clone(),
-                                ok: false,
-                                tail: format!("{e:#}"),
-                                ..Default::default()
-                            });
-                            break 'step;
-                        }
-                    };
-                    let (tail, output_ref) = record_output(&idir, &seq.to_string(), &r);
-                    f.store.append_job_step(&JobStep {
-                        run: 0,
-                        id: 0,
+                    let ran = operation_step::run(operation_step::OperationStep {
+                        f,
                         job_id,
                         seq,
-                        action: action.name.clone(),
-                        kind: "operation".to_string(),
-                        provider: String::new(),
-                        model: String::new(),
-                        cost_usd: Some(0.0),
-                        started_at,
-                        finished_at: Some(unix_now()),
-                        exit_code: r.exit,
-                        output_ref,
-                        tail: tail.clone(),
-                        outcome: String::new(),
-                        probabilities: String::new(),
-                        node: step.node.clone(),
-                    })?;
-                    for line in log_lines(&effect_log).into_iter().skip(before) {
-                        let mut parts = line.splitn(3, '\t');
-                        let (Some(kind), Some(target), Some(summary)) =
-                            (parts.next(), parts.next(), parts.next())
-                        else {
-                            continue;
-                        };
-                        f.store.append_job_effect(&JobEffect {
-                            id: 0,
-                            job_id,
-                            seq,
-                            kind: kind.to_string(),
-                            target: target.to_string(),
-                            summary: summary.to_string(),
-                            dry_run,
-                        })?;
+                        step,
+                        trust,
+                        env,
+                        repo_checks: &repo_checks,
+                        scratch: &scratch,
+                        idir: &idir,
+                        effect_log: &effect_log,
+                        timeout,
+                        dry_run,
+                    })
+                    .await?;
+                    total_cost += ran.charged;
+                    verdict.extend(ran.verdict);
+                    if ran.charged > 0.0
+                        && let Some(l) = limits
+                        && total_cost > l.budget_usd
+                    {
+                        needs_human = true;
+                        ok = false;
+                        verdict.push(over_budget(&action.name, total_cost, l.budget_usd));
+                        break 'steps;
                     }
-                    if !r.ok {
+                    if !ran.ok {
                         failed = true;
-                        verdict.push(checks::CheckResult { tail, ..r });
                         break 'step;
                     }
                     // `produces = ["interface"]` (`ActionDef::yields_interface`)
@@ -911,7 +892,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
                     // printed — a catalog dump, say — as "the output of step
                     // ...".
                     if action.yields_interface() {
-                        step_outputs.push((action.name.clone(), r.stdout.trim().to_string()));
+                        step_outputs.push((action.name.clone(), ran.stdout.trim().to_string()));
                     }
                 }
                 Kind::Directive => {
@@ -984,17 +965,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
                     {
                         needs_human = true;
                         ok = false;
-                        verdict.push(checks::CheckResult {
-                            level: "L0".to_string(),
-                            name: "budget".to_string(),
-                            ok: false,
-                            tail: format!(
-                                "step {} brought the run to ${total_cost:.4}, over the ${:.2} \
-                             per-run budget; asking the operator",
-                                action.name, l.budget_usd
-                            ),
-                            ..Default::default()
-                        });
+                        verdict.push(over_budget(&action.name, total_cost, l.budget_usd));
                         break 'steps;
                     }
                     if let Some(p) = &d.output_ref {
