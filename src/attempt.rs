@@ -41,7 +41,7 @@ struct AttemptLaunch<'a> {
     prompt: &'a str,
     log_path: &'a Path,
     resume: Option<&'a str>,
-    writes: bool,
+    contract: Contract,
     start_sha: &'a str,
     provider: &'a agent::Provider,
     /// How long the checks after the attempt may take (`check_timeout_secs`).
@@ -304,7 +304,7 @@ pub async fn run_attempt(
         resume: resume
             .filter(|r| r.fresh_from.is_none())
             .map(|r| r.session.as_str()),
-        writes: contract.writes(),
+        contract,
         start_sha: &a.start_sha,
         provider,
         check_timeout: Duration::from_secs(cfg.check_timeout_secs),
@@ -581,7 +581,7 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
         prompt,
         log_path,
         resume,
-        writes,
+        contract,
         start_sha,
         provider,
         check_timeout,
@@ -593,6 +593,10 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
         provider,
         model_pinned(&t.model_source),
     );
+    let mut provider = provider.clone();
+    provider
+        .env
+        .push(("FORGE_CONTRACT".into(), contract.as_str().into()));
     let run = crate::directive::launch(
         f,
         crate::directive::Spec {
@@ -606,10 +610,10 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
             timeout: Duration::from_secs(t.timeout_secs as u64),
             check_timeout,
             log_path,
-            provider,
+            provider: &provider,
             schema: crate::envelope::SCHEMA,
             sandboxed: true,
-            writes,
+            writes: contract.writes(),
             start_sha,
             resume,
             no_tools: false,
