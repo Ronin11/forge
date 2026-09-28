@@ -39,6 +39,18 @@ const SUCCESSOR_OF: &str = "FORGE_SUCCESSOR_OF";
 /// the old worker waits for its successor's pid here before it exits.
 pub const CAPABILITY: &str = "successor-capable";
 
+/// `FORGE_HOME/bin/<STARTED>`: `<pid> <release>` of the successor this home's
+/// worker last started. The old worker exits 0 once the successor names
+/// itself in the capability file, and cannot watch it after that, so the
+/// record outlives it: a worker restarted on `current` finds the successor
+/// dead with `current` never flipped and marks the release failed.
+const STARTED: &str = "successor-started";
+
+/// `FORGE_HOME/bin/<FAILED>`: `<release> <unix seconds>` of a staged release
+/// whose successor died. `staged` naming it is not started again until a
+/// deploy stages a release anew.
+pub const FAILED: &str = "staged-failed";
+
 /// The unit a worker runs under when systemd does not say otherwise.
 pub const WORKER_UNIT: &str = "forge-worker";
 
@@ -76,6 +88,8 @@ impl Succession {
             if let Ok(parent) = std::env::var(SUCCESSOR_OF) {
                 eprintln!("successor of worker {parent}: release {version} claims from here");
                 take_over(f, &root, &version);
+            } else {
+                settle_started(&root, &version);
             }
             notify(&format!("MAINPID={pid}\nREADY=1"));
             write_capability(&root, pid);
@@ -113,10 +127,20 @@ impl Succession {
             && let Ok(Some(status)) = child.try_wait()
         {
             eprintln!("successor {} exited ({status})", child.id());
+            let root = release::root(&f.paths.home);
+            if release::pointed_at(&root, "current").as_deref() != Some(id.as_str()) {
+                mark_failed(&root, id);
+            }
             self.failed.insert(std::mem::take(id));
             self.child = None;
         }
         let live = f.store.live_workers(pid_alive)?;
+        // After `live` is read: a successor that died since is seen dead here,
+        // and one that dies after is still in `live`, so it is not started
+        // again on this tick and is settled on a later one.
+        if self.child.is_none() {
+            settle_started(&release::root(&f.paths.home), &self.version);
+        }
         let newer: Vec<_> = live
             .iter()
             .filter(|w| w.id > self.id && w.version != self.version)
@@ -130,6 +154,7 @@ impl Succession {
         if let Some(next) = self.staged_successor(&f.paths, &live) {
             match self.spawn(&f.paths, &next) {
                 Ok(child) => {
+                    write_started(&release::root(&f.paths.home), i64::from(child.id()), &next);
                     f.store.register_worker(i64::from(child.id()), &next)?;
                     eprintln!(
                         "release {next} staged: successor pid {} started; this worker drains",
@@ -140,6 +165,7 @@ impl Succession {
                 }
                 Err(e) => {
                     eprintln!("release {next} staged but its worker did not start: {e:#}");
+                    mark_failed(&release::root(&f.paths.home), &next);
                     self.failed.insert(next);
                 }
             }
@@ -156,6 +182,7 @@ impl Succession {
         (staged != self.version
             && runnable
             && !self.failed.contains(&staged)
+            && failed_release(&root).as_deref() != Some(staged.as_str())
             && !live.iter().any(|w| w.version == staged))
         .then_some(staged)
     }
@@ -216,6 +243,9 @@ impl Succession {
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
             if read_capability(&root) != Some(want) {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    mark_failed(&root, id);
+                }
                 result = Err(match child.try_wait() {
                     Ok(Some(status)) => anyhow::anyhow!(
                         "successor pid {want} for release {id} exited ({status}) without taking the unit over"
@@ -241,6 +271,65 @@ pub fn capable(home: &std::path::Path, store: &crate::store::Store) -> bool {
         .live_workers(pid_alive)
         .is_ok_and(|live| !live.is_empty())
         || read_capability(&release::root(home)).is_some_and(pid_alive)
+}
+
+/// The release recorded in `staged-failed`, if any.
+fn failed_release(root: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(root.join(FAILED)).ok()?;
+    text.split_whitespace().next().map(str::to_string)
+}
+
+/// Write `name` under `root` through a temporary file renamed into place.
+fn write_record(root: &std::path::Path, name: &str, text: &str) {
+    let tmp = root.join(format!(".{name}.{}", std::process::id()));
+    let written = std::fs::create_dir_all(root)
+        .and_then(|()| std::fs::write(&tmp, text))
+        .and_then(|()| std::fs::rename(&tmp, root.join(name)));
+    if let Err(e) = written {
+        eprintln!("could not write {}: {e}", root.join(name).display());
+    }
+}
+
+fn write_started(root: &std::path::Path, pid: i64, release: &str) {
+    write_record(root, STARTED, &format!("{pid} {release}\n"));
+}
+
+fn read_started(root: &std::path::Path) -> Option<(i64, String)> {
+    let text = std::fs::read_to_string(root.join(STARTED)).ok()?;
+    let mut words = text.split_whitespace();
+    Some((words.next()?.parse().ok()?, words.next()?.to_string()))
+}
+
+/// Record `release` as one whose successor died, and retire `staged` when
+/// it still names it, so no worker starts it again.
+fn mark_failed(root: &std::path::Path, release: &str) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    write_record(root, FAILED, &format!("{release} {now}\n"));
+    if release::pointed_at(root, "staged").as_deref() == Some(release) {
+        let _ = std::fs::remove_file(root.join("staged"));
+    }
+    eprintln!("release {release} failed as a successor: not started again (bin/{FAILED})");
+}
+
+/// What became of the successor the last worker started: gone, with
+/// `current` never moved to its release, it failed after taking over (or
+/// before) and this restarted worker records it; one that flipped `current`
+/// or is this release needs no record any more. Checked at join and on every
+/// tick of `superseded`, so a successor that dies while this worker runs is
+/// settled too.
+fn settle_started(root: &std::path::Path, version: &str) {
+    let Some((pid, release)) = read_started(root) else {
+        return;
+    };
+    if pid_alive(pid) && release != version {
+        return;
+    }
+    if release != version && release::pointed_at(root, "current").as_deref() != Some(&release) {
+        mark_failed(root, &release);
+    }
+    let _ = std::fs::remove_file(root.join(STARTED));
 }
 
 fn read_capability(root: &std::path::Path) -> Option<i64> {
