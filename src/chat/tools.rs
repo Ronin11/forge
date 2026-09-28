@@ -129,7 +129,7 @@ pub fn redactor(f: &Forge) -> Redactor {
     for p in f.providers.values() {
         secrets.extend(p.env.iter().map(|(_, v)| v.clone()));
         secrets.extend(
-            [&p.api_key_env, &p.account_id_env]
+            [&p.api_key_env, &p.account_id_env, &p.cloudflare_key_env]
                 .into_iter()
                 .flatten()
                 .filter_map(|var| std::env::var(var).ok()),

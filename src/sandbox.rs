@@ -507,10 +507,11 @@ impl Sandbox {
     /// beside `worktree`, for a caller that holds the login's lock (see
     /// `login::lock`).
     pub fn write_back_siblings_locked(&self, worktree: &Path) {
-        let claude = &crate::login::CLAUDE;
-        for copy in claude.private_copies(worktree) {
-            let _ = claude.write_back_locked(&self.config_dir, &self.forge_home, &copy);
-        }
+        crate::login::CLAUDE.write_back_private_copies_locked(
+            &self.config_dir,
+            &self.forge_home,
+            worktree,
+        );
     }
 
     fn cache_dir_for(&self, worktree: &Path) -> Option<PathBuf> {

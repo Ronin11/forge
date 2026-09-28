@@ -1,5 +1,7 @@
-//! `Runner::Jev`: TypeSafe's Jev through Cloudflare Workers AI, typed
-//! judgment in one HTTP call (docs/EXECUTION.md, "The judgment tier").
+//! `Runner::Jev`: TypeSafe's Jev, typed judgment in one HTTP call
+//! (docs/EXECUTION.md, "The judgment tier"). Two hosts serve it until
+//! Cloudflare's AI Gateway credits are spent: Cloudflare Workers AI first,
+//! then TypeSafe directly for good (see `JevBackend`).
 
 use super::{Launch, Outcome, truncated_first_line};
 use anyhow::{Context, Result};
@@ -18,19 +20,137 @@ pub struct Judgment<'a> {
     pub state: &'a str,
 }
 
+/// TypeSafe's own endpoint, the default `base_url` of a jev provider.
+pub const JEV_DEFAULT_URL: &str = "https://api.typesafe.ai/v1/systemone";
+pub const JEV_DEFAULT_MODEL: &str = "jev-latest";
+pub const JEV_DEFAULT_KEY_ENV: &str = "TYPESAFE_API_KEY";
 /// Cloudflare Workers AI's run endpoint; `{account_id}` is the value of the
-/// provider's `account_id_env`.
-pub const JEV_DEFAULT_URL: &str =
+/// provider's `account_id_env`. Used until the gateway's credits run out
+/// (see `Backend`), then deleted.
+pub const JEV_CLOUDFLARE_URL: &str =
     "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run";
-pub const JEV_DEFAULT_MODEL: &str = "typesafe/jev";
-pub const JEV_DEFAULT_KEY_ENV: &str = "CLOUDFLARE_API_TOKEN";
+pub const JEV_CLOUDFLARE_MODEL: &str = "typesafe/jev";
+pub const JEV_CLOUDFLARE_KEY_ENV: &str = "CLOUDFLARE_API_TOKEN";
 pub const JEV_DEFAULT_ACCOUNT_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
 /// List price of Jev's input tokens; its output is free.
 pub const JEV_PRICE_INPUT_PER_MILLION: f64 = 0.042;
+/// The marker a process writes when Cloudflare's AI Gateway answers 402
+/// (its "Insufficient balance"), beside the worker's credentials drop-in:
+/// every later process then goes straight to TypeSafe.
+pub const JEV_EXHAUSTED_MARKER: &str = "jev-cloudflare-exhausted";
+/// How many times a 429 or 529 is retried inside one judgment call.
+const RETRIES: u32 = 3;
 
-/// Jev's request for `action` over `state`: the outcomes as one `choice`
-/// question named `outcome` whose criteria are their descriptions, then the
-/// action's own `[[questions]]`.
+/// Which of Jev's two hosts a jev provider posts to (`backend` in its
+/// `[providers.<name>]`): `auto` (the default) is Cloudflare while its
+/// credits last and its token is set, then TypeSafe for good; the other two
+/// force one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum JevBackend {
+    #[default]
+    Auto,
+    Cloudflare,
+    TypeSafe,
+}
+
+impl JevBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JevBackend::Auto => "auto",
+            JevBackend::Cloudflare => "cloudflare",
+            JevBackend::TypeSafe => "typesafe",
+        }
+    }
+}
+
+impl std::str::FromStr for JevBackend {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "auto" => Ok(JevBackend::Auto),
+            "cloudflare" => Ok(JevBackend::Cloudflare),
+            "typesafe" => Ok(JevBackend::TypeSafe),
+            other => Err(format!(
+                "unknown jev backend {other:?}; expected \"auto\", \"cloudflare\" or \"typesafe\""
+            )),
+        }
+    }
+}
+
+/// Set once this process has seen Cloudflare's 402: TypeSafe from then on.
+static CLOUDFLARE_EXHAUSTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The directory of the worker's systemd drop-ins, where the operator keeps
+/// the credentials drop-in (`$XDG_CONFIG_HOME`, else `~/.config`, then
+/// `systemd/user/forge-worker.service.d`); the exhaustion marker lives there.
+pub fn dropin_dir() -> Option<std::path::PathBuf> {
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
+        })?;
+    Some(config.join("systemd/user/forge-worker.service.d"))
+}
+
+/// Where the exhaustion marker is, when there is a home to put it in.
+pub fn exhausted_marker() -> Option<std::path::PathBuf> {
+    dropin_dir().map(|d| d.join(JEV_EXHAUSTED_MARKER))
+}
+
+/// Whether Cloudflare's credits are known spent: this process saw its 402,
+/// or an earlier one left the marker.
+pub fn cloudflare_exhausted() -> bool {
+    CLOUDFLARE_EXHAUSTED.load(std::sync::atomic::Ordering::SeqCst)
+        || exhausted_marker().is_some_and(|m| m.exists())
+}
+
+/// Cloudflare answered 402: switch this process to TypeSafe for the rest of
+/// its life, say so once, and leave the dated marker for later processes.
+fn switch_to_typesafe(provider: &super::Provider) {
+    if CLOUDFLARE_EXHAUSTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let day = crate::doctor::ymd(crate::unix_now());
+    let written = exhausted_marker().map(|m| {
+        m.parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&m, format!("{day}\n")))
+            .map(|()| m)
+    });
+    let note = match written {
+        Some(Ok(m)) => format!("marked in {}", m.display()),
+        Some(Err(e)) => format!("could not write the marker: {e}"),
+        None => "no home for the marker".into(),
+    };
+    eprintln!(
+        "jev: provider {:?}: Cloudflare answered 402 (insufficient balance); switching to TypeSafe for good ({note})",
+        provider.name
+    );
+}
+
+/// The host a call through `provider` goes to now.
+pub fn backend_for(provider: &super::Provider) -> JevBackend {
+    match provider.jev_backend {
+        JevBackend::Auto => {
+            let key = provider
+                .cloudflare_key_env
+                .as_deref()
+                .unwrap_or(JEV_CLOUDFLARE_KEY_ENV);
+            if cloudflare_exhausted() || std::env::var_os(key).is_none() {
+                JevBackend::TypeSafe
+            } else {
+                JevBackend::Cloudflare
+            }
+        }
+        forced => forced,
+    }
+}
+
+/// Jev's request for `action` over `state`, in TypeSafe's shape: the
+/// outcomes as one `choice` question named `outcome` whose criteria are
+/// their descriptions, then the action's own `[[questions]]`.
 pub fn request(model: &str, action: &crate::workflows::ActionDef, state: &str) -> Value {
     let mut instructions = action.description.clone();
     if let Some(extra) = &action.prompt {
@@ -59,7 +179,15 @@ pub fn request(model: &str, action: &crate::workflows::ActionDef, state: &str) -
         }
         questions.insert(q.name.clone(), v);
     }
-    serde_json::json!({"model": model, "input": {"state": state, "questions": questions}})
+    serde_json::json!({"model": model, "state": state, "questions": questions})
+}
+
+/// A TypeSafe-shaped request as Cloudflare Workers AI takes it: state and
+/// questions under `input`, the model Cloudflare names it by.
+pub fn cloudflare_request(model: &str, body: &Value) -> Value {
+    serde_json::json!({"model": model, "input": {
+        "state": body["state"], "questions": body["questions"],
+    }})
 }
 
 /// One of Jev's typed answers read into a label, a confidence and the
@@ -172,36 +300,69 @@ pub fn probabilities(runner: super::Runner, envelope: &Value) -> String {
     }
 }
 
-/// The URL and bearer token a `jev` provider posts with, from the
-/// environment variables it names.
-pub fn endpoint(provider: &super::Provider) -> Result<(String, String)> {
+/// Where one call through a `jev` provider goes: its host, the URL, the
+/// bearer token and the model that host names Jev by.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Endpoint {
+    pub backend: JevBackend,
+    pub url: String,
+    pub key: String,
+    pub model: String,
+}
+
+/// The endpoint `provider` posts to on `backend` (never `Auto`; see
+/// `backend_for`), from the environment variables it names.
+pub fn endpoint(provider: &super::Provider, backend: JevBackend) -> Result<Endpoint> {
     let name = &provider.name;
-    let mut url = provider
-        .base_url
-        .clone()
-        .unwrap_or_else(|| JEV_DEFAULT_URL.to_string());
-    if url.contains("{account_id}") {
-        let var = provider
-            .account_id_env
-            .as_deref()
-            .unwrap_or(JEV_DEFAULT_ACCOUNT_ENV);
-        let id = std::env::var(var).map_err(|_| {
+    let var = |var: &str, what: &str| {
+        std::env::var(var).map_err(|_| {
             anyhow::anyhow!(
-                "provider {name:?}: ${var} is not set (account_id_env names the environment variable that holds the Cloudflare account id)"
+                "provider {name:?}: ${var} is not set ({what} names the environment variable that holds it, never the value itself)"
             )
-        })?;
-        url = url.replace("{account_id}", &id);
+        })
+    };
+    if backend == JevBackend::Cloudflare {
+        let mut url = provider
+            .cloudflare_url
+            .clone()
+            .unwrap_or_else(|| JEV_CLOUDFLARE_URL.to_string());
+        if url.contains("{account_id}") {
+            let id_var = provider
+                .account_id_env
+                .as_deref()
+                .unwrap_or(JEV_DEFAULT_ACCOUNT_ENV);
+            url = url.replace("{account_id}", &var(id_var, "account_id_env")?);
+        }
+        let key_var = provider
+            .cloudflare_key_env
+            .as_deref()
+            .unwrap_or(JEV_CLOUDFLARE_KEY_ENV);
+        return Ok(Endpoint {
+            backend,
+            url,
+            key: var(key_var, "cloudflare_api_key_env")?,
+            model: provider
+                .cloudflare_model
+                .clone()
+                .unwrap_or_else(|| JEV_CLOUDFLARE_MODEL.to_string()),
+        });
     }
     let key_var = provider
         .api_key_env
         .as_deref()
         .unwrap_or(JEV_DEFAULT_KEY_ENV);
-    let key = std::env::var(key_var).map_err(|_| {
-        anyhow::anyhow!(
-            "provider {name:?}: ${key_var} is not set (api_key_env names the environment variable that holds the key, never the key itself)"
-        )
-    })?;
-    Ok((url, key))
+    Ok(Endpoint {
+        backend: JevBackend::TypeSafe,
+        url: provider
+            .base_url
+            .clone()
+            .unwrap_or_else(|| JEV_DEFAULT_URL.to_string()),
+        key: var(key_var, "api_key_env")?,
+        model: provider
+            .model
+            .clone()
+            .unwrap_or_else(|| JEV_DEFAULT_MODEL.to_string()),
+    })
 }
 
 /// What a call's usage cost at the provider's prices, when it reported any.
@@ -216,6 +377,108 @@ pub fn usage_cost(
     })
 }
 
+/// Why a call came back without an answer: the provider refusing it (429
+/// or 529 past every retry), which holds the provider like a spent window
+/// and is not the step's fault, or anything else.
+#[derive(Debug)]
+pub enum CallError {
+    Refused(String),
+    Failed(anyhow::Error),
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CallError::Refused(why) => f.write_str(why),
+            CallError::Failed(e) => write!(f, "{e:#}"),
+        }
+    }
+}
+
+/// The backoff before retry `n` (0-based) of a 429 or 529: one second
+/// doubling, `FORGE_JEV_BACKOFF_MS` overriding the second.
+fn backoff(n: u32) -> Duration {
+    let base = crate::config::env("JEV_BACKOFF_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000u64);
+    Duration::from_millis(base.saturating_mul(1 << n))
+}
+
+/// One judgment call through `provider`: `body` (TypeSafe's shape) to the
+/// host `backend_for` picks, `model` overriding TypeSafe's. A 429 or 529 is
+/// retried with exponential backoff up to `RETRIES` times, then refused; a
+/// 402 from Cloudflare under `auto` switches the process to TypeSafe and
+/// asks there. `sink` sees each request as sent and each response. The
+/// answer is the object holding `answers` and `usage`: TypeSafe's top
+/// level, Cloudflare's `result.result`.
+pub async fn call(
+    provider: &super::Provider,
+    body: &Value,
+    model: Option<&str>,
+    timeout: Duration,
+    sink: &mut (dyn FnMut(&str, &Value) + Send),
+) -> std::result::Result<Value, CallError> {
+    let client = reqwest::Client::new();
+    let mut backend = backend_for(provider);
+    'hosts: loop {
+        let mut ep = endpoint(provider, backend).map_err(CallError::Failed)?;
+        let sent = if backend == JevBackend::Cloudflare {
+            cloudflare_request(&ep.model, body)
+        } else {
+            if let Some(m) = model.filter(|m| !m.is_empty()) {
+                ep.model = m.to_string();
+            }
+            let mut b = body.clone();
+            b["model"] = ep.model.clone().into();
+            b
+        };
+        sink(
+            "forge_jev_request",
+            &serde_json::json!({"backend": backend.as_str(), "body": sent}),
+        );
+        let mut tries = 0;
+        let response = loop {
+            match post_json(&client, &ep.url, &ep.key, &sent, timeout).await {
+                Ok(v) => break v,
+                Err(PostError::Status(429 | 529, _)) if tries < RETRIES => {
+                    tokio::time::sleep(backoff(tries)).await;
+                    tries += 1;
+                }
+                Err(PostError::Status(code @ (429 | 529), text)) => {
+                    return Err(CallError::Refused(format!(
+                        "jev endpoint ({}) refused the call with {code} after {RETRIES} retries: {text}",
+                        backend.as_str()
+                    )));
+                }
+                Err(PostError::Status(402, _))
+                    if backend == JevBackend::Cloudflare
+                        && provider.jev_backend == JevBackend::Auto =>
+                {
+                    switch_to_typesafe(provider);
+                    backend = JevBackend::TypeSafe;
+                    continue 'hosts;
+                }
+                Err(PostError::Status(code, text)) => {
+                    return Err(CallError::Failed(anyhow::anyhow!(
+                        "jev endpoint ({}) returned {code}: {text}",
+                        backend.as_str()
+                    )));
+                }
+                Err(PostError::Other(e)) => return Err(CallError::Failed(e)),
+            }
+        };
+        sink("forge_jev_response", &response);
+        return Ok(match backend {
+            JevBackend::Cloudflare if response["result"]["result"].is_object() => {
+                response["result"]["result"].clone()
+            }
+            JevBackend::Cloudflare => response["result"].clone(),
+            _ => response,
+        });
+    }
+}
+
 /// One raw request through a `jev` provider: the `answers` object and the
 /// usage cost, for a caller that builds its own questions (`forge eval jev`).
 pub async fn ask(
@@ -223,13 +486,9 @@ pub async fn ask(
     body: &Value,
     timeout: Duration,
 ) -> Result<(Value, f64)> {
-    let (url, key) = endpoint(provider)?;
-    let resp = post_json(&reqwest::Client::new(), &url, &key, body, timeout).await?;
-    let result = if resp["result"]["result"].is_object() {
-        &resp["result"]["result"]
-    } else {
-        &resp["result"]
-    };
+    let result = call(provider, body, None, timeout, &mut |_, _| {})
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let usage = &result["usage"];
     let cost = usage_cost(
         provider,
@@ -255,39 +514,38 @@ pub(super) async fn run(l: Launch<'_>) -> Result<Outcome> {
     let mut log =
         File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
     let mut out = Outcome::default();
-    let fail = |log: &mut File, out: &mut Outcome, why: String| -> Result<()> {
-        out.exit_code = Some(1);
-        out.stderr_text = why;
-        out.wall_ms = start.elapsed().as_millis();
-        writeln!(
-            log,
-            "{{\"type\":\"forge_stderr\",\"text\":{}}}",
-            serde_json::to_string(&out.stderr_text)?
-        )?;
-        Ok(())
-    };
-    let (url, key) = match endpoint(l.provider) {
-        Ok(found) => found,
-        Err(e) => {
-            fail(&mut log, &mut out, format!("{e:#}"))?;
-            return Ok(out);
-        }
-    };
     let body = request(l.model, judgment.action, judgment.state);
-    writeln!(log, "{{\"type\":\"forge_jev_request\",\"body\":{body}}}")?;
-    let client = reqwest::Client::new();
-    let resp = match post_json(&client, &url, &key, &body, l.timeout).await {
-        Ok(v) => v,
+    let mut written = Ok(());
+    let called = call(
+        l.provider,
+        &body,
+        Some(l.model),
+        l.timeout,
+        &mut |kind, v| {
+            if written.is_ok() {
+                written = writeln!(log, "{{\"type\":\"{kind}\",\"body\":{v}}}");
+            }
+        },
+    )
+    .await;
+    written?;
+    let result = match called {
+        Ok(r) => r,
         Err(e) => {
-            fail(&mut log, &mut out, format!("{e:#}"))?;
+            if let CallError::Refused(_) = e {
+                out.is_error = true;
+                super::refusal::hold_text_only(&mut out);
+            }
+            out.exit_code = Some(1);
+            out.stderr_text = e.to_string();
+            out.wall_ms = start.elapsed().as_millis();
+            writeln!(
+                log,
+                "{{\"type\":\"forge_stderr\",\"text\":{}}}",
+                serde_json::to_string(&out.stderr_text)?
+            )?;
             return Ok(out);
         }
-    };
-    writeln!(log, "{{\"type\":\"forge_jev_response\",\"body\":{resp}}}")?;
-    let result = if resp["result"]["result"].is_object() {
-        &resp["result"]["result"]
-    } else {
-        &resp["result"]
     };
     let usage = &result["usage"];
     out.input_tokens = usage["input_tokens"].as_i64();
@@ -309,6 +567,13 @@ pub(super) async fn run(l: Launch<'_>) -> Result<Outcome> {
     Ok(out)
 }
 
+/// Why a POST gave no JSON: an HTTP status (with the first line of its
+/// body), or anything else.
+enum PostError {
+    Status(u16, String),
+    Other(anyhow::Error),
+}
+
 /// One JSON POST with a bearer token, the response parsed as JSON on a 2xx.
 async fn post_json(
     client: &reqwest::Client,
@@ -316,7 +581,7 @@ async fn post_json(
     key: &str,
     body: &Value,
     timeout: Duration,
-) -> Result<Value> {
+) -> std::result::Result<Value, PostError> {
     let resp = client
         .post(url)
         .bearer_auth(key)
@@ -324,16 +589,23 @@ async fn post_json(
         .timeout(timeout)
         .send()
         .await
-        .context("sending the jev request")?;
+        .context("sending the jev request")
+        .map_err(PostError::Other)?;
     let status = resp.status();
-    let text = resp.text().await.context("reading the jev response body")?;
+    let text = resp
+        .text()
+        .await
+        .context("reading the jev response body")
+        .map_err(PostError::Other)?;
     if !status.is_success() {
-        anyhow::bail!(
-            "jev endpoint returned {status}: {}",
-            truncated_first_line(&text)
-        );
+        return Err(PostError::Status(
+            status.as_u16(),
+            truncated_first_line(&text),
+        ));
     }
-    serde_json::from_str(&text).context("parsing the jev response as JSON")
+    serde_json::from_str(&text)
+        .context("parsing the jev response as JSON")
+        .map_err(PostError::Other)
 }
 
 #[cfg(test)]
@@ -356,10 +628,11 @@ mod tests {
             instructions: "How soon?".into(),
             criteria: Some(serde_json::json!(["low", "high"])),
         });
-        let req = request("typesafe/jev", &a, "The input document:\nhi");
-        assert_eq!(req["model"], "typesafe/jev");
-        assert_eq!(req["input"]["state"], "The input document:\nhi");
-        let q = &req["input"]["questions"];
+        let req = request("jev-latest", &a, "The input document:\nhi");
+        assert_eq!(req["model"], "jev-latest");
+        assert_eq!(req["state"], "The input document:\nhi");
+        assert!(req.get("input").is_none(), "{req}");
+        let q = &req["questions"];
         assert_eq!(q["outcome"]["type"], "choice");
         assert_eq!(q["outcome"]["instructions"], "Route the email.");
         assert_eq!(
@@ -435,10 +708,84 @@ mod tests {
             instructions: "How big?".into(),
             criteria: Some(serde_json::json!({"a-small": "few lines", "b-large": "many"})),
         });
-        let req = request("typesafe/jev", &a, "s");
+        let req = request("jev-latest", &a, "s");
         assert_eq!(
-            req["input"]["questions"]["size"]["criteria"],
+            req["questions"]["size"]["criteria"],
             serde_json::json!(["a-small", "b-large"])
         );
+    }
+
+    /// TypeSafe's answer to a triage request with a score and a noul beside
+    /// the outcomes, in the documented response shape.
+    const RECORDED: &str = include_str!("testdata/typesafe-systemone.json");
+
+    #[test]
+    fn a_typesafe_response_is_read_from_its_top_level_answers_and_usage() {
+        let resp: Value = serde_json::from_str(RECORDED).unwrap();
+        let env = envelope(&action(), &resp["answers"]).unwrap();
+        assert_eq!(env["outcome"], "reply");
+        assert_eq!(env["confidence"], 0.91);
+        assert!(env.get("choice").is_none());
+        assert_eq!(env["answers"]["urgency"]["legend"]["1"], "medium");
+        assert_eq!(env["answers"]["personal"]["noul"], 0.22);
+        let p = crate::agent::Provider {
+            runner: crate::agent::Runner::Jev,
+            price_input_per_million: JEV_PRICE_INPUT_PER_MILLION,
+            ..Default::default()
+        };
+        let cost = usage_cost(
+            &p,
+            resp["usage"]["input_tokens"].as_i64(),
+            resp["usage"]["output_tokens"].as_i64(),
+        )
+        .unwrap();
+        assert!((cost - 500.0 * 0.042 / 1e6).abs() < 1e-15, "{cost}");
+        let priced = crate::agent::Provider {
+            price_output_per_million: 1.0,
+            ..p
+        };
+        let cost = usage_cost(&priced, Some(500), Some(87)).unwrap();
+        assert!(
+            (cost - (500.0 * 0.042 + 87.0) / 1e6).abs() < 1e-15,
+            "{cost}"
+        );
+    }
+
+    #[test]
+    fn cloudflare_takes_the_same_request_under_input_by_its_own_model_name() {
+        let body = request("jev-latest", &action(), "s");
+        let cf = cloudflare_request(JEV_CLOUDFLARE_MODEL, &body);
+        assert_eq!(cf["model"], "typesafe/jev");
+        assert_eq!(cf["input"]["state"], "s");
+        assert_eq!(cf["input"]["questions"], body["questions"]);
+    }
+
+    #[test]
+    fn each_backend_reads_its_own_variables() {
+        let p = crate::agent::Provider {
+            name: "jev".into(),
+            runner: crate::agent::Runner::Jev,
+            api_key_env: Some("FORGE_TEST_JEV_UNSET_TYPESAFE".into()),
+            cloudflare_key_env: Some("FORGE_TEST_JEV_UNSET_CLOUDFLARE".into()),
+            ..Default::default()
+        };
+        let e = endpoint(&p, JevBackend::TypeSafe).unwrap_err().to_string();
+        assert!(e.contains("$FORGE_TEST_JEV_UNSET_TYPESAFE"), "{e}");
+        let e = endpoint(&p, JevBackend::Cloudflare)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("CLOUDFLARE_ACCOUNT_ID") || e.contains("FORGE_TEST_JEV_UNSET_CLOUDFLARE"),
+            "{e}"
+        );
+        // Without a Cloudflare token set, `auto` has only TypeSafe to go to.
+        assert_eq!(backend_for(&p), JevBackend::TypeSafe);
+        let forced = crate::agent::Provider {
+            jev_backend: JevBackend::Cloudflare,
+            ..p
+        };
+        assert_eq!(backend_for(&forced), JevBackend::Cloudflare);
+        assert_eq!("typesafe".parse(), Ok(JevBackend::TypeSafe));
+        assert!("workers".parse::<JevBackend>().is_err());
     }
 }

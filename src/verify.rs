@@ -1235,6 +1235,7 @@ async fn red_on_base(s: &Subject<'_>, checks: &mut Vec<CheckResult>) -> Result<(
         .scratch
         .ok_or_else(|| anyhow::anyhow!("the tests contract needs a scratch directory"))?;
     let _ = std::fs::remove_dir_all(scratch);
+    crate::sandbox::discard_provider_state(scratch);
     crate::git::archive_all(s.worktree, s.base_sha, scratch).await?;
     let files = crate::git::ls_tree(s.worktree, "HEAD", &s.cfg.namespace).await?;
     crate::git::archive_into(s.worktree, "HEAD", &files, scratch).await?;
@@ -1272,6 +1273,7 @@ async fn red_on_base(s: &Subject<'_>, checks: &mut Vec<CheckResult>) -> Result<(
         checks.push(r);
     }
     let _ = std::fs::remove_dir_all(scratch);
+    crate::sandbox::discard_provider_state(scratch);
     Ok(())
 }
 
@@ -2009,6 +2011,47 @@ mod tests {
             },
         ];
         assert!(try_known_fix(&s, &checks).await.unwrap().is_none());
+    }
+
+    /// docs/REVIEW-4.md #1.23: `red_on_base` must discard the scratch
+    /// directory's own `-provider` sibling along with the scratch itself,
+    /// not just the scratch, or a copy of the login leaks per task.
+    #[tokio::test]
+    async fn red_on_base_leaves_neither_the_scratch_nor_its_provider_directory() {
+        let (dir, base) = commit_fixture().await;
+        let mut cfg = test_cfg();
+        cfg.checks.insert("test".into(), vec!["false".into()]);
+        let report = Reporter::new(false, None);
+        let scratch = dir.path().join("wt-red");
+        let provider = PathBuf::from(format!("{}-provider", scratch.display()));
+        std::fs::create_dir_all(provider.join("claude")).unwrap();
+        std::fs::write(provider.join("claude").join("credentials.json"), "{}").unwrap();
+        let s = Subject {
+            task_id: 1,
+            repo: dir.path(),
+            worktree: dir.path(),
+            base_sha: &base,
+            start_sha: &base,
+            branch: "forge/1",
+            cfg: &cfg,
+            task_checks: &[],
+            paths: &[],
+            allow_protected: false,
+            overlay_refs: &[],
+            pending_main: None,
+            sandbox: None,
+            report: &report,
+            logs_dir: dir.path(),
+            scratch: Some(&scratch),
+            plan_rows: true,
+        };
+        let mut checks = Vec::new();
+        red_on_base(&s, &mut checks).await.unwrap();
+        assert!(!scratch.exists(), "the scratch directory was left behind");
+        assert!(
+            !provider.exists(),
+            "the scratch's provider directory was left behind"
+        );
     }
 
     #[test]

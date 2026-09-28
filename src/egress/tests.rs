@@ -480,7 +480,7 @@ fn the_model_endpoint_is_always_in_the_rules() {
 fn chat_and_jev_providers_open_nothing_of_their_own_even_with_a_base_url() {
     let jev = crate::agent::Provider {
         runner: crate::agent::Runner::Jev,
-        base_url: Some("https://api.cloudflare.com/client/v4".into()),
+        base_url: Some(crate::agent::JEV_DEFAULT_URL.into()),
         ..crate::agent::Provider::default()
     };
     assert!(provider_rules(&jev).is_empty());

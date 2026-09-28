@@ -1,6 +1,6 @@
 //! docs/EXECUTION.md, "The judgment tier": a directive step judged by a
-//! `jev` provider against a fake Workers AI endpoint answering the
-//! documented shape.
+//! `jev` provider against a fake endpoint answering TypeSafe's documented
+//! shape at `/v1/systemone` and Cloudflare Workers AI's under `/accounts/`.
 
 use crate::support::*;
 use std::sync::mpsc::Receiver;
@@ -96,18 +96,37 @@ fn answer(
     }
 }
 
-/// A loopback endpoint answering each request as Workers AI answers Jev's:
-/// each question in the shape its type takes (see `answer`), a choice
-/// being `choice` at `confidence`; the receiver carries (path,
-/// authorization, body) per request.
+/// How the fake answers besides a judgment: Cloudflare's 402 (its gateway
+/// out of credits), or TypeSafe's 529 (overloaded) for its first `busy`
+/// requests.
+#[derive(Clone, Copy, Default)]
+struct Fake {
+    cloudflare_broke: bool,
+    busy: usize,
+}
+
+/// A loopback endpoint answering each request as TypeSafe (any path but
+/// `/accounts/...`) or Cloudflare Workers AI answers Jev's: each question
+/// in the shape its type takes (see `answer`), a choice being `choice` at
+/// `confidence`; the receiver carries (path, authorization, body) per
+/// request.
 fn fake_jev(
     choice: &'static str,
     confidence: f64,
+) -> (String, Receiver<(String, String, serde_json::Value)>) {
+    fake_jev_with(choice, confidence, Fake::default())
+}
+
+fn fake_jev_with(
+    choice: &'static str,
+    confidence: f64,
+    fake: Fake,
 ) -> (String, Receiver<(String, String, serde_json::Value)>) {
     let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
     let url = format!("http://{}", server.server_addr().to_ip().unwrap());
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
+        let mut busy = fake.busy;
         for mut req in server.incoming_requests() {
             let mut body = String::new();
             std::io::Read::read_to_string(req.as_reader(), &mut body).unwrap();
@@ -118,30 +137,57 @@ fn fake_jev(
                 .map(|h| h.value.to_string())
                 .unwrap_or_default();
             let body: serde_json::Value = serde_json::from_str(&body).unwrap();
-            let _ = tx.send((req.url().to_string(), auth, body.clone()));
-            let answers: Result<serde_json::Map<String, serde_json::Value>, String> = body["input"]
-                ["questions"]
+            let path = req.url().to_string();
+            let _ = tx.send((path.clone(), auth, body.clone()));
+            let cloudflare = path.starts_with("/accounts/");
+            if cloudflare && fake.cloudflare_broke {
+                let _ = req.respond(
+                    tiny_http::Response::from_string(
+                        r#"{"success":false,"errors":[{"code":2003,"message":"Insufficient balance"}]}"#,
+                    )
+                    .with_status_code(402),
+                );
+                continue;
+            }
+            if !cloudflare && busy > 0 {
+                busy -= 1;
+                let _ = req.respond(
+                    tiny_http::Response::from_string(r#"{"error":"overloaded"}"#)
+                        .with_status_code(529),
+                );
+                continue;
+            }
+            let questions = if cloudflare {
+                &body["input"]["questions"]
+            } else {
+                &body["questions"]
+            };
+            let answers: Result<serde_json::Map<String, serde_json::Value>, String> = questions
                 .as_object()
                 .into_iter()
                 .flatten()
                 .map(|(name, q)| Ok((name.clone(), answer(name, q, choice, confidence)?)))
                 .collect();
+            let result = |answers| {
+                serde_json::json!({
+                    "model": "jev-1.13.0",
+                    "answers": answers,
+                    "usage": {"input_tokens": 500, "output_tokens": 87},
+                })
+            };
             let response = match answers {
-                Ok(answers) => tiny_http::Response::from_string(
+                Ok(answers) if cloudflare => tiny_http::Response::from_string(
                     serde_json::json!({"success": true, "result": {
                         "state": "Completed",
-                        "result": {
-                            "model": "jev-1.13.0",
-                            "answers": answers,
-                            "usage": {"input_tokens": 500, "output_tokens": 87},
-                        },
+                        "result": result(answers),
                     }})
                     .to_string(),
                 ),
+                Ok(answers) => tiny_http::Response::from_string(result(answers).to_string()),
                 Err(why) => tiny_http::Response::from_string(
-                    serde_json::json!({"success": false, "errors": [{"message": why}]}).to_string(),
+                    serde_json::json!({"error": {"message": why}}).to_string(),
                 )
-                .with_status_code(400),
+                .with_status_code(422),
             };
             let _ = req.respond(response);
         }
@@ -149,13 +195,14 @@ fn fake_jev(
     (url, rx)
 }
 
-fn judged_run(e: &Env, url: &str) -> serde_json::Value {
+/// A jev provider with both hosts on the fake, and the triage workflow.
+fn setup(e: &Env, url: &str, extra: &str) {
     let repo_s = e.repo.to_str().unwrap();
     std::fs::create_dir_all(&e.home).unwrap();
     std::fs::write(
         e.home.join("config.toml"),
         format!(
-            "[providers.jev]\nrunner = \"jev\"\nbase_url = \"{url}/accounts/{{account_id}}/ai/run\"\n[roles]\nplan = \"jev\"\n"
+            "[providers.jev]\nrunner = \"jev\"\nbase_url = \"{url}/v1/systemone\"\ncloudflare_url = \"{url}/accounts/{{account_id}}/ai/run\"\n{extra}[roles]\nplan = \"jev\"\n"
         ),
     )
     .unwrap();
@@ -174,20 +221,42 @@ fn judged_run(e: &Env, url: &str) -> serde_json::Value {
     std::fs::write(d.join("actions/triage.toml"), ACTION).unwrap();
     std::fs::write(d.join("actions/ask-april.toml"), ASK).unwrap();
     std::fs::write(d.join("triage-flow.toml"), WORKFLOW).unwrap();
-    let o = e
-        .cmd("ok.sh")
-        .env("CLOUDFLARE_ACCOUNT_ID", "acct-1")
-        .env("CLOUDFLARE_API_TOKEN", "tok-1")
+}
+
+/// One `forge job start --now` of the triage workflow with `env` set:
+/// the job's `show --json`, and the run's stderr.
+fn start(e: &Env, env: &[(&str, &str)]) -> (serde_json::Value, String) {
+    let mut c = e.cmd("ok.sh");
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    let o = c
+        .env("FORGE_JEV_BACKOFF_MS", "10")
         .args(["job", "start", "equitizr", "triage-flow", "--now"])
         .output()
         .unwrap();
     let out = String::from_utf8_lossy(&o.stdout);
-    let id: i64 = out
-        .trim()
-        .parse()
-        .unwrap_or_else(|_| panic!("{out}{}", String::from_utf8_lossy(&o.stderr)));
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    let id: i64 = out.trim().parse().unwrap_or_else(|_| panic!("{out}{err}"));
     let shown = e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"]);
-    serde_json::from_slice(&shown.stdout).unwrap()
+    (serde_json::from_slice(&shown.stdout).unwrap(), err)
+}
+
+const TYPESAFE: &[(&str, &str)] = &[("TYPESAFE_API_KEY", "ts-1")];
+const BOTH: &[(&str, &str)] = &[
+    ("TYPESAFE_API_KEY", "ts-1"),
+    ("CLOUDFLARE_ACCOUNT_ID", "acct-1"),
+    ("CLOUDFLARE_API_TOKEN", "tok-1"),
+];
+
+fn judged_run(e: &Env, url: &str) -> serde_json::Value {
+    setup(e, url, "");
+    start(e, TYPESAFE).0
+}
+
+fn marker(e: &Env) -> std::path::PathBuf {
+    e.xdg_config
+        .join("systemd/user/forge-worker.service.d/jev-cloudflare-exhausted")
 }
 
 #[test]
@@ -206,15 +275,16 @@ fn a_jev_step_routes_on_its_outcome_and_a_low_confidence_is_its_own_outcome() {
     assert!((cost - 500.0 * 0.042 / 1e6).abs() < 1e-12, "{cost}");
 
     let (path, auth, body) = rx.recv().unwrap();
-    assert_eq!(path, "/accounts/acct-1/ai/run");
-    assert_eq!(auth, "Bearer tok-1");
-    assert_eq!(body["model"], "typesafe/jev");
+    assert_eq!(path, "/v1/systemone");
+    assert_eq!(auth, "Bearer ts-1");
+    assert_eq!(body["model"], "jev-latest");
+    assert!(body.get("input").is_none(), "{body}");
     assert_eq!(
-        body["input"]["questions"]["outcome"]["criteria"]["reply"],
+        body["questions"]["outcome"]["criteria"]["reply"],
         "a person needs an answer"
     );
     assert!(
-        body["input"]["state"]
+        body["state"]
             .as_str()
             .unwrap()
             .contains("The input document")
@@ -237,9 +307,7 @@ fn eval_jev_replays_a_fixture_and_reports_accuracy_calibration_latency_and_cost(
     std::fs::create_dir_all(&e.home).unwrap();
     std::fs::write(
         e.home.join("config.toml"),
-        format!(
-            "[providers.jev]\nrunner = \"jev\"\nbase_url = \"{url}/accounts/{{account_id}}/ai/run\"\n"
-        ),
+        format!("[providers.jev]\nrunner = \"jev\"\nbase_url = \"{url}/v1/systemone\"\n"),
     )
     .unwrap();
     let fixture = e.home.join("fixture.json");
@@ -259,8 +327,7 @@ fn eval_jev_replays_a_fixture_and_reports_accuracy_calibration_latency_and_cost(
     let report = e.home.join("report.md");
     let o = e
         .cmd("ok.sh")
-        .env("CLOUDFLARE_ACCOUNT_ID", "acct-1")
-        .env("CLOUDFLARE_API_TOKEN", "tok-1")
+        .env("TYPESAFE_API_KEY", "ts-1")
         .args(["eval", "jev", "--provider", "jev", "--fixture"])
         .arg(&fixture)
         .arg("--out")
@@ -315,16 +382,126 @@ fn eval_jev_replays_a_fixture_and_reports_accuracy_calibration_latency_and_cost(
     }
     let bodies: Vec<serde_json::Value> = rx.try_iter().map(|(_, _, b)| b).collect();
     assert_eq!(bodies.len(), 6);
-    let q = &bodies[0]["input"]["questions"]["outcome"];
+    let q = &bodies[0]["questions"]["outcome"];
     assert_eq!(q["type"], "choice");
     assert!(q["criteria"]["need"].is_string());
-    let q = &bodies[2]["input"]["questions"]["outcome"];
+    let q = &bodies[2]["questions"]["outcome"];
     assert_eq!(q["type"], "noul");
     assert!(q["criteria"]["true"].is_string() && q["criteria"]["false"].is_string());
-    let q = &bodies[4]["input"]["questions"]["outcome"];
+    let q = &bodies[4]["questions"]["outcome"];
     assert_eq!(q["type"], "score");
     assert_eq!(
         q["criteria"],
         serde_json::json!(["small", "medium", "large"])
+    );
+}
+
+#[test]
+fn cloudflare_goes_first_while_its_credits_last() {
+    let e = Env::new();
+    let (url, rx) = fake_jev("ignore", 0.9);
+    setup(&e, &url, "");
+    let (doc, _) = start(&e, BOTH);
+    assert_eq!(doc["state"], "ok", "{doc}");
+    assert_eq!(doc["steps"][0]["outcome"], "ignore", "{doc}");
+    let (path, auth, body) = rx.recv().unwrap();
+    assert_eq!(path, "/accounts/acct-1/ai/run");
+    assert_eq!(auth, "Bearer tok-1");
+    assert_eq!(body["model"], "typesafe/jev");
+    assert!(body["input"]["questions"]["outcome"].is_object(), "{body}");
+    assert!(rx.try_recv().is_err());
+    assert!(!marker(&e).exists());
+}
+
+#[test]
+fn cloudflares_402_switches_to_typesafe_for_good_and_leaves_the_marker() {
+    let e = Env::new();
+    let (url, rx) = fake_jev_with(
+        "ignore",
+        0.9,
+        Fake {
+            cloudflare_broke: true,
+            ..Fake::default()
+        },
+    );
+    setup(&e, &url, "");
+    let (doc, err) = start(&e, BOTH);
+    assert_eq!(doc["state"], "ok", "{doc}");
+    assert_eq!(doc["steps"][0]["outcome"], "ignore", "{doc}");
+    let paths: Vec<String> = rx.try_iter().map(|(p, _, _)| p).collect();
+    assert_eq!(paths, ["/accounts/acct-1/ai/run", "/v1/systemone"]);
+    assert_eq!(err.matches("switching to TypeSafe").count(), 1, "{err}");
+    let day = std::fs::read_to_string(marker(&e)).unwrap();
+    let day = day.trim();
+    assert_eq!(day.len(), 10, "{day}");
+    assert_eq!(&day[4..5], "-", "{day}");
+
+    // A later process reads the marker and never asks Cloudflare again.
+    let (doc, err) = start(&e, BOTH);
+    assert_eq!(doc["state"], "ok", "{doc}");
+    let paths: Vec<String> = rx.try_iter().map(|(p, _, _)| p).collect();
+    assert_eq!(paths, ["/v1/systemone"]);
+    assert!(!err.contains("switching"), "{err}");
+}
+
+#[test]
+fn a_forced_backend_is_the_only_one_asked() {
+    let e = Env::new();
+    let (url, rx) = fake_jev_with(
+        "ignore",
+        0.9,
+        Fake {
+            cloudflare_broke: true,
+            ..Fake::default()
+        },
+    );
+    setup(&e, &url, "backend = \"cloudflare\"\n");
+    let (doc, _) = start(&e, BOTH);
+    assert_eq!(doc["state"], "failed", "{doc}");
+    let paths: Vec<String> = rx.try_iter().map(|(p, _, _)| p).collect();
+    assert_eq!(paths, ["/accounts/acct-1/ai/run"]);
+    assert!(!marker(&e).exists());
+
+    let e = Env::new();
+    let (url, rx) = fake_jev("ignore", 0.9);
+    setup(&e, &url, "backend = \"typesafe\"\n");
+    let (doc, _) = start(&e, BOTH);
+    assert_eq!(doc["state"], "ok", "{doc}");
+    let paths: Vec<String> = rx.try_iter().map(|(p, _, _)| p).collect();
+    assert_eq!(paths, ["/v1/systemone"]);
+}
+
+#[test]
+fn an_overloaded_typesafe_is_retried_three_times_then_refused() {
+    let e = Env::new();
+    let (url, rx) = fake_jev_with(
+        "ignore",
+        0.9,
+        Fake {
+            busy: 3,
+            ..Fake::default()
+        },
+    );
+    setup(&e, &url, "");
+    let (doc, _) = start(&e, TYPESAFE);
+    assert_eq!(doc["state"], "ok", "{doc}");
+    assert_eq!(rx.try_iter().count(), 4);
+
+    let e = Env::new();
+    let (url, rx) = fake_jev_with(
+        "ignore",
+        0.9,
+        Fake {
+            busy: 4,
+            ..Fake::default()
+        },
+    );
+    setup(&e, &url, "");
+    let (doc, _) = start(&e, TYPESAFE);
+    assert_eq!(doc["state"], "failed", "{doc}");
+    assert_eq!(rx.try_iter().count(), 4);
+    assert!(
+        doc.to_string().contains("rate limited by the provider"),
+        "{doc}"
     );
 }

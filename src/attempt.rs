@@ -395,7 +395,7 @@ pub fn tests_clone_dir(worktree: &str) -> PathBuf {
     PathBuf::from(format!("{worktree}-tests"))
 }
 
-fn scratch_dir(worktree: &str) -> PathBuf {
+pub fn scratch_dir(worktree: &str) -> PathBuf {
     PathBuf::from(format!("{worktree}-red"))
 }
 
@@ -796,6 +796,10 @@ mod tests {
             base_url: None,
             api_key_env: None,
             account_id_env: None,
+            jev_backend: agent::JevBackend::Auto,
+            cloudflare_url: None,
+            cloudflare_key_env: None,
+            cloudflare_model: None,
             env: vec![],
             extra_args: vec![],
             notes: None,

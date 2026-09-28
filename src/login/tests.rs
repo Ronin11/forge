@@ -716,6 +716,32 @@ fn seed_first_writes_back_a_later_private_login_from_a_sibling_task() {
     }
 }
 
+/// docs/REVIEW-4.md #1.23: a `-provider` directory whose own worktree is
+/// gone is written back once, then discarded, so a later launch never
+/// scans it again under the login lock.
+#[test]
+fn write_back_private_copies_discards_a_stale_providers_directory_once_written_back() {
+    for f in rotating() {
+        let s = f.shape;
+        let t = seeded(s, &f.login("a", "dead", far()));
+        // A leftover from a task whose worktree no longer exists, seeded
+        // (so it carries a record a write-back can judge) before it rotates.
+        let stale_dir = t.root.path().join("work/gone-provider");
+        let stale = stale_dir.join(s.cli).join(s.file);
+        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        block_on(s.seed(&t.dir, &t.state, &t.worktree, &stale));
+        std::fs::write(&stale, f.good("b", "live", far() + 5000)).unwrap();
+        block_on(async {
+            let _lock = lock(&t.dir).await;
+            s.write_back_private_copies_locked(&t.dir, &t.state, &t.worktree);
+        });
+        let host = std::fs::read_to_string(t.dir.join(s.file)).unwrap();
+        assert!(host.contains("live"), "{}", s.cli);
+        assert!(!stale_dir.exists(), "{}", s.cli);
+        assert!(!s.private_copies(&t.worktree).contains(&stale), "{}", s.cli);
+    }
+}
+
 #[test]
 fn each_login_keeps_its_own_lock_mark_and_backup_beside_its_file() {
     let t = seeded(&CODEX, &codex_raw("a0", "r0", far()));
@@ -814,4 +840,79 @@ fn a_seed_waits_for_a_refresh_probe_on_the_host() {
             .await
             .unwrap();
     });
+}
+
+const MIN: i64 = 60_000;
+
+/// A fake clock through the incident: a login expiring at 13:02, the CLI
+/// never refreshing it, a launch every minute from 12:32.
+#[test]
+fn a_probe_that_did_not_refresh_waits_until_five_minutes_before_expiry() {
+    let expiry = NOW + 30 * MIN;
+    let mut last: Option<ProbeRecord> = None;
+    let mut probes = Vec::new();
+    for minute in 0..40 {
+        let now = NOW + minute * MIN;
+        if probe_due(last.as_ref(), expiry, now) {
+            probes.push(minute);
+            last = Some(ProbeRecord {
+                at_ms: now,
+                expires_before_ms: expiry,
+                expires_after_ms: expiry,
+            });
+        }
+    }
+    // Once at the start; then not until expiry minus five minutes; then at
+    // most once per five minutes.
+    assert_eq!(probes, vec![0, 25, 30, 35]);
+}
+
+#[test]
+fn a_probe_runs_at_most_once_per_five_minutes() {
+    let r = ProbeRecord {
+        at_ms: NOW,
+        expires_before_ms: NOW + 10 * MIN,
+        expires_after_ms: NOW + 70 * MIN,
+    };
+    assert!(r.refreshed());
+    // Even a login near expiry again (a later login written back) waits.
+    assert!(!probe_due(Some(&r), NOW + 3 * MIN, NOW + 4 * MIN));
+    assert!(probe_due(Some(&r), NOW + 3 * MIN, NOW + 5 * MIN));
+    assert!(probe_due(None, NOW, NOW));
+}
+
+#[test]
+fn the_back_off_holds_only_for_the_expiry_the_probe_saw() {
+    let expiry = NOW + 20 * MIN;
+    let r = ProbeRecord {
+        at_ms: NOW,
+        expires_before_ms: expiry,
+        expires_after_ms: expiry,
+    };
+    assert!(!r.refreshed());
+    assert!(!probe_due(Some(&r), expiry, NOW + 10 * MIN));
+    assert!(probe_due(Some(&r), expiry, NOW + 15 * MIN));
+    // Another login (a new expiry) is only held to the five minutes.
+    assert!(probe_due(Some(&r), expiry + MIN, NOW + 5 * MIN));
+    // Past expiry, the five minutes still hold.
+    let late = ProbeRecord {
+        at_ms: expiry + MIN,
+        ..r
+    };
+    assert!(!probe_due(Some(&late), expiry, expiry + 3 * MIN));
+    assert!(probe_due(Some(&late), expiry, expiry + 6 * MIN));
+}
+
+#[test]
+fn the_last_probe_is_recorded_beside_the_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(last_probe(dir.path()), None);
+    let r = ProbeRecord {
+        at_ms: NOW,
+        expires_before_ms: NOW + MIN,
+        expires_after_ms: NOW + MIN,
+    };
+    record_probe(dir.path(), &r).unwrap();
+    assert_eq!(last_probe(dir.path()), Some(r));
+    assert!(dir.path().join(PROBE_MARK).exists());
 }

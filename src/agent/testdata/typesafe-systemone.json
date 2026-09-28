@@ -1,0 +1,20 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "outcome": {
+      "type": "choice",
+      "choice": "reply",
+      "probabilities": {"reply": 0.91, "ignore": 0.09},
+      "confidence": 0.91
+    },
+    "urgency": {
+      "type": "score",
+      "score": 1.21,
+      "legend": {"0": "low", "1": "medium", "2": "high"},
+      "probabilities": {"0": 0, "1": 0.78, "2": 0.22},
+      "confidence": 0.67
+    },
+    "personal": {"type": "noul", "noul": 0.22}
+  },
+  "usage": {"input_tokens": 500, "output_tokens": 87}
+}
