@@ -56,6 +56,7 @@ use crate::prompts::{
 };
 use crate::report::Event;
 use crate::store::{Attempt, AttemptState, FinishAttempt, Task};
+use crate::verify::review::asked;
 use crate::verify::{self, Subject, Verdict};
 use crate::workflows::{Contract, ResolvedStep};
 use crate::{agent, config, git, unix_now};
@@ -246,9 +247,10 @@ pub async fn run_attempt(
         },
         Contract::Review => Spec {
             dir: PathBuf::from(&t.worktree),
-            prompt: review_prompt(t, cfg, step, outcome.as_deref()),
+            prompt: review_prompt(t, cfg, step, outcome.as_deref(), asked(feedback)),
             // A review is told nothing of earlier attempts: it judges the
-            // branch as it stands. Feedback owed to it is recorded, not shown.
+            // branch as it stands. Feedback owed to it is recorded, not
+            // shown, but for the one ask to inline a reproduction.
             inputs: Inputs {
                 journal: None,
                 context: None,

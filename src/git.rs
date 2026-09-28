@@ -751,6 +751,15 @@ pub async fn reset_hard(dir: &Path, sha: &str) -> Result<()> {
     Ok(())
 }
 
+/// `git reset --hard sha` alone: unlike `reset_hard`, untracked files
+/// the commits never named are left where they are.
+pub async fn reset_tracked(dir: &Path, sha: &str) -> Result<()> {
+    Git::new(dir)
+        .line(&["reset", "--hard", "--quiet", sha])
+        .await?;
+    Ok(())
+}
+
 pub async fn head(dir: &Path) -> Result<String> {
     Git::new(dir).line(&["rev-parse", "HEAD"]).await
 }
@@ -924,6 +933,25 @@ pub async fn dirty_paths(wt: &Path) -> Result<Vec<String>> {
     Ok(porcelain_paths(
         &Git::new(wt).raw(&["status", "--porcelain"]).await?,
     ))
+}
+
+/// As `dirty_paths`, but naming every untracked file on its own instead
+/// of collapsing a new directory into one entry.
+pub async fn dirty_files(wt: &Path) -> Result<Vec<String>> {
+    Ok(porcelain_paths(
+        &Git::new(wt)
+            .raw(&["status", "--porcelain", "--untracked-files=all"])
+            .await?,
+    ))
+}
+
+/// Take whatever the index holds under `path` back to HEAD, leaving
+/// every other staged change as it is.
+pub async fn unstage(wt: &Path, path: &str) -> Result<()> {
+    Git::new(wt)
+        .line(&["reset", "--quiet", "HEAD", "--", path])
+        .await?;
+    Ok(())
 }
 
 /// Porcelain status entries for paths git already tracks: staged or
