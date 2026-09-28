@@ -497,3 +497,48 @@ deny = ["*.example.com", "~/.cache/secrets"]   # hosts, `*.suffix` hosts, cache 
 The operator widens what needs no asking by widening the `[environment]`
 table in `config.toml` (above); that table is never consulted by the
 supervisor's judgement, only read by code.
+
+## Landing hand-made work
+
+A branch written by hand, outside Forge, still lands through the integrator:
+
+```sh
+forge adopt ~/Projects/Exploration jetpack-yields-to-wall-and-mantle --title "Jetpack yields to wall and mantle"
+```
+
+`forge adopt <REPO> <BRANCH_OR_COMMIT> [--title ...] [--no-land] [--project ...] [--allow-protected]`
+records a task whose origin is `adopted` (the branch, the commit, who adopted
+it, the title) and runs **no agent**. The branch is taken as it is — a local
+branch, a commit, or a branch that only exists on the push remote — into a
+clean clone of the base, and the repository's `forge.toml` checks run on it
+exactly as they do after an attempt (setup first, then the rest, from the
+trusted base's config). If they pass, the task lands the way `forge land`
+lands one: the base merged in, everything re-verified, pushed and
+fast-forwarded under the repository's landing lock, so it is race-safe with
+queued and running agent tasks and other adoptions. The command ends by
+naming the `git pull --ff-only <remote> <base>` that brings your working copy
+up to date.
+
+- A failing check blocks the task with the check's output and a question;
+  nothing lands. A merge of the moved base that conflicts, or fails the
+  checks once merged, blocks it the same way; nothing half-merged ever lands.
+- No agent ever edits adopted commits. Fix the branch by hand, push it, and
+  run `forge retry <id>`: the retry adopts the branch again at its current
+  commit and verifies it; it never codes. `forge answer` on an adopted task is
+  refused, and no worker claims one.
+- A branch that changes a `[verify] protected` path, or `forge.toml` itself,
+  is refused unless `--allow-protected` is given; either way the ruling is
+  recorded as a decision (`forge decisions`). The rules are the same as an
+  agent's: the integrator still never lands a change to `forge.toml`.
+- `--no-land` verifies only and leaves the verified branch for a human;
+  `forge land <id>` lands it later through the same integrator.
+
+Adopted tasks show as manual in `forge log`, `forge show`, the portal ("Made
+by hand") and `forge stats` (a `manual` line), and are kept out of every
+workflow's outcome statistics and the economist's factor data: no agent did
+the work, so it measures nothing about one.
+
+Use `forge adopt` when the change is already written and you only want Forge
+to check and land it. File a task (`forge add`) when you want an agent to do
+or change the work — including resolving a conflict with the base, which an
+adoption hands back to you.
