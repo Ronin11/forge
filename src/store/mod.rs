@@ -786,7 +786,10 @@ impl Store {
                 Ok(()) => c.execute_batch("COMMIT")?,
                 Err(e) => {
                     c.execute_batch("ROLLBACK").ok();
-                    bail!("contract step {v} failed: {e}");
+                    bail!(
+                        "contract step {v} (`{}`) failed: {e}",
+                        migrations::first_line(sql)
+                    );
                 }
             }
             applied += 1;
@@ -836,7 +839,10 @@ fn migrate(conn: &mut Connection) -> Result<()> {
             tx.execute_batch(&format!("PRAGMA user_version={v}"))
         })();
         if let Err(e) = r {
-            bail!("migration to schema version {v} failed: {e}");
+            bail!(
+                "migration step {v} (`{}`) failed: {e}",
+                migrations::first_line(sql)
+            );
         }
     }
     tx.commit()?;
@@ -966,6 +972,41 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kind, 1);
+    }
+
+    #[test]
+    fn a_failing_step_names_its_index_and_first_line() {
+        // A store that already has `workers.slots` from an earlier step,
+        // the way bc36fdb's reorder met the live store: the step that adds
+        // it again fails, and the error says which step and what SQL.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let slots = MIGRATIONS
+            .iter()
+            .position(|sql| sql.contains("ADD COLUMN slots"))
+            .unwrap();
+        {
+            let c = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..slots] {
+                if !migrations::is_contract(sql) {
+                    c.execute_batch(sql).unwrap();
+                }
+            }
+            c.execute_batch("ALTER TABLE workers ADD COLUMN slots INTEGER NOT NULL DEFAULT 0;")
+                .unwrap();
+            c.execute_batch(&format!("PRAGMA user_version={slots}"))
+                .unwrap();
+        }
+        let err = match Store::open(&path) {
+            Err(e) => format!("{e:#}"),
+            Ok(_) => panic!("re-added slots"),
+        };
+        assert!(err.contains(&format!("step {}", slots + 1)), "{err}");
+        assert!(
+            err.contains("ALTER TABLE workers ADD COLUMN slots INTEGER NOT NULL DEFAULT 0;"),
+            "{err}"
+        );
+        assert!(err.contains("duplicate column name: slots"), "{err}");
     }
 
     #[test]
