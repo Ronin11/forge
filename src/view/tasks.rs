@@ -286,12 +286,9 @@ pub struct TraceTask {
     /// Trust the caller earned by the path it queued through: `"operator"`,
     /// `"contact"`, or `"public"` (see `store::Trust`).
     pub trust: String,
-    /// `"agent"`, or `"adopted"` for a hand-made branch `forge adopt`
-    /// verified and landed with no agent run (see `store::Origin`).
-    pub origin: String,
-    /// The adopted branch, commit and adopter; absent for an agent's task.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub adoption: Option<crate::store::Adoption>,
+    /// Where the work came from, as `origin` and (adopted only) `adoption`.
+    #[serde(flatten)]
+    pub origin: TraceOrigin,
     pub reason: String,
     pub workflow: String,
     pub workflow_hash: String,
@@ -358,6 +355,25 @@ pub struct TraceTask {
     pub worktree_removed_at: Option<i64>,
     #[serde(skip)]
     pub decisions: Vec<Decision>,
+}
+
+/// `TraceTask`'s origin keys: `"agent"`, or `"adopted"` for a hand-made
+/// branch `forge adopt` verified and landed with no agent run (see
+/// `store::Origin`), with the adopted branch, commit and adopter.
+#[derive(Serialize)]
+pub struct TraceOrigin {
+    pub origin: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adoption: Option<crate::store::Adoption>,
+}
+
+impl TraceOrigin {
+    fn of(t: &crate::store::Task) -> Self {
+        TraceOrigin {
+            origin: t.origin.as_str().to_string(),
+            adoption: t.adoption.clone(),
+        }
+    }
 }
 
 /// `TraceTask.inputs`: what the economist must condition on before the
@@ -522,8 +538,7 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
         text: t.task.clone(),
         state: t.state.as_str().to_string(),
         trust: t.trust.as_str().to_string(),
-        origin: t.origin.as_str().to_string(),
-        adoption: t.adoption.clone(),
+        origin: TraceOrigin::of(t),
         reason: t.reason.clone(),
         workflow: t.workflow.clone(),
         workflow_hash: t.workflow_hash.clone(),
