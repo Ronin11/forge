@@ -576,6 +576,17 @@ impl Drop for GroupGuard {
     }
 }
 
+/// Records that `name` is stopped, and why.
+fn write_stopped(home: &Path, name: &str, why: String) {
+    write_run_state(
+        home,
+        name,
+        &RunState::Stopped {
+            last_exit: Some(why),
+        },
+    );
+}
+
 /// One plugin, started, restarted per its manifest's policy, and stopped
 /// when `stop` fires. Runs until told to stop; a plugin's own failure
 /// never propagates out of this task.
@@ -607,13 +618,7 @@ async fn supervise_plugin(
         let mut child = match spawn_plugin(&plugin, &home, &state_dir, &log_path) {
             Ok(c) => c,
             Err(e) => {
-                write_run_state(
-                    &home,
-                    &name,
-                    &RunState::Stopped {
-                        last_exit: Some(format!("failed to start: {e:#}")),
-                    },
-                );
+                write_stopped(&home, &name, format!("failed to start: {e:#}"));
                 if plugin.manifest.restart == Restart::Never
                     || wait_backoff_or_stop(&mut stop, backoff).await
                 {
@@ -644,24 +649,12 @@ async fn supervise_plugin(
         let status = match waited {
             None => {
                 stop_child(&mut child).await;
-                write_run_state(
-                    &home,
-                    &name,
-                    &RunState::Stopped {
-                        last_exit: Some(reason_text(&reason)),
-                    },
-                );
+                write_stopped(&home, &name, reason_text(&reason));
                 return;
             }
             Some(Ok(s)) => s,
             Some(Err(e)) => {
-                write_run_state(
-                    &home,
-                    &name,
-                    &RunState::Stopped {
-                        last_exit: Some(format!("wait failed: {e:#}")),
-                    },
-                );
+                write_stopped(&home, &name, format!("wait failed: {e:#}"));
                 return;
             }
         };
@@ -673,13 +666,7 @@ async fn supervise_plugin(
             Restart::Never => false,
         };
         if !should_restart {
-            write_run_state(
-                &home,
-                &name,
-                &RunState::Stopped {
-                    last_exit: Some(desc),
-                },
-            );
+            write_stopped(&home, &name, desc);
             return;
         }
 
@@ -691,13 +678,7 @@ async fn supervise_plugin(
         let wait = backoff;
         backoff = (backoff * 2).min(BACKOFF_MAX);
         if wait_backoff_or_stop(&mut stop, wait).await {
-            write_run_state(
-                &home,
-                &name,
-                &RunState::Stopped {
-                    last_exit: Some(desc),
-                },
-            );
+            write_stopped(&home, &name, desc);
             return;
         }
     }

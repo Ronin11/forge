@@ -182,8 +182,15 @@ Supervision is single per home. A supervisor holds an `flock` on
 `<FORGE_HOME>/plugins-run/<name>.lock` for as long as the plugin's process
 lives; one that finds it held skips that plugin and tries again on its
 next reconcile tick. `forge work --once` supervises nothing. A draining
-worker stops all its plugins together before it starts its successor, so
-the lock passes to the successor instead of two copies running at once.
+worker keeps its plugins until its successor has claimed (its pid is in
+`bin/successor-capable`), then stops them together so the lock passes to
+the successor instead of two copies running at once; `forge plugin status`
+says `stopped: stopped by worker for handoff to pid N` (a disabled plugin
+says `stopped: disabled`). A successor that exits, or never claims, while
+the worker still claims gives the plugins back: the worker starts them
+again on its next pass. `forge doctor`'s plugins row FAILs when an enabled
+plugin has no process while a worker claims (a plugin handed to a live
+successor excepted).
 
 - **start**: `run` in the plugin directory, with the environment below.
 - **restart**: `always` restarts it whenever it exits; `on-failure` only
