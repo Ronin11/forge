@@ -774,6 +774,33 @@ CREATE TABLE job_resolutions (
     "
 ALTER TABLE tasks ADD COLUMN run_json TEXT NOT NULL DEFAULT '';
 ",
+    // Ask Forge (docs/CHAT.md): a conversation's sessions and turns. A
+    // turn's `tool_calls` is the JSON array of the tool calls it made,
+    // each with its arguments and result; `cost_usd` counts against the
+    // operator's per-day budget (`Store::spent_since`).
+    "
+CREATE TABLE chat_sessions (
+  id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL DEFAULT '',
+  provider TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE chat_turns (
+  id INTEGER PRIMARY KEY,
+  session INTEGER NOT NULL REFERENCES chat_sessions(id),
+  role TEXT NOT NULL,
+  text TEXT NOT NULL DEFAULT '',
+  tool_calls TEXT NOT NULL DEFAULT '[]',
+  cost_usd REAL NOT NULL DEFAULT 0,
+  provider TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  prompt_hash TEXT NOT NULL DEFAULT '',
+  at INTEGER NOT NULL
+);
+CREATE INDEX chat_turns_session ON chat_turns(session, id);
+CREATE INDEX chat_turns_at ON chat_turns(at);
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

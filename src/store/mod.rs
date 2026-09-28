@@ -12,6 +12,7 @@ use std::sync::Mutex;
 
 mod arms;
 mod attempts;
+mod chat;
 mod daily;
 mod deploys;
 mod descendants;
@@ -37,6 +38,7 @@ mod webhooks;
 mod workers;
 
 pub use attempts::{Attempt, AttemptState, FinishAttempt, Op, RateLimitSample, seed_used};
+pub use chat::{ChatSession, ChatTurn, NewChatTurn};
 pub use daily::DailyStat;
 pub use deploys::{Assessment, Deploy, DeployTarget, FinishDeploy};
 pub use factors::{FactorLevelStat, ROLES};
@@ -1201,6 +1203,8 @@ mod column_tests {
             ("messages", messages::MESSAGE_COLUMNS),
             ("webhook_tokens", webhooks::WEBHOOK_TOKEN_COLUMNS),
             ("event_cursors", events::EVENT_CURSOR_COLUMNS),
+            ("chat_sessions", chat::CHAT_SESSION_COLUMNS),
+            ("chat_turns", chat::CHAT_TURN_COLUMNS),
         ] {
             let listed: Vec<String> = cols
                 .iter()
