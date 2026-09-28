@@ -599,7 +599,8 @@ fn slot_share(predecessor: i64, successor: i64, slots: usize) -> (Status, String
         return (Status::Ok, String::new(), "");
     }
     let sum = predecessor + successor;
-    let share = format!("; {sum} of {slots} slots: predecessor {predecessor}, successor {successor}");
+    let share =
+        format!("; {sum} of {slots} slots: predecessor {predecessor}, successor {successor}");
     if sum > slots as i64 {
         (
             Status::Warn,

@@ -882,10 +882,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
             run_ticks(&f, &mut refusals, superseded, stopping).await?;
 
             // Fill free slots, re-reading what the other workers hold.
-            slots = slot_budget(
-                jobs,
-                f.store.running_elsewhere(pid, pid_alive).unwrap_or(0),
-            );
+            slots = slot_budget(jobs, f.store.running_elsewhere(pid, pid_alive).unwrap_or(0));
             while !stopping
                 && !superseded
                 && env_error.is_none()

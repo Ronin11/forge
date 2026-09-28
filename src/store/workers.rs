@@ -65,8 +65,9 @@ impl Store {
     /// Workers not stopped whose process exists, oldest registration first.
     pub fn live_workers(&self, alive: impl Fn(i64) -> bool) -> Result<Vec<WorkerRow>> {
         let c = self.lock();
-        let mut stmt =
-            c.prepare("SELECT id, pid, version, slots FROM workers WHERE stopped_at IS NULL ORDER BY id")?;
+        let mut stmt = c.prepare(
+            "SELECT id, pid, version, slots FROM workers WHERE stopped_at IS NULL ORDER BY id",
+        )?;
         let rows = stmt
             .query_map([], |r| {
                 Ok(WorkerRow {
