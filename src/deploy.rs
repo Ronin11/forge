@@ -47,6 +47,12 @@ async fn deploy_at(
             if successors { "1" } else { "0" }.to_string(),
         ));
     }
+    // The action's own timeout (deploy-self declares one ample for a cold
+    // build) outranks the repository's check timeout.
+    let timeout = action
+        .def
+        .timeout_secs
+        .map_or(timeout, |s| Duration::from_secs(u64::from(s)));
     let r = operation::run_deploy_method(action, target, sha, home, scratch, timeout, &extra).await;
     let _ = std::fs::remove_dir_all(scratch);
     r

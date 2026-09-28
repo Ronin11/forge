@@ -355,9 +355,12 @@ passing commit through the same method (its release is still on disk, so
 without a rebuild), and the project gets its question. A first-ever
 deploy has no passing commit to roll back to; the record says so.
 
-The whole method has to finish inside the repository's
-`check_timeout_secs`, a cold `cargo build` included; the build cache in
-`FORGE_HOME/bin/target` is what makes a warm one fit.
+The whole method has to finish inside the action's own `timeout_secs`
+(3600 for `deploy-self`, ample for a cold `cargo build`; an action that
+declares none gets the repository's `check_timeout_secs`). A method that
+overruns is sent SIGTERM to its process group and has five seconds to run
+its exit trap, which puts the pointers back and cleans the scratch, before
+SIGKILL.
 
 ## Rollback and the human rung
 
