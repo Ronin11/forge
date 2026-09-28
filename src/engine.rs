@@ -1080,10 +1080,8 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
             continue;
         }
         consecutive_refusals = 0;
-        // An environment need the policy covers (a host the proxy
-        // refused, a host cache) is applied and the attempt runs again;
-        // it does not count against the directive. What the table does
-        // not cover falls through as it always has.
+        // An environment need the policy covers (a refused host, a host cache) is
+        // applied and rerun without counting; anything else falls through.
         match environment_after(f, t, cfg, &a, &verdict).await? {
             Environment::Applied => {
                 run.refund(f, seq, a.id)?;
@@ -1091,6 +1089,9 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
             }
             Environment::Ask(reason) => return Ok(blocked_on(reason)),
             Environment::Left => {}
+        }
+        if reask_reproduction(f, step, &a, &verdict, run, seq, &mut feedback)? {
+            continue;
         }
         // A check that failed only inside the verification namespace
         // is the test author's failure, not the coder's: the coder
@@ -1752,6 +1753,36 @@ enum End {
         initiative: i64,
         last: i64,
     },
+}
+
+/// A review whose demotion cited files only its sandbox had is asked,
+/// once, to inline the reproduction (`verify::review::reask`): that
+/// attempt does not count against the step, and the ask becomes the
+/// feedback the next attempt is shown. True when it asked.
+fn reask_reproduction(
+    f: &Forge,
+    step: &workflows::ResolvedStep,
+    a: &crate::store::Attempt,
+    verdict: &verify::Verdict,
+    run: &mut Run,
+    seq: i64,
+    feedback: &mut Option<String>,
+) -> Result<bool, Fault> {
+    if step.action.contract != Contract::Review || a.state != AttemptState::ChecksFailed {
+        return Ok(false);
+    }
+    let Some(ask) = verify::review::reask(&verdict.checks, feedback.as_deref(), a.task_id) else {
+        return Ok(false);
+    };
+    f.report.emit(
+        a.task_id,
+        Event::Note {
+            text: "review   the demotion cites files outside the clone; asking the reviewer once to inline its reproduction",
+        },
+    );
+    run.refund(f, seq, a.id)?;
+    *feedback = Some(ask);
+    Ok(true)
 }
 
 /// Names the L0 rows the last attempt's verdict failed, the same shape

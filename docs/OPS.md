@@ -432,8 +432,9 @@ A host or cache need the `[environment]` table does not cover goes to the
 supervisor (`src/env_supervisor.rs`), not the operator, when the supervisor is
 on. It is given the typed need, the evidence line, the table and a ceiling it
 may not exceed: **one named host** (never a wildcard, never `github.com`,
-never a model endpoint), or **one directory under `~/.cache`**, read-only.
-It approves or denies with a one-line reason.
+never a model endpoint), or a cache **the operator's own `cache_paths` list already names**,
+read-only (a cache outside the list is always the operator's question).
+Neither is granted to a trust level whose egress is `model`. It approves or denies with a one-line reason.
 
 - An approval within the ceiling is applied like an automatic grant, the run
   repeats without spending a retry, and the decision row (kind

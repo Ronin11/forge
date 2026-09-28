@@ -490,6 +490,10 @@ pub fn rule_diagnosis(rule: Rule, c: &CheckResult) -> Diagnosis {
             "the supervisor said the work had landed but cited no succeeded task",
             "The question went to the operator instead. Check the tasks list yourself; if the work did land, mark this task superseded by hand.",
         ),
+        Rule::ReproductionSelfContained => d(
+            &format!("the review's demotion cited files only its sandbox had ({tail1})"),
+            "A follow-up starts from a fresh clone. The reviewer is asked once to inline the reproduction or write it under tests/review-notes/<task>/; if it repeats, the review prompt is being ignored.",
+        ),
     }
 }
 
