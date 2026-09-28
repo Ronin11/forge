@@ -1,11 +1,23 @@
 name = "deploy-command"
 kind = "operation"
+required_args = ["host", "dest"]
 description = "the generic deploy method: rsync's the landed tree (or an optional build_dir within it) to host:dest over ssh, runs the target's command there, then runs the target's check there and reports its exit status. Host 'local' skips ssh and runs everything on this machine. Reads its args (host, dest, command, and optionally build_dir and exclude, a comma-separated list of rsync exclude patterns) and the check command from the environment, injected there by `forge deploy` from the target's own record (see docs/DEPLOY.md, 'Secrets and hosts')."
 run = ["bash", "-c", '''
 set -e
 host="$FORGE_ARG_HOST"
 dest="$FORGE_ARG_DEST"
 cmd="$FORGE_ARG_COMMAND"
+if [ -z "$host" ]; then
+  echo "deploy-command: no host arg" >&2
+  exit 1
+fi
+case "$dest" in
+  *[!/]*) ;;
+  *)
+    echo "deploy-command: dest arg is empty or /, refusing to rsync --delete onto it" >&2
+    exit 1
+    ;;
+esac
 src="."
 if [ -n "$FORGE_ARG_BUILD_DIR" ]; then
   src="$FORGE_ARG_BUILD_DIR"

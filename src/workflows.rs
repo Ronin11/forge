@@ -479,6 +479,11 @@ struct ActionRaw {
     timeout_secs: Option<u32>,
     /// Operation: a command to run in the sandbox against the tree.
     run: Option<Vec<String>>,
+    /// Operation: the `--arg`s a deploy target running it must give,
+    /// each non-empty; `forge project deploy add`/`set` refuse a target
+    /// missing one.
+    #[serde(default)]
+    required_args: Vec<String>,
     /// Operation: run the repository's declared check of this name instead.
     check: Option<String>,
     /// Directive: which kernel contract runs it (default: the name).
@@ -545,6 +550,9 @@ pub struct ActionDef {
     pub max_turns: Option<u32>,
     pub timeout_secs: Option<u32>,
     pub run: Option<Vec<String>>,
+    /// The args a deploy target running this operation must give.
+    #[serde(default)]
+    pub required_args: Vec<String>,
     pub check: Option<String>,
     pub contract: Contract,
     pub paths: Vec<String>,
@@ -1080,9 +1088,9 @@ pub(crate) fn parse_action(path: &Path, text: &str, hash: String) -> Result<Acti
             }
         }
         Kind::Directive => {
-            if raw.run.is_some() || raw.check.is_some() {
+            if raw.run.is_some() || raw.check.is_some() || !raw.required_args.is_empty() {
                 bail!(
-                    "{}: a directive does not have `run` or `check`",
+                    "{}: a directive does not have `run`, `check` or `required_args`",
                     path.display()
                 );
             }
@@ -1200,6 +1208,7 @@ pub(crate) fn parse_action(path: &Path, text: &str, hash: String) -> Result<Acti
         max_turns: raw.max_turns,
         timeout_secs: raw.timeout_secs,
         run: raw.run,
+        required_args: raw.required_args,
         check: raw.check,
         contract,
         paths: raw.paths,

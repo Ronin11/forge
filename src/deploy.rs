@@ -586,6 +586,35 @@ const RESERVED_ARG_KEYS: &[&str] = &[
     "on_landing",
 ];
 
+/// Refuse a target whose method declares `required_args` (see
+/// src/builtins/operations/deploy-command.toml) that its args leave
+/// missing or blank: an empty `dest` would otherwise make the method's
+/// `rsync --delete` target the host's `/` (docs/REVIEW-4.md, E3-19). A
+/// method the catalog does not know is left for `forge deploy` to refuse.
+fn check_required_args(f: &Forge, method: &str, args: &BTreeMap<String, String>) -> Result<()> {
+    let actions = crate::workflows::load_actions(&f.paths.home)?;
+    let Some(def) = actions.get(method) else {
+        return Ok(());
+    };
+    let missing: Vec<&str> = def
+        .required_args
+        .iter()
+        .filter(|k| args.get(*k).is_none_or(|v| v.trim().is_empty()))
+        .map(String::as_str)
+        .collect();
+    if !missing.is_empty() {
+        bail!(
+            "method {method:?} requires {}",
+            missing
+                .iter()
+                .map(|k| format!("--arg {k}=<value>"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    Ok(())
+}
+
 /// Parse repeated `<key>=<value>` pairs from `--arg` into a map, in the
 /// order clap collected them (last write wins on a repeated key).
 /// Refuses a pair with no `=` and a key that shadows one of the target's
@@ -622,6 +651,7 @@ pub fn add_target(f: &Forge, spec: TargetSpec) -> Result<DeployTarget> {
         .map(|s| serde_json::to_string(&s.split(',').collect::<Vec<_>>()))
         .transpose()?;
     let args = parse_target_args(&spec.args)?;
+    check_required_args(f, &spec.method, &args)?;
     let check = match spec.check {
         Some(c) => c,
         None if has_default_check(&spec.method) => String::new(),
@@ -688,6 +718,7 @@ pub fn set_target(
     if t.check_cmd.is_empty() && !has_default_check(&t.method) {
         bail!("--check is required for method {:?}", t.method);
     }
+    check_required_args(f, &t.method, &t.args)?;
 
     f.store.update_deploy_target(&t)?;
     Ok(t)
