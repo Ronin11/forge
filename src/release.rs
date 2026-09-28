@@ -191,6 +191,57 @@ pub fn unstage(lock: &Lock, root: &Path, id: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// Withdraw the stage request whatever it names, as every flip of `current`
+/// other than `deploy-self`'s does first: a flip decides what runs, and a
+/// `staged` left behind would start a successor that flips it back.
+/// Returns what `staged` named.
+pub fn drop_staged(_lock: &Lock, root: &Path) -> Result<Option<String>> {
+    let named = pointed_at(root, "staged");
+    match std::fs::remove_file(root.join("staged")) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(named),
+    }
+}
+
+/// Acknowledge the stage request for `id`, the release that now runs:
+/// remove `staged` only while it still names `id`, so a later deploy's
+/// stage is left alone. Returns whether it was removed.
+pub fn acknowledge_staged(_lock: &Lock, root: &Path, id: &str) -> Result<bool> {
+    if pointed_at(root, "staged").as_deref() != Some(id) {
+        return Ok(false);
+    }
+    std::fs::remove_file(root.join("staged"))?;
+    Ok(true)
+}
+
+/// Whether `staged` is older than `current` in `previous`'s lineage: it
+/// names `previous`, or `current` was pointed somewhere after it was
+/// staged (an upgrade, a hand flip back to `previous`). Such a stage was
+/// overtaken and must not start a successor that flips `current` back.
+pub fn staged_overtaken(root: &Path) -> bool {
+    let Some(staged) = pointed_at(root, "staged") else {
+        return false;
+    };
+    if pointed_at(root, "current").as_deref() == Some(staged.as_str()) {
+        return false;
+    }
+    if pointed_at(root, "previous").as_deref() == Some(staged.as_str()) {
+        return true;
+    }
+    let pointed = |name: &str| {
+        std::fs::symlink_metadata(root.join(name))
+            .and_then(|m| m.modified())
+            .ok()
+    };
+    matches!((pointed("staged"), pointed("current")), (Some(s), Some(c)) if s < c)
+}
+
+/// Take the pointers' lock only if nobody holds it: for a worker's tick,
+/// which must not wait out a `deploy-self` build.
+pub fn try_lock(root: &Path) -> Option<Lock> {
+    lock_within(root, Duration::ZERO).ok()
+}
+
 /// Make the symlink `link` point at `target`, replacing whatever is there;
 /// false when it already did.
 pub fn relink(link: &Path, target: &Path) -> Result<bool> {
@@ -286,6 +337,35 @@ mod tests {
         for t in threads {
             t.join().unwrap();
         }
+    }
+
+    #[test]
+    fn a_staged_release_is_overtaken_by_a_later_flip_or_by_naming_previous() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("bin");
+        let lock = lock(&root).unwrap();
+        for id in ["a", "b", "c"] {
+            install(&lock, &root, &fake_src(dir.path(), id), id).unwrap();
+        }
+        flip(&lock, &root, "a").unwrap();
+        assert!(!staged_overtaken(&root), "nothing staged");
+        std::thread::sleep(Duration::from_millis(20));
+        point(&lock, &root, "staged", "b").unwrap();
+        assert!(!staged_overtaken(&root), "a fresh stage is a request");
+        std::thread::sleep(Duration::from_millis(20));
+        // An upgrade (or a hand flip) after the stage overtakes it.
+        flip(&lock, &root, "c").unwrap();
+        assert!(staged_overtaken(&root));
+        // Staged naming previous is older than current.
+        point(&lock, &root, "staged", "a").unwrap();
+        assert!(staged_overtaken(&root));
+        // Acknowledged only while it names the release that runs.
+        assert!(!acknowledge_staged(&lock, &root, "c").unwrap());
+        assert!(acknowledge_staged(&lock, &root, "a").unwrap());
+        assert!(pointed_at(&root, "staged").is_none());
+        point(&lock, &root, "staged", "b").unwrap();
+        assert_eq!(drop_staged(&lock, &root).unwrap().as_deref(), Some("b"));
+        assert_eq!(drop_staged(&lock, &root).unwrap(), None);
     }
 
     #[test]

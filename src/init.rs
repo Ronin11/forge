@@ -287,6 +287,7 @@ fn adopt_running_binaries(home: &Path) -> Result<Vec<StepResult>> {
         Some(live) => steps.push(step("release", false, format!("current is already {live}"))),
         None => {
             let made = release::install(&lock, &root, src, id)?;
+            release::drop_staged(&lock, &root)?;
             release::flip(&lock, &root, id)?;
             let detail = format!(
                 "copied {} into {} and pointed {} at it{}",
