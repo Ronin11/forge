@@ -214,6 +214,7 @@ fn probabilities_json<S: serde::Serializer>(text: &str, s: S) -> Result<S::Ok, S
 }
 
 pub(super) const JOB_COLUMNS: &[&str] = &[
+    "run",
     "id",
     "project",
     "workflow",
