@@ -407,3 +407,94 @@ fn forge_upgrade_refuses_a_tarball_whose_checksum_does_not_match() {
     assert!(err.contains("sha256 mismatch"), "{err}");
     assert_eq!(u.binary("forge"), "#!/bin/sh\n# old\nexit 0\n");
 }
+
+/// A worker restarted from `current/forge`, as the unit does after an
+/// upgrade, with the fakes on `PATH`.
+fn restart_worker(u: &Upgrade) -> Worker {
+    let mut cmd = Command::new(u.bins.join("current/forge"));
+    cmd.envs(
+        u.e.cmd("ok.sh")
+            .get_envs()
+            .filter_map(|(k, v)| Some((k, v?))),
+    )
+    .env("PATH", &u.path)
+    .env("UPGRADE_CALLS_LOG", &u.calls_log)
+    .args(["work", "--jobs", "1", "--poll", "1"]);
+    Worker::spawn(&mut cmd)
+}
+
+/// Worker versions registered in the store.
+fn worker_versions(e: &Env) -> Vec<String> {
+    let db = e.db();
+    let mut s = db.prepare("SELECT version FROM workers").unwrap();
+    s.query_map([], |r| r.get(0))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect()
+}
+
+#[test]
+fn upgrade_with_a_stale_staged_leaves_current_on_the_upgraded_release_after_the_worker_restarts() {
+    let u = Upgrade::new(&["forge-web", "forge-portal", "forge-worker"], FAKE_CURL_OK);
+    // A self-deploy long ago left `staged` naming its release, a runnable
+    // `forge`: a successor started on it would flip `current` back.
+    let deployed = u.bins.join("releases/deployed");
+    std::fs::create_dir_all(&deployed).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_forge"), deployed.join("forge")).unwrap();
+    std::os::unix::fs::symlink("releases/deployed", u.bins.join("staged")).unwrap();
+
+    let tarball = u.tarball("9.9.9");
+    let o = u.run(&[tarball.to_str().unwrap()]);
+    assert!(
+        o.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(u.link("current"), "releases/9.9.9");
+    assert_eq!(u.link("staged"), "", "the upgrade left the stale stage");
+
+    // Even a stage put back by hand is older than the upgrade's flip.
+    std::os::unix::fs::symlink("releases/deployed", u.bins.join("staged")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let tmp = u.bins.join(".current.hand");
+    std::os::unix::fs::symlink("releases/9.9.9", &tmp).unwrap();
+    std::fs::rename(&tmp, u.bins.join("current")).unwrap();
+
+    let _reap = crate::successor::Reap(u.e.home.clone());
+    let _worker = restart_worker(&u);
+    assert!(
+        wait_until(
+            || worker_versions(&u.e).contains(&"9.9.9".to_string()),
+            std::time::Duration::from_secs(30)
+        ),
+        "the restarted worker never registered on 9.9.9"
+    );
+    // Several polls: time enough for a successor to start and flip back.
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    assert_eq!(u.link("current"), "releases/9.9.9");
+    let versions = worker_versions(&u.e);
+    assert!(
+        !versions.contains(&"deployed".to_string()),
+        "a successor started on the stale stage: {versions:?}"
+    );
+
+    // Doctor names the stage nobody will answer.
+    let out = u.e.forge("ok.sh", &["doctor", "--json"]);
+    let checks: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let row = checks
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "worker")
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(row["status"], "fail", "{checks}");
+    assert!(
+        row["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("release deployed staged but current is 9.9.9"),
+        "{row}"
+    );
+}

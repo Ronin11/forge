@@ -385,8 +385,30 @@ fn host_ceiling(
             "{host} is a wildcard; the most that may be granted is one named host"
         ));
     }
+    if !host.is_empty() && !host.contains(['.', ':']) {
+        return Err(format!(
+            "{host} is a single-label name; only a fully qualified host may be granted"
+        ));
+    }
     if !valid_host(host) {
         return Err(format!("{host} is not a host name"));
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    if labels.iter().any(|l| l.is_empty()) {
+        return Err(format!("{host} is not a host name"));
+    }
+    // No real top-level domain starts with a digit, so this also catches
+    // the short and hex spellings of an address (`10.5`, `0x7f.1`).
+    if labels
+        .last()
+        .is_some_and(|l| l.starts_with(|c: char| c.is_ascii_digit()))
+    {
+        return Err(format!(
+            "{host} is an IP address; only a named host may be granted"
+        ));
+    }
+    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".localhost") {
+        return Err(format!("{host} is localhost and is never granted"));
     }
     if host == "github.com" || host.ends_with(".github.com") {
         return Err("github.com is never granted".into());
@@ -630,6 +652,36 @@ mod tests {
             target: target.into(),
             evidence: String::new(),
         }
+    }
+
+    #[test]
+    fn the_ceiling_refuses_ip_literals_localhost_and_single_label_names() {
+        let host = |t: &str| within_ceiling(&ceiling_need(NeedKind::Host, t), &[], &[], &[]);
+        for t in [
+            "169.254.169.254",
+            "10.0.0.5",
+            "127.0.0.1",
+            "10.5",
+            "2130706433",
+            "0x7f.0x1",
+            "::1",
+            "localhost",
+            "LOCALHOST",
+            "app.localhost",
+            "intranet",
+            "metadata",
+            "example.com.",
+            "a..example.com",
+        ] {
+            assert!(host(t).is_err(), "{t} must be refused");
+        }
+        assert!(host("169.254.169.254").unwrap_err().contains("IP address"));
+        assert!(host("localhost").is_err());
+        assert!(host("intranet").unwrap_err().contains("single-label"));
+        assert_eq!(
+            host("registry.example.net"),
+            Ok(Grant::Host("registry.example.net".into()))
+        );
     }
 
     #[test]

@@ -210,7 +210,7 @@ graph TD
 
 **src/main.rs** is the process entry point for the `forge` binary; it declares the crate's modules and delegates to `cli::main()`.
 
-**build.rs** runs at compile time, shelling out to `git rev-parse --short HEAD` and exposing the result as the `FORGE_GIT_SHA` compile-time env var, read by `forge version`.
+**build.rs** runs at compile time, shelling out to `git rev-parse --short HEAD` and exposing the result as the `FORGE_GIT_SHA` compile-time env var, read by `forge version`, and `git rev-parse HEAD` as `FORGE_GIT_SHA_FULL`, the id `forge init --relink` names its release by (the one `deploy-self` uses).
 
 **src/cli.rs** implements every `forge` subcommand (`run`, `add`, `ask`, `work`, `log`, `retry`, `answer`, `withdraw`, `decisions`, `show`, `supervise`, `doctor`, `workflows`, `providers`, `trace`, `requests`, `stats`, `events`, `snapshot`, `land`, `integrate`, `journal`, `gc`, `version`, `provision`, plus the `plugin`, `ref`, `project`, `job`, `initiative`, `deploy`, and `intake` command groups). The engine never prints; this does. It validates operator input and dispatches into `queue`, `concierge`, `intake`, `worker`, `job`, `deploy`, `operation`, `plugins`, `landing`, `supervisor`, `view`, `audit`, `profile`, `git`, `doctor`, and `ctx`. A `#[cfg(test)]` measures every function's body and fails on any over 80 lines outside a named allowlist (`main`; the renderers `show`, `trace`, `initiative_report`, `log`, `list_workflows`, `stats`, `quality_stats`; `land_task`, which lands a verified branch and reports every outcome) — a function may leave the list, nothing new joins it (docs/REVIEW-2.md, stage 3: "a cli.rs function parses arguments, calls one kernel function and prints").
 

@@ -710,25 +710,37 @@ pub async fn commit_all(dir: &Path, message: &str) -> Result<Option<String>> {
 /// next to it). Returns the new commit, or `None` when `path` was
 /// already exactly this content at `HEAD`.
 pub async fn commit_path(dir: &Path, path: &str, message: &str) -> Result<Option<String>> {
+    commit_paths(dir, &[path], message).await
+}
+
+/// `commit_path` for several paths as one commit; nothing outside `paths`
+/// is staged or committed.
+pub async fn commit_paths(dir: &Path, paths: &[&str], message: &str) -> Result<Option<String>> {
+    if paths.is_empty() {
+        return Ok(None);
+    }
     let g = Git::new(dir);
-    g.line(&["add", "--", path]).await?;
+    let with_paths = |head: &[&str]| -> Vec<String> {
+        head.iter()
+            .chain(&["--"])
+            .chain(paths)
+            .map(|s| s.to_string())
+            .collect()
+    };
+    let add = with_paths(&["add"]);
+    g.line(&add.iter().map(String::as_str).collect::<Vec<_>>())
+        .await?;
+    let diff = with_paths(&["diff", "--cached", "--quiet"]);
     let staged = g
-        .output(&["diff", "--cached", "--quiet", "--", path])
+        .output(&diff.iter().map(String::as_str).collect::<Vec<_>>())
         .await?;
     if staged.status.success() {
         return Ok(None);
     }
+    let commit = with_paths(&["commit", "--quiet", "--no-verify", "-m", message]);
     Git::new(dir)
         .with_identity()
-        .line(&[
-            "commit",
-            "--quiet",
-            "--no-verify",
-            "-m",
-            message,
-            "--",
-            path,
-        ])
+        .line(&commit.iter().map(String::as_str).collect::<Vec<_>>())
         .await?;
     Ok(Some(g.line(&["rev-parse", "HEAD"]).await?))
 }
