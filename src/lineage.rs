@@ -72,15 +72,24 @@ pub fn tip_of(root: i64, rows: &[LineageRow]) -> i64 {
     cur
 }
 
-/// What became of a lineage, from its tip's state and reason alone: queued,
-/// running or capped are still going (`InProgress`); succeeded lands;
-/// withdrawn and unverified keep their own name; blocked is a `Question`
-/// when the reason is one addressed to a person, else `Dangling` beside
-/// every failed tip.
-pub fn classify(state: TaskState, reason: &str) -> Outcome {
+/// What became of a lineage, from its tip's state, reason and landing
+/// fields: queued, running or capped are still going (`InProgress`);
+/// succeeded is `Landed` once it either landed (`landed_sha` set) or was
+/// never meant to (`--no-land`, `land` false), else still `InProgress`
+/// pending a human's `forge land` — the same "resolved" test
+/// `queue::map_dep` uses; withdrawn and unverified keep their own name;
+/// blocked is a `Question` when the reason is one addressed to a person,
+/// else `Dangling` beside every failed tip.
+pub fn classify(state: TaskState, reason: &str, land: bool, landed_sha: &str) -> Outcome {
     match state {
         TaskState::Queued | TaskState::Running | TaskState::Capped => Outcome::InProgress,
-        TaskState::Succeeded => Outcome::Landed,
+        TaskState::Succeeded => {
+            if !land || !landed_sha.is_empty() {
+                Outcome::Landed
+            } else {
+                Outcome::InProgress
+            }
+        }
         TaskState::Withdrawn => Outcome::Withdrawn,
         TaskState::Unverified => Outcome::Unverified,
         TaskState::Blocked => {
@@ -118,7 +127,7 @@ pub fn lineage_of(rows: &[LineageRow]) -> Option<Lineage> {
     Some(Lineage {
         root,
         tip: tip_id,
-        outcome: classify(state, &tip.reason),
+        outcome: classify(state, &tip.reason, tip.land, &tip.landed_sha),
         task_count: rows.len(),
         cost_usd: rows.iter().map(|r| r.cost).sum(),
         reason: tip.reason.clone(),
@@ -182,6 +191,12 @@ mod tests {
             reason: reason.into(),
             workflow: "direct".into(),
             cost: 1.0,
+            land: true,
+            landed_sha: if state == "succeeded" {
+                "sha".into()
+            } else {
+                String::new()
+            },
         }
     }
 
@@ -216,36 +231,55 @@ mod tests {
     #[test]
     fn classify_maps_every_state() {
         assert_eq!(
-            classify(TaskState::Queued, ""),
+            classify(TaskState::Queued, "", true, ""),
             Outcome::InProgress
         );
         assert_eq!(
-            classify(TaskState::Running, ""),
+            classify(TaskState::Running, "", true, ""),
             Outcome::InProgress
         );
         assert_eq!(
-            classify(TaskState::Capped, "task budget reached"),
+            classify(TaskState::Capped, "task budget reached", true, ""),
             Outcome::InProgress
         );
-        assert_eq!(classify(TaskState::Succeeded, ""), Outcome::Landed);
         assert_eq!(
-            classify(TaskState::Withdrawn, "stale"),
+            classify(TaskState::Succeeded, "", true, "abc123"),
+            Outcome::Landed
+        );
+        assert_eq!(
+            classify(TaskState::Withdrawn, "stale", true, ""),
             Outcome::Withdrawn
         );
         assert_eq!(
-            classify(TaskState::Unverified, "no L1 or L2"),
+            classify(TaskState::Unverified, "no L1 or L2", true, ""),
             Outcome::Unverified
         );
         assert_eq!(
-            classify(TaskState::Failed, "L1 failed: test"),
+            classify(TaskState::Failed, "L1 failed: test", true, ""),
             Outcome::Dangling
+        );
+    }
+
+    #[test]
+    fn a_succeeded_task_still_pending_forge_land_is_in_progress() {
+        assert_eq!(
+            classify(TaskState::Succeeded, "", true, ""),
+            Outcome::InProgress
+        );
+    }
+
+    #[test]
+    fn a_no_land_succeeded_task_is_landed_with_no_sha() {
+        assert_eq!(
+            classify(TaskState::Succeeded, "", false, ""),
+            Outcome::Landed
         );
     }
 
     #[test]
     fn a_question_addressed_to_a_person_is_not_dangling() {
         assert_eq!(
-            classify(TaskState::Blocked, "needs input: which db?"),
+            classify(TaskState::Blocked, "needs input: which db?", true, ""),
             Outcome::Question
         );
     }
@@ -259,7 +293,7 @@ mod tests {
             "waits on task 14 (failed: L1 failed: test)",
         ] {
             assert_eq!(
-                classify(TaskState::Blocked, reason),
+                classify(TaskState::Blocked, reason, true, ""),
                 Outcome::Dangling,
                 "{reason}"
             );

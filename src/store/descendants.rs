@@ -66,6 +66,8 @@ mod tests {
             reason: String::new(),
             workflow: "w".into(),
             cost: 0.0,
+            land: true,
+            landed_sha: String::new(),
         }
     }
 

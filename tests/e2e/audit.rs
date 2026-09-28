@@ -24,6 +24,12 @@ fn every_outcome_is_totaled_with_its_task_count_and_cost() {
     set(&e, landed, "succeeded", "");
     e.db()
         .execute(
+            "UPDATE tasks SET landed_sha='abc123' WHERE id=?1",
+            rusqlite::params![landed],
+        )
+        .unwrap();
+    e.db()
+        .execute(
             "INSERT INTO attempts (task_id, attempt_no, step, state, cost_usd, started_at) VALUES (?1, 1, 'code', 'succeeded', 1.5, 0)",
             rusqlite::params![landed],
         )

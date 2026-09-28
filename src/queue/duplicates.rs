@@ -88,6 +88,8 @@ mod tests {
             reason: String::new(),
             workflow: "w".into(),
             cost: 0.0,
+            land: true,
+            landed_sha: String::new(),
         };
         assert_eq!(
             live_descendant_refusal(811, &[row(822, "running"), row(823, "queued")]),

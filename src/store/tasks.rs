@@ -351,6 +351,11 @@ pub struct LineageRow {
     pub reason: String,
     pub workflow: String,
     pub cost: f64,
+    /// Land on the base branch once verified (see `Task::land`); with
+    /// `landed_sha`, tells a succeeded row apart from one still pending a
+    /// human's `forge land` (see `crate::lineage::classify`).
+    pub land: bool,
+    pub landed_sha: String,
 }
 
 /// The shared decision behind `release_dependents` and
@@ -929,7 +934,7 @@ impl Store {
         let mut stmt = c.prepare(
             "WITH RECURSIVE down(id) AS (
                SELECT ?1 UNION ALL SELECT t.id FROM down JOIN tasks t ON t.retry_of = down.id)
-             SELECT t.id, t.retry_of, t.state, t.reason, t.workflow,
+             SELECT t.id, t.retry_of, t.state, t.reason, t.workflow, t.land, t.landed_sha,
                     COALESCE((SELECT SUM(cost_usd) FROM attempts a WHERE a.task_id = t.id), 0) AS cost
              FROM down JOIN tasks t ON t.id = down.id ORDER BY t.id",
         )?;
@@ -941,6 +946,8 @@ impl Store {
                 reason: r.get("reason")?,
                 workflow: r.get("workflow")?,
                 cost: r.get("cost")?,
+                land: r.get::<_, i64>("land")? != 0,
+                landed_sha: r.get("landed_sha")?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
