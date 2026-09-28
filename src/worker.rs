@@ -921,7 +921,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         let pass: Result<()> = async {
             recover_orphans(&f, false)?;
             superseded = succession.superseded(&f, &mut plugins).await?;
-            if !stopping && succession.stop_requested() {
+            if !stopping && succession.stop_requested().await {
                 stopping = true;
                 eprintln!(
                     "stopping: the unit has a stop job; {} running attempt(s) will finish",
@@ -1087,7 +1087,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     if let Some(p) = plugins {
         p.stop().await;
     }
-    let handover = succession.leave(&f);
+    let handover = succession.leave(&f).await;
     eprintln!("worked {done} task(s): {ok} succeeded, {} not", done - ok);
     if jobs_done > 0 {
         eprintln!(

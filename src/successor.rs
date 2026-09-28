@@ -220,20 +220,20 @@ impl Succession {
     /// own `systemctl --user stop` or `restart` queued while the old worker
     /// was the main pid, whose SIGTERM systemd never re-sends to the pid
     /// that took the unit over. The worker drains and exits as on SIGTERM.
-    pub fn stop_requested(&self) -> bool {
+    pub async fn stop_requested(&self) -> bool {
         if !self.daemon
             || std::env::var_os(SUCCESSOR_OF).is_none()
             || std::env::var_os("NOTIFY_SOCKET").is_none()
         {
             return false;
         }
-        unit_state(&own_unit()).as_deref() == Some("deactivating")
+        unit_state_async(&own_unit()).await.as_deref() == Some("deactivating")
     }
 
     /// Deregister; a worker that started a successor first waits (bounded)
     /// until the successor has taken the unit over, so systemd never sees
     /// the main pid exit before `MAINPID=` moved it.
-    pub fn leave(&mut self, f: &Forge) -> Result<()> {
+    pub async fn leave(&mut self, f: &Forge) -> Result<()> {
         if !self.daemon {
             return Ok(());
         }
@@ -246,7 +246,7 @@ impl Succession {
                 && matches!(child.try_wait(), Ok(None))
                 && start.elapsed() < HANDOVER_WAIT
             {
-                std::thread::sleep(std::time::Duration::from_millis(200));
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
             if read_capability(&root) != Some(want) {
                 if matches!(child.try_wait(), Ok(Some(_))) {
@@ -391,6 +391,28 @@ fn own_unit() -> String {
                 .map(|seg| seg.trim_end_matches(".service").to_string())
         })
         .unwrap_or_else(|| WORKER_UNIT.to_string())
+}
+
+async fn bounded_output(
+    command: &mut tokio::process::Command,
+    timeout: std::time::Duration,
+) -> Option<std::process::Output> {
+    command.kill_on_drop(true);
+    tokio::time::timeout(timeout, command.output())
+        .await
+        .ok()?
+        .ok()
+}
+
+async fn unit_state_async(unit: &str) -> Option<String> {
+    let mut command = tokio::process::Command::new("systemctl");
+    command
+        .args(["--user", "is-active", unit])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    let out = bounded_output(&mut command, std::time::Duration::from_secs(2)).await?;
+    let word = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!word.is_empty()).then_some(word)
 }
 
 /// `systemctl --user is-active <unit>`'s word for it: active,
@@ -705,5 +727,33 @@ mod tests {
             down.describe("forge-web"),
             "forge-web: did not become active within 4 tries"
         );
+    }
+}
+
+#[cfg(test)]
+mod bounded_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn bounded_call_times_out_without_blocking_runtime() {
+        let mut command = tokio::process::Command::new("sleep");
+        command.arg("30");
+        let started = std::time::Instant::now();
+        let (result, ()) = tokio::join!(
+            bounded_output(&mut command, std::time::Duration::from_millis(50)),
+            async { tokio::time::sleep(std::time::Duration::from_millis(10)).await }
+        );
+        assert!(result.is_none());
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn bounded_call_returns_output() {
+        let mut command = tokio::process::Command::new("printf");
+        command.arg("deactivating\n");
+        let out = bounded_output(&mut command, std::time::Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(out.stdout, b"deactivating\n");
     }
 }
