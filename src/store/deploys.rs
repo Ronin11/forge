@@ -565,6 +565,61 @@ mod tests {
         assert!(s.deploy_target("equitizr", "prod").unwrap().is_none());
     }
 
+    /// `deploy::run`'s error path must not overwrite an outcome it already
+    /// recorded (docs/REVIEW-4.md, E3-10): `finish_open_deploy` finishes an
+    /// open row and says so, and leaves a finished one, rollback and all,
+    /// exactly as it was.
+    #[test]
+    fn finish_open_deploy_never_overwrites_a_finished_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "equitizr");
+        let error = |id| FinishDeploy {
+            id,
+            at: 300,
+            check_ok: false,
+            check_output: "",
+            rolled_back_to: None,
+            reason: "some later error",
+            smoke_ok: None,
+            smoke_json: None,
+            look_ok: None,
+            look_json: None,
+        };
+
+        let rolled = s
+            .start_deploy("equitizr", "prod", "bbbbbbb", 200, None)
+            .unwrap();
+        s.finish_deploy(FinishDeploy {
+            id: rolled,
+            at: 250,
+            check_ok: false,
+            check_output: "connection refused",
+            rolled_back_to: Some("aaaaaaa"),
+            reason: "rolled back to aaaaaaa",
+            smoke_ok: None,
+            smoke_json: None,
+            look_ok: None,
+            look_json: None,
+        })
+        .unwrap();
+        assert!(!s.finish_open_deploy(error(rolled)).unwrap());
+        let row = &s.deploys("equitizr", None).unwrap()[0];
+        assert_eq!(row.rolled_back_to.as_deref(), Some("aaaaaaa"));
+        assert_eq!(row.reason, "rolled back to aaaaaaa");
+        assert_eq!(row.finished_at, Some(250));
+
+        let open = s
+            .start_deploy("equitizr", "prod", "ccccccc", 400, None)
+            .unwrap();
+        assert!(s.finish_open_deploy(error(open)).unwrap());
+        let row = &s.deploys("equitizr", None).unwrap()[0];
+        assert_eq!(row.id, open);
+        assert_eq!(row.reason, "some later error");
+        assert_eq!(row.finished_at, Some(300));
+        assert_eq!(row.check_ok, Some(false));
+    }
+
     #[test]
     fn deploys_are_recorded_and_listed_newest_first_optionally_by_target() {
         let dir = tempfile::tempdir().unwrap();

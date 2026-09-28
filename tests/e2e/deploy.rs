@@ -1085,6 +1085,8 @@ fn deploy_static_rsyncs_and_defaults_the_check_to_a_url_fetch_with_a_marker() {
     assert_eq!(rows.as_array().unwrap()[0]["check_ok"], false);
 }
 
+#[path = "deploy/errors.rs"]
+mod errors;
 #[path = "deploy/landing.rs"]
 mod landing;
 
