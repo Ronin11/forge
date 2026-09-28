@@ -237,6 +237,39 @@ pub fn check(dir: &Path, source_override: Option<&Path>) -> Standing {
     }
 }
 
+/// Doctor's view of every plugin installed under `<home>/plugins`: a
+/// `; installed vs repo copy: name state, ...` suffix (with the diff size where it drifted), and the hint
+/// naming the first drifted plugin (empty when none drifted).
+pub fn summarize(cat: &super::Catalog, home: &Path) -> (String, String) {
+    let installed = home.join("plugins");
+    let mut parts = Vec::new();
+    let mut hint = String::new();
+    for p in cat.plugins.values().filter(|p| p.root == installed) {
+        let s = check(&p.dir, None);
+        match s.diff_lines {
+            Some(n) if s.drift.is_drifted() => {
+                parts.push(format!(
+                    "{} {} ({n} diff line(s))",
+                    p.name,
+                    s.drift.as_str()
+                ));
+                if hint.is_empty() {
+                    hint = format!(
+                        "forge plugin refresh {} (or --all): installed plugin files differ from the repo copy they were installed from",
+                        p.name
+                    );
+                }
+            }
+            _ => parts.push(format!("{} {}", p.name, s.drift.as_str())),
+        }
+    }
+    let summary = match parts.is_empty() {
+        true => String::new(),
+        false => format!("; installed vs repo copy: {}", parts.join(", ")),
+    };
+    (summary, hint)
+}
+
 /// What `refresh` did, or why it did not.
 #[derive(Debug)]
 pub enum Refresh {
