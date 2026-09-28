@@ -969,7 +969,11 @@ mod tests {
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(names, [CLAUDE.file], "the temporary sibling is renamed away");
+        assert_eq!(
+            names,
+            [CLAUDE.file],
+            "the temporary sibling is renamed away"
+        );
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&dest).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "the login is private to its owner");
@@ -1031,7 +1035,11 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&t.private).unwrap(), seed_text);
             let host = t.dir.join(s.file);
             std::fs::write(&t.private, f.good("new-a", "new-r", far() + 1000)).unwrap();
-            assert!(s.write_back(&t.dir, &t.state, &t.private).unwrap(), "{}", s.cli);
+            assert!(
+                s.write_back(&t.dir, &t.state, &t.private).unwrap(),
+                "{}",
+                s.cli
+            );
             assert!(std::fs::read_to_string(&host).unwrap().contains("new-r"));
             assert!(last_write_back(&t.dir).is_some());
             // The same login again is not later: nothing to do.
@@ -1080,7 +1088,10 @@ mod tests {
             took,
             "a backup is made exactly when a login is accepted"
         );
-        (took, std::fs::read_to_string(t.dir.join(shape.file)).unwrap())
+        (
+            took,
+            std::fs::read_to_string(t.dir.join(shape.file)).unwrap(),
+        )
     }
 
     #[test]
@@ -1110,7 +1121,11 @@ mod tests {
             let (took, _) = offered(f.shape, &seed_text, |p| {
                 std::fs::write(p, f.good("a1", "r1", far() + 1000)).unwrap();
             });
-            assert!(took, "{}: a login within the lifetime is taken", f.shape.cli);
+            assert!(
+                took,
+                "{}: a login within the lifetime is taken",
+                f.shape.cli
+            );
         }
     }
 
@@ -1226,10 +1241,16 @@ mod tests {
                 ("aaaa.bbbb".into(), ort("r1")),
                 ("aaaa.bbbb.cccc.dddd".into(), ort("r1")),
                 (format!("{}..sig", b64(b"{}")), ort("r1")),
-                (format!("{}.{}.sig", b64(b"{}"), b64(b"not json")), ort("r1")),
+                (
+                    format!("{}.{}.sig", b64(b"{}"), b64(b"not json")),
+                    ort("r1"),
+                ),
                 // A JWT with no expiry, or with padding.
                 (format!("{}.{}.sig", b64(b"{}"), b64(b"{}")), ort("r1")),
-                (format!("{}.{}=.sig", b64(b"{}"), b64(br#"{"exp":1}"#)), ort("r1")),
+                (
+                    format!("{}.{}=.sig", b64(b"{}"), b64(br#"{"exp":1}"#)),
+                    ort("r1"),
+                ),
                 // A refresh token without its prefix, version or body.
                 (oat("a1"), format!("rt.{}", x(40))),
                 (oat("a1"), format!("rt..{}", x(40))),
@@ -1288,7 +1309,10 @@ mod tests {
             let mut n = 0;
             for e in std::fs::read_dir(t.state.join(SEEDS)).unwrap().flatten() {
                 let text = std::fs::read_to_string(e.path()).unwrap();
-                assert!(!text.contains(&refresh) && !text.contains("a0-secret"), "{text}");
+                assert!(
+                    !text.contains(&refresh) && !text.contains("a0-secret"),
+                    "{text}"
+                );
                 n += 1;
             }
             assert_eq!(n, 1, "{}", f.shape.cli);
@@ -1322,7 +1346,10 @@ mod tests {
             s.seed(&t.dir, &state_of(&t.root), &t.worktree, &t.private);
             assert!(!t.private.exists(), "{}", s.cli);
             assert_eq!(s.host_state(&t.dir), Host::Empty);
-            assert!(!Seed::path(&t.state, &t.private).exists(), "no record either");
+            assert!(
+                !Seed::path(&t.state, &t.private).exists(),
+                "no record either"
+            );
         }
     }
 
@@ -1422,7 +1449,11 @@ mod tests {
             s.seed(&t.dir, &t.state, &t.worktree, &t.private);
             let host = std::fs::read_to_string(t.dir.join(s.file)).unwrap();
             assert!(host.contains("live"), "{}", s.cli);
-            assert!(std::fs::read_to_string(&t.private).unwrap().contains("live"));
+            assert!(
+                std::fs::read_to_string(&t.private)
+                    .unwrap()
+                    .contains("live")
+            );
         }
     }
 
@@ -1436,9 +1467,16 @@ mod tests {
             assert!(t.dir.join(name).exists(), "{name}");
         }
         // A claude copy beside it is not codex's to judge.
-        let claude = t.root.path().join("work/task-provider/claude").join(CLAUDE.file);
+        let claude = t
+            .root
+            .path()
+            .join("work/task-provider/claude")
+            .join(CLAUDE.file);
         std::fs::create_dir_all(claude.parent().unwrap()).unwrap();
         std::fs::write(&claude, "{}").unwrap();
-        assert_eq!(CODEX.private_copies(&t.worktree), [t.private.clone()]);
+        assert_eq!(
+            CODEX.private_copies(&t.worktree),
+            std::slice::from_ref(&t.private)
+        );
     }
 }

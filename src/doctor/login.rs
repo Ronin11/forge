@@ -131,9 +131,11 @@ fn login_file(shape: &Shape) -> Vec<Check> {
                 shape.login
             ),
         ),
-        Host::Usable(c) if c.expires_at_ms == login::NEVER => {
-            row(Status::Ok, format!("login does not expire; {wrote}"), String::new())
-        }
+        Host::Usable(c) if c.expires_at_ms == login::NEVER => row(
+            Status::Ok,
+            format!("login does not expire; {wrote}"),
+            String::new(),
+        ),
         Host::Usable(c) => {
             let at = c.expires_at_ms / 1000;
             let detail = format!(
