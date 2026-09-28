@@ -42,6 +42,10 @@ pub enum TaskState {
     /// superseded, or the product decision went the other way. Terminal,
     /// like `Failed`, but never a defect in the work.
     Withdrawn,
+    /// The task's cost cap would be crossed by its next attempt. A
+    /// decision for a human, not a failure: the branch stays pushed and
+    /// the row keeps the session and handoff a continuation resumes from.
+    Capped,
 }
 
 impl TaskState {
@@ -54,6 +58,7 @@ impl TaskState {
             TaskState::Unverified => "unverified",
             TaskState::Blocked => "blocked",
             TaskState::Withdrawn => "withdrawn",
+            TaskState::Capped => "capped",
         }
     }
 }
@@ -69,6 +74,7 @@ impl TryFrom<&str> for TaskState {
             "unverified" => TaskState::Unverified,
             "blocked" => TaskState::Blocked,
             "withdrawn" => TaskState::Withdrawn,
+            "capped" => TaskState::Capped,
             other => {
                 return Err(std::io::Error::other(format!(
                     "unknown task state {other:?}"
@@ -293,6 +299,12 @@ pub struct Task {
     /// role that never ran (a task that failed before review, say) has no
     /// entry.
     pub routing: BTreeMap<String, RoleRouting>,
+    /// The CLI session of the last agent attempt, kept when the task
+    /// ends `capped` so a continuation resumes it; empty otherwise.
+    pub session_id: String,
+    /// The last handoff summary (`handoff::build`), kept with the
+    /// session when the task ends `capped`; empty otherwise.
+    pub handoff: String,
 }
 
 /// `Store::set_task_fields`: only a field that is `Some` replaces the
@@ -567,7 +579,7 @@ impl Store {
              concierge_json=?43, proposal_json=?44, proposal_answer=?45, proposal_initiative=?46,
              title=?47, landed_at=?48, hand_landed=?49, shape_text_len=?50, shape_path_tokens=?51,
              shape_tdd=?52, shape_declared_checks=?53, model_source=?54, workflow_source=?55,
-             routing_json=?56 WHERE id=?1",
+             routing_json=?56, session_id=?57, handoff=?58 WHERE id=?1",
             params![
                 t.id,
                 t.repo,
@@ -625,6 +637,8 @@ impl Store {
                 t.model_source,
                 t.workflow_source,
                 serde_json::to_string(&t.routing)?,
+                t.session_id,
+                t.handoff,
             ],
         )?;
         Ok(())

@@ -180,7 +180,7 @@ fn a_reviewer_that_cannot_finish_leaves_the_verified_branch_for_a_human() {
 }
 
 #[test]
-fn a_budget_the_code_step_exhausts_exactly_strands_a_verified_branch_that_forge_land_accepts() {
+fn a_budget_the_code_step_exhausts_caps_the_task_on_a_verified_branch_that_forge_land_accepts() {
     let e = Env::new();
     let o = e.run(
         "ok.sh",
@@ -195,10 +195,10 @@ fn a_budget_the_code_step_exhausts_exactly_strands_a_verified_branch_that_forge_
     );
     assert!(!o.status.success());
     let (state, reason, pushed) = e.task(1);
-    assert_eq!(state, "unverified", "{reason}");
-    assert_eq!(
-        reason,
-        "budget reached after the code step verified; review did not run"
+    assert_eq!(state, "capped", "{reason}");
+    assert!(
+        reason.starts_with("$0.01 of $0.01; code step verified, review not run"),
+        "{reason}"
     );
     assert!(
         pushed,

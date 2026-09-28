@@ -627,6 +627,31 @@ impl Store {
         )?)
     }
 
+    /// What the next attempt of a task is expected to cost: the mean of
+    /// the task's own agent attempts so far, else the mean of every agent
+    /// attempt run under the same workflow, else 0 when the record has
+    /// nothing to go on. The budget check adds this to what is spent, so
+    /// a cap is not crossed by more than one attempt.
+    pub fn expected_attempt_cost(&self, task_id: i64, workflow: &str) -> Result<f64> {
+        let c = self.lock();
+        let own: Option<f64> = c.retry_query_row(
+            "SELECT AVG(cost_usd) FROM attempts
+             WHERE task_id=?1 AND step NOT IN ('supervisor', 'integrate') AND state != 'running' AND cost_usd > 0",
+            params![task_id],
+            |r| r.get(0),
+        )?;
+        if let Some(mean) = own {
+            return Ok(mean);
+        }
+        let measured: Option<f64> = c.retry_query_row(
+            "SELECT AVG(a.cost_usd) FROM attempts a JOIN tasks t ON t.id = a.task_id
+             WHERE t.workflow=?1 AND a.step NOT IN ('supervisor', 'integrate') AND a.state != 'running' AND a.cost_usd > 0",
+            params![workflow],
+            |r| r.get(0),
+        )?;
+        Ok(measured.unwrap_or(0.0))
+    }
+
     /// Cost of every attempt started at or after `since`.
     /// The files successful attempts on this repository read most: a prior
     /// for where a new task's answer is likely to be. From the tool facts.
