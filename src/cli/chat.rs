@@ -81,12 +81,24 @@ async fn say(c: ChatCmd) -> Result<()> {
     }
     let f = Forge::open(false, false)?;
     let stream = c.stream;
+    let errored = std::cell::Cell::new(false);
     let mut emit = |event: Value| {
+        errored.set(errored.get() || event["type"] == "error");
         if stream {
             out!("{event}");
         }
     };
-    let asked = chat::ask(&f, c.session, &message, c.provider.as_deref(), &mut emit).await?;
+    let asked = match chat::ask(&f, c.session, &message, c.provider.as_deref(), &mut emit).await {
+        Ok(asked) => asked,
+        Err(e) => {
+            // A stream's reader sees the failure as an event, whichever
+            // side of the first model call it happened on.
+            if stream && !errored.get() {
+                out!("{}", json!({"type": "error", "message": format!("{e:#}")}));
+            }
+            return Err(e);
+        }
+    };
     let proposals = asked.proposals();
     if c.json {
         let doc = chat::session_doc(&f, asked.session)?;
@@ -205,5 +217,63 @@ pub(super) async fn dispatch(cmd: Cmd) -> Result<()> {
         Some(ChatSub::Show { id, json }) => show(id, json),
         Some(ChatSub::Confirm { action, json }) => decide(action, true, json).await,
         Some(ChatSub::Reject { action, json }) => decide(action, false, json).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> ChatCmd {
+        let mut argv = vec!["forge", "chat"];
+        argv.extend_from_slice(args);
+        match Cli::try_parse_from(argv).unwrap().cmd {
+            Cmd::Chat(c) => c,
+            _ => panic!("not chat"),
+        }
+    }
+
+    #[test]
+    fn a_message_is_words_and_a_session_continues_one() {
+        let c = parse(&["--session", "3", "why", "did", "903", "fail"]);
+        assert_eq!(c.session, Some(3));
+        assert_eq!(c.message.join(" "), "why did 903 fail");
+        assert!(c.cmd.is_none());
+    }
+
+    #[test]
+    fn after_dashes_the_message_is_never_an_option_or_a_subcommand() {
+        let c = parse(&["--stream", "--", "--why", "did", "it"]);
+        assert!(c.stream && c.cmd.is_none());
+        assert_eq!(c.message, ["--why", "did", "it"]);
+        let c = parse(&["--", "sessions"]);
+        assert!(c.cmd.is_none());
+        assert_eq!(c.message, ["sessions"]);
+    }
+
+    #[test]
+    fn the_rest_of_the_conversation_is_subcommands() {
+        assert!(matches!(
+            parse(&["sessions"]).cmd,
+            Some(ChatSub::Sessions { .. })
+        ));
+        assert!(matches!(
+            parse(&["show", "3"]).cmd,
+            Some(ChatSub::Show { id: 3, .. })
+        ));
+        let Some(ChatSub::Confirm { action, json }) = parse(&["confirm", "12.0", "--json"]).cmd
+        else {
+            panic!("confirm");
+        };
+        assert_eq!((action.as_str(), json), ("12.0", true));
+        assert!(matches!(
+            parse(&["reject", "12.0"]).cmd,
+            Some(ChatSub::Reject { .. })
+        ));
+    }
+
+    #[test]
+    fn json_and_stream_are_two_ways_to_print_one_reply() {
+        assert!(Cli::try_parse_from(["forge", "chat", "--json", "--stream", "hi"]).is_err());
     }
 }

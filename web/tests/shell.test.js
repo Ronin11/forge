@@ -14,7 +14,7 @@ const fmtTime = secs => `T${secs}`;
 // distinct g-then-letter shortcut.
 const EXPECTED_PAGES = [
   'tasks', 'requests', 'projects', 'initiatives', 'workflows', 'jobs',
-  'deploys', 'stats', 'graph', 'plugins', 'activity', 'messages', 'doctor',
+  'deploys', 'stats', 'graph', 'plugins', 'activity', 'messages', 'doctor', 'chat',
 ];
 assert.deepEqual(NAV_PAGES.map(p => p.key), EXPECTED_PAGES);
 assert.equal(new Set(Object.values(SHORTCUT_TARGETS)).size, Object.keys(SHORTCUT_TARGETS).length);
