@@ -11,6 +11,8 @@ pub struct WorkerRow {
     pub id: i64,
     pub pid: i64,
     pub version: String,
+    /// The slot count it runs with; 0 when it never recorded one.
+    pub slots: usize,
 }
 
 impl Store {
@@ -42,6 +44,15 @@ impl Store {
         Ok(c.last_insert_rowid())
     }
 
+    /// Record how many slots worker `id` runs with.
+    pub fn set_worker_slots(&self, id: i64, slots: usize) -> Result<()> {
+        self.lock().retry_execute(
+            "UPDATE workers SET slots=?2 WHERE id=?1",
+            params![id, slots as i64],
+        )?;
+        Ok(())
+    }
+
     /// The worker exited: it no longer counts, whatever its pid does.
     pub fn stop_worker(&self, id: i64) -> Result<()> {
         self.lock().retry_execute(
@@ -55,17 +66,30 @@ impl Store {
     pub fn live_workers(&self, alive: impl Fn(i64) -> bool) -> Result<Vec<WorkerRow>> {
         let c = self.lock();
         let mut stmt =
-            c.prepare("SELECT id, pid, version FROM workers WHERE stopped_at IS NULL ORDER BY id")?;
+            c.prepare("SELECT id, pid, version, slots FROM workers WHERE stopped_at IS NULL ORDER BY id")?;
         let rows = stmt
             .query_map([], |r| {
                 Ok(WorkerRow {
                     id: r.get("id")?,
                     pid: r.get("pid")?,
                     version: r.get("version")?,
+                    slots: r.get::<_, i64>("slots")?.max(0) as usize,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows.into_iter().filter(|w| alive(w.pid)).collect())
+    }
+
+    /// Tasks and jobs running under every live registered worker but `pid`:
+    /// the slots of the machine's budget that are not this worker's to use.
+    pub fn running_elsewhere(&self, pid: i64, alive: impl Fn(i64) -> bool) -> Result<usize> {
+        let mut n = 0;
+        for w in self.live_workers(alive)? {
+            if w.pid != pid {
+                n += self.held_by_worker(w.pid)?.max(0) as usize;
+            }
+        }
+        Ok(n)
     }
 
     /// Tasks and jobs `pid` is running right now.
@@ -98,5 +122,31 @@ mod tests {
         assert_eq!(s.live_workers(|p| p == 11).unwrap().len(), 1);
         s.stop_worker(a).unwrap();
         assert_eq!(s.live_workers(|_| true).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn what_the_other_workers_run_is_counted_and_a_workers_own_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        let old = s.register_worker(10, "old").unwrap();
+        let new = s.register_worker(11, "new").unwrap();
+        s.set_worker_slots(old, 4).unwrap();
+        s.set_worker_slots(new, 4).unwrap();
+        let live = s.live_workers(|_| true).unwrap();
+        assert_eq!(live.iter().map(|w| w.slots).collect::<Vec<_>>(), [4, 4]);
+        assert_eq!(s.running_elsewhere(11, |_| true).unwrap(), 0);
+        for _ in 0..2 {
+            s.insert_task(&Task {
+                repo: "r".into(),
+                task: "t".into(),
+                base_branch: "main".into(),
+                ..Default::default()
+            })
+            .unwrap();
+            s.claim_next(10, &[], |_| false).unwrap().unwrap();
+        }
+        assert_eq!(s.running_elsewhere(11, |_| true).unwrap(), 2);
+        assert_eq!(s.running_elsewhere(10, |_| true).unwrap(), 0);
+        assert_eq!(s.running_elsewhere(11, |p| p == 11).unwrap(), 0);
     }
 }

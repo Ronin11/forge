@@ -699,6 +699,13 @@ pub async fn webhook_workflow(
     }
 }
 
+/// The slots this worker may fill: the machine's `jobs`, less the attempts
+/// other live workers still run (a draining predecessor's, or the
+/// successor's), so a handoff never takes the box past `jobs` between them.
+pub fn slot_budget(jobs: usize, running_elsewhere: usize) -> usize {
+    jobs.saturating_sub(running_elsewhere).min(jobs)
+}
+
 pub struct WorkOpts {
     pub jobs: usize,
     /// Seconds between queue polls when idle; `None` exits when idle.
@@ -839,6 +846,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         .poll
         .map(|_| crate::plugins::Supervisor::start(f.clone()));
     let jobs = opts.jobs.max(1);
+    let mut slots = jobs;
     let mut running: JoinSet<WorkResult> = JoinSet::new();
     let mut ids: Vec<i64> = Vec::new();
     let mut job_ids: Vec<i64> = Vec::new();
@@ -873,11 +881,15 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
             }
             run_ticks(&f, &mut refusals, superseded, stopping).await?;
 
-            // Fill free slots.
+            // Fill free slots, re-reading what the other workers hold.
+            slots = slot_budget(
+                jobs,
+                f.store.running_elsewhere(pid, pid_alive).unwrap_or(0),
+            );
             while !stopping
                 && !superseded
                 && env_error.is_none()
-                && running.len() < jobs
+                && running.len() < slots
                 && opts.max_tasks.is_none_or(|m| claimed < m)
             {
                 crate::login_hold::probe_due(&f).await;
@@ -980,7 +992,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
             // finishes. Before this branch the loop woke only on a join or
             // a signal: on 2026-09-19 two tasks sat queued beside one
             // running attempt and two free slots for an hour.
-            _ = tokio::time::sleep(Duration::from_secs(opts.poll.unwrap_or(10))), if running.len() < jobs || opts.poll.is_some() => {}
+            _ = tokio::time::sleep(Duration::from_secs(opts.poll.unwrap_or(10))), if running.len() < slots || opts.poll.is_some() => {}
             Some(joined) = running.join_next() => {
                 match joined {
                     Ok(WorkResult::Task(id, Ok(state))) => {
@@ -1045,6 +1057,16 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_worker_claims_only_the_slots_the_others_are_not_using() {
+        use super::slot_budget;
+        assert_eq!(slot_budget(4, 0), 4);
+        assert_eq!(slot_budget(4, 2), 2);
+        assert_eq!(slot_budget(4, 4), 0);
+        assert_eq!(slot_budget(4, 9), 0, "never below zero");
+        assert_eq!(slot_budget(1, 0), 1);
+    }
+
     #[test]
     fn this_process_is_alive() {
         assert!(super::pid_alive(std::process::id() as i64));
