@@ -471,4 +471,41 @@ mod tests {
         };
         assert!(grant(Trust::Operator, TrustEgress::Declared, d).is_err());
     }
+
+    fn home_with(config: &str) -> Result<crate::config::HomeConfig> {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), config).unwrap();
+        crate::config::load_home(dir.path())
+    }
+
+    #[test]
+    fn config_secrets_map_a_name_to_a_variable() {
+        let c = home_with("[secrets]\ncloudflare_token = { env = \"CLOUDFLARE_API_TOKEN\" }\n")
+            .unwrap();
+        assert_eq!(
+            c.secrets,
+            table_of(&[("cloudflare_token", "CLOUDFLARE_API_TOKEN")])
+        );
+        assert!(home_with("").unwrap().secrets.is_empty());
+    }
+
+    fn table_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn config_secrets_never_take_a_value() {
+        let e = home_with("[secrets]\ncloudflare_token = \"abc123\"\n")
+            .err()
+            .unwrap();
+        let text = format!("{e:#}");
+        assert!(text.contains("never written into config.toml"), "{text}");
+        assert!(!text.contains("abc123"), "{text}");
+        assert!(home_with("[secrets]\nBad = { env = \"X\" }\n").is_err());
+        assert!(home_with("[secrets]\nok = { env = \"1X\" }\n").is_err());
+        assert!(home_with("[secrets]\nok = { env = \"FORGE_HOME\" }\n").is_err());
+    }
 }
