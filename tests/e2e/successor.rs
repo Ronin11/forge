@@ -440,7 +440,8 @@ fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_o
     gone.wait().unwrap();
     let live = tmp.join(format!("forge-egress-{old_pid}"));
     let dead = tmp.join(format!("forge-egress-{}", gone.id()));
-    std::fs::create_dir(&live).unwrap();
+    // The old worker makes its own once it starts the task: either may win.
+    std::fs::create_dir_all(&live).unwrap();
     std::fs::create_dir(&dead).unwrap();
 
     std::os::unix::fs::symlink("releases/new", root.join("staged")).unwrap();

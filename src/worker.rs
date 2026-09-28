@@ -917,7 +917,9 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let pid = std::process::id() as i64;
     write_pid_file(&f.paths, pid);
     let mut succession = crate::successor::Succession::join(&f, &opts)?;
-    let mut plugins = Some(crate::plugins::Supervisor::start(f.clone()));
+    let mut plugins = opts
+        .poll
+        .map(|_| crate::plugins::Supervisor::start(f.clone()));
     let jobs = opts.jobs.max(1);
     let mut running: JoinSet<WorkResult> = JoinSet::new();
     let mut ids: Vec<i64> = Vec::new();
@@ -942,16 +944,13 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
             let runs = tick_run_workflows(&f).await?;
             schedule_tick(&f, &runs).await?;
             event_tick(&f, &runs).await?;
-            superseded = succession.superseded(&f)?;
+            superseded = succession.superseded(&f, &mut plugins).await?;
             if !stopping && succession.stop_requested() {
                 stopping = true;
                 eprintln!(
                     "stopping: the unit has a stop job; {} running attempt(s) will finish",
                     running.len()
                 );
-            }
-            if superseded && let Some(p) = plugins.take() {
-                p.stop().await;
             }
 
             // Fill free slots.

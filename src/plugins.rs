@@ -312,8 +312,9 @@ pub fn remove_installed(home: &Path, name: &str) -> Result<()> {
 
 // --- Supervision -----------------------------------------------------
 //
-// `forge work` starts every enabled plugin and stops them when it drains
-// (see `Supervisor`); `forge run`, a single task, never constructs one.
+// A daemon `forge work` starts every enabled plugin and stops them when it
+// drains (see `Supervisor`); `forge work --once` and `forge run`, a single
+// task, never construct one.
 // See docs/PLUGINS.md "Supervision" and "Environment".
 
 const BACKOFF_START: Duration = Duration::from_secs(1);
@@ -385,6 +386,26 @@ fn write_run_state(home: &Path, name: &str, state: &RunState) {
     if std::fs::write(&tmp, text).is_ok() {
         let _ = std::fs::rename(&tmp, &path);
     }
+}
+
+fn lock_path(home: &Path, name: &str) -> PathBuf {
+    home.join("plugins-run").join(format!("{name}.lock"))
+}
+
+/// The exclusive `flock` that makes supervision single per home, or `None`
+/// when another supervisor (a worker still draining, a duplicate) holds it.
+/// Released when the returned file drops, which the reconciler defers until
+/// the plugin's supervising task, and so its child, is gone.
+fn try_lock_plugin(home: &Path, name: &str) -> Option<std::fs::File> {
+    let path = lock_path(home, name);
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()?;
+    file.try_lock().ok()?;
+    Some(file)
 }
 
 fn restart_request_path(home: &Path, name: &str) -> PathBuf {
@@ -647,6 +668,38 @@ fn enabled_plugins_now(f: &Forge) -> BTreeMap<String, Plugin> {
         .collect()
 }
 
+/// One plugin this supervisor runs: its stop channel, its supervising task,
+/// the restart generation it started under, and the per-home lock that
+/// keeps every other supervisor off the plugin until the task has ended.
+struct Supervised {
+    stop: watch::Sender<bool>,
+    handle: JoinHandle<()>,
+    restart_gen: u64,
+    _lock: std::fs::File,
+}
+
+impl Supervised {
+    fn spawn(home: &Path, plugin: &Plugin, restart_gen: u64, lock: std::fs::File) -> Supervised {
+        let (stop, rx) = watch::channel(false);
+        let handle = tokio::spawn(supervise_plugin(home.to_path_buf(), plugin.clone(), rx));
+        Supervised {
+            stop,
+            handle,
+            restart_gen,
+            _lock: lock,
+        }
+    }
+
+    fn signal_stop(&self) {
+        let _ = self.stop.send(true);
+    }
+
+    async fn stop(self) {
+        self.signal_stop();
+        self.handle.await.ok();
+    }
+}
+
 /// Supervises every enabled plugin for the life of `forge work`: starts
 /// them, restarts them per their manifest's `restart` policy, and stops
 /// them (SIGTERM, then SIGKILL after ten seconds) when told to. While
@@ -656,7 +709,11 @@ fn enabled_plugins_now(f: &Forge) -> BTreeMap<String, Plugin> {
 /// `forge plugin restart` request and swaps a still-enabled plugin's
 /// process for a fresh one, since `enable`/`disable` alone never
 /// replaces a process that stayed enabled the whole time (see
-/// `request_restart`).
+/// `request_restart`). Supervision is single per home: each plugin is held
+/// under an `flock` on `plugins-run/<name>.lock` for as long as its child
+/// lives, and a plugin whose lock another supervisor holds is skipped and
+/// tried again on the next tick. `stop` signals every plugin before it
+/// waits on any, so the lock passes to a successor rather than overlapping.
 pub struct Supervisor {
     stop: watch::Sender<bool>,
     reconciler: JoinHandle<()>,
@@ -669,36 +726,33 @@ impl Supervisor {
             // `restart_gen` is the generation this instance was started
             // with; a mismatch against `read_restart_gen` on a later tick
             // means `forge plugin restart` ran while it was up.
-            let mut running: BTreeMap<String, (watch::Sender<bool>, JoinHandle<()>, u64)> =
-                BTreeMap::new();
+            let mut running: BTreeMap<String, Supervised> = BTreeMap::new();
             loop {
                 let enabled = enabled_plugins_now(&f);
 
                 let to_restart: Vec<String> = running
                     .iter()
-                    .filter(|(name, (_, _, rgen))| {
+                    .filter(|(name, s)| {
                         enabled.contains_key(*name)
-                            && read_restart_gen(&f.paths.home, name) != *rgen
+                            && read_restart_gen(&f.paths.home, name) != s.restart_gen
                     })
                     .map(|(name, _)| name.clone())
                     .collect();
                 for name in to_restart {
-                    if let Some((ptx, handle, _)) = running.remove(&name) {
-                        let _ = ptx.send(true);
-                        handle.await.ok();
+                    if let Some(s) = running.remove(&name) {
+                        s.stop().await;
                     }
                 }
 
                 for (name, plugin) in &enabled {
-                    if !running.contains_key(name) {
-                        let (ptx, prx) = watch::channel(false);
-                        let handle = tokio::spawn(supervise_plugin(
-                            f.paths.home.clone(),
-                            plugin.clone(),
-                            prx,
-                        ));
-                        let rgen = read_restart_gen(&f.paths.home, name);
-                        running.insert(name.clone(), (ptx, handle, rgen));
+                    if !running.contains_key(name)
+                        && let Some(lock) = try_lock_plugin(&f.paths.home, name)
+                    {
+                        let restart_gen = read_restart_gen(&f.paths.home, name);
+                        running.insert(
+                            name.clone(),
+                            Supervised::spawn(&f.paths.home, plugin, restart_gen, lock),
+                        );
                     }
                 }
                 let gone: Vec<String> = running
@@ -707,9 +761,8 @@ impl Supervisor {
                     .cloned()
                     .collect();
                 for name in gone {
-                    if let Some((ptx, handle, _)) = running.remove(&name) {
-                        let _ = ptx.send(true);
-                        handle.await.ok();
+                    if let Some(s) = running.remove(&name) {
+                        s.stop().await;
                     }
                 }
 
@@ -730,9 +783,11 @@ impl Supervisor {
             if !running.is_empty() {
                 tokio::time::sleep(STOP_SETTLE).await;
             }
-            for (_, (ptx, handle, _)) in running {
-                let _ = ptx.send(true);
-                handle.await.ok();
+            for s in running.values() {
+                s.signal_stop();
+            }
+            for s in running.into_values() {
+                s.handle.await.ok();
             }
         });
         Supervisor {
@@ -1032,5 +1087,104 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }
+    }
+
+    fn forge_enabling(dir: &Path, plugins: &[(&str, &str)]) -> Arc<crate::ctx::Forge> {
+        let store = crate::store::Store::open(&dir.join("forge.db")).unwrap();
+        let paths = crate::ctx::Paths {
+            home: dir.to_path_buf(),
+            worktrees: dir.join("worktrees"),
+            logs: dir.join("logs"),
+        };
+        let f = crate::ctx::Forge::open_with(paths, store).unwrap();
+        for (name, run) in plugins {
+            let run = run.replace('\\', "\\\\").replace('"', "\\\"");
+            write_manifest(
+                dir,
+                name,
+                &format!(
+                    "name = \"{name}\"\nrun = [\"sh\", \"-c\", \"{run}\"]\ncapabilities = [\"events\"]\nrestart = \"never\"\n"
+                ),
+            );
+            f.store
+                .set_plugin_enabled(name, true, crate::unix_now())
+                .unwrap();
+        }
+        Arc::new(f)
+    }
+
+    async fn wait_running(home: &Path, name: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !matches!(read_run_state(home, name), RunState::Running { .. }) {
+            assert!(Instant::now() < deadline, "{name} never started");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// docs/REVIEW-3.md §3.1 item 9: a draining worker's plugins are stopped
+    /// together. Each plugin, on SIGTERM, waits for the other's SIGTERM to
+    /// arrive before exiting, so a stop that waited on one plugin before
+    /// signalling the next would leave both waiting out their own bound.
+    #[tokio::test]
+    async fn stop_signals_every_plugin_before_waiting_on_any_of_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = |other: &str| {
+            format!(
+                "trap 'touch \"$FORGE_PLUGIN_STATE/term\"; i=0; while [ ! -e \"$FORGE_PLUGIN_STATE/../{other}/term\" ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done; [ -e \"$FORGE_PLUGIN_STATE/../{other}/term\" ] && touch \"$FORGE_PLUGIN_STATE/saw_other\"; exit 0' TERM; sleep 1000 & wait"
+            )
+        };
+        let (a, b) = (script("b"), script("a"));
+        let f = forge_enabling(dir.path(), &[("a", &a), ("b", &b)]);
+        let sup = Supervisor::start(f.clone());
+        wait_running(dir.path(), "a").await;
+        wait_running(dir.path(), "b").await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let started = Instant::now();
+        sup.stop().await;
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "stop was sequential"
+        );
+        for name in ["a", "b"] {
+            let seen = dir
+                .path()
+                .join("plugins-state")
+                .join(name)
+                .join("saw_other");
+            assert!(seen.exists(), "{name} was signalled before the other was");
+        }
+    }
+
+    /// docs/REVIEW-3.md §3.1 item 9: a supervisor that finds a plugin's
+    /// `plugins-run/<name>.lock` held leaves the plugin alone; once the
+    /// holder lets go, a supervisor starts it.
+    #[tokio::test]
+    async fn a_plugin_whose_lock_is_held_is_skipped_until_it_is_released() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = forge_enabling(dir.path(), &[("held", "sleep 1000")]);
+        let lock = try_lock_plugin(dir.path(), "held").expect("first lock");
+        assert!(try_lock_plugin(dir.path(), "held").is_none());
+
+        let sup = Supervisor::start(f.clone());
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(matches!(
+            read_run_state(dir.path(), "held"),
+            RunState::Stopped { last_exit: None }
+        ));
+        sup.stop().await;
+
+        drop(lock);
+        let sup = Supervisor::start(f.clone());
+        wait_running(dir.path(), "held").await;
+        assert!(
+            try_lock_plugin(dir.path(), "held").is_none(),
+            "the lock is held while the plugin runs"
+        );
+        sup.stop().await;
+        assert!(
+            try_lock_plugin(dir.path(), "held").is_some(),
+            "the lock is released once the plugin is stopped"
+        );
     }
 }

@@ -11,12 +11,14 @@
 //! one listed beside it in the unit's cgroup.
 
 use crate::ctx::{Forge, Paths};
+use crate::plugins::Supervisor;
 use crate::release;
 use crate::worker::{WorkOpts, pid_alive};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 
 /// The units that run this release's other binaries, restarted once the
 /// successor has flipped `current` under them.
@@ -90,8 +92,14 @@ impl Succession {
     }
 
     /// Whether a newer version is live, so this worker claims no more.
-    /// Starts the successor first when a newer release is staged.
-    pub fn superseded(&mut self, f: &Forge) -> Result<bool> {
+    /// Starts the successor when a newer release is staged, after stopping
+    /// this worker's plugins, so their locks pass to the successor's set
+    /// instead of the two overlapping.
+    pub async fn superseded(
+        &mut self,
+        f: &Arc<Forge>,
+        plugins: &mut Option<Supervisor>,
+    ) -> Result<bool> {
         if !self.daemon {
             return Ok(false);
         }
@@ -108,6 +116,9 @@ impl Succession {
             .any(|w| w.id > self.id && w.version != self.version)
         {
             if let Some(next) = self.staged_successor(&f.paths, &live) {
+                if let Some(p) = plugins.take() {
+                    p.stop().await;
+                }
                 match self.spawn(&f.paths, &next) {
                     Ok(child) => {
                         f.store.register_worker(i64::from(child.id()), &next)?;
@@ -121,10 +132,14 @@ impl Succession {
                     Err(e) => {
                         eprintln!("release {next} staged but its worker did not start: {e:#}");
                         self.failed.insert(next);
+                        *plugins = Some(Supervisor::start(f.clone()));
                     }
                 }
             }
             return Ok(false);
+        }
+        if let Some(p) = plugins.take() {
+            p.stop().await;
         }
         Ok(true)
     }
