@@ -280,8 +280,9 @@ impl Forge {
     /// Apply what the environment policy grants for `need` to attempts in
     /// `worktree`: the host on top of its egress, or the cache path
     /// read-only. `None` when the policy does not cover the need, the
-    /// trust level reaches the model endpoints alone, there is no sandbox,
-    /// or the grant was already applied (a re-run would fail the same way).
+    /// trust level reaches the model endpoints alone (neither a host nor a
+    /// cache is opened to it), or the grant was already applied (a re-run
+    /// would fail the same way; without a sandbox it is only remembered).
     pub fn grant_environment(
         &self,
         worktree: &Path,
@@ -309,7 +310,7 @@ impl Forge {
         // remembered: the first time it is seen the run repeats, the
         // second it would fail the same way.
         let fresh = match (&self.sandbox, &grant) {
-            (_, Grant::Host(_)) if !declared => false,
+            (_, Grant::Host(_) | Grant::ReadOnly(_)) if !declared => false,
             (Some(sb), Grant::Host(h)) => {
                 sb.grant_host(worktree, crate::egress::Rule::parse(h).ok()?)
             }
@@ -530,6 +531,22 @@ mod tests {
         );
         assert_eq!(f.apply_grant(Path::new("/w/1"), g.clone(), t), None);
         assert_eq!(f.apply_grant(Path::new("/w/2"), g.clone(), t), Some(g));
+    }
+
+    #[test]
+    fn a_public_tasks_read_only_grant_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("forge.db")).unwrap();
+        let paths = Paths {
+            home: dir.path().to_path_buf(),
+            worktrees: dir.path().join("worktrees"),
+            logs: dir.path().join("logs"),
+        };
+        let f = Forge::open_with(paths, store).unwrap();
+        let g = crate::environment::Grant::ReadOnly(PathBuf::from("/home/x/.cache/pw"));
+        let public = crate::store::Trust::Public;
+        assert_eq!(f.apply_grant(Path::new("/w/1"), g.clone(), public), None);
+        assert_eq!(f.apply_grant(Path::new("/w/1"), g, public), None);
     }
 
     #[test]

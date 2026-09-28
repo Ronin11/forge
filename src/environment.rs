@@ -355,17 +355,20 @@ fn host_matches(entry: &str, host: &str) -> bool {
 
 /// The most the supervisor may approve for `need`, or why nothing: one
 /// named host (never a wildcard, never github.com, never a model endpoint,
-/// never what the repository's `[environment] deny` lists), or the one
-/// directory under `~/.cache` the need's path is in, read-only. Pure code;
-/// the supervisor's ruling is checked against this, never the other way.
+/// never what the repository's `[environment] deny` lists), or a cache the
+/// operator's own `cache_paths` list already names, read-only. Nothing
+/// outside that list is ever granted; the need is the operator's to answer.
+/// Pure code; the supervisor's ruling is checked against this, never the
+/// other way.
 pub fn within_ceiling(
     need: &Need,
     deny: &[String],
     models: &[crate::egress::Rule],
+    cache_paths: &[PathBuf],
 ) -> Result<Grant, String> {
     match need.kind {
         NeedKind::Host => host_ceiling(&need.target, deny, models),
-        NeedKind::Cache => cache_ceiling(&need.target, deny),
+        NeedKind::Cache => cache_ceiling(&need.target, deny, cache_paths),
         NeedKind::Binary | NeedKind::Toolchain => {
             Err(format!("a {} is never granted here", need.kind.as_str()))
         }
@@ -402,32 +405,27 @@ fn host_ceiling(
     Ok(Grant::Host(host.to_string()))
 }
 
-fn cache_ceiling(target: &str, deny: &[String]) -> Result<Grant, String> {
+fn cache_ceiling(target: &str, deny: &[String], cache_paths: &[PathBuf]) -> Result<Grant, String> {
     let path = Path::new(target);
-    let cache = expand_home("~/.cache");
-    if !cache.is_absolute() {
-        return Err("no home directory to find ~/.cache in".into());
-    }
-    let Some(first) = path
-        .strip_prefix(&cache)
-        .ok()
-        .filter(|_| !target.contains(".."))
-        .and_then(|rest| rest.components().next())
+    let Some(dir) = cache_paths
+        .iter()
+        .find(|c| !target.contains("..") && path.starts_with(c))
     else {
-        return Err(format!("{target} is not under {}", cache.display()));
+        return Err(format!(
+            "{target} is not under a path in the operator's [environment] cache_paths"
+        ));
     };
-    let dir = cache.join(first);
     if let Some(d) = deny
         .iter()
         .map(|d| expand_home(d))
-        .find(|d| dir.starts_with(d) || d.starts_with(&dir))
+        .find(|d| dir.starts_with(d) || d.starts_with(dir))
     {
         return Err(format!(
             "the repository's forge.toml [environment] deny lists {}",
             d.display()
         ));
     }
-    Ok(Grant::ReadOnly(dir))
+    Ok(Grant::ReadOnly(dir.clone()))
 }
 
 /// Record an applied grant as a decision row by `by` on `task_id`, naming
@@ -639,7 +637,7 @@ mod tests {
         let models = vec![crate::egress::Rule::parse("*.anthropic.com").unwrap()];
         let host = |t: &str, deny: &[&str]| {
             let deny: Vec<String> = deny.iter().map(|d| d.to_string()).collect();
-            within_ceiling(&ceiling_need(NeedKind::Host, t), &deny, &models)
+            within_ceiling(&ceiling_need(NeedKind::Host, t), &deny, &models, &[])
         };
         assert_eq!(
             host("registry.example.net", &[]),
@@ -658,23 +656,38 @@ mod tests {
                 .contains("deny")
         );
         assert!(host("registry.example.net", &["other.net"]).is_ok());
-        assert!(within_ceiling(&ceiling_need(NeedKind::Binary, "tsc"), &[], &models).is_err());
+        assert!(within_ceiling(&ceiling_need(NeedKind::Binary, "tsc"), &[], &models, &[]).is_err());
     }
 
     #[test]
-    fn the_ceiling_for_a_cache_is_one_directory_under_home_cache_read_only() {
-        let home = expand_home("~/.cache");
-        let deep = home.join("foo/bar/baz");
-        let need = ceiling_need(NeedKind::Cache, deep.to_str().unwrap());
+    fn the_ceiling_for_a_cache_is_a_path_in_the_operators_table_read_only() {
+        let table = vec![PathBuf::from("/h/.cache/ms-playwright")];
+        let ceiling = |t: &str, deny: &[&str]| {
+            let deny: Vec<String> = deny.iter().map(|d| d.to_string()).collect();
+            within_ceiling(&ceiling_need(NeedKind::Cache, t), &deny, &[], &table)
+        };
         assert_eq!(
-            within_ceiling(&need, &[], &[]),
-            Ok(Grant::ReadOnly(home.join("foo")))
+            ceiling("/h/.cache/ms-playwright/chromium-1/chrome", &[]),
+            Ok(Grant::ReadOnly(PathBuf::from("/h/.cache/ms-playwright")))
         );
-        assert!(within_ceiling(&need, &["~/.cache/foo".into()], &[]).is_err());
-        let outside = ceiling_need(NeedKind::Cache, "/etc/.cache/x");
-        assert!(within_ceiling(&outside, &[], &[]).is_err());
-        let up = ceiling_need(NeedKind::Cache, home.join("../.ssh/id").to_str().unwrap());
-        assert!(within_ceiling(&up, &[], &[]).is_err());
+        assert!(ceiling("/h/.cache/ms-playwright/x", &["/h/.cache/ms-playwright"]).is_err());
+        assert!(ceiling("/h/.cache/ms-playwright-evil/x", &[]).is_err());
+        assert!(ceiling("/h/.cache/ms-playwright/../../.ssh/id", &[]).is_err());
+        assert!(ceiling("/etc/.cache/x", &[]).is_err());
+    }
+
+    #[test]
+    fn the_ceiling_refuses_a_cache_the_table_does_not_list() {
+        let home = expand_home("~/.cache");
+        let need = ceiling_need(
+            NeedKind::Cache,
+            home.join("huggingface/token").to_str().unwrap(),
+        );
+        let table = Policy::default().cache_paths;
+        assert!(!table.contains(&home.join("huggingface")));
+        let why = within_ceiling(&need, &[], &[], &table).unwrap_err();
+        assert!(why.contains("cache_paths"), "{why}");
+        assert!(within_ceiling(&need, &[], &[], &[]).is_err());
     }
 
     #[test]

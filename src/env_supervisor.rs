@@ -1,8 +1,8 @@
 //! An environment need the operator's `[environment]` table does not cover
 //! (`environment::Policy::covers`) goes to the supervisor, not the operator.
 //! It is given the typed need, the evidence line, the table and a ceiling it
-//! may not exceed (`environment::within_ceiling`): one named host, or one
-//! directory under `~/.cache` read-only. It approves, and the grant is
+//! may not exceed (`environment::within_ceiling`): one named host, or a
+//! cache the operator's `cache_paths` already lists, read-only. It approves, and the grant is
 //! applied and recorded like an automatic one but answered by `supervisor`,
 //! or it denies with a one-line reason and only then does the operator get a
 //! question, carrying the need and the reason, whose answer is yes or no.
@@ -76,16 +76,15 @@ pub fn question(need: &Need, reason: &str) -> String {
 }
 
 /// Whether this need is the supervisor's at all: a host or a cache, with
-/// the supervisor on, and (for a host) a trust level that may reach one.
+/// the supervisor on and a trust level that may be granted either.
 pub fn applies(f: &Forge, t: &Task, need: &Need) -> bool {
     use crate::environment::NeedKind;
     f.supervisor.enabled
         && match need.kind {
-            NeedKind::Host => matches!(
+            NeedKind::Host | NeedKind::Cache => matches!(
                 f.trust_policy(t.trust).egress,
                 crate::config::TrustEgress::Declared
             ),
-            NeedKind::Cache => true,
             NeedKind::Binary | NeedKind::Toolchain => false,
         }
 }
@@ -100,7 +99,7 @@ pub async fn rule(f: &Forge, t: &Task, deny: &[String], need: &Need) -> Result<R
         )));
     }
     let models = crate::egress::model_rules(&f.providers);
-    let ceiling = within_ceiling(need, deny, &models);
+    let ceiling = within_ceiling(need, deny, &models, &f.environment.cache_paths);
     let wt = Path::new(&t.worktree);
     let table = f.environment.describe();
     let text = prompt(need, &table, &ceiling);

@@ -195,3 +195,41 @@ fn a_covered_cache_path_that_keeps_failing_is_granted_once_and_the_task_then_fai
         "the grant is recorded once"
     );
 }
+
+#[test]
+fn a_check_naming_an_unlisted_cache_under_public_trust_ends_with_no_bind() {
+    let e = Env::new();
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[checks]\nanswer = [\"true\"]\nsetup = [\"bash\", \"-c\", \"echo \\\"ENOENT: no such file $HOME/.cache/huggingface/token\\\"; exit 1\"]\n",
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "setup names a cache"]);
+    // The supervisor would approve anything; a public task never asks it.
+    let mut c = e.with_role("ok.sh", "SUPERVISOR", "supervisor-env-approve.sh");
+    c.env("FORGE_SUPERVISOR", "1");
+    let o = c
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--trust",
+            "public",
+            "--workflow",
+            "reviewed",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "failed", "{reason}");
+    assert!(reason.contains("huggingface"), "{reason}");
+    assert_eq!(
+        e.decisions_json().as_array().unwrap().len(),
+        0,
+        "nothing was granted"
+    );
+    assert!(e.requests_json().as_array().unwrap().is_empty());
+}
