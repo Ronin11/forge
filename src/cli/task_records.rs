@@ -463,6 +463,16 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
     if let Some(r) = task.retry_of {
         out!("retry of   {r}");
     }
+    if !task.live_descendants.is_empty() {
+        out!(
+            "live       {}",
+            task.live_descendants
+                .iter()
+                .map(|l| format!("{} {}", l.id, l.state))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     if task.lineage.len() > 1 {
         out!(
             "lineage    {}",

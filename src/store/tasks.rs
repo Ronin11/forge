@@ -993,7 +993,6 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn claim_is_exclusive_and_requeue_closes_the_open_attempt() {
         let dir = tempfile::tempdir().unwrap();

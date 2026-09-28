@@ -13,6 +13,9 @@ use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+mod duplicates;
+pub use duplicates::{refuse_live_descendant, withdraw_abort};
+
 /// What a new task is made from. Field names follow the CLI flags; the
 /// negatives (`no_land`, `no_context`) are the operator's control arms
 /// and default to off.
@@ -1324,8 +1327,13 @@ pub fn withdraw(f: &Forge, id: i64, reason: &str, by: &str) -> Result<i64> {
     };
     if !matches!(old.state, TaskState::Blocked | TaskState::Queued) {
         bail!(
-            "task {id} is {}; only a blocked or queued task is withdrawn (a running attempt might still finish, and a landed task is already merged)",
-            old.state.as_str()
+            "task {id} is {}; only a blocked or queued task is withdrawn (a running attempt might still finish, and a landed task is already merged{})",
+            old.state.as_str(),
+            if old.state == TaskState::Running && !f.store.live_siblings(id)?.is_empty() {
+                "; it is a duplicate of a live sibling, so --abort may stop it"
+            } else {
+                ""
+            }
         );
     }
     if !f.store.withdraw(id, reason)? {
@@ -1394,7 +1402,6 @@ pub fn settle_superseded(f: &Forge, landed: i64) -> Result<Vec<i64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn check_answer_scope_allows_anything_when_unscoped() {
         assert!(check_answer_scope(1, Some("a"), Some("alice"), None).is_ok());

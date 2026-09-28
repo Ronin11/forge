@@ -193,7 +193,10 @@ asked a question or for another workflow). Attempt states:
 workflow, budget, and flags, on a fresh branch; everything that had been
 queued `--after` it now waits on the new task instead, and anything that
 had been blocked by its failure is queued again (`--chain` is accepted
-and no longer needed). `forge answer <id> <text>` answers a task blocked on a
+and no longer needed). A task that already has a live descendant (a
+retry or a review demotion's follow-up still queued, running or
+unverified) is not retried: the refusal names it, and `--again` retries
+anyway; `forge show` lists a task's live descendants. `forge answer <id> <text>` answers a task blocked on a
 question (state `blocked` with its last attempt `needs_input`; anything
 else is refused, naming why): it records the question and answer in a
 `decisions` table and re-queues the task through the same retry path
@@ -319,6 +322,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   jobs.rs           jobs, job_steps, job_effects
   job_runs.rs       recovered job run numbers and cumulative step costs
   deploys.rs        deploys, deploy_targets, assessments
+  descendants.rs    the live tasks below and beside a task in its retry lineage, and the `withdraw --abort` decision a worker reads
   projects.rs       projects, project_repos, backlog, initiatives, portal_tokens
   record.rs         decisions, task_refs, plugins
   messages.rs       messages: one row per inbound/outbound message on a channel, so a rule can ask "has this contact replied since"

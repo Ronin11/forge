@@ -4022,8 +4022,7 @@ run = ["bash", "-c", "touch sleeping; exec sleep 30"]
         },
         Duration::from_secs(10)
     ));
-    worker.signal(libc::SIGKILL);
-    assert!(!worker.wait().success());
+    assert!(!worker.crash().success());
     // The restart can now complete the otherwise identical operation immediately.
     std::fs::write(
         &action,
