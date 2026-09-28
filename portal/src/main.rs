@@ -445,9 +445,10 @@ fn render_landed(items: &[PortalLanded], more: i64, token: &str) -> String {
     }
     let mut out = String::from(r#"<ul class="plain">"#);
     for l in items {
-        let pieces = match l.pieces {
-            Some(n) => format!(r#"<div class="pieces">{}</div>"#, esc(&pieces_phrase(n))),
-            None => String::new(),
+        let pieces = match (l.pieces, l.manual) {
+            (Some(n), _) => format!(r#"<div class="pieces">{}</div>"#, esc(&pieces_phrase(n))),
+            (None, true) => r#"<div class="pieces">Made by hand</div>"#.to_string(),
+            (None, false) => String::new(),
         };
         let live = match l.deployed_at {
             Some(at) => format!(r#"<div class="date">{}</div>"#, time_tag("Live since ", at)),

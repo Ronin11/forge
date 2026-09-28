@@ -435,6 +435,7 @@ fn stats_doc_omits_tools_when_not_requested() {
         time_to_live_projects: vec![],
         factors: vec![],
         daily: vec![],
+        manual: Default::default(),
         tools: None,
     };
     let v = serde_json::to_value(&doc).unwrap();

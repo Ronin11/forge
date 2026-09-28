@@ -179,6 +179,21 @@ fn tools_json(f: &Forge, step: Option<&str>) -> Result<serde_json::Value> {
     Ok(serde_json::Value::Object(steps))
 }
 
+/// Adopted tasks, apart from every workflow's row: hand-made work that
+/// Forge verified and landed, which no agent's outcome includes.
+fn print_manual(m: &crate::store::ManualStat) {
+    if m.tasks > 0 {
+        out!(
+            "manual   {} adopted task(s), no agent ran: {} landed, {} verified for a human, {} blocked, {} refused (not in the rows below)",
+            m.tasks,
+            m.landed,
+            m.verified,
+            m.blocked,
+            m.failed
+        );
+    }
+}
+
 pub(super) async fn stats(args: StatsOptions) -> Result<()> {
     let StatsOptions {
         tools,
@@ -240,6 +255,7 @@ pub(super) async fn stats(args: StatsOptions) -> Result<()> {
         return factor_stats_cmd(&f, &scope, days).await;
     }
     let doc = crate::view::stats_doc(&f, &scope, None).await?;
+    print_manual(&doc.manual);
     out!(
         "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9} {:>6} {:>9} {:>5}",
         "WF",

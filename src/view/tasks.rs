@@ -27,6 +27,9 @@ pub struct TaskRow {
     /// Trust the caller earned by the path it queued through: `"operator"`,
     /// `"contact"`, or `"public"` (see `store::Trust`).
     pub trust: String,
+    /// `"agent"`, or `"adopted"`: a hand-made branch `forge adopt` landed
+    /// with no agent run, which `forge log` marks manual.
+    pub origin: String,
     /// Only under `forge log --touches`: `"changes"` when an attempt
     /// recorded a change at the path, `"text"` when only the task's text
     /// mentions it (`--touches-text`). Absent otherwise.
@@ -91,6 +94,7 @@ impl From<&TaskSummary> for TaskRow {
             project: s.project.clone(),
             initiative: s.initiative,
             trust: s.trust.clone(),
+            origin: s.origin.clone(),
             touch: s.touch.clone(),
             matched: s.matched.clone(),
             failures: s.failures.clone(),
@@ -282,6 +286,12 @@ pub struct TraceTask {
     /// Trust the caller earned by the path it queued through: `"operator"`,
     /// `"contact"`, or `"public"` (see `store::Trust`).
     pub trust: String,
+    /// `"agent"`, or `"adopted"` for a hand-made branch `forge adopt`
+    /// verified and landed with no agent run (see `store::Origin`).
+    pub origin: String,
+    /// The adopted branch, commit and adopter; absent for an agent's task.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adoption: Option<crate::store::Adoption>,
     pub reason: String,
     pub workflow: String,
     pub workflow_hash: String,
@@ -512,6 +522,8 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
         text: t.task.clone(),
         state: t.state.as_str().to_string(),
         trust: t.trust.as_str().to_string(),
+        origin: t.origin.as_str().to_string(),
+        adoption: t.adoption.clone(),
         reason: t.reason.clone(),
         workflow: t.workflow.clone(),
         workflow_hash: t.workflow_hash.clone(),

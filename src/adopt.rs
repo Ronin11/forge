@@ -257,15 +257,16 @@ async fn run(
         std::fs::remove_dir_all(&wt)?;
     }
     let timer = Timer::now();
-    let base_ref = match remote {
-        Some((name, url)) if git::remote_branch_exists(url, &cfg.base_branch).await? => {
-            git::fetch_branch(&repo, name, &cfg.base_branch).await?;
-            Some(format!("refs/remotes/{name}/{}", cfg.base_branch))
-        }
-        _ => None,
-    };
-    let tip = git::clone_task(&repo, &cfg.base_branch, &wt, &t.branch, base_ref.as_deref(), None)
-        .await?;
+    let mut tip = git::clone_task(&repo, &cfg.base_branch, &wt, &t.branch, None, None).await?;
+    // The base as the remote has it, fetched straight into the clone: the
+    // registered checkout, the human's own, is only ever read.
+    if let Some((_, url)) = remote
+        && git::remote_branch_exists(url, &cfg.base_branch).await?
+    {
+        let base_ref = format!("refs/heads/{}", cfg.base_branch);
+        git::fetch_full_ref(&wt, url, &base_ref).await?;
+        tip = git::rev_parse(&wt, "FETCH_HEAD").await?;
+    }
     git::fetch_full_ref(&wt, &src.from, &src.fetch_ref).await?;
     git::reset_hard(&wt, &src.commit).await?;
     let Some(base_sha) = git::merge_base(&wt, &src.commit, &tip).await else {
