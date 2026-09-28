@@ -87,6 +87,10 @@ pub struct TaskArgs {
     /// Cost cap for this task in USD (default: per_task_usd in config.toml)
     #[arg(long)]
     budget: Option<f64>,
+    /// Let --budget exceed the cap of the --trust level (operator only);
+    /// recorded as a decision on the task
+    #[arg(long)]
+    allow_over_trust_cap: bool,
     /// A shell command that must exit 0 in the worktree for the task to be
     /// done (repeatable). Run after the repo's own checks.
     #[arg(long = "check")]
@@ -682,6 +686,7 @@ impl From<&TaskArgs> for crate::queue::TaskRequest {
             retries: a.retries,
             timeout_secs: a.timeout_secs,
             budget: a.budget,
+            allow_over_trust_cap: a.allow_over_trust_cap,
             checks: a.checks.clone(),
             allow_protected: a.allow_protected,
             workflow: a.workflow.clone(),

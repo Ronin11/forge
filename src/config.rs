@@ -677,6 +677,10 @@ struct TrustRaw {
 
 #[derive(Deserialize, Default)]
 struct TrustLevelRaw {
+    per_task_usd: Option<f64>,
+    per_initiative_usd: Option<f64>,
+    /// The name `per_task_usd` had before initiatives got a cap of their
+    /// own; still read, `per_task_usd` wins when both are set.
     budget_usd: Option<f64>,
     workflows: Option<Vec<String>>,
     allow_protected: Option<bool>,
@@ -711,8 +715,13 @@ impl TrustEgress {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrustPolicy {
     /// Cost cap for a task at this level; `None` is the operator's own
-    /// `[budget] per_task_usd` (no tighter cap at this level).
-    pub budget_usd: Option<f64>,
+    /// `[budget] per_task_usd` (no tighter cap at this level). A task
+    /// filed here gets it unless `--budget` says less; more needs
+    /// `--allow-over-trust-cap`.
+    pub per_task_usd: Option<f64>,
+    /// What an initiative's tasks at this level may have cost together;
+    /// `None` is no cap at this level.
+    pub per_initiative_usd: Option<f64>,
     /// Workflow names a task at this level may run under; `None` is every
     /// workflow.
     pub workflows: Option<Vec<String>>,
@@ -733,6 +742,27 @@ pub struct TrustPolicies {
     pub operator: TrustPolicy,
     pub contact: TrustPolicy,
     pub public: TrustPolicy,
+}
+
+impl TrustPolicies {
+    /// The three levels' cost caps as `forge doctor` prints them: the
+    /// operator's fall to `[budget]` when its table names none.
+    pub fn describe_caps(&self, budget: &Budget) -> String {
+        let usd = |v: Option<f64>| v.map_or("none".to_string(), |v| format!("${v:.2}"));
+        let level = |name: &str, p: &TrustPolicy, task: Option<f64>| {
+            format!(
+                "{name} {} a task / {} an initiative",
+                usd(p.per_task_usd.or(task)),
+                usd(p.per_initiative_usd)
+            )
+        };
+        [
+            level("operator", &self.operator, Some(budget.per_task_usd)),
+            level("contact", &self.contact, None),
+            level("public", &self.public, None),
+        ]
+        .join(", ")
+    }
 }
 
 fn parse_trust_egress(
@@ -760,10 +790,13 @@ fn parse_trust_egress(
 /// files — neither ever writes code, and without both a contact could not
 /// reach `forge ask` at all), and may not touch protected paths; `public`
 /// is tighter on every field, with `auto_land = false` and `per_day = 5`.
+/// The cost caps default by level: public $5 a task and $25 an initiative,
+/// contact $10 and $50, the operator none beyond `[budget]`.
 fn build_trust(raw: TrustRaw) -> Result<TrustPolicies> {
     Ok(TrustPolicies {
         operator: TrustPolicy {
-            budget_usd: raw.operator.budget_usd,
+            per_task_usd: raw.operator.per_task_usd.or(raw.operator.budget_usd),
+            per_initiative_usd: raw.operator.per_initiative_usd,
             workflows: raw.operator.workflows,
             allow_protected: raw.operator.allow_protected.unwrap_or(true),
             egress: parse_trust_egress("operator", raw.operator.egress, TrustEgress::Declared)?,
@@ -771,7 +804,13 @@ fn build_trust(raw: TrustRaw) -> Result<TrustPolicies> {
             auto_land: raw.operator.auto_land.unwrap_or(true),
         },
         contact: TrustPolicy {
-            budget_usd: raw.contact.budget_usd,
+            per_task_usd: Some(
+                raw.contact
+                    .per_task_usd
+                    .or(raw.contact.budget_usd)
+                    .unwrap_or(10.0),
+            ),
+            per_initiative_usd: Some(raw.contact.per_initiative_usd.unwrap_or(50.0)),
             workflows: raw.contact.workflows.or_else(|| {
                 Some(vec![
                     "reviewed".to_string(),
@@ -786,7 +825,13 @@ fn build_trust(raw: TrustRaw) -> Result<TrustPolicies> {
             auto_land: raw.contact.auto_land.unwrap_or(true),
         },
         public: TrustPolicy {
-            budget_usd: Some(raw.public.budget_usd.unwrap_or(1.0)),
+            per_task_usd: Some(
+                raw.public
+                    .per_task_usd
+                    .or(raw.public.budget_usd)
+                    .unwrap_or(5.0),
+            ),
+            per_initiative_usd: Some(raw.public.per_initiative_usd.unwrap_or(25.0)),
             workflows: raw
                 .public
                 .workflows
@@ -975,14 +1020,17 @@ max_questions_per_day = 8
 # CLI), contact (a known contact through the Signal plugin, the portal, or a
 # message trigger), or public (the github-issues plugin, a webhook whose
 # caller is not a contact, anything a stranger can send). Each level's own
-# table below is the policy it is judged against: budget_usd (a per-task cost
-# cap, unset means [budget]'s own per_task_usd), workflows (allowed workflow
+# table below is the policy it is judged against: per_task_usd (the cost cap
+# a task filed at this level gets; --budget may say less, never more without
+# --allow-over-trust-cap; unset means [budget]'s own per_task_usd),
+# per_initiative_usd (what one initiative's tasks may cost together, unset
+# means no cap), workflows (allowed workflow
 # names, unset means every workflow), allow_protected, egress (\"model\": only
 # the configured providers' model endpoints, or \"declared\": also the hosts
 # forge.toml's own [sandbox] egress names), per_day (how many tasks may start
 # at this level per day, unset means no cap), and auto_land (may a verified
-# task at this level land itself). budget_usd, workflows, allow_protected and
-# per_day are enforced at enqueue; egress and auto_land by a later task. See
+# task at this level land itself). per_task_usd, per_initiative_usd, workflows,
+# allow_protected and per_day are enforced at enqueue; egress and auto_land by a later task. See
 # docs/ROADMAP.md and docs/GTM.md item 1.
 [trust.operator]
 allow_protected = true
@@ -994,6 +1042,8 @@ auto_land = true
 # and intake, the front door itself (forge ask's own decision, and the
 # interview a need files) — neither ever writes code.
 workflows = [\"reviewed\", \"tdd-reviewed\", \"concierge\", \"intake\"]
+per_task_usd = 10.0
+per_initiative_usd = 50.0
 allow_protected = false
 egress = \"declared\"
 auto_land = true
@@ -1002,7 +1052,8 @@ auto_land = true
 # Tighter on every field: a stranger's task costs less, runs under the one
 # workflow this operator trusts unattended, cannot land itself, and is
 # capped at five a day.
-budget_usd = 1.0
+per_task_usd = 5.0
+per_initiative_usd = 25.0
 workflows = [\"reviewed\"]
 allow_protected = false
 egress = \"model\"
@@ -1579,7 +1630,8 @@ mod tests {
         assert_eq!(
             c.trust.operator,
             TrustPolicy {
-                budget_usd: None,
+                per_task_usd: None,
+                per_initiative_usd: None,
                 workflows: None,
                 allow_protected: true,
                 egress: TrustEgress::Declared,
@@ -1590,7 +1642,8 @@ mod tests {
         assert_eq!(
             c.trust.contact,
             TrustPolicy {
-                budget_usd: None,
+                per_task_usd: Some(10.0),
+                per_initiative_usd: Some(50.0),
                 workflows: Some(vec![
                     "reviewed".to_string(),
                     "tdd-reviewed".to_string(),
@@ -1606,7 +1659,8 @@ mod tests {
         assert_eq!(
             c.trust.public,
             TrustPolicy {
-                budget_usd: Some(1.0),
+                per_task_usd: Some(5.0),
+                per_initiative_usd: Some(25.0),
                 workflows: Some(vec!["reviewed".to_string()]),
                 allow_protected: false,
                 egress: TrustEgress::Model,
@@ -1622,7 +1676,8 @@ mod tests {
         std::fs::write(
             dir.path().join("config.toml"),
             "[trust.public]\n\
-             budget_usd = 0.5\n\
+             per_task_usd = 0.5\n\
+             per_initiative_usd = 3.0\n\
              workflows = [\"direct\"]\n\
              allow_protected = true\n\
              egress = \"declared\"\n\
@@ -1631,7 +1686,8 @@ mod tests {
         )
         .unwrap();
         let c = load_home(dir.path()).unwrap();
-        assert_eq!(c.trust.public.budget_usd, Some(0.5));
+        assert_eq!(c.trust.public.per_task_usd, Some(0.5));
+        assert_eq!(c.trust.public.per_initiative_usd, Some(3.0));
         assert_eq!(c.trust.public.workflows, Some(vec!["direct".to_string()]));
         assert!(c.trust.public.allow_protected);
         assert_eq!(c.trust.public.egress, TrustEgress::Declared);
