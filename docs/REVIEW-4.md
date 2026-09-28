@@ -845,6 +845,46 @@ from the lines cited, and where a defect rests on a CLI's behaviour (4, 8,
     `login_problem`. Test: a unit test over `near_expiry` with a
     two-hour timeout and a token with 90 minutes left.
 
+28. **An expired private pair can overwrite a host refresh token that
+    still works.**
+    `should_write_back` (src/login.rs:109-113) tests the private expiry
+    against now only when the host is unusable. Here "usable" means both
+    token strings are non-empty, not that either token is valid
+    (src/login.rs:35-69). `write_back_locked` reads the private bytes and
+    replaces the entire host file, including its refresh token, without
+    checking refresh validity or preserving the displaced pair
+    (src/login.rs:169-186). It is reached by
+    `Sandbox::write_back_login` (src/sandbox.rs:384-388) and by `seed`'s
+    scan of sibling private copies (src/login.rs:225-228).
+    *Input:* a host pair with an expired access token but a still-working
+    refresh token, and a private file with two non-empty token strings,
+    a later but already-past access expiry, and a revoked or junk refresh
+    token. A sandbox can write that file (defect 2); it need not supply a
+    future expiry to displace the host login.
+    *Reproduction:* compiling the actual predicate and calling it with
+    host `{usable: true, expires_at_ms: 100}`, private
+    `{usable: true, expires_at_ms: 200}`, and now `1000` returns `true`.
+    The caller then passes all private bytes to `replace_atomic`; a
+    temporary-file probe of that function confirms that the host refresh
+    token bytes are discarded. The expired access token cannot serve
+    requests, and the substituted invalid refresh token cannot recover
+    it; the working host refresh token has been lost. This demonstrates
+    the destructive replacement, not a live provider revocation test.
+    The other required predicate probe, host `{usable: false,
+    expires_at_ms: 0}`, private `{usable: true, expires_at_ms: 2000}`,
+    now `1000`, also returns `true`: restoring that unexpired private
+    pair over an emptied host file is intentional.
+    *Task:* Guard promotion of an already-expired private pair over a
+    usable host login: preserve the host pair until the candidate's
+    refresh succeeds and yields a validated replacement, or reject the
+    expired candidate without replacing the host. Integrate this with
+    defect 2's provenance guards; expiry ordering alone cannot establish
+    refresh-token validity. Add tests for both predicate probes above
+    and a write-back test with expired access tokens and distinct refresh
+    tokens, asserting that an unvalidated expired candidate cannot
+    destroy the host pair. Keep unexpired-private recovery over an empty
+    host file working.
+
 ### 1.2 Read and found sound
 
 So the next reader does not repeat it:
@@ -890,11 +930,18 @@ So the next reader does not repeat it:
 - **The credential lock and the file swap.** `flock` on an open file holds
   against threads and processes (login.rs:146-160); `replace_atomic`
   writes a `create_new` 0600 sibling, `fsync`s and renames (117-144);
-  `should_write_back` never lets an emptied host file or an expired private
-  one win (109-115); `seed` removes a stale private copy when the host is
+  `should_write_back` requires a usable private pair that expires later
+  than the host pair (109-113). If the host is empty or unusable, the
+  private pair must also be unexpired at write-back time: an unexpired
+  private pair does replace an emptied host file, the intended refresh
+  recovery path. If the host is usable (both tokens non-empty), the
+  private pair's own expiry is not checked against now; the harmful
+  expired-pair case is recorded in defect 28.
+  `seed` removes a stale private copy when the host is
   empty rather than seeding a dead pair (225-234); an empty host token is a
   provider refusal, not an attempt (refusal.rs:56-68, 140-170). What is
-  wrong is what the sandbox can feed it (defects 1, 2), not the mechanics.
+  wrong includes what the sandbox can feed it (defects 1, 2) and the
+  expired-pair acceptance in defect 28.
 - **What a launch sees of the host.** The tmpfs `$HOME` hides `~/.ssh`,
   `~/.aws`, `~/.gitconfig` and the registered checkout and its `.git` (the
   clone has its remote removed, git.rs:209); `env_clear` plus an
@@ -976,12 +1023,13 @@ three files), L (more).
 | 25 | Reviewer reads the coder's session transcripts | sandbox.rs:198, attempt.rs:242 | low | S | none |
 | 26 | Codex and copilot prompts in argv | agent.rs:1685, 1883 | low | S | none |
 | 27 | Refresh window ignores the attempt timeout | login.rs:30, refusal.rs:58 | low | S | none |
+| 28 | Expired private pair can destroy a working host refresh token | login.rs:109-113, 169-186, 225-228; sandbox.rs:384-388 | medium | M | 2 |
 
 Order: 1, 4, 3 and 5 first (each is an untrusted run reaching the
 operator's host or login, and none needs the others); 2 right after 1;
 6, 7, 11, 12, 13 and 20 are independent and small; 10 before 23; 8 and 19
-after 2 so they inherit its guards. Rows 15, 16 and 17 take the same
-file (sandbox.rs, agent.rs) as 13 and 20: file them one after another or
+after 2 so they inherit its guards; 28 follows 2 for the same reason.
+Rows 15, 16 and 17 take the same file (sandbox.rs, agent.rs) as 13 and 20: file them one after another or
 merge them into one branch.
 
 ## 4. The weekly measurement caught up with itself (2026-09-27)
