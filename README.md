@@ -332,6 +332,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   job_runs.rs       recovered job run numbers and cumulative step costs
   deploys.rs        deploys, deploy_targets, assessments
   descendants.rs    the live tasks below and beside a task in its retry lineage, and the `withdraw --abort` decision a worker reads
+  supersede.rs      tasks.supersedes: the newest task that superseded one, and the check that reopens a blocked task once its re-pointed `--after` is past blocking
   projects.rs       projects, project_repos, backlog, initiatives, portal_tokens
   record.rs         decisions, task_refs, plugins
   chat.rs           chat_sessions and chat_turns: every turn of Ask Forge, its tool calls and cost
