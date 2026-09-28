@@ -365,6 +365,32 @@ fn count_jobs_started_since(
     )?)
 }
 
+/// A start refused by a workflow's `per_day` cap: the text `forge job
+/// start` and the triggers print, and what the worker's schedule tick
+/// downcasts to tell a refusal that lasts until the window rolls from any
+/// other failure. `next_allowed` is the unix second the oldest counted
+/// start leaves the 24-hour window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PerDayRefused {
+    pub workflow: String,
+    pub started: i64,
+    pub cap: i64,
+    pub hint: String,
+    pub next_allowed: Option<i64>,
+}
+
+impl std::fmt::Display for PerDayRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} has started {} time(s) in the last 24 hours and its per_day limit is {}{}",
+            self.workflow, self.started, self.cap, self.hint
+        )
+    }
+}
+
+impl std::error::Error for PerDayRefused {}
+
 impl Store {
     /// One project's jobs in the last rolling 24h, by outcome: what `forge
     /// project show` counts separately from its task rollup (see
@@ -430,10 +456,24 @@ impl Store {
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let started = count_jobs_started_since(&tx, &j.project, &j.workflow, since)?;
         if started >= cap {
-            bail!(
-                "{} has started {started} time(s) in the last 24 hours and its per_day limit is {cap}{hint}",
-                j.workflow
-            );
+            // The start that frees a slot is the (started - cap)th oldest
+            // still in the window; it rolls out a day after it began.
+            let next_allowed = tx
+                .retry_query_row(
+                    "SELECT started_at FROM jobs WHERE project=?1 AND workflow=?2 AND dry_run=0 AND state != 'skipped' AND started_at >= ?3 ORDER BY started_at LIMIT 1 OFFSET ?4",
+                    params![j.project, j.workflow, since, started - cap],
+                    |r| r.get::<_, i64>(0),
+                )
+                .optional()?
+                .map(|t| t + 24 * 3600);
+            return Err(PerDayRefused {
+                workflow: j.workflow.clone(),
+                started,
+                cap,
+                hint: hint.to_string(),
+                next_allowed,
+            }
+            .into());
         }
         let id = create_job_row(&tx, j)?;
         tx.commit()?;

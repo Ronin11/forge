@@ -713,6 +713,19 @@ ALTER TABLE jobs ADD COLUMN worker_start TEXT;
 ALTER TABLE tasks ADD COLUMN session_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN handoff TEXT NOT NULL DEFAULT '';
 ",
+    // A schedule whose `per_day` cap refuses its start: one row while the
+    // refusal lasts, written by the worker's schedule tick and read by
+    // `forge job list`, so the fact is queried rather than logged.
+    "
+CREATE TABLE schedule_refusals (
+  project TEXT NOT NULL,
+  workflow TEXT NOT NULL,
+  since INTEGER NOT NULL,
+  next_allowed INTEGER,
+  reason TEXT NOT NULL,
+  PRIMARY KEY (project, workflow)
+);
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

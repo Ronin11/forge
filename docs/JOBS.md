@@ -161,6 +161,14 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (honour
   which slot, with no I/O — the tick around it does the resolving,
   reading and writing.
 
+  A due slot the workflow's `per_day` cap refuses starts nothing and is
+  due again on the next tick until the window rolls. The tick logs that
+  refusal once when it begins, with the time the cap next allows a start,
+  and once when it clears, and is silent in between (`worker::RefusalLog`,
+  a map of schedule name to when its refusal began). The state in between
+  is the `schedule_refusals` table (`store::schedule_refusals`), which
+  `forge job list` prints as `refused` lines after the jobs.
+
   A message is the record's own trigger: `forge message record` is the
   trigger point, so recording a `direction = in` message (`--from`; the
   Signal plugin's record call, docs/PLUGINS.md) is what fires it, with no

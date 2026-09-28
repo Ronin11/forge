@@ -428,10 +428,26 @@ fn job_list(project: Option<String>, json: bool) -> Result<()> {
     }
     if rows.is_empty() {
         out!("no jobs");
-        return Ok(());
     }
     for r in &rows {
         print_job_row(r);
+    }
+    // The schedules a `per_day` cap holds back: the worker logs each once,
+    // so this is where the state in between is read.
+    for r in f.store.schedule_refusals()? {
+        if project.as_deref().is_some_and(|p| p != r.project) {
+            continue;
+        }
+        out!(
+            "refused {:<20} {} schedule since {}{}: {}",
+            r.workflow,
+            r.project,
+            render::utc(r.since),
+            r.next_allowed
+                .map(|t| format!(", next start allowed {}", render::utc(t)))
+                .unwrap_or_default(),
+            r.reason
+        );
     }
     Ok(())
 }

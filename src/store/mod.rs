@@ -26,6 +26,7 @@ mod projects;
 mod questions;
 mod record;
 mod retry;
+mod schedule;
 use retry::RetryConnection;
 mod stats;
 mod tasks;
@@ -36,7 +37,7 @@ pub use attempts::{Attempt, AttemptState, FinishAttempt, Op, RateLimitSample, se
 pub use daily::DailyStat;
 pub use deploys::{Assessment, Deploy, DeployTarget, FinishDeploy};
 pub use factors::{FactorLevelStat, ROLES};
-pub use jobs::{Job, JobEffect, JobStat, JobState, JobStep};
+pub use jobs::{Job, JobEffect, JobStat, JobState, JobStep, PerDayRefused};
 pub use messages::{Direction, InsertMessage, Message, MessageFilter};
 pub use owners::{Caller, Owner, start_of};
 pub use projects::{
@@ -47,6 +48,7 @@ pub use projects::{
 pub use questions::RetryFacts;
 pub use questions::{QuestionRecord, Resolution};
 pub use record::{Decision, InsertDecisionBy, TaskRef};
+pub use schedule::ScheduleRefusal;
 pub use stats::{
     HumanAttentionProjectStat, HumanAttentionStat, JournalStat, RoleStat, StatsFilter, StepStat,
     TaskTtl, WorkflowStat,

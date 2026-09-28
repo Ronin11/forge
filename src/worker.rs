@@ -649,13 +649,79 @@ async fn event_tick(f: &Forge, runs: &[TickRun]) -> Result<()> {
     Ok(())
 }
 
+/// What the schedule tick has already said about the schedules a `per_day`
+/// cap refuses: schedule name (`project/workflow`) -> the second the
+/// refusal began. A refusal is the same fact on every tick until the
+/// window rolls, so the tick logs it once when it begins and once when it
+/// clears and stays silent in between; the state in between is queried
+/// from `store::schedule_refusals` (`forge job list`), which the tick keeps
+/// up to date.
+#[derive(Debug, Default)]
+struct RefusalLog {
+    since: HashMap<String, i64>,
+}
+
+impl RefusalLog {
+    /// A refusal the tick found at `now`. The line to log if it just
+    /// began, `None` if it was already logged.
+    fn refused(
+        &mut self,
+        name: &str,
+        now: i64,
+        next_allowed: Option<i64>,
+        why: &str,
+    ) -> Option<String> {
+        if self.since.contains_key(name) {
+            return None;
+        }
+        self.since.insert(name.to_string(), now);
+        let next = match next_allowed {
+            Some(t) => format!("; next start allowed at unix {t}"),
+            None => String::new(),
+        };
+        Some(format!(
+            "schedule tick: {name}: {why}{next}; not logged again until it clears"
+        ))
+    }
+
+    /// The schedule started (or is no longer refused) at `now`. The line to
+    /// log if it had been refused, `None` if it had not.
+    fn cleared(&mut self, name: &str, now: i64) -> Option<String> {
+        let since = self.since.remove(name)?;
+        Some(format!(
+            "schedule tick: {name}: per_day refusal cleared at unix {now}, after {}s (refused since unix {since})",
+            now - since
+        ))
+    }
+
+    /// When the refusal of `name` began, if it is refused.
+    fn since(&self, name: &str) -> Option<i64> {
+        self.since.get(name).copied()
+    }
+
+    /// Take up a refusal an earlier worker recorded, so a restart does not
+    /// log it a second time.
+    fn adopt(&mut self, name: &str, since: i64) {
+        self.since.entry(name.to_string()).or_insert(since);
+    }
+
+    /// The names refused so far that are not in `still`.
+    fn not_in(&self, still: &HashSet<String>) -> Vec<String> {
+        self.since
+            .keys()
+            .filter(|n| !still.contains(*n))
+            .cloned()
+            .collect()
+    }
+}
+
 /// The worker's schedule trigger (docs/JOBS.md, "Triggers" and "Build
 /// order" step 3): for every project, every run workflow with `[trigger]
 /// on = "schedule"` that resolves for it, queue one job per cron slot due
 /// since its last scheduled job. Called once per pass of the poll loop
 /// (`work`, below); cheap when no project has a schedule due, since
 /// `due_schedules` alone decides what starts.
-async fn schedule_tick(f: &Forge, runs: &[TickRun]) -> Result<()> {
+async fn schedule_tick(f: &Forge, runs: &[TickRun], log: &mut RefusalLog) -> Result<()> {
     let now = unix_now();
     let mut schedules = Vec::new();
     let mut resolved: HashMap<
@@ -693,12 +759,26 @@ async fn schedule_tick(f: &Forge, runs: &[TickRun]) -> Result<()> {
             (&run.wf, run.source, run.landed_sha.as_str()),
         );
     }
+    match f.store.schedule_refusals() {
+        Ok(rows) => {
+            for r in rows {
+                log.adopt(&format!("{}/{}", r.project, r.workflow), r.since);
+            }
+        }
+        Err(e) => eprintln!("schedule tick: {e:#}"),
+    }
+    let names: HashSet<String> = resolved
+        .keys()
+        .map(|(project, workflow)| format!("{project}/{workflow}"))
+        .collect();
+    let mut refused: HashSet<String> = HashSet::new();
     for due in due_schedules(now, schedules) {
         let Some((wf, source, landed_sha)) =
             resolved.get(&(due.project.clone(), due.workflow.clone()))
         else {
             continue;
         };
+        let name = format!("{}/{}", due.project, due.workflow);
         match job::start_scheduled(
             f,
             &due.project,
@@ -710,11 +790,56 @@ async fn schedule_tick(f: &Forge, runs: &[TickRun]) -> Result<()> {
         )
         .await
         {
-            Ok(id) => eprintln!(
-                "======== job {id} starting (schedule {} on {})",
-                due.workflow, due.project
-            ),
-            Err(e) => eprintln!("schedule tick: {}/{}: {e:#}", due.project, due.workflow),
+            Ok(id) => {
+                if let Some(line) = log.cleared(&name, now) {
+                    eprintln!("{line}");
+                }
+                if let Err(e) = f.store.clear_schedule_refusal(&due.project, &due.workflow) {
+                    eprintln!("schedule tick: {name}: {e:#}");
+                }
+                eprintln!(
+                    "======== job {id} starting (schedule {} on {})",
+                    due.workflow, due.project
+                );
+            }
+            Err(e) => match e.downcast_ref::<crate::store::PerDayRefused>() {
+                Some(r) => {
+                    refused.insert(name.clone());
+                    let why = format!("{e:#}");
+                    if let Some(line) = log.refused(&name, now, r.next_allowed, &why) {
+                        eprintln!("{line}");
+                    }
+                    if let Err(e) = f
+                        .store
+                        .set_schedule_refusal(&crate::store::ScheduleRefusal {
+                            project: due.project.clone(),
+                            workflow: due.workflow.clone(),
+                            since: log.since(&name).unwrap_or(now),
+                            next_allowed: r.next_allowed,
+                            reason: why,
+                        })
+                    {
+                        eprintln!("schedule tick: {name}: {e:#}");
+                    }
+                }
+                None => eprintln!("schedule tick: {}/{}: {e:#}", due.project, due.workflow),
+            },
+        }
+    }
+    // A refusal whose schedule is no longer due has cleared without a
+    // start of ours; one whose schedule is gone is dropped without a word.
+    for name in log.not_in(&refused) {
+        let Some((project, workflow)) = name.split_once('/') else {
+            continue;
+        };
+        if names.contains(&name)
+            && let Some(line) = log.cleared(&name, now)
+        {
+            eprintln!("{line}");
+        }
+        log.since.remove(&name);
+        if let Err(e) = f.store.clear_schedule_refusal(project, workflow) {
+            eprintln!("schedule tick: {name}: {e:#}");
         }
     }
     Ok(())
@@ -931,6 +1056,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut claimed = 0u32;
     let mut hold_until: Option<i64> = None;
     let mut announced_holds: HashSet<i64> = HashSet::new();
+    let mut refusals = RefusalLog::default();
 
     loop {
         // Config reloads between claims: what is claimed from here on runs
@@ -942,7 +1068,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         let pass: Result<()> = async {
             recover_orphans(&f, false)?;
             let runs = tick_run_workflows(&f).await?;
-            schedule_tick(&f, &runs).await?;
+            schedule_tick(&f, &runs, &mut refusals).await?;
             event_tick(&f, &runs).await?;
             superseded = succession.superseded(&f, &mut plugins).await?;
             if !stopping && succession.stop_requested() {
@@ -1620,6 +1746,86 @@ mod tests {
         let job = f.store.job(id).unwrap().unwrap();
         assert_eq!(job.state, JobState::Scheduled);
         assert!(job.due_at.unwrap() >= before + 3600);
+    }
+
+    #[test]
+    fn a_refusal_is_logged_when_it_begins_and_when_it_clears_and_not_between() {
+        let mut log = RefusalLog::default();
+        let name = "forge/gc-nightly";
+        let why =
+            "gc-nightly has started 1 time(s) in the last 24 hours and its per_day limit is 1";
+        let begun = log
+            .refused(name, 100, Some(86_500), why)
+            .expect("logged once");
+        assert!(begun.contains(name) && begun.contains(why), "{begun}");
+        assert!(
+            begun.contains("86500"),
+            "names the next allowed time: {begun}"
+        );
+        for tick in 1..=20 {
+            assert_eq!(log.refused(name, 100 + 30 * tick, Some(86_500), why), None);
+        }
+        assert_eq!(log.since(name), Some(100), "the refusal still began at 100");
+        let cleared = log.cleared(name, 86_500).expect("logged once");
+        assert!(
+            cleared.contains(name) && cleared.contains("cleared"),
+            "{cleared}"
+        );
+        assert_eq!(log.cleared(name, 86_530), None);
+        // A refusal after that is a new one and is logged again.
+        assert!(log.refused(name, 90_000, None, why).is_some());
+    }
+
+    #[test]
+    fn schedules_are_deduplicated_independently_and_a_restart_adopts_the_recorded_refusal() {
+        let mut log = RefusalLog::default();
+        assert!(log.refused("a/x", 10, None, "why").is_some());
+        assert!(log.refused("a/y", 11, None, "why").is_some());
+        assert_eq!(log.refused("a/x", 12, None, "why"), None);
+        let mut restarted = RefusalLog::default();
+        restarted.adopt("a/x", 10);
+        assert_eq!(restarted.refused("a/x", 40, None, "why"), None);
+        assert_eq!(restarted.since("a/x"), Some(10));
+        let still: HashSet<String> = ["a/x".to_string()].into();
+        assert_eq!(log.not_in(&still), vec!["a/y".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_schedule_tick_refused_by_per_day_records_the_refusal_once() {
+        let (dir, f) = message_fixture(&[("nightly", "on = \"schedule\"\ncron = \"* * * * *\"")]);
+        let repo = dir.path().join("repo");
+        let file = repo.join(".forge/workflows/nightly.toml");
+        let mut text = std::fs::read_to_string(&file).unwrap();
+        text.push_str("\n[limits]\nbudget_usd = 1.0\nper_day = 1\non_failure = \"drop\"\n");
+        std::fs::write(&file, text).unwrap();
+        git_in(&repo, &["commit", "-aqm", "cap"]);
+        f.store
+            .create_job(&crate::store::Job {
+                project: "demo".into(),
+                workflow: "nightly".into(),
+                trigger_kind: "manual".into(),
+                state: JobState::Ok,
+                started_at: unix_now() - 3600,
+                verdict_json: "[]".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let mut log = RefusalLog::default();
+        for _ in 0..3 {
+            let runs = tick_run_workflows(&f).await.unwrap();
+            schedule_tick(&f, &runs, &mut log).await.unwrap();
+        }
+        assert_eq!(f.store.jobs(Some("demo"), None).unwrap().len(), 1);
+        let rows = f.store.schedule_refusals().unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(
+            (rows[0].project.as_str(), rows[0].workflow.as_str()),
+            ("demo", "nightly")
+        );
+        assert_eq!(Some(rows[0].since), log.since("demo/nightly"));
+        let next = rows[0].next_allowed.expect("the window rolls");
+        assert!((next - (unix_now() + 23 * 3600)).abs() < 300, "{next}");
+        assert!(rows[0].reason.contains("per_day limit is 1"), "{rows:?}");
     }
 
     /// One pass of the event tick, as the poll loop runs it.
