@@ -89,8 +89,13 @@ async fn answer(id: i64, text: String, by: String, project: Option<String>) -> R
 }
 
 /// Withdraw a blocked or queued task, as the operator.
-fn withdraw(id: i64, reason: String, by: String) -> Result<()> {
+fn withdraw(id: i64, reason: String, by: String, abort: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
+    if abort {
+        crate::queue::withdraw_abort(&f, id, &reason, &by)?;
+        out!("aborting task {id}: {reason}");
+        return Ok(());
+    }
     crate::queue::withdraw(&f, id, &reason, &by)?;
     out!("withdrew task {id}: {reason}");
     Ok(())
@@ -115,7 +120,7 @@ async fn run(args: TaskArgs) -> Result<()> {
     Ok(())
 }
 
-async fn retry(id: i64, chain: bool, o: crate::queue::RetryOverrides) -> Result<()> {
+async fn retry(id: i64, chain: bool, again: bool, o: crate::queue::RetryOverrides) -> Result<()> {
     let f = Forge::open(false, false)?;
     let Some(old) = f.store.task(id)? else {
         bail!("no task {id}");
@@ -126,6 +131,7 @@ async fn retry(id: i64, chain: bool, o: crate::queue::RetryOverrides) -> Result<
             old.state.as_str()
         );
     }
+    crate::queue::refuse_live_descendant(&f, id, again)?;
     let mut made: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
     let mut queue = vec![old];
     let mut first = true;
@@ -401,6 +407,7 @@ async fn dispatch_retry(cmd: Cmd) -> Result<()> {
             retries,
             budget,
             allow_over_trust_cap,
+            again,
             max_turns,
             timeout_secs,
             workflow,
@@ -408,6 +415,7 @@ async fn dispatch_retry(cmd: Cmd) -> Result<()> {
             retry(
                 id,
                 chain,
+                again,
                 crate::queue::RetryOverrides {
                     retries,
                     budget,
@@ -437,7 +445,12 @@ async fn dispatch_answer(cmd: Cmd) -> Result<()> {
 
 async fn dispatch_withdraw(cmd: Cmd) -> Result<()> {
     match cmd {
-        Cmd::Withdraw { id, reason, by } => withdraw(id, reason, by),
+        Cmd::Withdraw {
+            id,
+            abort,
+            reason,
+            by,
+        } => withdraw(id, reason, by, abort),
         _ => unreachable!("command routed to the wrong family"),
     }
 }

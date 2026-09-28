@@ -13,8 +13,8 @@
 //! full disk stops the worker rather than failing the task.
 
 mod capped;
-use capped::check_cap;
 pub(crate) use capped::landable_capped;
+use capped::{check_abort, check_cap};
 mod terminal;
 use terminal::finish;
 pub(crate) use terminal::{finish_fault, settle_ready_initiatives};
@@ -273,12 +273,19 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         done: resume_done(&prior),
     };
     // The cap is checked at claim as well as before every attempt.
-    let mut end = check_cap(&f, &mut t, &resolved, &run.done, task_cap, &wt).await?;
+    let mut end = match check_abort(&f, &t)? {
+        Some(e) => Some(e),
+        None => check_cap(&f, &mut t, &resolved, &run.done, task_cap, &wt).await?,
+    };
     'run: loop {
         if end.is_some() {
             break 'run;
         }
         while run.idx < resolved.steps.len() {
+            if let Some(e) = check_abort(&f, &t)? {
+                end = Some(e);
+                break;
+            }
             let step = &resolved.steps[run.idx];
             let seq = run.step_seq();
             run.seq = seq;
@@ -963,6 +970,11 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
             resume: resume.as_ref(),
         })
         .await?;
+        // `forge withdraw --abort` stopped this attempt (see
+        // `attempt::launch`): the task ends here, not on its verdict.
+        if let Some(end) = check_abort(f, t)? {
+            return Ok(StepFlow::End(end));
+        }
         // A deterministic fix ran before this verdict was
         // decided (see `verify::try_known_fix`): its own
         // row, so the trace shows what Forge did without an

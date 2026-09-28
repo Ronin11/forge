@@ -14,6 +14,7 @@ mod arms;
 mod attempts;
 mod daily;
 mod deploys;
+mod descendants;
 mod events;
 mod factors;
 mod job_runs;
@@ -51,8 +52,8 @@ pub use stats::{
     TaskTtl, WorkflowStat,
 };
 pub use tasks::{
-    REQUEUE_ABORT, REQUEUE_ORPHAN, REQUEUE_REASONS, RoleRouting, Routed, Task, TaskState,
-    TaskUpdate, Trust,
+    LineageRow, REQUEUE_ABORT, REQUEUE_ORPHAN, REQUEUE_REASONS, RoleRouting, Routed, Task,
+    TaskState, TaskUpdate, Trust,
 };
 pub use workers::WorkerRow;
 
@@ -1245,6 +1246,7 @@ mod column_tests {
             ("attempts.rs", include_str!("attempts.rs")),
             ("jobs.rs", include_str!("jobs.rs")),
             ("deploys.rs", include_str!("deploys.rs")),
+            ("descendants.rs", include_str!("descendants.rs")),
             ("projects.rs", include_str!("projects.rs")),
             ("record.rs", include_str!("record.rs")),
             ("stats.rs", include_str!("stats.rs")),

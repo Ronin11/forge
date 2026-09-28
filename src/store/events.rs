@@ -36,6 +36,31 @@ impl Store {
     }
 }
 
+impl Store {
+    /// The `generation:offset` cursor after the last line delivered to
+    /// the subscriber `name`, or `None` if it has never received one.
+    pub fn subscription_cursor(&self, name: &str) -> Result<Option<String>> {
+        Ok(self
+            .lock()
+            .retry_query_row(
+                "SELECT cursor FROM subscriptions WHERE name=?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Record that `name` has been delivered everything before `cursor`.
+    pub fn set_subscription_cursor(&self, name: &str, cursor: &str) -> Result<()> {
+        self.lock().retry_execute(
+            "INSERT INTO subscriptions (name, cursor, updated_at) VALUES (?1, ?2, strftime('%s','now'))
+             ON CONFLICT(name) DO UPDATE SET cursor=excluded.cursor, updated_at=excluded.updated_at",
+            params![name, cursor],
+        )?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,6 +129,24 @@ mod tests {
         assert_eq!(
             s.event_cursor("shop", "on-done").unwrap(),
             Some("0:0".into())
+        );
+    }
+
+    #[test]
+    fn a_subscription_cursor_is_kept_per_name() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(&d.path().join("forge.db")).unwrap();
+        assert_eq!(s.subscription_cursor("notify").unwrap(), None);
+        s.set_subscription_cursor("notify", "0:120").unwrap();
+        s.set_subscription_cursor("other", "1:7").unwrap();
+        s.set_subscription_cursor("notify", "0:200").unwrap();
+        assert_eq!(
+            s.subscription_cursor("notify").unwrap().as_deref(),
+            Some("0:200")
+        );
+        assert_eq!(
+            s.subscription_cursor("other").unwrap().as_deref(),
+            Some("1:7")
         );
     }
 }

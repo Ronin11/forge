@@ -134,6 +134,17 @@ impl Store {
         Ok(())
     }
 
+    /// The answer of the operator's `forge withdraw --abort` decision on
+    /// `id` (the reason it gave), if one was recorded: the running attempt
+    /// is to stop and the task to end.
+    pub fn abort_requested(&self, id: i64) -> Result<Option<String>> {
+        Ok(self.lock().retry_query_row(
+            "SELECT answer FROM decisions WHERE task_id=?1 AND kind='withdraw-abort' ORDER BY id DESC LIMIT 1",
+            params![id],
+            |r| r.get::<_, String>(0),
+        ).optional()?)
+    }
+
     /// How many times the supervisor has answered within this piece of work.
     pub fn supervisor_answers_in_lineage(&self, task_id: i64) -> Result<u32> {
         // self.lineage() walks *down* the whole retry tree from the root, so

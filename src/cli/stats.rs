@@ -176,14 +176,35 @@ fn events(since: Option<String>, follow: bool, task: Option<i64>) -> Result<()> 
     use std::io::Write;
     let paths = crate::ctx::Paths::resolve()?;
     let path = paths.home.join("events.jsonl");
-    let mut pos: Cursor = since.as_deref().unwrap_or("0").parse()?;
+    // A follower with no `--since` is a named subscription: the kernel keeps
+    // its place, so a restart resumes after the last line it was handed.
+    // An explicit `--since` is the caller's own cursor and is left alone.
+    let subscription = if follow && since.is_none() {
+        let name = std::env::var("FORGE_PLUGIN_NAME")
+            .ok()
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "default".to_string());
+        let store = crate::store::Store::open(&paths.home.join("forge.db"))?;
+        Some((name, store))
+    } else {
+        None
+    };
+    let mut pos: Cursor = match (&since, &subscription) {
+        (Some(s), _) => s.parse()?,
+        (None, Some((name, store))) => store
+            .subscription_cursor(name)?
+            .as_deref()
+            .unwrap_or("0")
+            .parse()?,
+        (None, None) => "0".parse()?,
+    };
     let mut stdout = std::io::stdout().lock();
     loop {
         let batch = log::read(&path, pos, 8 * 1024 * 1024)?;
         if batch.resync && writeln!(stdout, "{}", serde_json::json!({
             "type": "resync", "cursor": batch.lines.first().map(|l| l.0).unwrap_or(batch.next).to_string()
         })).is_err() { return Ok(()); }
-        for (_, cursor, line) in batch.lines {
+        for (start, cursor, line) in batch.lines {
             let Ok(mut event) = serde_json::from_str::<serde_json::Value>(&line) else {
                 continue;
             };
@@ -194,11 +215,25 @@ fn events(since: Option<String>, follow: bool, task: Option<i64>) -> Result<()> 
                 continue;
             }
             event["cursor"] = cursor.to_string().into();
+            // A line counts as delivered once it is handed to the pipe, so
+            // the subscription moves past it first: a crash after this
+            // never replays it. A write that fails puts the cursor back.
+            if let Some((name, store)) = &subscription {
+                store.set_subscription_cursor(name, &cursor.to_string())?;
+            }
             if writeln!(stdout, "{event}").is_err() {
+                if let Some((name, store)) = &subscription {
+                    store.set_subscription_cursor(name, &start.to_string())?;
+                }
                 return Ok(());
             }
         }
         let _ = stdout.flush();
+        if let Some((name, store)) = &subscription
+            && pos != batch.next
+        {
+            store.set_subscription_cursor(name, &batch.next.to_string())?;
+        }
         let advanced = pos != batch.next;
         pos = batch.next;
         if advanced {
