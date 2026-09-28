@@ -321,9 +321,10 @@ pub(super) async fn guarded_claude(l: Launch<'_>) -> Result<Outcome> {
 /// Why the host login cannot start an attempt, after refreshing it if it is
 /// near expiry; `None` when it can (or there is no file to speak of).
 async fn login_problem(l: &Launch<'_>, dir: &Path) -> Option<String> {
+    let window = crate::login::refresh_window_ms(l.timeout, l.check_timeout);
     let state = match crate::login::host_state(dir) {
-        crate::login::Host::Usable(c) if c.near_expiry(crate::unix_now() * 1000) => {
-            refresh_on_host(l, dir).await
+        crate::login::Host::Usable(c) if c.near_expiry(crate::unix_now() * 1000, window) => {
+            refresh_on_host(l, dir, window).await
         }
         s => s,
     };
@@ -340,7 +341,7 @@ async fn login_problem(l: &Launch<'_>, dir: &Path) -> Option<String> {
 /// one; probing with the host's dead one would empty the file), and only if
 /// the host file is still near expiry, run a one-token probe through the
 /// attempts' own lean argv so the CLI refreshes it. The file as it stands.
-async fn refresh_on_host(l: &Launch<'_>, dir: &Path) -> crate::login::Host {
+async fn refresh_on_host(l: &Launch<'_>, dir: &Path, window: i64) -> crate::login::Host {
     let owned = dir.to_path_buf();
     let _lock = tokio::task::spawn_blocking(move || crate::login::lock(&owned))
         .await
@@ -350,7 +351,7 @@ async fn refresh_on_host(l: &Launch<'_>, dir: &Path) -> crate::login::Host {
     }
     let state = crate::login::host_state(dir);
     match state {
-        crate::login::Host::Usable(c) if c.near_expiry(crate::unix_now() * 1000) => {
+        crate::login::Host::Usable(c) if c.near_expiry(crate::unix_now() * 1000, window) => {
             probe(l).await;
             crate::login::host_state(dir)
         }

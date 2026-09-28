@@ -790,6 +790,7 @@ fn claim_egress_dir() -> crate::egress::OwnDirGuard {
 
 pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut shutdown = Shutdown::install();
+    crate::egress::raise_nofile_limit();
     let _own_egress_dir = claim_egress_dir();
     // SIGHUP: re-read `config.toml` before the next claim, whatever its
     // mtime says (`crate::reload`).

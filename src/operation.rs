@@ -584,6 +584,7 @@ mod tests {
             max_turns: None,
             timeout_secs: None,
             run: None,
+            required_args: vec![],
             check: None,
             contract: Contract::Code,
             paths: vec![],

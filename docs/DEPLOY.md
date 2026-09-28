@@ -46,6 +46,14 @@ outright, so a repository it was `--on-landing` for stops deploying it on
 future landings; it is refused while a deploy of that target is still
 running, since there would be nothing left to record the result on.
 
+A method may declare `required_args` in its action file: `add` and `set`
+refuse a target that leaves one missing or blank (`deploy-command` needs
+`host` and `dest`; `deploy-user-service` also needs `unit`). A target
+waiting on `forge provision` for its host gives a placeholder `host`,
+which provisioning replaces. The two methods also refuse at run time an
+empty `host` or a `dest` that is empty or `/`, so their `rsync --delete`
+never targets the host's root.
+
 ## Methods
 
 A method is an action file under `src/builtins/operations/deploy-*.toml`,
@@ -263,7 +271,10 @@ archived from that fetched commit, never the checkout's working tree.
 
 `deploy-self` (`src/builtins/operations/deploy-self.toml`) runs, in that
 scratch archive, under a lock (`FORGE_HOME/bin/.deploy-self.lock`) so
-two landings never build over each other:
+two landings never build over each other (the same lock, taken by
+`release::lock`, is held by `forge upgrade`, `init --relink` and the
+successor's take-over around every write to the pointers and
+`releases/`, whose temporary names carry the writer's pid):
 
 1. Unless `FORGE_HOME/bin/releases/<sha>/` already exists (a rollback to
    a commit built before), `cargo build --release --workspace` with
@@ -273,10 +284,13 @@ two landings never build over each other:
    temporary directory renamed to `releases/<sha>/`. The archive has no
    `.git`, so the commit is handed to `build.rs` as `FORGE_BUILD_SHA`
    and `forge version` still names it.
-2. Run that release's own `forge doctor --json` against a scratch
-   `FORGE_HOME`, so its migration ladder runs on an empty store rather
-   than the live one, and require its `schema` check to be `ok` (a bare
-   home fails other rows, such as the agent login, which do not count).
+2. Copy the live `forge.db` with `sqlite3 .backup` (as `forge upgrade`
+   backs the store up) into a scratch `FORGE_HOME` and run that
+   release's own `forge doctor --json --only schema` there, so its
+   migration ladder runs on the real rows but never on the live file. It
+   must exit zero: the new binary itself decides that the `schema` check
+   ran and is not FAIL, nothing greps its JSON. A migration that fails on
+   data is refused here, before anything is staged.
 3. Write `FORGE_HOME/bin/staged -> releases/<sha>` (a symlink renamed
    into place). When the running worker starts successors, this is all
    the deploy does: the worker starts a successor on `staged`, which

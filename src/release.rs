@@ -5,8 +5,10 @@
 //! release. Nothing ever writes to a file a process is executing.
 
 use anyhow::{Context, Result};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// The workspace's own release binaries, in the order `scripts/release.sh`
 /// packs them (see `tests/release.rs`).
@@ -22,6 +24,50 @@ pub const BINS: &[&str] = &[
 /// `FORGE_HOME/bin`, the directory holding `releases/`, `current` and `previous`.
 pub fn root(home: &Path) -> PathBuf {
     home.join("bin")
+}
+
+/// How long `lock` waits for another writer of the pointers, as long as
+/// `deploy-self` waits for its own lock.
+const LOCK_WAIT: Duration = Duration::from_secs(600);
+
+/// The one lock every writer of `current`, `previous` and `releases/`
+/// holds: `flock` on `bin/.deploy-self.lock`, the file the `deploy-self`
+/// script locks too. Released when dropped, or when the process dies.
+#[derive(Debug)]
+pub struct Lock(#[allow(dead_code)] std::fs::File);
+
+/// Take the pointers' lock, waiting for whoever holds it.
+pub fn lock(root: &Path) -> Result<Lock> {
+    lock_within(root, LOCK_WAIT)
+}
+
+fn lock_within(root: &Path, wait: Duration) -> Result<Lock> {
+    std::fs::create_dir_all(root.join("releases"))?;
+    let path = root.join(".deploy-self.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    let start = Instant::now();
+    loop {
+        // SAFETY: flock on a descriptor this function owns.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(Lock(file));
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() != std::io::ErrorKind::WouldBlock {
+            return Err(err).with_context(|| format!("locking {}", path.display()));
+        }
+        anyhow::ensure!(
+            start.elapsed() < wait,
+            "{} was held for {} s by another release writer",
+            path.display(),
+            wait.as_secs()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 pub fn release_dir(root: &Path, id: &str) -> PathBuf {
@@ -58,7 +104,7 @@ pub fn running(root: &Path) -> String {
 /// temporary directory renamed into place), executable. `forge` itself is
 /// required. Returns whether the release was created; an existing one is
 /// never touched.
-pub fn install(root: &Path, src: &Path, id: &str) -> Result<bool> {
+pub fn install(_lock: &Lock, root: &Path, src: &Path, id: &str) -> Result<bool> {
     let dest = release_dir(root, id);
     if dest.exists() {
         return Ok(false);
@@ -68,7 +114,9 @@ pub fn install(root: &Path, src: &Path, id: &str) -> Result<bool> {
         "{} has no forge",
         src.display()
     );
-    let tmp = root.join("releases").join(format!(".{id}.tmp"));
+    let tmp = root
+        .join("releases")
+        .join(format!(".{id}.tmp.{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp)?;
     for b in BINS {
@@ -83,9 +131,10 @@ pub fn install(root: &Path, src: &Path, id: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// Make `<root>/<name>` a symlink to `releases/<id>`, atomically.
-fn point(root: &Path, name: &str, id: &str) -> Result<()> {
-    let tmp = root.join(format!(".{name}.new"));
+/// Make `<root>/<name>` a symlink to `releases/<id>`, atomically. The
+/// temporary name carries the pid, as the script's does.
+fn point(_lock: &Lock, root: &Path, name: &str, id: &str) -> Result<()> {
+    let tmp = root.join(format!(".{name}.new.{}", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
     std::os::unix::fs::symlink(Path::new("releases").join(id), &tmp)?;
     std::fs::rename(&tmp, root.join(name))?;
@@ -94,7 +143,7 @@ fn point(root: &Path, name: &str, id: &str) -> Result<()> {
 
 /// Flip `current` to `id` and move the old target to `previous`. Returns
 /// the pointers as they were, for `restore`. A no-op when `id` is live.
-pub fn flip(root: &Path, id: &str) -> Result<(Option<String>, Option<String>)> {
+pub fn flip(lock: &Lock, root: &Path, id: &str) -> Result<(Option<String>, Option<String>)> {
     anyhow::ensure!(
         release_dir(root, id).is_dir(),
         "no release {id} under {}",
@@ -105,22 +154,22 @@ pub fn flip(root: &Path, id: &str) -> Result<(Option<String>, Option<String>)> {
         return Ok(was);
     }
     if let Some(old) = &was.0 {
-        point(root, "previous", old)?;
+        point(lock, root, "previous", old)?;
     }
-    point(root, "current", id)?;
+    point(lock, root, "current", id)?;
     Ok(was)
 }
 
 /// Put the pointers back as `flip` found them.
-pub fn restore(root: &Path, was: &(Option<String>, Option<String>)) -> Result<()> {
+pub fn restore(lock: &Lock, root: &Path, was: &(Option<String>, Option<String>)) -> Result<()> {
     match &was.0 {
-        Some(id) => point(root, "current", id)?,
+        Some(id) => point(lock, root, "current", id)?,
         None => {
             let _ = std::fs::remove_file(root.join("current"));
         }
     }
     match &was.1 {
-        Some(id) => point(root, "previous", id)?,
+        Some(id) => point(lock, root, "previous", id)?,
         None => {
             let _ = std::fs::remove_file(root.join("previous"));
         }
@@ -159,21 +208,22 @@ mod tests {
     fn flip_moves_the_old_target_to_previous_and_restore_undoes_it() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("bin");
+        let lock = lock(&root).unwrap();
         for id in ["a", "b"] {
-            install(&root, &fake_src(dir.path(), id), id).unwrap();
+            install(&lock, &root, &fake_src(dir.path(), id), id).unwrap();
         }
-        let was = flip(&root, "a").unwrap();
+        let was = flip(&lock, &root, "a").unwrap();
         assert_eq!(was, (None, None));
-        flip(&root, "b").unwrap();
+        flip(&lock, &root, "b").unwrap();
         assert_eq!(pointed_at(&root, "current").as_deref(), Some("b"));
         assert_eq!(pointed_at(&root, "previous").as_deref(), Some("a"));
         assert_eq!(
             std::fs::read_to_string(root.join("current/forge")).unwrap(),
             "b"
         );
-        let was = flip(&root, "b").unwrap();
+        let was = flip(&lock, &root, "b").unwrap();
         assert_eq!(was.0.as_deref(), Some("b"));
-        restore(&root, &(Some("a".into()), None)).unwrap();
+        restore(&lock, &root, &(Some("a".into()), None)).unwrap();
         assert_eq!(pointed_at(&root, "current").as_deref(), Some("a"));
         assert!(pointed_at(&root, "previous").is_none());
     }
@@ -182,11 +232,55 @@ mod tests {
     fn install_never_touches_an_existing_release() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("bin");
-        assert!(install(&root, &fake_src(dir.path(), "x"), "r").unwrap());
-        assert!(!install(&root, &fake_src(dir.path(), "y"), "r").unwrap());
+        let lock = lock(&root).unwrap();
+        assert!(install(&lock, &root, &fake_src(dir.path(), "x"), "r").unwrap());
+        assert!(!install(&lock, &root, &fake_src(dir.path(), "y"), "r").unwrap());
         assert_eq!(
             std::fs::read_to_string(root.join("releases/r/forge")).unwrap(),
             "x"
         );
+    }
+
+    #[test]
+    fn two_threads_flipping_alternately_never_leave_previous_naming_current() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("bin");
+        {
+            let lock = lock(&root).unwrap();
+            for id in ["a", "b", "c"] {
+                install(&lock, &root, &fake_src(dir.path(), id), id).unwrap();
+            }
+        }
+        let threads: Vec<_> = [["a", "b"], ["b", "c"]]
+            .into_iter()
+            .map(|ids| {
+                let root = root.clone();
+                std::thread::spawn(move || {
+                    for i in 0..100 {
+                        let lock = lock(&root).unwrap();
+                        flip(&lock, &root, ids[i % 2]).unwrap();
+                        let current = pointed_at(&root, "current");
+                        let previous = pointed_at(&root, "previous");
+                        assert!(
+                            previous.is_none() || previous != current,
+                            "previous {previous:?} names what current names"
+                        );
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn the_lock_waits_for_its_holder_and_gives_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("bin");
+        let held = lock(&root).unwrap();
+        assert!(lock_within(&root, Duration::from_millis(100)).is_err());
+        drop(held);
+        assert!(lock_within(&root, Duration::from_millis(100)).is_ok());
     }
 }

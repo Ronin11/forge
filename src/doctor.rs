@@ -1079,6 +1079,30 @@ pub fn run() -> Result<Vec<Check>> {
     }
 }
 
+/// Only the checks `names` asks for. `schema` alone takes the short way:
+/// open (and so migrate) the store and read its version, without the
+/// probes the full run makes, so a caller such as `deploy-self` can prove
+/// a new binary against a copy of the live store and nothing else. A
+/// store that will not open is the schema check failing. Any other name
+/// runs everything and keeps the checks so named.
+pub fn run_only(names: &[String]) -> Result<Vec<Check>> {
+    if names.iter().all(|n| n == "schema") {
+        let paths = Paths::resolve()?;
+        return Ok(match Store::open(&paths.home.join("forge.db")) {
+            Ok(store) => check_schema(&store),
+            Err(e) => vec![check(
+                "schema",
+                Status::Fail,
+                format!("{e:#}"),
+                "the new binary cannot open or migrate this store",
+            )],
+        });
+    }
+    let mut checks = run()?;
+    checks.retain(|c| names.contains(&c.name));
+    Ok(checks)
+}
+
 fn check_executors(store: &Store, paths: &Paths) -> Vec<Check> {
     use crate::executor::Backend;
     let mut backends = std::collections::BTreeSet::new();

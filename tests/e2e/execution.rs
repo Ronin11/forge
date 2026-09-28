@@ -223,7 +223,9 @@ fn an_effect_workflow_is_not_enabled_or_scheduled_until_a_fixture_passes() {
     let o = e.forge("ok.sh", &["job", "enable", "equitizr", "writer"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
-    assert_eq!(job_count(&e), 1);
+    // The cron is every minute, so a run that straddles a minute boundary
+    // schedules a second job; what matters is that the first one exists.
+    assert!(job_count(&e) >= 1);
 }
 
 const EDGE_TRIAGE_ACTION: &str = r#"name = "triage"

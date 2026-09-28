@@ -172,6 +172,7 @@ async fn try_run(
             model: &model,
             max_turns,
             timeout: std::time::Duration::from_secs(timeout_secs),
+            check_timeout: std::time::Duration::ZERO,
             log_path: &log_path,
             provider,
             schema: SCHEMA,

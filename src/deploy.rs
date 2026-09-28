@@ -154,22 +154,66 @@ async fn non_self_src(
     Ok((repo.to_path_buf(), sha))
 }
 
+/// Where the rollback archives `previous_sha` from: `src`, the tree this
+/// deploy came from, when it has that commit, and otherwise the kernel
+/// repository, where an on-landing deploy staged it (see
+/// [`non_self_src`]). An operator's `forge deploy` archives from the
+/// registered checkout, which need not have a commit only a landing
+/// staged, and a rollback must not fail on that.
+async fn rollback_src(home: &Path, src: &Path, repo: &Path, previous_sha: &str) -> Result<PathBuf> {
+    let rev = format!("{previous_sha}^{{commit}}");
+    if git::rev_parse(src, &rev).await.is_ok() {
+        return Ok(src.to_path_buf());
+    }
+    let kernel = git::kernel_repository(home, repo).await?;
+    git::rev_parse(&kernel, &rev).await.with_context(|| {
+        format!(
+            "rolling back to {}: neither {} nor the kernel repository has it",
+            short(previous_sha),
+            src.display()
+        )
+    })?;
+    Ok(kernel)
+}
+
 /// Finish `deploy_id`'s row as a failure with `e`'s text as the reason, so
 /// an error after `start_deploy` never leaves the row open, and return `e`
-/// unchanged for the caller to propagate.
-fn record_deploy_error(f: &Forge, deploy_id: i64, e: anyhow::Error) -> anyhow::Error {
-    let _ = f.store.finish_deploy(crate::store::FinishDeploy {
+/// unchanged for the caller to propagate. A row `run` already finished (a
+/// recorded rollback, or nothing to roll back to) is left as it is; only
+/// when this finishes the row, so no rollback was recorded and nobody was
+/// asked, does it file the question itself.
+fn record_deploy_error(
+    f: &Forge,
+    project: &str,
+    repo: &str,
+    deploy_id: i64,
+    sha: &str,
+    e: anyhow::Error,
+) -> anyhow::Error {
+    let reason = format!("{e:#}");
+    let finished = f.store.finish_open_deploy(crate::store::FinishDeploy {
         id: deploy_id,
         at: unix_now(),
         check_ok: false,
         check_output: "",
         rolled_back_to: None,
-        reason: &format!("{e:#}"),
+        reason: &reason,
         smoke_ok: None,
         smoke_json: None,
         look_ok: None,
         look_json: None,
     });
+    if matches!(finished, Ok(true)) {
+        let _ = ask(
+            f,
+            project,
+            repo,
+            format!(
+                "the deploy of {} failed with an error and was not rolled back; it may still be live:\n{reason}",
+                short(sha)
+            ),
+        );
+    }
     e
 }
 
@@ -301,7 +345,16 @@ pub async fn run(
             match (&target.smoke_url, &smoke_action) {
                 (Some(url), Some(smoke_action)) => {
                     let out_dir = f.paths.home.join("deploys").join(deploy_id.to_string());
-                    let sr = operation::run_deploy_smoke(smoke_action, url, &out_dir, timeout).await?;
+                    // A smoke step that cannot even run is a failed one: the
+                    // method already succeeded, so the normal rollback and
+                    // question must still follow.
+                    let sr = operation::run_deploy_smoke(smoke_action, url, &out_dir, timeout)
+                        .await
+                        .unwrap_or_else(|e| crate::checks::CheckResult {
+                            ok: false,
+                            tail: format!("the smoke step could not run: {e:#}"),
+                            ..Default::default()
+                        });
                     let json = std::fs::read_to_string(out_dir.join("smoke.json")).ok();
                     if !sr.ok {
                         r.ok = false;
@@ -426,10 +479,11 @@ pub async fn run(
             return Ok(false);
         };
 
+        let rb_src = rollback_src(&f.paths.home, &src, &repo, &previous.sha).await?;
         let rb = deploy_at(
             &action,
             &target,
-            &src,
+            &rb_src,
             &previous.sha,
             f,
             timeout,
@@ -480,7 +534,7 @@ pub async fn run(
         Ok(false)
     }
     .await;
-    outcome.map_err(|e| record_deploy_error(f, deploy_id, e))
+    outcome.map_err(|e| record_deploy_error(f, project, &target.repo, deploy_id, &sha, e))
 }
 
 /// `forge project deploy add`'s fields, parsed by clap but not yet
@@ -532,6 +586,35 @@ const RESERVED_ARG_KEYS: &[&str] = &[
     "on_landing",
 ];
 
+/// Refuse a target whose method declares `required_args` (see
+/// src/builtins/operations/deploy-command.toml) that its args leave
+/// missing or blank: an empty `dest` would otherwise make the method's
+/// `rsync --delete` target the host's `/` (docs/REVIEW-4.md, E3-19). A
+/// method the catalog does not know is left for `forge deploy` to refuse.
+fn check_required_args(f: &Forge, method: &str, args: &BTreeMap<String, String>) -> Result<()> {
+    let actions = crate::workflows::load_actions(&f.paths.home)?;
+    let Some(def) = actions.get(method) else {
+        return Ok(());
+    };
+    let missing: Vec<&str> = def
+        .required_args
+        .iter()
+        .filter(|k| args.get(*k).is_none_or(|v| v.trim().is_empty()))
+        .map(String::as_str)
+        .collect();
+    if !missing.is_empty() {
+        bail!(
+            "method {method:?} requires {}",
+            missing
+                .iter()
+                .map(|k| format!("--arg {k}=<value>"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    Ok(())
+}
+
 /// Parse repeated `<key>=<value>` pairs from `--arg` into a map, in the
 /// order clap collected them (last write wins on a repeated key).
 /// Refuses a pair with no `=` and a key that shadows one of the target's
@@ -568,6 +651,7 @@ pub fn add_target(f: &Forge, spec: TargetSpec) -> Result<DeployTarget> {
         .map(|s| serde_json::to_string(&s.split(',').collect::<Vec<_>>()))
         .transpose()?;
     let args = parse_target_args(&spec.args)?;
+    check_required_args(f, &spec.method, &args)?;
     let check = match spec.check {
         Some(c) => c,
         None if has_default_check(&spec.method) => String::new(),
@@ -634,6 +718,7 @@ pub fn set_target(
     if t.check_cmd.is_empty() && !has_default_check(&t.method) {
         bail!("--check is required for method {:?}", t.method);
     }
+    check_required_args(f, &t.method, &t.args)?;
 
     f.store.update_deploy_target(&t)?;
     Ok(t)
@@ -671,5 +756,70 @@ mod arg_tests {
             .to_string();
         assert!(err.contains("method"), "{err}");
         assert!(err.contains("--method"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod script_tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Run a built-in deploy method's `run` in a scratch directory with
+    /// `args` as its `FORGE_ARG_*` and a fake rsync/ssh on PATH that only
+    /// record being called; returns its exit code and whether either ran.
+    fn run(toml_text: &str, args: &[(&str, &str)]) -> (Option<i32>, bool) {
+        let v: toml::Value = toml::from_str(toml_text).unwrap();
+        let argv: Vec<String> = v["run"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a.as_str().unwrap().to_string())
+            .collect();
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let log = dir.path().join("calls.log");
+        for tool in ["rsync", "ssh", "systemctl"] {
+            let p = bin.join(tool);
+            std::fs::write(
+                &p,
+                format!("#!/bin/bash\necho {tool} >> {}\n", log.display()),
+            )
+            .unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut c = std::process::Command::new(&argv[0]);
+        c.args(&argv[1..]).current_dir(dir.path()).env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        );
+        for (k, v) in args {
+            c.env(format!("FORGE_ARG_{}", k.to_uppercase()), v);
+        }
+        let status = c.status().unwrap();
+        (status.code(), log.exists())
+    }
+
+    #[test]
+    fn deploy_command_and_deploy_user_service_exit_1_on_an_empty_host_or_an_empty_or_root_dest() {
+        let methods = [
+            include_str!("builtins/operations/deploy-command.toml"),
+            include_str!("builtins/operations/deploy-user-service.toml"),
+        ];
+        let bad: &[&[(&str, &str)]] = &[
+            &[("host", ""), ("dest", "/srv/app")],
+            &[("dest", "/srv/app")],
+            &[("host", "box"), ("dest", "")],
+            &[("host", "box")],
+            &[("host", "box"), ("dest", "/")],
+            &[("host", "box"), ("dest", "///")],
+            &[("host", "local"), ("dest", "/")],
+        ];
+        for text in methods {
+            for args in bad {
+                let mut args = args.to_vec();
+                args.push(("unit", "demo.service"));
+                assert_eq!(run(text, &args), (Some(1), false), "{args:?}");
+            }
+        }
     }
 }
