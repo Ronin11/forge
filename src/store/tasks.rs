@@ -323,6 +323,8 @@ pub struct TaskUpdate {
     pub tdd: Option<bool>,
     pub after: Option<Vec<i64>>,
     pub checks: Option<Vec<String>>,
+    /// The task's own `--provider` (`Task::provider`), routing every role.
+    pub provider: Option<String>,
 }
 
 /// One task in a lineage: parent is what it retries.
@@ -754,7 +756,8 @@ impl Store {
                 workflow_text = COALESCE(?11, workflow_text),
                 shape_tdd = COALESCE(?12, shape_tdd),
                 after_json = COALESCE(?13, after_json),
-                checks_json = COALESCE(?14, checks_json)
+                checks_json = COALESCE(?14, checks_json),
+                provider = COALESCE(?15, provider)
              WHERE id=?1 AND state IN ('queued', 'blocked')",
             params![
                 id,
@@ -771,7 +774,20 @@ impl Store {
                 d.tdd.map(|b| b as i64),
                 after_json,
                 checks_json,
+                d.provider,
             ],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// Replace a queued task's explore draws (`Task::explore`): the
+    /// worker's claim-time re-draw of an arm whose provider is held (see
+    /// `worker::redraw_held`). Atomic on state, so a task claimed in
+    /// between is left alone; returns whether it changed anything.
+    pub fn set_explore(&self, id: i64, explore: &BTreeMap<String, String>) -> Result<bool> {
+        let n = self.lock().retry_execute(
+            "UPDATE tasks SET explore_json=?2 WHERE id=?1 AND state='queued'",
+            params![id, serde_json::to_string(explore)?],
         )?;
         Ok(n == 1)
     }
@@ -1393,6 +1409,7 @@ mod tests {
                         tdd: Some(true),
                         after: Some(vec![3, 4]),
                         checks: Some(vec!["true".into()]),
+                        provider: None,
                     }
                 )
                 .unwrap()

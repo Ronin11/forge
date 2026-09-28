@@ -399,7 +399,8 @@ and does not parse stdout.
   withdraw control.
 - **`forge task set ID [--budget USD] [--max-turns N] [--timeout-secs N]
   [--retries N] [--text TEXT | --text-file PATH] [--workflow NAME]
-  [--after ID... | --no-after] [--check CMD... | --no-checks]`** — write
+  [--after ID... | --no-after] [--check CMD... | --no-checks]
+  [--provider NAME]`** — write
   verb: changes a queued or blocked task's spec in place, replacing only
   the fields given; refused (non-zero exit) on a running or finished
   task, and when none are given. `--after` and `--check` repeat and
@@ -409,7 +410,10 @@ and does not parse stdout.
   and is allowed at the task's trust level, dependencies that exist, will
   land and do not already wait on this task, and checks that leave
   something to verify the work (`--no-checks` is refused when the
-  repository declares no `[checks]`). State is untouched: a blocked task
+  repository declares no `[checks]`). `--provider NAME` routes every role
+  of the task to that configured provider by hand; the worker never
+  re-draws a task that names one (docs/ECONOMIST.md, "A held arm is
+  re-drawn at claim time"). State is untouched: a blocked task
   stays blocked, and a queued one is claimed with its new spec. Recorded
   as a decision on the task (see [`DecisionRow`](#decisionrow)) whose
   `question` is `task ID's spec` and whose `answer` names each field's

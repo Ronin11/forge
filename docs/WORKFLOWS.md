@@ -347,6 +347,14 @@ repository's own catalog, rebalances the weights weekly from `forge
 stats --factors`; see docs/ECONOMIST.md for the arithmetic and
 `docs/CHECKS.md` for the job itself.
 
+A drawn arm is a draw, not a promise: at claim time the worker re-draws a
+task whose arm for its next role is held (its provider's window at its
+cap, or its login refused) among that role's other arms, by the same
+weights renormalised over the arms that are free, and records the
+re-draw on the task's `explore` with a note. The task waits only when
+every arm is held (docs/ECONOMIST.md, "A held arm is re-drawn at claim
+time").
+
 ## Authoring
 
 The first agent that needs to author a workflow is a run workflow itself:

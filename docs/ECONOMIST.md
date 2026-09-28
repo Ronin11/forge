@@ -183,6 +183,50 @@ is merged into `Task::explore` — the exact field and CLI/JSON surface
 `"experiment"`, with no change needed to how a step resolves its
 provider or how the record is read.
 
+### A held arm is re-drawn at claim time
+
+The draw happens at enqueue; the worker claims later, and by then the
+drawn provider's subscription window may be spent while another arm of the
+same role is free. On 2026-09-28 seven queued tasks had all drawn openai
+(`review=openai` on 825, 836, 846, 854, 855; `code=openai` on 828, 852),
+openai's 5h window stood at 100%, and the worker logged `holding, 7
+task(s) queued` for over an hour while anthropic sat at 29% and
+anthropic-opus at 27%.
+
+So the claim loop (`worker::route_candidate`, deciding with
+`redraw::decide`) judges a candidate by the provider its *next* agent step
+resolves to, and when that provider is held and the task drew it from
+`experiment.toml`, it draws again among that factor's arms whose providers
+are not held. The re-draw is the same `experiment::draw_level` (the task's
+own draw value against the weights), with the held arms left out and the
+rest renormalised to sum to 1.0 (`redraw::open_arms`), so it is
+reproducible and keeps the experiment's proportions among the arms that
+can run. It is written to the task's `explore` — the role's entry becomes
+the new provider, and an entry `redraw:<role>` carries the note, e.g.
+`review: openai held until 02:10, re-drawn anthropic` (appended to an
+earlier note when a task is re-drawn twice) — and shown on the task's
+event stream, so the experiment and `forge show` can account for a level
+that is not the one first drawn. What ran is what the attempt's
+`provider` records, which is what `forge stats --factors` reads.
+
+A task waits only when every arm of its role is held (the hold line then
+names the provider that frees first). A task that is not on an arm the
+experiment drew is never re-drawn: an explicit `--provider` (at `forge
+add`, or by hand with `forge task set <id> --provider <name>` or `forge
+retry <id> --provider <name>`), a project's `[roles]` pin, the operator's
+`[roles]` table, or a `[measure] explore` draw outside the factor's arms
+is deliberate routing, and it waits for its provider.
+
+The exploration policy respects a held window by construction: nothing
+over-samples an arm. The audit of the draw since task 800 (review:
+anthropic 36, anthropic-opus 5, openai 15; code: anthropic 36,
+anthropic-opus 11, openai 9) is consistent with the weights, and
+`draw_level` is a pure function of the task id and the factor.
+
+The hold line names the provider: `openai: rate window 5h at 100% (cap
+90%), resets in 71m; holding, 7 task(s) queued`. `forge doctor`'s
+`rate_limit` row already names it.
+
 ### The weekly rebalance
 
 `forge economist rebalance [--days 14] [--threshold 1.0] [--dry-run]`

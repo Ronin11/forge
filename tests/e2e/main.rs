@@ -42,6 +42,7 @@ mod presence;
 mod providers;
 mod provision;
 mod questions;
+mod redraw;
 mod refs;
 mod reload;
 mod resume;
