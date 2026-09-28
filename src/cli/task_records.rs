@@ -328,6 +328,22 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
             format!(" ({})", task.reason)
         }
     );
+    if t.state == crate::store::TaskState::Queued {
+        let resolved: crate::workflows::Resolved =
+            serde_json::from_str(&t.actions_json).unwrap_or_default();
+        let names: Vec<&str> = resolved
+            .steps
+            .iter()
+            .map(|s| s.action.name.as_str())
+            .collect();
+        if let Some(line) = crate::engine::cursor::resume_line(
+            f.store.run_cursor(id)?.as_deref(),
+            &t.actions_json,
+            &names,
+        ) {
+            out!("{line}");
+        }
+    }
     out!("trust      {}", t.trust.as_str());
     if let Some(to) = &task.to {
         out!(

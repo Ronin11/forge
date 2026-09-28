@@ -14,6 +14,9 @@ pub struct RunAttempt<'a> {
     pub attempt_no: i64,
     pub feedback: Option<&'a str>,
     pub resume: Option<&'a Resume>,
+    /// The run cursor to store, in the same transaction as the attempt's
+    /// state, if the attempt verifies: the step after this one.
+    pub cursor: Option<RunCursor>,
 }
 
 /// Inputs and provider identity recorded when opening an attempt row.
@@ -45,6 +48,7 @@ struct AttemptLaunch<'a> {
 
 use crate::audit::{Inputs, Outputs};
 use crate::ctx::Forge;
+use crate::engine::cursor::RunCursor;
 use crate::engine::{Classify, Fault};
 use crate::landing::overlay_refs;
 use crate::prompts::{
@@ -102,6 +106,7 @@ pub async fn run_attempt(
         attempt_no,
         feedback,
         resume,
+        cursor,
     } = args;
     let contract = step.action.contract;
     let repo = Path::new(&t.repo);
@@ -360,7 +365,25 @@ pub async fn run_attempt(
     )
     .await
     .task()?;
-    record(f, &mut a, &spec.dir, &verdict, &outcome, spec.verify_ref).await?;
+    let cursor = cursor.map(|mut c| {
+        let summary = verdict.envelope.as_ref().map(|e| e.summary.clone());
+        match contract {
+            Contract::Tests => c.interface = summary.unwrap_or_default(),
+            Contract::Plan => c.plan = summary.unwrap_or_default(),
+            _ => {}
+        }
+        c.to_json()
+    });
+    record(
+        f,
+        &mut a,
+        &spec.dir,
+        &verdict,
+        &outcome,
+        spec.verify_ref,
+        cursor.as_deref(),
+    )
+    .await?;
     Ok((a, verdict, outcome))
 }
 
@@ -620,6 +643,7 @@ pub async fn record(
     verdict: &Verdict,
     outcome: &agent::Outcome,
     verify_ref: Option<String>,
+    cursor: Option<&str>,
 ) -> Result<(), Fault> {
     let end_sha = git::head(dir).await.task()?;
     a.session_id = outcome.session_id.clone().unwrap_or_default();
@@ -687,41 +711,46 @@ pub async fn record(
     a.rl_seven_day_resets = outcome.rate_limits.seven_day.map(|(_, r)| r);
     a.early_signals = serde_json::to_string(&outcome.early_signals).env()?;
     a.early_near = serde_json::to_string(&outcome.early_near).env()?;
-    f.store
-        .finish_attempt(&FinishAttempt {
-            id: a.id,
-            state: a.state,
-            reason: a.reason.clone(),
-            finished_at: a.finished_at,
-            agent_exit: a.agent_exit,
-            timed_out: a.timed_out,
-            num_turns: a.num_turns,
-            tool_calls: a.tool_calls,
-            cost_usd: a.cost_usd,
-            cli_cost_usd: a.cli_cost_usd,
-            agent_ms: a.agent_ms,
-            commits: a.commits,
-            files_changed: a.files_changed,
-            dirty: a.dirty,
-            verdict_json: a.verdict_json.clone(),
-            result_text: a.result_text.clone(),
-            envelope_json: a.envelope_json.clone(),
-            rl_five_hour: a.rl_five_hour,
-            rl_seven_day: a.rl_seven_day,
-            rl_five_hour_resets: a.rl_five_hour_resets,
-            rl_seven_day_resets: a.rl_seven_day_resets,
-            end_sha: a.end_sha.clone(),
-            outputs_json: a.outputs_json.clone(),
-            session_id: a.session_id.clone(),
-            first_edit: a.first_edit,
-            input_tokens: a.input_tokens,
-            output_tokens: a.output_tokens,
-            cache_read_input_tokens: a.cache_read_input_tokens,
-            cache_creation_input_tokens: a.cache_creation_input_tokens,
-            early_signals: a.early_signals.clone(),
-            early_near: a.early_near.clone(),
-        })
-        .env()?;
+    let finished = FinishAttempt {
+        id: a.id,
+        state: a.state,
+        reason: a.reason.clone(),
+        finished_at: a.finished_at,
+        agent_exit: a.agent_exit,
+        timed_out: a.timed_out,
+        num_turns: a.num_turns,
+        tool_calls: a.tool_calls,
+        cost_usd: a.cost_usd,
+        cli_cost_usd: a.cli_cost_usd,
+        agent_ms: a.agent_ms,
+        commits: a.commits,
+        files_changed: a.files_changed,
+        dirty: a.dirty,
+        verdict_json: a.verdict_json.clone(),
+        result_text: a.result_text.clone(),
+        envelope_json: a.envelope_json.clone(),
+        rl_five_hour: a.rl_five_hour,
+        rl_seven_day: a.rl_seven_day,
+        rl_five_hour_resets: a.rl_five_hour_resets,
+        rl_seven_day_resets: a.rl_seven_day_resets,
+        end_sha: a.end_sha.clone(),
+        outputs_json: a.outputs_json.clone(),
+        session_id: a.session_id.clone(),
+        first_edit: a.first_edit,
+        input_tokens: a.input_tokens,
+        output_tokens: a.output_tokens,
+        cache_read_input_tokens: a.cache_read_input_tokens,
+        cache_creation_input_tokens: a.cache_creation_input_tokens,
+        early_signals: a.early_signals.clone(),
+        early_near: a.early_near.clone(),
+    };
+    match cursor {
+        Some(c) if a.state == AttemptState::Succeeded => {
+            f.store.finish_attempt_with_cursor(&finished, c)
+        }
+        _ => f.store.finish_attempt(&finished),
+    }
+    .env()?;
     f.report.emit(
         a.task_id,
         Event::AttemptDone {

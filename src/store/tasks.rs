@@ -945,12 +945,31 @@ impl Store {
     /// task another worker has claimed since is left alone, and the pair of
     /// writes is one transaction. Returns whether the task was requeued.
     pub fn requeue(&self, id: i64, owner: &Owner, why: &str) -> Result<bool> {
+        self.requeue_at(id, owner, why, None)
+    }
+
+    /// `requeue`, also recording `cursor` (the run cursor as JSON) in the
+    /// same transaction when given: the step the interrupted run was on.
+    pub fn requeue_at(
+        &self,
+        id: i64,
+        owner: &Owner,
+        why: &str,
+        cursor: Option<&str>,
+    ) -> Result<bool> {
         let mut c = self.lock();
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let n = tx.execute(
-            "UPDATE tasks SET state='queued', worker_pid=NULL, worker_start=NULL, reason=?2
+            "UPDATE tasks SET state='queued', worker_pid=NULL, worker_start=NULL, reason=?2,
+             run_json=COALESCE(?5, run_json)
              WHERE id=?1 AND state='running' AND worker_pid IS ?3 AND worker_start IS ?4",
-            params![id, format!("requeued: {why}"), owner.pid, owner.start],
+            params![
+                id,
+                format!("requeued: {why}"),
+                owner.pid,
+                owner.start,
+                cursor
+            ],
         )?;
         if n == 1 {
             tx.execute(
@@ -960,6 +979,26 @@ impl Store {
         }
         tx.commit()?;
         Ok(n == 1)
+    }
+
+    /// The task's run cursor as stored JSON; `None` when it has none.
+    pub fn run_cursor(&self, id: i64) -> Result<Option<String>> {
+        let raw: Option<String> = self
+            .lock()
+            .retry_query_row("SELECT run_json FROM tasks WHERE id=?1", params![id], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(raw.filter(|s| !s.is_empty()))
+    }
+
+    /// Record the task's run cursor; an empty string clears it.
+    pub fn set_run_cursor(&self, id: i64, cursor: &str) -> Result<()> {
+        self.lock().retry_execute(
+            "UPDATE tasks SET run_json=?2 WHERE id=?1",
+            params![id, cursor],
+        )?;
+        Ok(())
     }
 
     /// Tasks left in `running` by a worker that no longer exists, each with

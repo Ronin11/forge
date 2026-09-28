@@ -363,47 +363,21 @@ impl Store {
     }
 
     pub fn finish_attempt(&self, a: &FinishAttempt) -> Result<()> {
-        self.lock().retry_execute(
-            "UPDATE attempts SET state=?2, reason=?3, finished_at=?4, agent_exit=?5, timed_out=?6, num_turns=?7,
-             tool_calls=?8, cost_usd=?9, agent_ms=?10, commits=?11, files_changed=?12, dirty=?13, verdict_json=?14,
-             result_text=?15, envelope_json=?16, rl_five_hour=?17, rl_seven_day=?18, rl_five_hour_resets=?19,
-             rl_seven_day_resets=?20, end_sha=?21, outputs_json=?22, session_id=?23, first_edit=?24,
-             input_tokens=?25, output_tokens=?26, cache_read_input_tokens=?27, cache_creation_input_tokens=?28,
-             early_signals=?29, early_near=?30, cli_cost_usd=?31 WHERE id=?1",
-            params![
-                a.id,
-                a.state.as_str(),
-                a.reason,
-                a.finished_at,
-                a.agent_exit,
-                a.timed_out as i64,
-                a.num_turns,
-                a.tool_calls,
-                a.cost_usd,
-                a.agent_ms,
-                a.commits,
-                a.files_changed,
-                a.dirty as i64,
-                a.verdict_json,
-                a.result_text,
-                a.envelope_json,
-                a.rl_five_hour,
-                a.rl_seven_day,
-                a.rl_five_hour_resets,
-                a.rl_seven_day_resets,
-                a.end_sha,
-                a.outputs_json,
-                a.session_id,
-                a.first_edit,
-                a.input_tokens,
-                a.output_tokens,
-                a.cache_read_input_tokens,
-                a.cache_creation_input_tokens,
-                a.early_signals,
-                a.early_near,
-                a.cli_cost_usd,
-            ],
+        finish_attempt_row(&self.lock(), a)
+    }
+
+    /// `finish_attempt` and the task's run cursor in one transaction, so a
+    /// step's verified result and the place to resume after it are never
+    /// out of step with each other.
+    pub fn finish_attempt_with_cursor(&self, a: &FinishAttempt, cursor: &str) -> Result<()> {
+        let mut c = self.lock();
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        finish_attempt_row(&tx, a)?;
+        tx.execute(
+            "UPDATE tasks SET run_json=?2 WHERE id=(SELECT task_id FROM attempts WHERE id=?1)",
+            params![a.id, cursor],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -709,6 +683,51 @@ impl Store {
         )?;
         Ok(())
     }
+}
+
+fn finish_attempt_row(c: &rusqlite::Connection, a: &FinishAttempt) -> Result<()> {
+    c.retry_execute(
+        "UPDATE attempts SET state=?2, reason=?3, finished_at=?4, agent_exit=?5, timed_out=?6, num_turns=?7,
+             tool_calls=?8, cost_usd=?9, agent_ms=?10, commits=?11, files_changed=?12, dirty=?13, verdict_json=?14,
+             result_text=?15, envelope_json=?16, rl_five_hour=?17, rl_seven_day=?18, rl_five_hour_resets=?19,
+             rl_seven_day_resets=?20, end_sha=?21, outputs_json=?22, session_id=?23, first_edit=?24,
+             input_tokens=?25, output_tokens=?26, cache_read_input_tokens=?27, cache_creation_input_tokens=?28,
+             early_signals=?29, early_near=?30, cli_cost_usd=?31 WHERE id=?1",
+            params![
+                a.id,
+                a.state.as_str(),
+                a.reason,
+                a.finished_at,
+                a.agent_exit,
+                a.timed_out as i64,
+                a.num_turns,
+                a.tool_calls,
+                a.cost_usd,
+                a.agent_ms,
+                a.commits,
+                a.files_changed,
+                a.dirty as i64,
+                a.verdict_json,
+                a.result_text,
+                a.envelope_json,
+                a.rl_five_hour,
+                a.rl_seven_day,
+                a.rl_five_hour_resets,
+                a.rl_seven_day_resets,
+                a.end_sha,
+                a.outputs_json,
+                a.session_id,
+                a.first_edit,
+                a.input_tokens,
+                a.output_tokens,
+                a.cache_read_input_tokens,
+                a.cache_creation_input_tokens,
+                a.early_signals,
+                a.early_near,
+                a.cli_cost_usd,
+            ],
+    )?;
+    Ok(())
 }
 
 impl Attempt {
