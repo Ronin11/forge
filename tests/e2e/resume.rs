@@ -387,3 +387,57 @@ fn the_fresh_arm_hands_off_past_the_context_threshold_without_a_turn_cap() {
         "missing handoff in {prompt}"
     );
 }
+
+#[test]
+fn a_requeue_during_review_resumes_at_review_and_the_code_step_runs_once() {
+    let e = Env::new();
+    let o = run_wf(
+        &e,
+        "ok.sh",
+        &[("FORGE_CLAUDE_BIN_REVIEW", "reviewer-window.sh")],
+        "reviewed",
+        "write 42 to answer.txt",
+    );
+    assert!(
+        !o.status.success(),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(e.task(1).0, "queued", "{}", e.task(1).1);
+    assert!(
+        e.task(1).1.starts_with("requeued: rate window"),
+        "{}",
+        e.task(1).1
+    );
+    let show = String::from_utf8_lossy(&e.forge("ok.sh", &["show", "1"]).stdout).to_string();
+    assert!(show.contains("resumes at step review ("), "{show}");
+
+    let mut c = e.with_role("ok.sh", "REVIEW", "reviewer-window.sh");
+    let o = c.args(["work", "--once"]).output().expect("forge work");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(err.contains("cursor   resuming at step review"), "{err}");
+    assert_eq!(e.task(1).0, "succeeded", "{}", e.task(1).1);
+
+    let code_attempts: i64 = e
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM attempts WHERE task_id=1 AND step='code'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        code_attempts, 1,
+        "the verified code step is not paid for again"
+    );
+    let setups: i64 = e
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM ops WHERE task_id=1 AND name='setup'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(setups <= 1, "setup ran {setups} times");
+}
