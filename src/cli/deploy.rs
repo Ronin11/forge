@@ -119,7 +119,8 @@ async fn deploy_run(
         (Some(p), Some(n)) => (p, n),
         _ => bail!("usage: forge deploy <project> <name> [--sha <commit>] [--force]"),
     };
-    let f = Forge::open(false, false)?;
+    // The deploy look runs the agent, sandboxed as the worker's is.
+    let f = Forge::open(true, false)?;
     if !crate::deploy::run(&f, &project, &name, sha, None, force).await? {
         std::process::exit(1);
     }

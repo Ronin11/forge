@@ -445,6 +445,31 @@ impl Sandbox {
         worktree.ancestors().find_map(|d| caches.get(d)).cloned()
     }
 
+    /// A sandbox whose bwrap is `bwrap` (a fake, in a test) and whose every
+    /// host path lives under `home`.
+    #[cfg(test)]
+    pub(crate) fn with_bwrap(bwrap: PathBuf, home: PathBuf) -> Sandbox {
+        Sandbox {
+            bwrap,
+            config_dir: home.join(".claude"),
+            codex_dir: home.join(".codex"),
+            copilot_dir: home.join(".copilot"),
+            claude_json_seed: home.join(".claude.json"),
+            home,
+            agent_dirs: vec![],
+            extra_ro: vec![],
+            extra_rw: vec![],
+            overlay: true,
+            dependency_cache: None,
+            model_hosts: vec![],
+            relay_exe: PathBuf::from("/nonexistent/forge"),
+            proxies: Arc::new(Proxies::default()),
+            declared: Mutex::new(BTreeMap::new()),
+            caches: Mutex::new(BTreeMap::new()),
+            granted: Mutex::new(BTreeMap::new()),
+        }
+    }
+
     /// Build the bwrap command that runs `argv` inside the worktree with
     /// exactly `env` (HOME is forced to the tmpfs home).
     #[cfg(test)]

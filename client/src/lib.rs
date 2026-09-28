@@ -463,6 +463,32 @@ impl Forge {
         })
     }
 
+    /// `forge <args>` with `stdin` piped in, stdout parsed as one JSON
+    /// value: the draft editor's verbs (`forge workflows draft check`,
+    /// `save`, `put`, `import`), each a draft document in and an answer
+    /// out. A non-zero exit is the error, carrying what the verb printed
+    /// (a lint refusal lists its problems on stdout) and its stderr.
+    pub fn json_with_stdin(&self, args: &[&str], stdin: &str) -> Result<Value> {
+        let mut child = self.spawn_piped(args)?;
+        child
+            .stdin
+            .take()
+            .context("stdin")?
+            .write_all(stdin.as_bytes())
+            .with_context(|| format!("writing stdin to forge {}", args.join(" ")))?;
+        let out = self.wait_with_deadline(child, args)?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "forge {}: {}{}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stdout).trim(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        serde_json::from_slice(&out.stdout)
+            .with_context(|| format!("parsing forge {}", args.join(" ")))
+    }
+
     /// `forge stats --json`: see [`StatsDoc`].
     pub fn stats(&self) -> Result<StatsDoc> {
         let args = ["stats", "--json"];

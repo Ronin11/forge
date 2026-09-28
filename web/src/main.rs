@@ -37,6 +37,8 @@
 //! header that does not match is ignored and the token path stands. See
 //! docs/CLIENT.md, "Reaching forge-web (operator)".
 
+mod drafts;
+
 use anyhow::{Context, Result};
 use forge_client::{Forge, Workflow, WorkflowPutResult};
 use serde_json::Value;
@@ -49,6 +51,7 @@ const INDEX: &str = include_str!("index.html");
 const APP_JS: &str = include_str!("app.js");
 const TIME_JS: &str = include_str!("time.js");
 const WORKFLOWS_JS: &str = include_str!("workflows.js");
+const DRAFTS_JS: &str = include_str!("drafts.js");
 const GRAPH_JS: &str = include_str!("graph.js");
 const REQUESTS_JS: &str = include_str!("requests.js");
 const TASK_JS: &str = include_str!("task.js");
@@ -1282,6 +1285,7 @@ fn handle(req: Request, forge: &Forge, secret: &str, tailscale_login: Option<&st
             || path.starts_with("/api/withdraw/")
             || path.starts_with("/api/land/")
             || path.starts_with("/api/workflows/")
+            || path.starts_with("/api/drafts/")
             || path.starts_with("/api/initiatives/")
             || path == "/api/gc"
             || path.starts_with("/api/deploys/run/")
@@ -1358,6 +1362,7 @@ fn handle(req: Request, forge: &Forge, secret: &str, tailscale_login: Option<&st
         }
         "/time.js" => text(200, TIME_JS, "application/javascript"),
         "/workflows.js" => text(200, WORKFLOWS_JS, "application/javascript"),
+        "/drafts.js" => text(200, DRAFTS_JS, "application/javascript"),
         "/graph.js" => text(200, GRAPH_JS, "application/javascript"),
         "/shell.js" => text(200, SHELL_JS, "application/javascript"),
         "/requests.js" => text(200, REQUESTS_JS, "application/javascript"),
@@ -1408,6 +1413,10 @@ fn handle(req: Request, forge: &Forge, secret: &str, tailscale_login: Option<&st
             _ => text(404, "not found", "text/plain"),
         },
         "/api/workflows" => json_or_error(workflows_merged(forge)),
+        p if p == "/api/drafts" || p.starts_with("/api/drafts/") => {
+            drafts::route(req, forge, p);
+            return;
+        }
         "/api/workflows/draft" => {
             if req.method() != &Method::Post {
                 text(405, "POST only", "text/plain")
