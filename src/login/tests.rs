@@ -841,3 +841,78 @@ fn a_seed_waits_for_a_refresh_probe_on_the_host() {
             .unwrap();
     });
 }
+
+const MIN: i64 = 60_000;
+
+/// A fake clock through the incident: a login expiring at 13:02, the CLI
+/// never refreshing it, a launch every minute from 12:32.
+#[test]
+fn a_probe_that_did_not_refresh_waits_until_five_minutes_before_expiry() {
+    let expiry = NOW + 30 * MIN;
+    let mut last: Option<ProbeRecord> = None;
+    let mut probes = Vec::new();
+    for minute in 0..40 {
+        let now = NOW + minute * MIN;
+        if probe_due(last.as_ref(), expiry, now) {
+            probes.push(minute);
+            last = Some(ProbeRecord {
+                at_ms: now,
+                expires_before_ms: expiry,
+                expires_after_ms: expiry,
+            });
+        }
+    }
+    // Once at the start; then not until expiry minus five minutes; then at
+    // most once per five minutes.
+    assert_eq!(probes, vec![0, 25, 30, 35]);
+}
+
+#[test]
+fn a_probe_runs_at_most_once_per_five_minutes() {
+    let r = ProbeRecord {
+        at_ms: NOW,
+        expires_before_ms: NOW + 10 * MIN,
+        expires_after_ms: NOW + 70 * MIN,
+    };
+    assert!(r.refreshed());
+    // Even a login near expiry again (a later login written back) waits.
+    assert!(!probe_due(Some(&r), NOW + 3 * MIN, NOW + 4 * MIN));
+    assert!(probe_due(Some(&r), NOW + 3 * MIN, NOW + 5 * MIN));
+    assert!(probe_due(None, NOW, NOW));
+}
+
+#[test]
+fn the_back_off_holds_only_for_the_expiry_the_probe_saw() {
+    let expiry = NOW + 20 * MIN;
+    let r = ProbeRecord {
+        at_ms: NOW,
+        expires_before_ms: expiry,
+        expires_after_ms: expiry,
+    };
+    assert!(!r.refreshed());
+    assert!(!probe_due(Some(&r), expiry, NOW + 10 * MIN));
+    assert!(probe_due(Some(&r), expiry, NOW + 15 * MIN));
+    // Another login (a new expiry) is only held to the five minutes.
+    assert!(probe_due(Some(&r), expiry + MIN, NOW + 5 * MIN));
+    // Past expiry, the five minutes still hold.
+    let late = ProbeRecord {
+        at_ms: expiry + MIN,
+        ..r
+    };
+    assert!(!probe_due(Some(&late), expiry, expiry + 3 * MIN));
+    assert!(probe_due(Some(&late), expiry, expiry + 6 * MIN));
+}
+
+#[test]
+fn the_last_probe_is_recorded_beside_the_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(last_probe(dir.path()), None);
+    let r = ProbeRecord {
+        at_ms: NOW,
+        expires_before_ms: NOW + MIN,
+        expires_after_ms: NOW + MIN,
+    };
+    record_probe(dir.path(), &r).unwrap();
+    assert_eq!(last_probe(dir.path()), Some(r));
+    assert!(dir.path().join(PROBE_MARK).exists());
+}

@@ -375,6 +375,22 @@ impl Forge {
         }
     }
 
+    /// Whether a task at `level` may start on the backend a repository
+    /// declaring `cfg` would run on: `Err` names the backend and the level.
+    /// Without a resolved sandbox, `FORGE_SANDBOX=0` puts every launch on
+    /// the host.
+    pub fn egress_gate(
+        &self,
+        cfg: &config::Config,
+        level: crate::store::Trust,
+    ) -> Result<(), String> {
+        let (backend, guarantees) = match &self.sandbox {
+            Some(execution) => execution.guarantees_for(&cfg.execution),
+            None => crate::executor::guarantees_unresolved(&cfg.execution),
+        };
+        egress_gate(level, self.trust_policy(level), backend, guarantees)
+    }
+
     pub fn sandboxed(&self, worktree: &Path) -> bool {
         self.sandbox
             .as_ref()
@@ -515,9 +531,113 @@ pub fn describe_trust_caps(trust: &config::TrustPolicies, budget: &Budget) -> St
         .join(", ")
 }
 
+/// Prefix of the reason a task is refused (at enqueue) or blocked (at
+/// claim) by `egress_gate`; the worker never hands such a block to the
+/// supervisor, since no answer changes it.
+pub const EGRESS_REFUSAL: &str = "refused to start: ";
+
+/// Whether a task at `level` may start on `backend`: a level that is not
+/// operator, or whose `[trust]` egress is `model`, promises bounded egress
+/// and a private worktree, and only a backend that reports both keeps the
+/// promise, unless the level opts out with `allow_unsandboxed`.
+pub fn egress_gate(
+    level: crate::store::Trust,
+    policy: &config::TrustPolicy,
+    backend: crate::executor::Backend,
+    guarantees: crate::executor::Guarantees,
+) -> Result<(), String> {
+    let restricted =
+        level != crate::store::Trust::Operator || policy.egress == config::TrustEgress::Model;
+    if !restricted
+        || policy.allow_unsandboxed
+        || (guarantees.egress_bounded && guarantees.worktree_private)
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "{EGRESS_REFUSAL}trust {} (egress {}) needs a backend with egress_bounded and \
+         worktree_private, but backend {} reports egress_bounded={}, worktree_private={}; \
+         run it on bwrap, or set allow_unsandboxed = true under [trust.{}] in config.toml",
+        level.as_str(),
+        policy.egress.as_str(),
+        backend.as_str(),
+        guarantees.egress_bounded,
+        guarantees.worktree_private,
+        level.as_str(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::executor::{Backend, Guarantees};
+    use crate::store::Trust;
+
+    fn policy(egress: config::TrustEgress, allow_unsandboxed: bool) -> config::TrustPolicy {
+        config::TrustPolicy {
+            per_task_usd: None,
+            per_initiative_usd: None,
+            workflows: None,
+            allow_protected: true,
+            egress,
+            per_day: None,
+            auto_land: true,
+            allow_unsandboxed,
+        }
+    }
+
+    #[test]
+    fn the_gate_refuses_a_restricted_level_on_every_backend_that_does_not_bound_egress() {
+        for backend in [Backend::Host, Backend::Ssh] {
+            for level in [Trust::Contact, Trust::Public] {
+                let p = policy(config::TrustEgress::Declared, false);
+                let err = egress_gate(level, &p, backend, backend.guarantees()).unwrap_err();
+                assert!(err.starts_with(EGRESS_REFUSAL), "{err}");
+                assert!(err.contains(backend.as_str()), "{err}");
+                assert!(err.contains(level.as_str()), "{err}");
+            }
+            let p = policy(config::TrustEgress::Model, false);
+            let err = egress_gate(Trust::Operator, &p, backend, backend.guarantees()).unwrap_err();
+            assert!(
+                err.contains(backend.as_str()) && err.contains("operator"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_gate_lets_bwrap_carry_every_level() {
+        let g = Backend::Bwrap.guarantees();
+        for level in [Trust::Operator, Trust::Contact, Trust::Public] {
+            for egress in [config::TrustEgress::Model, config::TrustEgress::Declared] {
+                assert!(egress_gate(level, &policy(egress, false), Backend::Bwrap, g).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn the_gate_refuses_bwrap_when_it_is_unavailable() {
+        let p = policy(config::TrustEgress::Model, false);
+        let err =
+            egress_gate(Trust::Public, &p, Backend::Bwrap, Guarantees::default()).unwrap_err();
+        assert!(err.contains("bwrap") && err.contains("public"), "{err}");
+    }
+
+    #[test]
+    fn the_gate_leaves_an_operator_task_with_declared_egress_alone_on_any_backend() {
+        let p = policy(config::TrustEgress::Declared, false);
+        for backend in [Backend::Bwrap, Backend::Host, Backend::Ssh] {
+            assert!(egress_gate(Trust::Operator, &p, backend, backend.guarantees()).is_ok());
+        }
+    }
+
+    #[test]
+    fn allow_unsandboxed_opts_a_level_out_of_the_gate() {
+        let p = policy(config::TrustEgress::Model, true);
+        for backend in [Backend::Host, Backend::Ssh] {
+            assert!(egress_gate(Trust::Public, &p, backend, backend.guarantees()).is_ok());
+        }
+    }
 
     fn providers(names: &[&str]) -> BTreeMap<String, agent::Provider> {
         names

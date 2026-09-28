@@ -2,7 +2,7 @@
 //! filed at a trust level is judged against that level's own
 //! `[trust.<level>]` policy, checked in `queue::apply_trust_policy`.
 
-use crate::support::Env;
+use crate::support::{Env, git};
 
 #[test]
 fn a_public_task_with_workflow_direct_is_refused() {
@@ -350,4 +350,85 @@ fn c_land(e: &Env) -> std::process::Output {
             .join("assessor.sh"),
     );
     c.args(["land", "1"]).output().unwrap()
+}
+
+fn declare_host_backend(e: &Env) {
+    let path = e.repo.join("forge.toml");
+    let config = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("{config}[execution]\nbackend = \"host\"\n")).unwrap();
+    git(&e.repo, &["commit", "-qam", "select host executor"]);
+}
+
+#[test]
+fn a_public_task_is_refused_at_enqueue_on_a_repository_that_runs_on_the_host() {
+    let e = Env::new();
+    declare_host_backend(&e);
+    let o = add_public(&e, &[]);
+    assert!(!o.status.success());
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(stderr.contains("host"), "{stderr}");
+    assert!(stderr.contains("public"), "{stderr}");
+    assert!(stderr.contains("egress_bounded"), "{stderr}");
+    let n: i64 = e
+        .db()
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0);
+    // The operator's own task is not restricted.
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["add", e.repo.to_str().unwrap(), "write 42 to answer.txt"]
+        )
+        .status
+        .success()
+    );
+}
+
+#[test]
+fn a_queued_public_task_is_blocked_not_failed_when_its_repository_moves_to_the_host() {
+    let e = Env::new();
+    if e.sandbox_disabled() {
+        return;
+    }
+    let public = filed_id(&add_public(&e, &["--no-land"]));
+    declare_host_backend(&e);
+    let operator = e.add(&["--no-land"]);
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let (state, reason, _) = e.task(public);
+    assert_eq!(state, "blocked", "{reason}");
+    assert!(
+        reason.contains("host") && reason.contains("public"),
+        "{reason}"
+    );
+    assert!(reason.contains("allow_unsandboxed"), "{reason}");
+    assert!(e.attempts(public).is_empty(), "no agent was launched");
+
+    let (state, reason, _) = e.task(operator);
+    assert_eq!(state, "succeeded", "{reason}");
+    assert!(!e.attempts(operator).is_empty());
+}
+
+#[test]
+fn allow_unsandboxed_lets_a_public_task_start_on_the_host_and_doctor_flags_it() {
+    let e = Env::new();
+    declare_host_backend(&e);
+    std::fs::create_dir_all(&e.home).unwrap();
+    std::fs::write(
+        e.home.join("config.toml"),
+        "[trust.public]\nallow_unsandboxed = true\n",
+    )
+    .unwrap();
+    let o = add_public(&e, &["--no-land"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = e.forge("ok.sh", &["doctor", "--json"]);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&o.stdout).unwrap();
+    let row = rows
+        .iter()
+        .find(|r| r["name"] == "trust.allow_unsandboxed")
+        .expect("doctor flags the opt-out");
+    assert_eq!(row["status"], "warn");
+    assert!(row["detail"].as_str().unwrap().contains("public"));
 }

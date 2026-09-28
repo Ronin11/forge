@@ -47,6 +47,19 @@ const LOCK: &str = ".forge-credentials.lock";
 /// about to rotate. Always taken before `LOCK`, never while holding it.
 const PROBE_LOCK: &str = ".forge-refresh.lock";
 
+/// The last refresh probe on the host: when it ran and the expiry it saw
+/// before and after (see `ProbeRecord`). Beside `PROBE_LOCK`, and written
+/// only under it.
+const PROBE_MARK: &str = ".forge-refresh-probe";
+
+/// A refresh probe runs at most this often, whatever it found.
+pub const PROBE_MIN_INTERVAL_MS: i64 = 5 * 60 * 1000;
+
+/// After a probe the CLI did not refresh, the next waits until this long
+/// before the expiry it saw: the CLI refreshes only near its own, shorter
+/// margin, so a probe before then only runs it again for nothing.
+pub const PROBE_BACKOFF_BEFORE_EXPIRY_MS: i64 = 5 * 60 * 1000;
+
 /// Unix seconds of the last write-back, for `forge doctor`.
 const MARK: &str = ".forge-writeback";
 
@@ -798,6 +811,65 @@ fn read_private(path: &Path) -> Option<String> {
         return None;
     }
     String::from_utf8(bytes).ok()
+}
+
+/// The last refresh probe run on a host login.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProbeRecord {
+    /// When it ran, unix milliseconds.
+    pub at_ms: i64,
+    /// The login's expiry before it ran.
+    pub expires_before_ms: i64,
+    /// The login's expiry after it ran; the same when it did not refresh.
+    pub expires_after_ms: i64,
+}
+
+impl ProbeRecord {
+    /// Whether the probe moved the login's expiry.
+    pub fn refreshed(&self) -> bool {
+        self.expires_after_ms != self.expires_before_ms
+    }
+
+    /// The earliest a next probe may run on a login expiring at
+    /// `expires_at_ms`: five minutes after this one in any case, and after
+    /// one that left that very expiry unchanged, not before five minutes
+    /// short of it.
+    pub fn next_probe_at(&self, expires_at_ms: i64) -> i64 {
+        let floor = self.at_ms.saturating_add(PROBE_MIN_INTERVAL_MS);
+        if !self.refreshed() && self.expires_after_ms == expires_at_ms {
+            floor.max(expires_at_ms.saturating_sub(PROBE_BACKOFF_BEFORE_EXPIRY_MS))
+        } else {
+            floor
+        }
+    }
+}
+
+/// Whether a refresh probe may run now (`now_ms`) on a login expiring at
+/// `expires_at_ms`, given the last probe run on it.
+pub fn probe_due(last: Option<&ProbeRecord>, expires_at_ms: i64, now_ms: i64) -> bool {
+    last.is_none_or(|r| now_ms >= r.next_probe_at(expires_at_ms))
+}
+
+/// The last refresh probe run on `dir`'s login, if any is recorded.
+pub fn last_probe(dir: &Path) -> Option<ProbeRecord> {
+    let v: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(PROBE_MARK)).ok()?).ok()?;
+    Some(ProbeRecord {
+        at_ms: v["at_ms"].as_i64()?,
+        expires_before_ms: v["expires_before_ms"].as_i64()?,
+        expires_after_ms: v["expires_after_ms"].as_i64()?,
+    })
+}
+
+/// Record `r` as the last refresh probe on `dir`'s login. The caller holds
+/// `probe_lock`.
+pub fn record_probe(dir: &Path, r: &ProbeRecord) -> std::io::Result<()> {
+    let body = serde_json::json!({
+        "at_ms": r.at_ms,
+        "expires_before_ms": r.expires_before_ms,
+        "expires_after_ms": r.expires_after_ms,
+    });
+    replace_atomic(&dir.join(PROBE_MARK), body.to_string().as_bytes())
 }
 
 /// When the kernel last wrote a login back to the host file (unix seconds).

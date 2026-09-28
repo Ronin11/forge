@@ -45,6 +45,24 @@ pub struct Guarantees {
     pub credentials_seeded: bool,
     pub checks_under_kernel_control: bool,
 }
+/// `Execution::guarantees_for` for a process that never resolved a sandbox
+/// (a `forge add`, which only files the task): `FORGE_SANDBOX=0` means
+/// every launch is on the host, and a declared bwrap without the binary
+/// guarantees nothing.
+pub fn guarantees_unresolved(cfg: &config::Execution) -> (Backend, Guarantees) {
+    if config::env("SANDBOX").as_deref() == Ok("0") {
+        return (Backend::Host, Backend::Host.guarantees());
+    }
+    let backend = cfg.declared.unwrap_or_else(default_backend);
+    let available = backend != Backend::Bwrap || crate::sandbox::resolve_binary("bwrap").is_ok();
+    let guarantees = if available {
+        backend.guarantees()
+    } else {
+        Guarantees::default()
+    };
+    (backend, guarantees)
+}
+
 pub trait Executor {
     fn guarantees(&self) -> Guarantees;
     fn command(
@@ -232,7 +250,10 @@ impl Execution {
             .unwrap_or(self.fallback)
     }
     pub fn guarantees(&self, path: &Path) -> Guarantees {
-        match self.backend(path) {
+        self.guarantees_of(self.backend(path))
+    }
+    fn guarantees_of(&self, backend: Backend) -> Guarantees {
+        match backend {
             Backend::Host => Host.guarantees(),
             Backend::Ssh => Backend::Ssh.guarantees(),
             Backend::Bwrap => self
@@ -241,6 +262,12 @@ impl Execution {
                 .map(Executor::guarantees)
                 .unwrap_or_default(),
         }
+    }
+    /// The backend a repository declaring `cfg` would run on, and what it
+    /// guarantees here, before any worktree exists.
+    pub fn guarantees_for(&self, cfg: &config::Execution) -> (Backend, Guarantees) {
+        let backend = cfg.declared.unwrap_or(self.fallback);
+        (backend, self.guarantees_of(backend))
     }
     pub fn command(&self, path: &Path, argv: &[String], env: &[(String, String)]) -> Command {
         let policy = self
@@ -337,6 +364,25 @@ impl Execution {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn guarantees_for_follows_the_declared_backend_and_the_fallback() {
+        let execution = Execution {
+            bwrap: Err("bwrap not found".into()),
+            fallback: Backend::Host,
+            backends: Mutex::new(BTreeMap::new()),
+            remotes: Mutex::new(BTreeMap::new()),
+        };
+        let (backend, g) = execution.guarantees_for(&config::Execution::default());
+        assert_eq!(backend, Backend::Host);
+        assert!(!g.egress_bounded);
+        let declared = config::Execution {
+            declared: Some(Backend::Bwrap),
+            ..Default::default()
+        };
+        let (backend, g) = execution.guarantees_for(&declared);
+        assert_eq!(backend, Backend::Bwrap);
+        assert!(!g.egress_bounded && !g.worktree_private);
+    }
 
     #[tokio::test]
     async fn execution_config_defaults_and_rejects_unknown_backends() {

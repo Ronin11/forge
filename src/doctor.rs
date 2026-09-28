@@ -416,7 +416,7 @@ fn check_cache(paths: &Paths) -> Vec<Check> {
 }
 
 fn check_config(paths: &Paths) -> Vec<Check> {
-    vec![match config::load_home(&paths.home) {
+    let mut out = vec![match config::load_home(&paths.home) {
         Ok(c) => {
             let b = &c.budget;
             let present = |v: &[std::path::PathBuf]| v.iter().filter(|p| p.exists()).count();
@@ -448,7 +448,36 @@ fn check_config(paths: &Paths) -> Vec<Check> {
             },
             format!("fix {}", paths.home.join("config.toml").display()),
         ),
-    }]
+    }];
+    if let Ok(c) = config::load_home(&paths.home) {
+        out.extend(check_unsandboxed_opt_out(&c.trust));
+    }
+    out
+}
+
+/// A `[trust.<level>] allow_unsandboxed = true` lets that level's tasks run
+/// on a backend that bounds no egress; say which levels do.
+fn check_unsandboxed_opt_out(trust: &config::TrustPolicies) -> Option<Check> {
+    let levels: Vec<&str> = [
+        ("operator", &trust.operator),
+        ("contact", &trust.contact),
+        ("public", &trust.public),
+    ]
+    .into_iter()
+    .filter(|(_, p)| p.allow_unsandboxed)
+    .map(|(name, _)| name)
+    .collect();
+    (!levels.is_empty()).then(|| {
+        check(
+            "trust.allow_unsandboxed",
+            Status::Warn,
+            format!(
+                "{} may run without a bounded, private sandbox (host, ssh, or no bwrap): egress promised by [trust] is not enforced there",
+                levels.join(", ")
+            ),
+            "remove allow_unsandboxed from [trust.<level>] in config.toml to refuse those tasks on such a backend",
+        )
+    })
 }
 
 /// The database's real schema version, from `PRAGMA user_version`, not

@@ -1852,7 +1852,7 @@ fn deploy_self_puts_the_pointers_back_and_leaves_the_worker_alone_when_the_check
         rows[0]["reason"]
             .as_str()
             .unwrap_or_default()
-            .contains("no previous deploy"),
+            .contains("nothing else to roll back to"),
         "{:?}",
         rows[0]
     );

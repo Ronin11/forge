@@ -662,9 +662,7 @@ struct IntakeRaw {
 
 /// `[trust.operator]`, `[trust.contact]`, `[trust.public]`: the policy
 /// each of the three trust levels a task can carry (`store::Trust`) is
-/// judged against at enqueue (see docs/GTM.md item 1, docs/ROADMAP.md,
-/// `queue::apply_trust_policy`). `egress` and `auto_land` are declared
-/// here but enforced by a later task.
+/// judged against at enqueue (docs/GTM.md item 1, `queue::apply_trust_policy`).
 #[derive(Deserialize, Default)]
 struct TrustRaw {
     #[serde(default)]
@@ -686,13 +684,12 @@ struct TrustLevelRaw {
     egress: Option<String>,
     per_day: Option<u32>,
     auto_land: Option<bool>,
+    allow_unsandboxed: Option<bool>,
 }
 
-/// An attempt's network policy at one trust level, once egress reads this
-/// (see docs/ROADMAP.md item 4): `Model` reaches only the configured
-/// providers' model endpoints; `Declared` also reaches the hosts the
-/// repository's own `forge.toml` names under `[sandbox] egress`, today's
-/// behavior for every task regardless of trust.
+/// An attempt's network policy at one trust level (docs/ROADMAP.md item 4):
+/// `Model` reaches only the configured providers' model endpoints;
+/// `Declared` also the hosts the repository's `[sandbox] egress` names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrustEgress {
     Model,
@@ -700,7 +697,6 @@ pub enum TrustEgress {
 }
 
 impl TrustEgress {
-    #[allow(dead_code)]
     pub fn as_str(self) -> &'static str {
         match self {
             TrustEgress::Model => "model",
@@ -731,6 +727,8 @@ pub struct TrustPolicy {
     pub per_day: Option<u32>,
     /// Whether a task at this level may land itself once verified.
     pub auto_land: bool,
+    /// Opts this level out of `ctx::egress_gate`.
+    pub allow_unsandboxed: bool,
 }
 
 /// `[trust.<level>]` in full: the policy for each of the three levels a
@@ -784,6 +782,7 @@ fn build_trust(raw: TrustRaw) -> Result<TrustPolicies> {
             egress: parse_trust_egress("operator", raw.operator.egress, TrustEgress::Declared)?,
             per_day: raw.operator.per_day,
             auto_land: raw.operator.auto_land.unwrap_or(true),
+            allow_unsandboxed: raw.operator.allow_unsandboxed.unwrap_or(false),
         },
         contact: TrustPolicy {
             per_task_usd: per_task_of(&raw.contact, Some(10.0)),
@@ -800,6 +799,7 @@ fn build_trust(raw: TrustRaw) -> Result<TrustPolicies> {
             egress: parse_trust_egress("contact", raw.contact.egress, TrustEgress::Declared)?,
             per_day: raw.contact.per_day,
             auto_land: raw.contact.auto_land.unwrap_or(true),
+            allow_unsandboxed: raw.contact.allow_unsandboxed.unwrap_or(false),
         },
         public: TrustPolicy {
             per_task_usd: per_task_of(&raw.public, Some(5.0)),
@@ -812,6 +812,7 @@ fn build_trust(raw: TrustRaw) -> Result<TrustPolicies> {
             egress: parse_trust_egress("public", raw.public.egress, TrustEgress::Model)?,
             per_day: Some(raw.public.per_day.unwrap_or(5)),
             auto_land: raw.public.auto_land.unwrap_or(false),
+            allow_unsandboxed: raw.public.allow_unsandboxed.unwrap_or(false),
         },
     })
 }
@@ -997,13 +998,14 @@ max_questions_per_day = 8
 # --allow-over-trust-cap; unset means [budget]'s own per_task_usd),
 # per_initiative_usd (what an initiative's tasks may cost together, unset means
 # no cap), workflows (allowed workflow names, unset means every workflow),
-# allow_protected, egress (\"model\": only
-# the configured providers' model endpoints, or \"declared\": also the hosts
-# forge.toml's own [sandbox] egress names), per_day (how many tasks may start
-# at this level per day, unset means no cap), and auto_land (may a verified
-# task at this level land itself). The caps, workflows, allow_protected and
-# per_day are enforced at enqueue; egress and auto_land by a later task. See
-# docs/ROADMAP.md and docs/GTM.md item 1.
+# allow_protected, egress (\"model\": only the configured providers' model
+# endpoints, or \"declared\": also the hosts forge.toml's own [sandbox] egress
+# names), per_day (how many tasks may start at this level per day, unset means
+# no cap), and auto_land (may a verified task at this level land itself). The
+# caps, workflows, allow_protected and per_day are enforced at enqueue; egress
+# and auto_land by a later task. A level that is not operator, or whose egress
+# is \"model\", needs a bwrap backend (refused at enqueue, blocked at claim)
+# unless allow_unsandboxed = true (forge doctor flags it). See docs/GTM.md.
 [trust.operator]
 allow_protected = true
 egress = \"declared\"
@@ -1609,6 +1611,7 @@ mod tests {
                 egress: TrustEgress::Declared,
                 per_day: None,
                 auto_land: true,
+                allow_unsandboxed: false,
             }
         );
         assert_eq!(
@@ -1626,6 +1629,7 @@ mod tests {
                 egress: TrustEgress::Declared,
                 per_day: None,
                 auto_land: true,
+                allow_unsandboxed: false,
             }
         );
         assert_eq!(
@@ -1638,6 +1642,7 @@ mod tests {
                 egress: TrustEgress::Model,
                 per_day: Some(5),
                 auto_land: false,
+                allow_unsandboxed: false,
             }
         );
     }
