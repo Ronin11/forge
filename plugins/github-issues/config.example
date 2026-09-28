@@ -6,7 +6,8 @@
 # `[trust.public]` policy is the condition it runs under (docs/PLUGINS.md,
 # "Trust levels"; docs/GTM.md item 1). By default that policy is:
 #   - a daily cap: at most 5 public tasks in 24 hours, the rest wait;
-#   - a small budget (1.00 USD) and only the "reviewed" workflow;
+#   - a cap of 5 USD a task (25 an initiative; the issue gets a comment
+#     saying so) and only the "reviewed" workflow;
 #   - model-only egress: the attempt's network namespace reaches the
 #     model endpoint and nothing else, not even the hosts the target
 #     repository's forge.toml declares in [sandbox] egress;

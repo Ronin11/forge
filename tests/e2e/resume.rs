@@ -268,11 +268,8 @@ fn task_budget_stops_retries() {
             .success()
     );
     assert_eq!(e.attempts(1).len(), 1);
-    assert!(
-        e.task(1).1.starts_with("task budget reached"),
-        "{}",
-        e.task(1).1
-    );
+    assert_eq!(e.task(1).0, "capped", "{}", e.task(1).1);
+    assert!(e.task(1).1.contains(" of $0.0"), "{}", e.task(1).1);
 }
 
 #[test]

@@ -209,6 +209,10 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
             out.push(d(&t.reason, "The operator decided this should not be done; nothing to fix. A dependent that blocked on it needs its own decision: retry it fresh, against whatever replaced this task, or withdraw it too."));
             return out;
         }
+        TaskState::Capped => {
+            out.push(d(&t.reason, "The task reached its budget cap. Nothing failed: the branch is pushed and the row keeps the session and the last handoff. If the code step verified, `forge land <id>` takes it; otherwise raise --budget for the task or per_task_usd in config.toml and run it again."));
+            return out;
+        }
         TaskState::Queued | TaskState::Running => return out,
         TaskState::Failed => {}
     }

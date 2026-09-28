@@ -272,6 +272,19 @@ with the text as the reason. Neither is a failure, neither is retried, and
 neither is penalized anywhere. Workflow requests are the demand signal for
 new workflows; they are counted, not acted on automatically.
 
+A budget cap is a third honest exit. Before every attempt, and at claim, the
+kernel adds what the task has spent to what its next attempt is expected to
+cost (the task's mean attempt so far, else the workflow's measured mean) and
+compares that with the cap, so a cap is not crossed by more than one attempt.
+When the next attempt would cross it the task ends `capped`: terminal for the
+worker, kept for a human, and never a failure. The branch stays pushed, the
+row keeps the session id and the last handoff summary (the one a
+context-threshold continuation builds), and the reason names spent and cap
+(`$5.12 of $5.00; code step verified, review not run`). `forge log --state
+capped` lists them, `forge stats` counts them apart from `failed`, and an
+initiative counts a capped task as open. If the code step had verified,
+`forge land` takes the branch; otherwise raise the budget and run it again.
+
 ## Cost and choice
 
 Every attempt row carries its step and its task's workflow. Per repo and

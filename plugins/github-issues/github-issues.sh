@@ -59,6 +59,14 @@ intake_once() {
             task_id=$(printf '%s\n' "$out" | sed -n 's/^queued task \([0-9][0-9]*\).*/\1/p')
             [ -n "$task_id" ] || continue
             "$FORGE_BIN" ref add "$task_id" --kind issue --url "$url" --by github-issues >/dev/null
+            # A public-trust task carries the public level's cap (config
+            # [trust.public] per_task_usd); say so on the issue.
+            cap=$("$FORGE_BIN" trace "$task_id" --json | jq -r '.task.budget_usd // empty')
+            if [ -n "$cap" ]; then
+                cap=$(printf '%g' "$cap")
+                gh issue comment "$number" --repo "$GH_REPO" \
+                    --body "Forge will spend up to \$$cap on this; a maintainer can raise it" || true
+            fi
             printf '%s %s\n' "$number" "$task_id" >>"$filed"
         done
 }

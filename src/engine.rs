@@ -12,6 +12,9 @@
 //! taking the repository lock are `Env` faults, since a dead remote or a
 //! full disk stops the worker rather than failing the task.
 
+mod capped;
+use capped::check_cap;
+pub(crate) use capped::landable_capped;
 mod terminal;
 use terminal::finish;
 pub(crate) use terminal::{finish_fault, settle_ready_initiatives};
@@ -269,8 +272,12 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         owed: HashMap::new(),
         done: resume_done(&prior),
     };
-    let mut end: Option<End> = None;
+    // The cap is checked at claim as well as before every attempt.
+    let mut end = check_cap(&f, &mut t, &resolved, &run.done, task_cap, &wt).await?;
     'run: loop {
+        if end.is_some() {
+            break 'run;
+        }
         while run.idx < resolved.steps.len() {
             let step = &resolved.steps[run.idx];
             let seq = run.step_seq();
@@ -923,23 +930,10 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
         if let Some((msg, _)) = crate::worker::window_hold(f, &ts.provider).env()? {
             return Ok(StepFlow::Requeue(msg));
         }
-        let spent = f.store.task_cost(id).env()?;
-        if spent >= task_cap {
-            // A code attempt already verified, and the run stopped
-            // before the review that would vouch for it: not a
-            // failure, the same as a review that could not finish.
-            let code_verified = resolved.steps.iter().enumerate().any(|(i, s)| {
-                s.action.contract == Contract::Code && run.done.contains(&(i as i64 + 1))
-            });
-            return Ok(StepFlow::End(if code_verified {
-                End::Unverified(
-                    "budget reached after the code step verified; review did not run".to_string(),
-                )
-            } else {
-                End::Budget(format!(
-                    "task budget reached: ${spent:.4} of ${task_cap:.2} after {attempt_no} attempt(s)"
-                ))
-            }));
+        // Would the next attempt cross the cap? A decision for a human,
+        // not a failure: see `check_cap`.
+        if let Some(end) = check_cap(f, t, resolved, &run.done, task_cap, wt).await? {
+            return Ok(StepFlow::End(end));
         }
         *run.used.entry(seq).or_insert(0) += 1;
         let n = run.used[&seq];
@@ -1678,8 +1672,10 @@ enum End {
         counted: bool,
         pushes: bool,
     },
-    /// The task's cost cap was reached before it finished.
-    Budget(String),
+    /// The task's cost cap would be crossed by its next attempt: a
+    /// decision, not a failure. `pushes` keeps the branch when an attempt
+    /// ran, so a human can read or land what verified.
+    Capped { reason: String, pushes: bool },
     /// A plan step with `file_into_initiative` filed its items as
     /// sibling tasks in the task's initiative; nothing changed the tree,
     /// so nothing is pushed. `last` is the last filed task, chained
@@ -1709,7 +1705,8 @@ impl End {
     fn pushes(&self) -> bool {
         match self {
             End::Verified | End::Unverified(_) => true,
-            End::Landed(_) | End::Budget(_) | End::Filed { .. } => false,
+            End::Landed(_) | End::Filed { .. } => false,
+            End::Capped { pushes, .. } => *pushes,
             End::Blocked { demoted, .. } => *demoted,
             End::Failed { pushes, .. } => *pushes,
         }
@@ -1720,7 +1717,8 @@ impl End {
             End::Verified | End::Landed(_) | End::Filed { .. } => TaskState::Succeeded,
             End::Unverified(_) => TaskState::Unverified,
             End::Blocked { .. } => TaskState::Blocked,
-            End::Failed { .. } | End::Budget(_) => TaskState::Failed,
+            End::Failed { .. } => TaskState::Failed,
+            End::Capped { .. } => TaskState::Capped,
         }
     }
 
@@ -1742,7 +1740,9 @@ impl End {
             End::Filed { n, initiative, .. } => {
                 format!("filed {n} task(s) into initiative {initiative}")
             }
-            End::Unverified(r) | End::Blocked { reason: r, .. } | End::Budget(r) => r.clone(),
+            End::Unverified(r) | End::Blocked { reason: r, .. } | End::Capped { reason: r, .. } => {
+                r.clone()
+            }
             End::Failed {
                 reason, counted, ..
             } => {

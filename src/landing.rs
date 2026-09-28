@@ -1058,7 +1058,14 @@ pub async fn integrate_many(f: &Forge, ids: &[i64]) -> Result<IntegrateReport> {
 /// fixing, or a question whose L1 checks already ran on a clean,
 /// committed tree and all passed. The question or the demotion stands
 /// either way; neither says the commit itself is bad.
+///
+/// A `capped` task whose code step verified is landable the same way:
+/// the cap stopped the run before the steps that would vouch for it, and
+/// the checks already passed on what the code step left.
 pub(crate) fn landable_needs_input(f: &Forge, t: &Task) -> Result<bool> {
+    if t.state == TaskState::Capped {
+        return Ok(crate::engine::landable_capped(t, &f.store.attempts(t.id)?));
+    }
     if t.state != TaskState::Blocked {
         return Ok(false);
     }
