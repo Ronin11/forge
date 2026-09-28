@@ -792,6 +792,9 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
         tx.query_row("PRAGMA user_version", [], |r| r.get(0))?
     };
+    if seen > target {
+        bail!("database schema version {seen} is newer than this forge ({target}); upgrade forge");
+    }
     if seen == target {
         return Ok(());
     }
@@ -860,6 +863,33 @@ mod tests {
             started.elapsed()
         );
         assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
+        writer.execute_batch("ROLLBACK").unwrap();
+    }
+
+    #[test]
+    fn opening_a_newer_schema_store_refuses_at_once_despite_a_held_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        drop(Store::open(&path).unwrap());
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(&format!("PRAGMA user_version={}", MIGRATIONS.len() + 1))
+            .unwrap();
+
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let started = std::time::Instant::now();
+        let err = match Store::open(&path) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("opened a db from the future"),
+        };
+        assert!(err.contains("newer than this forge"), "{err}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "open waited {:?} behind a held writer",
+            started.elapsed()
+        );
         writer.execute_batch("ROLLBACK").unwrap();
     }
 
