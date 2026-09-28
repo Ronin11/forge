@@ -758,3 +758,68 @@ mod arg_tests {
         assert!(err.contains("--method"), "{err}");
     }
 }
+
+#[cfg(test)]
+mod script_tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Run a built-in deploy method's `run` in a scratch directory with
+    /// `args` as its `FORGE_ARG_*` and a fake rsync/ssh on PATH that only
+    /// record being called; returns its exit code and whether either ran.
+    fn run(toml_text: &str, args: &[(&str, &str)]) -> (Option<i32>, bool) {
+        let v: toml::Value = toml::from_str(toml_text).unwrap();
+        let argv: Vec<String> = v["run"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a.as_str().unwrap().to_string())
+            .collect();
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let log = dir.path().join("calls.log");
+        for tool in ["rsync", "ssh", "systemctl"] {
+            let p = bin.join(tool);
+            std::fs::write(
+                &p,
+                format!("#!/bin/bash\necho {tool} >> {}\n", log.display()),
+            )
+            .unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut c = std::process::Command::new(&argv[0]);
+        c.args(&argv[1..]).current_dir(dir.path()).env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        );
+        for (k, v) in args {
+            c.env(format!("FORGE_ARG_{}", k.to_uppercase()), v);
+        }
+        let status = c.status().unwrap();
+        (status.code(), log.exists())
+    }
+
+    #[test]
+    fn deploy_command_and_deploy_user_service_exit_1_on_an_empty_host_or_an_empty_or_root_dest() {
+        let methods = [
+            include_str!("builtins/operations/deploy-command.toml"),
+            include_str!("builtins/operations/deploy-user-service.toml"),
+        ];
+        let bad: &[&[(&str, &str)]] = &[
+            &[("host", ""), ("dest", "/srv/app")],
+            &[("dest", "/srv/app")],
+            &[("host", "box"), ("dest", "")],
+            &[("host", "box")],
+            &[("host", "box"), ("dest", "/")],
+            &[("host", "box"), ("dest", "///")],
+            &[("host", "local"), ("dest", "/")],
+        ];
+        for text in methods {
+            for args in bad {
+                let mut args = args.to_vec();
+                args.push(("unit", "demo.service"));
+                assert_eq!(run(text, &args), (Some(1), false), "{args:?}");
+            }
+        }
+    }
+}

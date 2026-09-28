@@ -479,9 +479,7 @@ struct ActionRaw {
     timeout_secs: Option<u32>,
     /// Operation: a command to run in the sandbox against the tree.
     run: Option<Vec<String>>,
-    /// Operation: the `--arg`s a deploy target running it must give,
-    /// each non-empty; `forge project deploy add`/`set` refuse a target
-    /// missing one.
+    /// Operation: the args a deploy target running it must give, non-empty.
     #[serde(default)]
     required_args: Vec<String>,
     /// Operation: run the repository's declared check of this name instead.
@@ -550,7 +548,6 @@ pub struct ActionDef {
     pub max_turns: Option<u32>,
     pub timeout_secs: Option<u32>,
     pub run: Option<Vec<String>>,
-    /// The args a deploy target running this operation must give.
     #[serde(default)]
     pub required_args: Vec<String>,
     pub check: Option<String>,
