@@ -23,6 +23,7 @@ mod holds;
 mod job_resolutions;
 mod job_runs;
 mod jobs;
+mod lineage;
 mod messages;
 mod migrations;
 mod notifications;

@@ -40,6 +40,7 @@ mod intake;
 mod job;
 mod journal;
 mod landing;
+mod lineage;
 mod login;
 mod login_hold;
 mod operation;
