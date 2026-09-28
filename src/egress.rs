@@ -12,7 +12,7 @@ use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 
@@ -270,17 +270,161 @@ pub fn bind(path: &Path) -> Result<UnixListener> {
     UnixListener::bind(path).with_context(|| format!("binding {}", path.display()))
 }
 
+/// Connections one proxy serves at once; the next is answered with a 503.
+pub const MAX_CONNECTIONS: usize = 256;
+/// A tunnel that moves no byte in either direction for this long is closed.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// A tunnel is closed after this long however busy it is.
+const TUNNEL_LIFETIME: Duration = Duration::from_secs(60 * 60);
+/// The pause after a failed `accept` (EMFILE and the like), so a descriptor
+/// shortage is a slow retry and not a busy loop.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
+/// Refusals logged per `REFUSAL_LOG_WINDOW` by one proxy; the rest are counted.
+const REFUSAL_LOG_BURST: u32 = 10;
+const REFUSAL_LOG_WINDOW: Duration = Duration::from_secs(10);
+
+/// Where a proxy's connections come from: a unix listener, or a test double.
+pub trait Accept {
+    fn accept(&self) -> impl std::future::Future<Output = std::io::Result<UnixStream>> + Send;
+}
+
+impl Accept for UnixListener {
+    async fn accept(&self) -> std::io::Result<UnixStream> {
+        UnixListener::accept(self).await.map(|(s, _)| s)
+    }
+}
+
+/// Bounds what one proxy writes to the worker's log: `REFUSAL_LOG_BURST`
+/// lines per window, and one line saying how many were left out.
+struct RefusalLog {
+    state: Mutex<(Instant, u32, u32)>,
+}
+
+impl RefusalLog {
+    fn new() -> RefusalLog {
+        RefusalLog {
+            state: Mutex::new((Instant::now(), 0, 0)),
+        }
+    }
+
+    /// Whether to log a refusal now, and how many were skipped before it.
+    fn admit(&self) -> Option<u32> {
+        let mut st = self.state.lock().unwrap();
+        if st.0.elapsed() >= REFUSAL_LOG_WINDOW {
+            let skipped = st.2;
+            *st = (Instant::now(), 0, 0);
+            st.1 = 1;
+            return Some(skipped);
+        }
+        if st.1 < REFUSAL_LOG_BURST {
+            st.1 += 1;
+            Some(0)
+        } else {
+            st.2 += 1;
+            None
+        }
+    }
+}
+
 /// Answer connections on `listener` under `policy` until the task is aborted.
 pub async fn serve(listener: UnixListener, policy: Arc<Policy>) {
+    serve_limited(listener, policy, MAX_CONNECTIONS).await
+}
+
+/// `serve` with at most `limit` connections at once: past it a connection
+/// is answered with a 503 and closed.
+pub async fn serve_limited(listener: impl Accept, policy: Arc<Policy>, limit: usize) {
+    let permits = Arc::new(tokio::sync::Semaphore::new(limit));
+    let log = Arc::new(RefusalLog::new());
     loop {
-        let Ok((stream, _)) = listener.accept().await else {
+        let mut stream = match listener.accept().await {
+            Ok(s) => s,
+            Err(_) => {
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+                continue;
+            }
+        };
+        let Ok(permit) = permits.clone().try_acquire_owned() else {
+            // A fresh socket's buffer is empty, so this write does not wait
+            // on the client; the timeout is for the odd case that it does.
+            let busy = respond(
+                &mut stream,
+                "503 Service Unavailable",
+                "too many connections\n",
+            );
+            let _ = tokio::time::timeout(Duration::from_secs(1), busy).await;
             continue;
         };
         let policy = policy.clone();
+        let log = log.clone();
         tokio::spawn(async move {
-            let _ = handle(stream, &policy).await;
+            let _permit = permit;
+            let _ = handle(stream, &policy, &log).await;
         });
     }
+}
+
+/// Raise the descriptor soft limit to the hard limit: the proxies hold two
+/// descriptors per tunnel in the worker's own process.
+pub fn raise_nofile_limit() {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit and setrlimit read and write only the rlimit we own.
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) != 0 || lim.rlim_cur >= lim.rlim_max {
+            return;
+        }
+        lim.rlim_cur = lim.rlim_max;
+        if libc::setrlimit(libc::RLIMIT_NOFILE, &lim) != 0 {
+            eprintln!("egress: could not raise the descriptor limit");
+        }
+    }
+}
+
+/// Copy both ways between `client` and `upstream` until either side closes,
+/// nothing moves for `IDLE_TIMEOUT`, or `TUNNEL_LIFETIME` is up.
+async fn tunnel(client: UnixStream, upstream: TcpStream) {
+    let (mut cr, mut cw) = client.into_split();
+    let (mut ur, mut uw) = upstream.into_split();
+    let moved = std::sync::atomic::AtomicBool::new(false);
+    let up = copy_idle(&mut cr, &mut uw, &moved);
+    let down = copy_idle(&mut ur, &mut cw, &moved);
+    let both = async {
+        tokio::join!(up, down);
+    };
+    let _ = tokio::time::timeout(TUNNEL_LIFETIME, both).await;
+}
+
+/// `io::copy` that gives up after `IDLE_TIMEOUT` with no read on this side
+/// and no byte moved on the other (`moved` is the shared activity flag).
+async fn copy_idle(
+    r: &mut (impl AsyncReadExt + Unpin),
+    w: &mut (impl AsyncWriteExt + Unpin),
+    moved: &std::sync::atomic::AtomicBool,
+) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let mut buf = [0u8; 16 * 1024];
+    loop {
+        let n = match tokio::time::timeout(IDLE_TIMEOUT, r.read(&mut buf)).await {
+            Ok(Ok(n)) if n > 0 => n,
+            Ok(_) => break,
+            // Idle here; a busy other direction (a download while the
+            // request side is quiet) keeps the tunnel open.
+            Err(_) => {
+                if moved.swap(false, Relaxed) {
+                    continue;
+                }
+                return;
+            }
+        };
+        moved.store(true, Relaxed);
+        if w.write_all(&buf[..n]).await.is_err() {
+            return;
+        }
+    }
+    let _ = w.shutdown().await;
 }
 
 async fn respond(s: &mut UnixStream, status: &str, body: &str) -> Result<()> {
@@ -306,8 +450,15 @@ async fn refuse(
     host: &str,
     port: u16,
     policy: &Policy,
+    log: &RefusalLog,
 ) -> Result<()> {
-    eprintln!("egress: refused {what}");
+    // `{:?}`: whatever the sender put in `what` cannot pass for a log line.
+    if let Some(skipped) = log.admit() {
+        if skipped > 0 {
+            eprintln!("egress: {skipped} refusals not logged");
+        }
+        eprintln!("egress: refused {what:?}");
+    }
     let allowed: Vec<String> = policy.rules.iter().map(|r| r.to_string()).collect();
     let body = format!(
         "forge egress: {host}:{port} is not allowed. This attempt may reach only: {}.\nA repository declares more in forge.toml under [sandbox] egress.\n",
@@ -328,7 +479,7 @@ fn authority(host: &str, port: u16) -> String {
 
 /// Split `host:port`, `host` (with `default`) or `[v6]:port`.
 fn split_authority(a: &str, default: u16) -> Option<(String, u16)> {
-    if a.is_empty() || a.contains(['/', '@', ' ']) {
+    if a.is_empty() || a.contains(['/', '@', ' ']) || a.chars().any(char::is_control) {
         return None;
     }
     if let Some(rest) = a.strip_prefix('[') {
@@ -375,7 +526,7 @@ async fn dial(host: &str, port: u16, matched: Matched) -> Result<TcpStream> {
     Err(last.unwrap_or_else(|| anyhow::anyhow!("{host} did not resolve")))
 }
 
-async fn handle(mut client: UnixStream, policy: &Policy) -> Result<()> {
+async fn handle(mut client: UnixStream, policy: &Policy, log: &RefusalLog) -> Result<()> {
     // The head: request line and headers, up to the blank line. Whatever
     // the client sent after it is body (or the start of a tunnel) and goes
     // upstream untouched.
@@ -418,7 +569,7 @@ async fn handle(mut client: UnixStream, policy: &Policy) -> Result<()> {
         };
         let Some(matched) = policy.allows(&host, port) else {
             let what = format!("CONNECT {host}:{port}");
-            return refuse(&mut client, &what, &host, port, policy).await;
+            return refuse(&mut client, &what, &host, port, policy, log).await;
         };
         let mut upstream = match dial(&host, port, matched).await {
             Ok(u) => u,
@@ -437,9 +588,7 @@ async fn handle(mut client: UnixStream, policy: &Policy) -> Result<()> {
         if !rest.is_empty() {
             upstream.write_all(rest).await?;
         }
-        tokio::io::copy_bidirectional(&mut client, &mut upstream)
-            .await
-            .ok();
+        tunnel(client, upstream).await;
         return Ok(());
     }
 
@@ -470,7 +619,7 @@ async fn handle(mut client: UnixStream, policy: &Policy) -> Result<()> {
     }
     let Some(matched) = policy.allows(&host, port) else {
         let what = format!("{method} http://{host}:{port}");
-        return refuse(&mut client, &what, &host, port, policy).await;
+        return refuse(&mut client, &what, &host, port, policy, log).await;
     };
     let mut upstream = match dial(&host, port, matched).await {
         Ok(u) => u,
@@ -503,9 +652,7 @@ async fn handle(mut client: UnixStream, policy: &Policy) -> Result<()> {
     out.push_str("Connection: close\r\n\r\n");
     upstream.write_all(out.as_bytes()).await?;
     upstream.write_all(rest).await?;
-    tokio::io::copy_bidirectional(&mut client, &mut upstream)
-        .await
-        .ok();
+    tunnel(client, upstream).await;
     Ok(())
 }
 
@@ -954,6 +1101,69 @@ mod tests {
             }
         });
         port
+    }
+
+    #[tokio::test]
+    async fn a_proxy_with_a_limit_of_two_refuses_the_third_concurrent_connection_with_a_503() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("p.sock");
+        let policy = Arc::new(Policy::new([rule("example.com")]));
+        let task = tokio::spawn(serve_limited(bind(&sock).unwrap(), policy, 2));
+        // Two connections held open without a request.
+        let _a = UnixStream::connect(&sock).await.unwrap();
+        let _b = UnixStream::connect(&sock).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let third = ask(&sock, "").await;
+        assert!(third.starts_with("HTTP/1.1 503"), "{third}");
+        drop(_a);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let again = ask(&sock, "GET http://forge-egress.invalid/ HTTP/1.1\r\n\r\n").await;
+        assert!(again.starts_with("HTTP/1.1 200"), "{again}");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_connect_target_with_a_newline_is_a_400() {
+        let (_d, sock, task) = start(&["example.com"]);
+        let got = ask(&sock, "CONNECT a\nb:443 HTTP/1.1\r\n\r\n").await;
+        assert!(got.starts_with("HTTP/1.1 400"), "{got}");
+        assert_eq!(split_authority("a\nb:443", 443), None);
+        assert_eq!(split_authority("a\rb", 443), None);
+        task.abort();
+    }
+
+    /// A listener whose every accept fails, counting the calls.
+    struct Failing(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Accept for Failing {
+        async fn accept(&self) -> std::io::Result<UnixStream> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(std::io::Error::from_raw_os_error(libc::EMFILE))
+        }
+    }
+
+    #[tokio::test]
+    async fn the_accept_loop_backs_off_when_accept_errors() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let task = tokio::spawn(serve_limited(
+            Failing(calls.clone()),
+            Arc::new(Policy::new([])),
+            2,
+        ));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        task.abort();
+        let n = calls.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            (2..=12).contains(&n),
+            "{n} accepts in 500ms at a 50ms backoff"
+        );
+    }
+
+    #[test]
+    fn refusals_are_logged_at_most_a_burst_per_window() {
+        let log = RefusalLog::new();
+        let admitted = (0..100).filter(|_| log.admit().is_some()).count();
+        assert_eq!(admitted, REFUSAL_LOG_BURST as usize);
     }
 
     #[tokio::test]
