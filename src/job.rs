@@ -777,13 +777,14 @@ pub fn start_event(args: StartEvent<'_>) -> Result<Option<i64>> {
     } = args;
     let kind = workflows::TriggerOn::Event;
     let trigger_ref = offset.to_string();
-    if f.store
-        .job_for_trigger(project, workflow, kind.as_str(), &trigger_ref)?
-        .is_some()
-    {
+    let earlier = || {
+        f.store
+            .job_for_trigger(project, workflow, kind.as_str(), &trigger_ref)
+    };
+    if earlier()?.is_some() {
         return Ok(None);
     }
-    queue_triggered(QueueTriggered {
+    match queue_triggered(QueueTriggered {
         f,
         project,
         workflow,
@@ -794,8 +795,15 @@ pub fn start_event(args: StartEvent<'_>) -> Result<Option<i64>> {
         trigger_ref: &trigger_ref,
         event_at: at,
         input_text: input,
-    })
-    .map(Some)
+    }) {
+        Ok(id) => Ok(Some(id)),
+        // Two ticks racing on one event: the unique index refused the
+        // second, and the first's job is the one that stands.
+        Err(e) => match earlier() {
+            Ok(Some(_)) => Ok(None),
+            _ => Err(e),
+        },
+    }
 }
 
 /// The lowercase hex SHA-256 of `bytes`: a webhook token's stored form and
