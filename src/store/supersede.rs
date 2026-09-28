@@ -93,6 +93,44 @@ mod tests {
     }
 
     #[test]
+    fn a_supersedes_dependent_is_re_pointed_at_the_new_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        let old = task(&s);
+        let dependent = s
+            .insert_task(&Task {
+                repo: "r".into(),
+                task: "t".into(),
+                base_branch: "main".into(),
+                model: "m".into(),
+                max_turns: 1,
+                max_attempts: 1,
+                timeout_secs: 1,
+                after: vec![old],
+                ..Default::default()
+            })
+            .unwrap();
+        let new_id = s
+            .insert_task(&Task {
+                repo: "r".into(),
+                task: "t2".into(),
+                base_branch: "main".into(),
+                model: "m".into(),
+                max_turns: 1,
+                max_attempts: 1,
+                timeout_secs: 1,
+                supersedes: Some(old),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let moved = s.reroute_dependents(old, new_id).unwrap();
+
+        assert_eq!(moved, vec![dependent]);
+        assert_eq!(s.task(dependent).unwrap().unwrap().after, vec![new_id]);
+    }
+
+    #[test]
     fn reopen_blocked_if_ready_requeues_only_when_every_new_dependency_is_past_blocking() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(&dir.path().join("t.db")).unwrap();
