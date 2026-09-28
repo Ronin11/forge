@@ -459,6 +459,42 @@ and does not parse stdout.
   names the oldest retained worktree's age. This is the write verb the
   doctor page's gc control (`POST /api/gc`, web UI task 7) calls.
 
+- **`forge chat`** — Ask Forge, the operator's conversation with Forge
+  about its own state ([CHAT.md](CHAT.md)). Every form but the first is
+  `--json`-shaped like the other verbs:
+  - `forge chat sessions [--limit N] --json` — `{"sessions": [{id, title,
+    provider, created_at, updated_at, turns, cost_usd}]}`, most recently
+    active first.
+  - `forge chat show ID --json` — `{"session": {...}, "turns": [{id,
+    role, text, tool_calls, cost_usd, provider, model, prompt_hash,
+    at}]}`. `role` is `user`, `assistant`, or `action` (the record of a
+    proposal the operator confirmed or rejected). A turn's `tool_calls`
+    are `{tool, arguments, note, result | error, proposal?}`; a write
+    verb's call carries `action`, the id to decide it by, and `proposal`
+    `{summary, status, outcome}` with `status` one of `proposed`,
+    `confirmed`, `rejected`, `failed`.
+  - `forge chat [--session ID] [--provider P] --json [--] MESSAGE...` —
+    say something, run it to a reply, print `{session, turn, reply,
+    cost_usd, tool_calls, proposals}`. A client passes `--` before the
+    message so the operator's words are never read as options.
+  - `forge chat --stream [--session ID] [--] MESSAGE...` — the same,
+    printing one JSON event per line as it happens: `{"type":"session"}`,
+    `{"type":"turn"}` (the operator's own), one `{"type":"tool", tool,
+    arguments, result | error | proposal}` per tool call, then
+    `{"type":"reply", session, turn, text, cost_usd, proposals}` or
+    `{"type":"error", message}`. The process exits when the turn does; a
+    turn a client stops reading still finishes and is recorded.
+  - `forge chat confirm ACTION --json` / `forge chat reject ACTION
+    --json` — decide a proposed write (`ACTION` is `turn.position`, like
+    `12.0`). `{action, status, outcome, turn}`; a confirm whose action
+    fails exits non-zero. Confirming runs the action once, through the
+    same code `forge add`, `forge answer` and `forge retry` use; a second
+    decision on the same action is refused.
+
+  `forge-client` reaches the streaming form through `Forge::follow`,
+  which runs a verb without the client's usual deadline and yields its
+  stdout line by line.
+
 `forge doctor --json` also exists (a JSON array of
 `{name, status, detail, hint}`, plus a handful of optional structured
 fields a few checks carry alongside their prose so a client can draw a
@@ -478,7 +514,7 @@ scraping this prose (`tests/boundary.rs` reads this block and
 asserts every verb a client source file invokes appears in it):
 
 ```text
-snapshot log requests decisions trace journal graph workflows stats events retry land doctor plugin ref project initiative task job deploy answer withdraw ask message gc providers
+snapshot log requests decisions trace journal graph workflows stats events retry land doctor plugin ref project initiative task job deploy answer withdraw ask message gc providers chat
 ```
 
 ## Reaching forge-web (operator)
@@ -1474,7 +1510,7 @@ across a rotation, not to the snapshot protocol itself.
   page mounts into one shared shell (`web/src/shell.js`, `web/src/styles.css`):
   a nav bar naming every page on the client contract (`ForgeShell.NAV_PAGES` —
   tasks, requests, projects, initiatives, workflows, jobs, deploys, stats,
-  graph, plugins, activity, messages, doctor; a page not yet built still
+  graph, plugins, activity, messages, doctor, chat; a page not yet built still
   gets a nav entry and a route, to a placeholder view, so the nav never
   claims a page that isn't reachable), and a header strip built from one
   `/api/snapshot` and one `/api/doctor` read: the worker's state, both
@@ -1512,6 +1548,19 @@ across a rotation, not to the snapshot protocol itself.
   `before` paging as before) advances the URL's `before` to the page just
   loaded. The list's columns are sortable by clicking a header (client-side,
   over whatever page is loaded so far — sorting never refetches).
+  **Chat** (`/chat`, `/chat/<id>`, `web/src/chat.js`): Ask Forge
+  ([CHAT.md](CHAT.md)). The sessions beside the transcript are
+  `GET /api/chat` → `chat sessions --json`, a transcript is `GET
+  /api/chat/<id>` → `chat show <id> --json`, and a message is `POST
+  /api/chat/message` (`{message, session?}`) → `chat --stream --session
+  <id> -- <message>`, its JSON lines relayed as server-sent events, one
+  `data:` frame each, so tool calls appear as they happen and the reply
+  when it lands. A write verb comes back as a proposal with confirm and
+  reject buttons: `POST /api/chat/confirm/<action>` and
+  `/api/chat/reject/<action>` → `chat confirm|reject <action> --json`,
+  the action id checked to be `turn.position` before it reaches an
+  argument. Nothing the model proposes has run until a confirm. `g` then
+  `c` jumps to the page.
   **The inbox.** `/requests` (`web/src/requests.js`) is everything waiting
   on a person: `/api/requests` (`forge requests --json`) for every blocked
   task — an open question with its text and who it is addressed to

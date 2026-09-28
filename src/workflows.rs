@@ -855,6 +855,7 @@ const BUILTIN_ACTIONS: &[(&str, &str)] = &[
         "concierge.toml",
         include_str!("builtins/actions/concierge.toml"),
     ),
+    ("chat.toml", include_str!("builtins/actions/chat.toml")),
 ];
 
 const BUILTIN_OPERATIONS: &[(&str, &str)] = &[

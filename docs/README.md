@@ -23,6 +23,9 @@ file is added or removed here without a matching change on disk.
   scheduled rule) instead of landing a change, and what stays the same.
 - **DEPLOY.md** — what a deploy target is, how a deploy runs, and what is
   deliberately not built.
+- **CHAT.md** — Ask Forge: talking to Forge about its own state from the
+  CLI and the web client, the fixed tools behind it, and the confirm gate in
+  front of the three things it may propose.
 - **INTAKE.md** — how a person who does not think in workflows tells Forge
   what to build, and how Forge confirms what they mean before building it.
 - **PORTAL.md** — the customer-facing view of a project, as opposed to the

@@ -37,6 +37,7 @@
 //! header that does not match is ignored and the token path stands. See
 //! docs/CLIENT.md, "Reaching forge-web (operator)".
 
+mod chat;
 mod drafts;
 
 use anyhow::{Context, Result};
@@ -63,6 +64,7 @@ const ACTIVITY_JS: &str = include_str!("activity.js");
 const MESSAGES_JS: &str = include_str!("messages.js");
 const SEARCH_JS: &str = include_str!("search.js");
 const SHELL_JS: &str = include_str!("shell.js");
+const CHAT_JS: &str = include_str!("chat.js");
 const STYLES_CSS: &str = include_str!("styles.css");
 
 /// Where Forge keeps its data: `FORGE_HOME` (`FORGE2_HOME` for one release),
@@ -1286,6 +1288,7 @@ fn handle(req: Request, forge: &Forge, secret: &str, tailscale_login: Option<&st
             || path.starts_with("/api/land/")
             || path.starts_with("/api/workflows/")
             || path.starts_with("/api/drafts/")
+            || path.starts_with("/api/chat/")
             || path.starts_with("/api/initiatives/")
             || path == "/api/gc"
             || path.starts_with("/api/deploys/run/")
@@ -1356,13 +1359,16 @@ fn handle(req: Request, forge: &Forge, secret: &str, tailscale_login: Option<&st
             || p == "/messages"
             || p == "/doctor"
             || p == "/workflows"
-            || p.starts_with("/workflows/") =>
+            || p.starts_with("/workflows/")
+            || p == "/chat"
+            || p.starts_with("/chat/") =>
         {
             text(200, INDEX, "text/html; charset=utf-8")
         }
         "/time.js" => text(200, TIME_JS, "application/javascript"),
         "/workflows.js" => text(200, WORKFLOWS_JS, "application/javascript"),
         "/drafts.js" => text(200, DRAFTS_JS, "application/javascript"),
+        "/chat.js" => text(200, CHAT_JS, "application/javascript"),
         "/graph.js" => text(200, GRAPH_JS, "application/javascript"),
         "/shell.js" => text(200, SHELL_JS, "application/javascript"),
         "/requests.js" => text(200, REQUESTS_JS, "application/javascript"),
@@ -1415,6 +1421,10 @@ fn handle(req: Request, forge: &Forge, secret: &str, tailscale_login: Option<&st
         "/api/workflows" => json_or_error(workflows_merged(forge)),
         p if p == "/api/drafts" || p.starts_with("/api/drafts/") => {
             drafts::route(req, forge, p);
+            return;
+        }
+        p if p == "/api/chat" || p.starts_with("/api/chat/") => {
+            chat::route(req, forge, p);
             return;
         }
         "/api/workflows/draft" => {

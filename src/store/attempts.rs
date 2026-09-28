@@ -655,11 +655,13 @@ impl Store {
         Ok(v.into_iter().take(n).map(|(p, _)| p).collect())
     }
 
-    /// Spend since `since`: every attempt's, and every login probe's.
+    /// Spend since `since`: every attempt's, every login probe's, and every
+    /// chat turn's (docs/CHAT.md).
     pub fn spent_since(&self, since: i64) -> Result<f64> {
         Ok(self.lock().retry_query_row(
             "SELECT (SELECT COALESCE(SUM(cost_usd), 0) FROM attempts WHERE started_at >= ?1)
-                  + (SELECT COALESCE(SUM(cost_usd), 0) FROM provider_probes WHERE at >= ?1)",
+                  + (SELECT COALESCE(SUM(cost_usd), 0) FROM provider_probes WHERE at >= ?1)
+                  + (SELECT COALESCE(SUM(cost_usd), 0) FROM chat_turns WHERE at >= ?1)",
             params![since],
             |r| r.get(0),
         )?)

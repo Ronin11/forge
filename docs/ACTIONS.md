@@ -155,6 +155,17 @@ contact — recording the decision as a `concierge_json` column on the task
 it produced, or a `decisions` row (`answered_by` "concierge") for an
 answer.
 
+`chat` is the plan contract's fourth directive and, like `assess`, never
+sits in a workflow's `steps`: it is the system prompt of Ask Forge
+(docs/CHAT.md), the operator's conversation with Forge about its own
+state. `forge chat` and the web client's Chat page launch it once per
+step with no tools at all — it answers with a JSON object that either
+names one of a fixed set of read tools or finishes with a reply, and the
+three write tools it may name only record a proposal the operator
+confirms. Its text is the `prompt` of `actions/chat.toml`, so it is
+versioned like every other prompt and an operator's own `chat.toml` in the
+catalog shadows it.
+
 A plan can also become an initiative's tasks instead of one task's code.
 `forge initiative from-plan <task id> [--outcome <text>]` reads a
 finished task's recorded plan (`t.plan`), creates an initiative in the

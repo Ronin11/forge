@@ -468,26 +468,39 @@ impl Sandbox {
             .insert(worktree.to_path_buf(), dir);
     }
 
-    /// Copy `worktree`'s private login back over the host file when the
-    /// attempt refreshed it (see `login`). Whether it did.
-    pub fn write_back_login(&self, worktree: &Path) -> bool {
+    /// The real config directory of `shape`'s CLI, which its login is
+    /// seeded from and written back to.
+    fn login_dir(&self, shape: &crate::login::Shape) -> &Path {
+        match shape.cli {
+            "codex" => &self.codex_dir,
+            "copilot" => &self.copilot_dir,
+            _ => &self.config_dir,
+        }
+    }
+
+    /// Copy `worktree`'s private `shape` login back over the host file when
+    /// the attempt refreshed it (see `login`). Whether it did.
+    pub fn write_back_login(&self, shape: &crate::login::Shape, worktree: &Path) -> bool {
         [None, Some(Contract::Review)]
             .into_iter()
             .fold(false, |any, contract| {
                 let private = provider_dir_for(worktree, contract)
-                    .join("claude")
-                    .join(crate::login::FILE);
-                crate::login::write_back(&self.config_dir, &self.forge_home, &private)
+                    .join(shape.cli)
+                    .join(shape.file);
+                shape
+                    .write_back(self.login_dir(shape), &self.forge_home, &private)
                     .unwrap_or(false)
                     || any
             })
     }
 
-    /// `write_back_login` for every task's private copy beside `worktree`,
-    /// for a caller that holds the login's lock (see `login::lock`).
+    /// `write_back_login` of the claude login for every task's private copy
+    /// beside `worktree`, for a caller that holds the login's lock (see
+    /// `login::lock`).
     pub fn write_back_siblings_locked(&self, worktree: &Path) {
-        for copy in crate::login::private_copies(worktree) {
-            let _ = crate::login::write_back_locked(&self.config_dir, &self.forge_home, &copy);
+        let claude = &crate::login::CLAUDE;
+        for copy in claude.private_copies(worktree) {
+            let _ = claude.write_back_locked(&self.config_dir, &self.forge_home, &copy);
         }
     }
 
@@ -677,32 +690,30 @@ impl Sandbox {
         let codex_priv = provider_dir.join("codex");
         let _ = std::fs::create_dir_all(&claude_priv);
         let _ = std::fs::create_dir_all(&codex_priv);
-        // The login is the kernel's (see `login`): a later private pair is
+        let copilot_priv = provider_dir.join("copilot");
+        let _ = std::fs::create_dir_all(&copilot_priv);
+        // Each login is the kernel's (see `login`): a later private login is
         // written back over the host file first, and an empty host file
-        // seeds nothing. Settings are plain copies.
-        crate::login::seed(
-            &self.config_dir,
-            &self.forge_home,
-            worktree,
-            &claude_priv.join(crate::login::FILE),
-        );
+        // seeds nothing. copilot's login lives in its `config.json`, beside
+        // its settings. The other settings are plain copies.
+        for shape in crate::login::SHAPES {
+            shape.seed(
+                self.login_dir(shape),
+                &self.forge_home,
+                worktree,
+                &provider_dir.join(shape.cli).join(shape.file),
+            );
+        }
         let _ = crate::login::seed_copy(
             &self.config_dir.join("settings.json"),
             &claude_priv.join("settings.json"),
         );
-        for name in ["auth.json", "config.toml"] {
-            let _ = crate::login::seed_copy(&self.codex_dir.join(name), &codex_priv.join(name));
-        }
+        let _ = crate::login::seed_copy(
+            &self.codex_dir.join("config.toml"),
+            &codex_priv.join("config.toml"),
+        );
         cmd.arg("--bind").arg(&claude_priv).arg(&self.config_dir);
         cmd.arg("--bind").arg(&codex_priv).arg(&self.codex_dir);
-        // copilot's login lives in its `config.json`; the same private,
-        // reseeded copy, bound where the CLI expects its home.
-        let copilot_priv = provider_dir.join("copilot");
-        let _ = std::fs::create_dir_all(&copilot_priv);
-        let _ = crate::login::seed_copy(
-            &self.copilot_dir.join("config.json"),
-            &copilot_priv.join("config.json"),
-        );
         cmd.arg("--bind").arg(&copilot_priv).arg(&self.copilot_dir);
         // What lives inside a directory just bound over (an agent under
         // `~/.claude/local`) is bound again on top of the private copy.
@@ -775,6 +786,8 @@ mod tests {
     const CREDS: &str =
         r#"{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":32503680000000}}"#;
 
+    const CODEX_AUTH: &str = r#"{"OPENAI_API_KEY":"sk-proj-abc","tokens":null}"#;
+
     #[test]
     fn review_provider_state_is_separate_and_discarded_with_the_coders() {
         let root = tempfile::tempdir().unwrap();
@@ -819,7 +832,7 @@ mod tests {
         std::fs::write(copilot_dir.join("config.json"), "login").unwrap();
         std::fs::write(config_dir.join(".credentials.json"), CREDS).unwrap();
         std::fs::write(config_dir.join("settings.json"), "settings").unwrap();
-        std::fs::write(codex_dir.join("auth.json"), "auth").unwrap();
+        std::fs::write(codex_dir.join("auth.json"), CODEX_AUTH).unwrap();
         std::fs::write(codex_dir.join("config.toml"), "cfg").unwrap();
         let npm_cache = root.path().join("opt/npm-cache");
         std::fs::create_dir_all(&npm_cache).unwrap();
@@ -941,7 +954,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(codex_priv.join("auth.json")).unwrap(),
-            "auth"
+            CODEX_AUTH
         );
         assert_eq!(
             std::fs::read_to_string(codex_priv.join("config.toml")).unwrap(),

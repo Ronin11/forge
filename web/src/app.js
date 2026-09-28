@@ -66,7 +66,9 @@
     if (location.pathname === '/messages') return { page: 'messages' };
     if (location.pathname === '/doctor') return { page: 'doctor' };
     if (location.pathname === '/stats') return { page: 'stats' };
-    let m = location.pathname.match(/^\/graph(\/modules)?\/?$/);
+    let m = location.pathname.match(/^\/chat(?:\/(\d+))?\/?$/);
+    if (m) return { page: 'chat', id: m[1] ? Number(m[1]) : null };
+    m = location.pathname.match(/^\/graph(\/modules)?\/?$/);
     if (m) return { page: 'graph', modules: !!m[1], repo: new URLSearchParams(location.search).get('repo') || '' };
     m = location.pathname.match(/^\/projects\/([^/]+)\/?$/);
     if (m) return { page: 'project', name: decodeURIComponent(m[1]) };
@@ -149,6 +151,7 @@
       : r.page === 'activity' ? activityView()
       : r.page === 'messages' ? messagesView()
       : r.page === 'doctor' ? doctorView()
+      : r.page === 'chat' ? chatView(r.id)
       : r.page === 'graph' ? (r.modules ? graphModulesView(r.repo) : graphView(r.repo))
       : r.page === 'stats' ? statsView()
       : r.page === 'jobs' ? (r.id === null ? jobsView() : jobView(r.id))
@@ -1420,6 +1423,112 @@
         timer = setInterval(() => draw().catch(() => {}), 60000);
       },
       teardown() { if (timer) clearInterval(timer); },
+    };
+  }
+
+  // ---- chat: Ask Forge (docs/CHAT.md). The sessions on the left are
+  // `forge chat sessions`, the transcript is `forge chat show`, and a
+  // message is `forge chat --stream` relayed as server-sent events: each
+  // tool call lands as it happens, then the reply. A write verb comes
+  // back as a proposal with confirm/reject buttons (`forge chat confirm`
+  // / `reject`); nothing has run until the operator presses confirm.
+  // Rendering lives in web/src/chat.js, tested under node.
+  function chatView(sessionId) {
+    let current = sessionId, busy = false;
+    const scroll = () => { const el = $('#chat-log'); if (el) el.scrollTop = el.scrollHeight; };
+    async function drawSessions() {
+      const doc = await get('/api/chat');
+      const el = $('#chat-list');
+      if (el) el.innerHTML = ForgeChat.renderSessions(doc, fmtTime, current);
+    }
+    async function drawSession() {
+      const el = $('#chat-log');
+      if (!el) return;
+      if (current === null) { el.innerHTML = '<p class="mute">Ask Forge about its own state: why a task failed, what an initiative is waiting on, what last night cost. Ask it to file a task, answer a question or retry one, and it proposes; you confirm.</p>'; return; }
+      const doc = await get(`/api/chat/${current}`);
+      el.innerHTML = doc.error ? `<p class="failed">${esc(doc.error)}</p>` : ForgeChat.renderSession(doc, fmtTime);
+      scroll();
+    }
+    async function send(message) {
+      busy = true;
+      let live = ForgeChat.emptyLive(message);
+      const log = $('#chat-log');
+      if (current === null) log.innerHTML = '';
+      const box = document.createElement('div');
+      log.appendChild(box);
+      const paint = () => { box.innerHTML = ForgeChat.renderLive(live); scroll(); };
+      paint();
+      try {
+        const body = { message };
+        if (current !== null) body.session = current;
+        const r = await fetch('/api/chat/message', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (r.status === 401) { document.body.innerHTML = '<p style="margin:2em">Not signed in: open the link forge-web printed when it started.</p>'; return; }
+        if (!r.ok || !r.body) {
+          const e = await r.json().catch(() => ({}));
+          live = ForgeChat.apply(live, { type: 'error', message: e.error || `HTTP ${r.status}` });
+        } else {
+          const reader = r.body.getReader(), dec = new TextDecoder();
+          let carry = '';
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            const parsed = ForgeChat.parseFrames(dec.decode(value, { stream: true }), carry);
+            carry = parsed.carry;
+            for (const ev of parsed.events) {
+              live = ForgeChat.apply(live, ev);
+              if (ev.type === 'session' && current === null) { current = ev.session; history.replaceState(null, '', `/chat/${current}`); }
+            }
+            paint();
+          }
+          if (!live.done) live = ForgeChat.apply(live, { type: 'error', message: 'the connection ended before Forge finished' });
+        }
+        paint();
+      } catch (e) {
+        live = ForgeChat.apply(live, { type: 'error', message: String(e) });
+        paint();
+      } finally { busy = false; }
+      if (current !== null && !live.error) await drawSession();
+      await drawSessions().catch(() => {});
+    }
+    async function onSubmit(ev) {
+      if (!ev.target.closest('form#chat-form')) return;
+      ev.preventDefault();
+      const ta = $('#chat-input');
+      const message = ta.value.trim();
+      if (!message || busy) return;
+      ta.value = '';
+      await send(message);
+    }
+    async function onClick(ev) {
+      const b = ev.target.closest('button.chat-confirm, button.chat-reject');
+      if (!b) return;
+      const box = b.closest('.chat-proposal');
+      box.querySelectorAll('button').forEach(x => { x.disabled = true; });
+      const r = await post(`/api/chat/${b.dataset.verb}/${encodeURIComponent(b.dataset.action)}`);
+      if (r.error) alert(r.error);
+      await drawSession();
+      await drawSessions().catch(() => {});
+    }
+    function onKey(ev) {
+      if (ev.target.id === 'chat-input' && ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+        ev.preventDefault();
+        $('#chat-form').requestSubmit();
+      }
+    }
+    return {
+      async show() {
+        $('#main').innerHTML = '<div id="chat-page"><div id="chat-list" class="chat-side mute">loading…</div>' +
+          '<div class="chat-main"><div id="chat-log"></div>' +
+          '<form id="chat-form"><textarea id="chat-input" rows="3" placeholder="Ask Forge… (ctrl-enter sends)"></textarea>' +
+          '<button type="submit">send</button></form></div></div>';
+        const page = $('#chat-page');
+        page.addEventListener('submit', onSubmit);
+        page.addEventListener('click', onClick);
+        page.addEventListener('keydown', onKey);
+        await Promise.all([drawSessions().catch(() => { $('#chat-list').textContent = 'no sessions'; }), drawSession()]);
+        $('#chat-input').focus();
+      },
+      teardown() {},
     };
   }
 

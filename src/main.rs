@@ -11,6 +11,7 @@ mod assess;
 mod attempt;
 mod audit;
 mod binary;
+mod chat;
 mod checks;
 mod cli;
 mod concierge;
