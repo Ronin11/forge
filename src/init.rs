@@ -330,6 +330,36 @@ fn link_local_bin(home: &Path) -> Result<Option<StepResult>> {
     Ok(Some(step("links", !changed.is_empty(), detail)))
 }
 
+/// Commit the catalog files `workflows::catalog_dir` wrote (the built-in
+/// workflows and the untrusted-data fragment): those the repository does not
+/// track yet and whose text is exactly what this binary writes. Whatever else
+/// sits in the catalog, an operator's uncommitted edit above all, is left as
+/// it is.
+async fn commit_written_catalog_files(catalog: &Path) -> Result<Option<String>> {
+    let written = workflows::BUILTIN_WORKFLOWS
+        .iter()
+        .map(|(file, text)| (file.to_string(), *text))
+        .chain([(
+            format!("{}/untrusted-data.md", workflows::FRAGMENTS_DIR),
+            workflows::UNTRUSTED_DATA,
+        )]);
+    let mut paths = Vec::new();
+    for (rel, text) in written {
+        let tracked = std::process::Command::new("git")
+            .arg("-C")
+            .arg(catalog)
+            .args(["ls-files", "--error-unmatch", "--", &rel])
+            .output()?
+            .status
+            .success();
+        if !tracked && std::fs::read_to_string(catalog.join(&rel)).is_ok_and(|t| t == text) {
+            paths.push(rel);
+        }
+    }
+    let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+    git::commit_paths(catalog, &paths, "forge init: built-in workflow catalog").await
+}
+
 /// Everything `forge init` does, in order. `home_override` is `--home`;
 /// `None` uses the usual resolution (`Paths::compute_home`).
 pub async fn run(home_override: Option<PathBuf>, relink: bool) -> Result<Report> {
@@ -353,7 +383,7 @@ pub async fn run(home_override: Option<PathBuf>, relink: bool) -> Result<Report>
     ));
 
     let catalog = workflows::catalog_dir(&home)?;
-    let commit = git::commit_all(&catalog, "forge init: built-in workflow catalog").await?;
+    let commit = commit_written_catalog_files(&catalog).await?;
     steps.push(match commit {
         Some(sha) => step(
             "workflows",
