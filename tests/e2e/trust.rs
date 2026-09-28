@@ -209,7 +209,7 @@ fn a_public_task_ends_unverified_with_its_branch_pushed_and_forge_land_lands_it(
     let o = c_land(&e);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let (state, reason, _) = e.task(1);
-    assert_eq!(state, "unverified", "{reason}");
+    assert_eq!(state, "succeeded", "{reason}");
     assert!(reason.starts_with("landed main @ "), "{reason}");
     assert_eq!(
         crate::support::origin_file(&e, "main", "answer.txt").as_deref(),
