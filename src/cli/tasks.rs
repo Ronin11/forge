@@ -15,6 +15,10 @@ pub(super) enum TaskCmd {
         /// Cost cap for this task in USD
         #[arg(long)]
         budget: Option<f64>,
+        /// Let --budget exceed the cap of the task's trust level (operator
+        /// only); the decision records it
+        #[arg(long)]
+        allow_over_trust_cap: bool,
         /// Turns per attempt
         #[arg(long = "max-turns")]
         max_turns: Option<u32>,
@@ -497,6 +501,7 @@ async fn dispatch_task(cmd: Cmd) -> Result<()> {
             TaskCmd::Set {
                 id,
                 budget,
+                allow_over_trust_cap,
                 max_turns,
                 timeout_secs,
                 retries,
@@ -519,6 +524,7 @@ async fn dispatch_task(cmd: Cmd) -> Result<()> {
                     id,
                     crate::queue::TaskEdit {
                         budget,
+                        allow_over_trust_cap,
                         max_turns,
                         timeout_secs,
                         retries,

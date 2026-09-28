@@ -426,7 +426,7 @@ fn check_config(paths: &Paths) -> Vec<Check> {
                     b.per_task_usd,
                     b.per_day_usd
                         .map_or("none".to_string(), |d| format!("{d:.2}")),
-                    c.trust.describe_caps(b),
+                    crate::ctx::describe_trust_caps(&c.trust, b),
                     present(&c.sandbox.ro),
                     c.sandbox.ro.len(),
                     present(&c.sandbox.rw),

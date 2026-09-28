@@ -687,3 +687,20 @@ mod tests {
         assert!(err.contains("plan"), "{err}");
     }
 }
+
+/// Each trust level's cost caps as `forge doctor` prints them; the
+/// operator's per-task cap falls to `[budget]`.
+pub fn describe_trust_caps(trust: &config::TrustPolicies, budget: &Budget) -> String {
+    let usd = |v: Option<f64>| v.map_or("none".to_string(), |v| format!("${v:.2}"));
+    let levels = [
+        ("operator", &trust.operator, Some(budget.per_task_usd)),
+        ("contact", &trust.contact, None),
+        ("public", &trust.public, None),
+    ];
+    levels
+        .map(|(name, p, fallback)| {
+            let (task, initiative) = (usd(p.per_task_usd.or(fallback)), usd(p.per_initiative_usd));
+            format!("{name} {task} a task / {initiative} an initiative")
+        })
+        .join(", ")
+}

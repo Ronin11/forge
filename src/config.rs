@@ -679,8 +679,7 @@ struct TrustRaw {
 struct TrustLevelRaw {
     per_task_usd: Option<f64>,
     per_initiative_usd: Option<f64>,
-    /// The name `per_task_usd` had before initiatives got a cap of their
-    /// own; still read, `per_task_usd` wins when both are set.
+    /// `per_task_usd`'s old name; it wins when both are set.
     budget_usd: Option<f64>,
     workflows: Option<Vec<String>>,
     allow_protected: Option<bool>,
@@ -716,8 +715,7 @@ impl TrustEgress {
 pub struct TrustPolicy {
     /// Cost cap for a task at this level; `None` is the operator's own
     /// `[budget] per_task_usd` (no tighter cap at this level). A task
-    /// filed here gets it unless `--budget` says less; more needs
-    /// `--allow-over-trust-cap`.
+    /// filed here gets it unless `--budget` says less.
     pub per_task_usd: Option<f64>,
     /// What an initiative's tasks at this level may have cost together;
     /// `None` is no cap at this level.
@@ -744,25 +742,9 @@ pub struct TrustPolicies {
     pub public: TrustPolicy,
 }
 
-impl TrustPolicies {
-    /// The three levels' cost caps as `forge doctor` prints them: the
-    /// operator's fall to `[budget]` when its table names none.
-    pub fn describe_caps(&self, budget: &Budget) -> String {
-        let usd = |v: Option<f64>| v.map_or("none".to_string(), |v| format!("${v:.2}"));
-        let level = |name: &str, p: &TrustPolicy, task: Option<f64>| {
-            format!(
-                "{name} {} a task / {} an initiative",
-                usd(p.per_task_usd.or(task)),
-                usd(p.per_initiative_usd)
-            )
-        };
-        [
-            level("operator", &self.operator, Some(budget.per_task_usd)),
-            level("contact", &self.contact, None),
-            level("public", &self.public, None),
-        ]
-        .join(", ")
-    }
+/// A level's `per_task_usd`, or its old name `budget_usd`, else `default`.
+fn per_task_of(l: &TrustLevelRaw, default: Option<f64>) -> Option<f64> {
+    l.per_task_usd.or(l.budget_usd).or(default)
 }
 
 fn parse_trust_egress(
@@ -795,7 +777,7 @@ fn parse_trust_egress(
 fn build_trust(raw: TrustRaw) -> Result<TrustPolicies> {
     Ok(TrustPolicies {
         operator: TrustPolicy {
-            per_task_usd: raw.operator.per_task_usd.or(raw.operator.budget_usd),
+            per_task_usd: per_task_of(&raw.operator, None),
             per_initiative_usd: raw.operator.per_initiative_usd,
             workflows: raw.operator.workflows,
             allow_protected: raw.operator.allow_protected.unwrap_or(true),
@@ -804,12 +786,7 @@ fn build_trust(raw: TrustRaw) -> Result<TrustPolicies> {
             auto_land: raw.operator.auto_land.unwrap_or(true),
         },
         contact: TrustPolicy {
-            per_task_usd: Some(
-                raw.contact
-                    .per_task_usd
-                    .or(raw.contact.budget_usd)
-                    .unwrap_or(10.0),
-            ),
+            per_task_usd: per_task_of(&raw.contact, Some(10.0)),
             per_initiative_usd: Some(raw.contact.per_initiative_usd.unwrap_or(50.0)),
             workflows: raw.contact.workflows.or_else(|| {
                 Some(vec![
@@ -825,12 +802,7 @@ fn build_trust(raw: TrustRaw) -> Result<TrustPolicies> {
             auto_land: raw.contact.auto_land.unwrap_or(true),
         },
         public: TrustPolicy {
-            per_task_usd: Some(
-                raw.public
-                    .per_task_usd
-                    .or(raw.public.budget_usd)
-                    .unwrap_or(5.0),
-            ),
+            per_task_usd: per_task_of(&raw.public, Some(5.0)),
             per_initiative_usd: Some(raw.public.per_initiative_usd.unwrap_or(25.0)),
             workflows: raw
                 .public
@@ -1023,14 +995,14 @@ max_questions_per_day = 8
 # table below is the policy it is judged against: per_task_usd (the cost cap
 # a task filed at this level gets; --budget may say less, never more without
 # --allow-over-trust-cap; unset means [budget]'s own per_task_usd),
-# per_initiative_usd (what one initiative's tasks may cost together, unset
-# means no cap), workflows (allowed workflow
-# names, unset means every workflow), allow_protected, egress (\"model\": only
+# per_initiative_usd (what an initiative's tasks may cost together, unset means
+# no cap), workflows (allowed workflow names, unset means every workflow),
+# allow_protected, egress (\"model\": only
 # the configured providers' model endpoints, or \"declared\": also the hosts
 # forge.toml's own [sandbox] egress names), per_day (how many tasks may start
 # at this level per day, unset means no cap), and auto_land (may a verified
-# task at this level land itself). per_task_usd, per_initiative_usd, workflows,
-# allow_protected and per_day are enforced at enqueue; egress and auto_land by a later task. See
+# task at this level land itself). The caps, workflows, allow_protected and
+# per_day are enforced at enqueue; egress and auto_land by a later task. See
 # docs/ROADMAP.md and docs/GTM.md item 1.
 [trust.operator]
 allow_protected = true

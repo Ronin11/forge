@@ -249,9 +249,38 @@ fn initiative_within_trust_cap(
     Ok(())
 }
 
-/// Record that the operator let task `id` past its level's cap, as a
-/// decision row on the task (see `forge decisions`).
-fn record_over_trust_cap(f: &Forge, t: &Task, over: (f64, f64)) -> Result<()> {
+/// What the request's trust level decides at enqueue: the budget the task
+/// files with, the level's `per_day` cap, and, when the operator's flag let
+/// the budget past the level's cap, the `(budget, cap)` to record.
+fn trust_gate(
+    f: &Forge,
+    args: &TaskRequest,
+    level: crate::store::Trust,
+    workflow: &str,
+    initiative: Option<i64>,
+) -> Result<(Option<f64>, Option<u32>, Option<(f64, f64)>)> {
+    let policy = match level {
+        crate::store::Trust::Operator => &f.trust.operator,
+        crate::store::Trust::Contact => &f.trust.contact,
+        crate::store::Trust::Public => &f.trust.public,
+    };
+    let budget = apply_trust_policy(
+        level,
+        policy,
+        workflow,
+        args.allow_protected,
+        args.budget,
+        args.allow_over_trust_cap,
+    )?;
+    initiative_within_trust_cap(f, level, policy, initiative)?;
+    Ok((budget, policy.per_day, over_trust_cap(policy, budget)))
+}
+
+/// Record that the operator let task `t` past its level's cap, as a
+/// decision row on the task (see `forge decisions`); nothing when `over`
+/// is `None`.
+fn record_over_trust_cap(f: &Forge, t: &Task, over: Option<(f64, f64)>) -> Result<()> {
+    let Some(over) = over else { return Ok(()) };
     let decision = f.store.insert_decision_by(crate::store::InsertDecisionBy {
         task_id: t.id,
         repo: &t.repo,
@@ -347,6 +376,32 @@ async fn dependency_fits(f: &Forge, dep: i64) -> Result<()> {
     Ok(())
 }
 
+/// A budget edit holds to the task's trust level like a new task does:
+/// over the level's `per_task_usd` it is refused unless the operator
+/// passed `--allow-over-trust-cap`, and then the decision row says so
+/// (the returned suffix, empty within the cap).
+fn budget_edit_over_trust_cap(f: &Forge, t: &Task, b: f64, allow: bool) -> Result<String> {
+    let policy = match t.trust {
+        crate::store::Trust::Operator => &f.trust.operator,
+        crate::store::Trust::Contact => &f.trust.contact,
+        crate::store::Trust::Public => &f.trust.public,
+    };
+    let Some((_, cap)) = over_trust_cap(policy, Some(b)) else {
+        return Ok(String::new());
+    };
+    if !allow {
+        bail!(
+            "trust {}: --budget ${b:.2} is over this level's per_task_usd cap of ${cap:.2}; \
+             --allow-over-trust-cap (operator only) raises it",
+            t.trust.as_str()
+        );
+    }
+    Ok(format!(
+        " (over the {} level's ${cap:.2} cap, --allow-over-trust-cap)",
+        t.trust.as_str()
+    ))
+}
+
 /// What `forge task set` may change on a queued or blocked task. Each
 /// `Some` replaces the stored value; `None` leaves it. `after` and
 /// `checks` replace the whole list, so `Some(vec![])` clears it
@@ -354,6 +409,9 @@ async fn dependency_fits(f: &Forge, dep: i64) -> Result<()> {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct TaskEdit {
     pub budget: Option<f64>,
+    /// `--allow-over-trust-cap`: `budget` may pass the task's trust level's
+    /// `per_task_usd`; the decision row says so.
+    pub allow_over_trust_cap: bool,
     pub max_turns: Option<u32>,
     pub timeout_secs: Option<u32>,
     pub retries: Option<u32>,
@@ -422,8 +480,9 @@ pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String
     let mut changes = Vec::new();
     let mut up = crate::store::TaskUpdate::default();
     if let Some(b) = edit.budget {
+        let over = budget_edit_over_trust_cap(f, &old, b, edit.allow_over_trust_cap)?;
         changes.push(format!(
-            "budget {} → ${b:.2}",
+            "budget {} → ${b:.2}{over}",
             old.budget_usd
                 .map_or("unset".to_string(), |o| format!("${o:.2}"))
         ));
@@ -667,22 +726,8 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
             .with_context(|| format!("--trust {s:?}: must be operator, contact, or public"))?,
         None => crate::store::Trust::Operator,
     };
-    let trust_policy = match trust {
-        crate::store::Trust::Operator => &f.trust.operator,
-        crate::store::Trust::Contact => &f.trust.contact,
-        crate::store::Trust::Public => &f.trust.public,
-    };
-    let budget = apply_trust_policy(
-        trust,
-        trust_policy,
-        &workflow,
-        args.allow_protected,
-        args.budget,
-        args.allow_over_trust_cap,
-    )?;
-    initiative_within_trust_cap(f, trust, trust_policy, initiative.as_ref().map(|i| i.id))?;
-    let over_cap = over_trust_cap(trust_policy, budget);
-    let per_day_cap = trust_policy.per_day;
+    let initiative_id = initiative.as_ref().map(|i| i.id);
+    let (budget, per_day_cap, over_cap) = trust_gate(f, args, trust, &workflow, initiative_id)?;
     let mut t = Task {
         repo: repo.display().to_string(),
         task: args.task.clone(),
@@ -765,9 +810,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
     t.journal = journal;
     t.journal_arm = arm;
     t.explore = explore;
-    if let Some(over) = over_cap {
-        record_over_trust_cap(f, &t, over)?;
-    }
+    record_over_trust_cap(f, &t, over_cap)?;
     f.report.emit(
         t.id,
         Event::TaskQueued {
