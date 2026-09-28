@@ -97,6 +97,62 @@ fn a_login_near_expiry_is_refreshed_on_the_host_before_the_attempt_is_seeded() {
     );
 }
 
+/// Find `name` anywhere under `dir`, however deep.
+fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_file(&path, name) {
+                return Some(found);
+            }
+        } else if path.file_name().and_then(|n| n.to_str()) == Some(name) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// (docs/REVIEW-4.md #1.4) The probe used to run in the task's worktree,
+/// with the repository's own `.claude/settings.json` (and any hook it
+/// names) in force. A hook that writes a marker must never fire from it,
+/// and its cwd must never be the worktree at all.
+#[test]
+fn the_login_refresh_probe_never_runs_in_the_tasks_worktree() {
+    let e = Env::new();
+    std::fs::create_dir_all(e.repo.join(".claude")).unwrap();
+    std::fs::write(
+        e.repo.join(".claude/settings.json"),
+        r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo hooked >hook-marker.txt"}]}]}}"#,
+    )
+    .unwrap();
+    git(&e.repo, &["add", "-A"]);
+    git(&e.repo, &["commit", "-qm", "a settings hook"]);
+    let soon = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64)
+        + 10 * 60 * 1000;
+    let config = config_dir(&e, &login("a0", "r0", soon));
+    let o = run(&e, "login-probe-cwd.sh", &config);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let cwd = std::fs::read_to_string(config.join(".credentials.json.probe-cwd")).unwrap();
+    let cwd = cwd.trim();
+    let worktree = e.home.join("worktrees");
+    assert!(
+        !Path::new(cwd).starts_with(&worktree) && cwd != e.repo.to_str().unwrap(),
+        "the probe ran in the task's worktree: {cwd}"
+    );
+    assert_eq!(
+        cwd,
+        e.home.join("probe").to_str().unwrap(),
+        "the probe runs in FORGE_HOME/probe"
+    );
+    assert!(
+        find_file(&e.home, "hook-marker.txt").is_none(),
+        "the settings hook fired from outside the worktree"
+    );
+}
+
 #[test]
 fn an_empty_login_is_a_provider_refusal_not_an_attempt_and_doctor_fails_it() {
     let e = Env::new();

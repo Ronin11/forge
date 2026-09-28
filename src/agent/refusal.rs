@@ -4,6 +4,7 @@
 //! (docs/REVIEW-3.md #1.1.4).
 
 use super::*;
+use std::path::PathBuf;
 
 pub fn hold_text_only(out: &mut Outcome) {
     out.rate_limited = true;
@@ -359,7 +360,11 @@ async fn refresh_on_host(l: &Launch<'_>, dir: &Path, window: i64) -> crate::logi
     }
 }
 
-/// `argv` as a one-token probe: no tools, one turn, no schema, nothing saved.
+/// `argv` as a one-token probe: no tools, one turn, no schema, nothing
+/// saved, and none of the repository's own settings — `user` in place of
+/// `project,local` (`claude_argv`'s default), since the probe now runs
+/// nowhere near a worktree and has none of its own to read
+/// (docs/REVIEW-4.md #1.4).
 fn probe_argv(mut argv: Vec<String>) -> Vec<String> {
     let mut drop_pair = |flag: &str, keep: Option<&str>| {
         if let Some(i) = argv.iter().position(|a| a == flag) {
@@ -375,21 +380,49 @@ fn probe_argv(mut argv: Vec<String>) -> Vec<String> {
     drop_pair("--tools", Some(""));
     drop_pair("--json-schema", None);
     drop_pair("--resume", None);
+    drop_pair("--setting-sources", Some("user"));
     argv.push("--no-session-persistence".to_string());
     argv
 }
 
+/// A directory made fresh for the login refresh probe, never a task's
+/// worktree: no `.claude/settings.json` or `CLAUDE.md`, not a git
+/// repository, nothing a hook could name (docs/REVIEW-4.md #1.4). Removed
+/// and recreated empty before every probe; `None` only when the kernel's
+/// own home cannot be found or made.
+fn probe_scratch_dir() -> Option<PathBuf> {
+    let dir = crate::ctx::Paths::compute_home().ok()?.join("probe");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Kill the process group `pid` leads: the probe is spawned with
+/// `process_group(0)`, so its own pid is also its pgid, and a hook the CLI
+/// ran dies with it rather than outliving the timeout.
+fn kill_group(pid: u32) {
+    // SAFETY: killpg(2) on the group this probe's own child leads.
+    unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+}
+
 async fn probe(l: &Launch<'_>) {
+    let Some(dir) = tokio::task::spawn_blocking(probe_scratch_dir)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return;
+    };
     let bin = crate::executor::agent_bin(l.sandbox, l.worktree, super::agent_bin_for(l.step));
     let argv = probe_argv(super::claude_argv(&bin, l));
     let extra = super::inputs::provider_env(l.provider);
     let Ok(mut child) = super::spawn_retrying_etxtbsy(|| {
-        let mut c =
-            tokio::process::Command::from(super::command_in(None, l.worktree, &argv, &extra));
+        let mut c = tokio::process::Command::from(super::command_in(None, &dir, &argv, &extra));
         c.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .kill_on_drop(true);
+            .kill_on_drop(true)
+            .process_group(0);
         c
     })
     .await
@@ -399,7 +432,14 @@ async fn probe(l: &Launch<'_>) {
     if let Some(mut stdin) = child.stdin.take() {
         let _ = tokio::io::AsyncWriteExt::write_all(&mut stdin, b"Reply with one word: ok").await;
     }
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(120), child.wait()).await;
+    let pid = child.id();
+    if tokio::time::timeout(std::time::Duration::from_secs(120), child.wait())
+        .await
+        .is_err()
+        && let Some(pid) = pid
+    {
+        kill_group(pid);
+    }
 }
 
 /// The refusal: no attempt is made and none is counted. It holds the
