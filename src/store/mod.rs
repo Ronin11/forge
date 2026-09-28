@@ -223,6 +223,7 @@ const TASK_COLUMNS: &[&str] = &[
     "workflow_hash",
     "workflow_text",
     "actions_json",
+    "run_json",
     "land",
     "after_json",
     "verify_base",
