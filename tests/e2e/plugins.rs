@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
-fn plugin_status_json(e: &Env, name: &str) -> serde_json::Value {
+pub(crate) fn plugin_status_json(e: &Env, name: &str) -> serde_json::Value {
     serde_json::from_slice(
         &e.forge("ok.sh", &["plugin", "status", name, "--json"])
             .stdout,
@@ -437,7 +437,7 @@ fn worker_running_notify(e: &Env) -> (Worker, i32) {
     (worker, pid.get())
 }
 
-fn pid_gone_within(pid: i32, limit: Duration) -> bool {
+pub(crate) fn pid_gone_within(pid: i32, limit: Duration) -> bool {
     wait_until(
         || {
             // A zombie awaiting its reaper is not running.

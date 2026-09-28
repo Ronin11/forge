@@ -518,6 +518,26 @@ fn event_project(f: &Forge, ev: &serde_json::Value) -> Option<String> {
     f.store.task(task).ok().flatten()?.project
 }
 
+/// The three ticks a live worker runs each pass: run-workflow resolution,
+/// then the schedule and event triggers over what it resolved. A worker
+/// that is superseded or stopping fires none of them: its older code would
+/// resolve workflows, queue jobs beside the successor and move the shared
+/// event cursor. Whether the ticks ran.
+async fn run_ticks(
+    f: &Forge,
+    refusals: &mut RefusalLog,
+    superseded: bool,
+    stopping: bool,
+) -> Result<bool> {
+    if superseded || stopping {
+        return Ok(false);
+    }
+    let runs = tick_run_workflows(f).await?;
+    schedule_tick(f, &runs, refusals).await?;
+    event_tick(f, &runs).await?;
+    Ok(true)
+}
+
 /// The worker's event trigger (docs/JOBS.md, "Triggers" and "Build order"
 /// step 3): for every project's run workflow with `[trigger] on = "event"`,
 /// read the events in `events.jsonl` past the offset this workflow last
@@ -827,9 +847,6 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         let mut superseded = false;
         let pass: Result<()> = async {
             recover_orphans(&f, false)?;
-            let runs = tick_run_workflows(&f).await?;
-            schedule_tick(&f, &runs, &mut refusals).await?;
-            event_tick(&f, &runs).await?;
             superseded = succession.superseded(&f, &mut plugins).await?;
             if !stopping && succession.stop_requested() {
                 stopping = true;
@@ -838,6 +855,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     running.len()
                 );
             }
+            run_ticks(&f, &mut refusals, superseded, stopping).await?;
 
             // Fill free slots.
             while !stopping
@@ -1501,6 +1519,43 @@ mod tests {
             .into_iter()
             .filter(|j| j.trigger_kind == "event")
             .collect()
+    }
+
+    #[tokio::test]
+    async fn a_superseded_or_stopping_pass_fires_no_tick() {
+        let (_dir, f) = message_fixture(&[("on-done", "on = \"event\"\ntype = \"task_done\"")]);
+        let mut log = RefusalLog::default();
+        for (superseded, stopping) in [(true, false), (false, true), (true, true)] {
+            let ran = run_ticks(&f, &mut log, superseded, stopping).await.unwrap();
+            assert!(!ran);
+            assert_eq!(f.store.event_cursor("demo", "on-done").unwrap(), None);
+        }
+        assert!(run_ticks(&f, &mut log, false, false).await.unwrap());
+        assert!(f.store.event_cursor("demo", "on-done").unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn two_start_events_on_one_event_yield_one_job_and_no_error() {
+        let (_dir, f) = message_fixture(&[("on-done", "on = \"event\"\ntype = \"task_done\"")]);
+        let runs = tick_run_workflows(&f).await.unwrap();
+        let run = &runs[0];
+        let start = || {
+            job::start_event(crate::job::StartEvent {
+                f: &f,
+                project: "demo",
+                workflow: "on-done",
+                landed_sha: &run.landed_sha,
+                wf: &run.wf,
+                source: run.source,
+                offset: "0:42",
+                at: unix_now(),
+                input: "{}",
+            })
+        };
+        let first = start().unwrap();
+        assert!(first.is_some());
+        assert_eq!(start().unwrap(), None);
+        assert_eq!(event_jobs(&f).len(), 1);
     }
 
     #[tokio::test]

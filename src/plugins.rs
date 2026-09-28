@@ -13,6 +13,7 @@ use handoff::{Reason, StopReason, reason_text};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -404,8 +405,13 @@ fn lock_path(home: &Path, name: &str) -> PathBuf {
 
 /// The exclusive `flock` that makes supervision single per home, or `None`
 /// when another supervisor (a worker still draining, a duplicate) holds it.
-/// Released when the returned file drops, which the reconciler defers until
-/// the plugin's supervising task, and so its child, is gone.
+/// The lock belongs to the open file description, not to the worker:
+/// `spawn_plugin` hands that description to the plugin's process group
+/// (clearing `FD_CLOEXEC` in a `pre_exec`), so it is released only when the
+/// returned file has dropped, which the reconciler defers until the
+/// supervising task has ended, *and* every member of the group has exited. A
+/// worker that dies without stopping its plugins therefore leaves the lock
+/// held, and its successor does not start a second copy beside the orphan.
 fn try_lock_plugin(home: &Path, name: &str) -> Option<std::fs::File> {
     let path = lock_path(home, name);
     std::fs::create_dir_all(path.parent()?).ok()?;
@@ -512,7 +518,13 @@ async fn stop_child(child: &mut Child) {
 /// so a plugin written against the old name still works), `FORGE_PLUGIN_DIR`,
 /// `FORGE_PLUGIN_NAME`, `FORGE_PLUGIN_STATE`, plus the pass-through list every agent and check
 /// gets (`agent::agent_env`).
-fn spawn_plugin(plugin: &Plugin, home: &Path, state_dir: &Path, log_path: &Path) -> Result<Child> {
+fn spawn_plugin(
+    plugin: &Plugin,
+    home: &Path,
+    state_dir: &Path,
+    log_path: &Path,
+    lock: &std::fs::File,
+) -> Result<Child> {
     let stdout_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -542,8 +554,15 @@ fn spawn_plugin(plugin: &Plugin, home: &Path, state_dir: &Path, log_path: &Path)
     // giving up on it) never runs `stop_child`; the kernel delivers SIGTERM
     // to the plugin instead of leaving it to be reparented to init.
     let parent = std::process::id() as libc::pid_t;
+    // The plugin's group inherits the locked file description across exec,
+    // so the `flock` lives as long as any member of the group does.
+    let lock_fd = lock.as_raw_fd();
     unsafe {
         cmd.pre_exec(move || {
+            let flags = libc::fcntl(lock_fd, libc::F_GETFD);
+            if flags < 0 || libc::fcntl(lock_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
@@ -595,6 +614,7 @@ async fn supervise_plugin(
     plugin: Plugin,
     mut stop: watch::Receiver<bool>,
     reason: Reason,
+    lock: std::fs::File,
 ) {
     let name = plugin.name.clone();
     let state_dir = home.join("plugins-state").join(&name);
@@ -615,7 +635,7 @@ async fn supervise_plugin(
             return;
         }
 
-        let mut child = match spawn_plugin(&plugin, &home, &state_dir, &log_path) {
+        let mut child = match spawn_plugin(&plugin, &home, &state_dir, &log_path, &lock) {
             Ok(c) => c,
             Err(e) => {
                 write_stopped(&home, &name, format!("failed to start: {e:#}"));
@@ -720,6 +740,7 @@ impl Supervised {
             plugin.clone(),
             rx,
             reason.clone(),
+            lock.try_clone().expect("duplicating the plugin lock"),
         ));
         Supervised {
             stop,
@@ -758,8 +779,8 @@ impl Supervised {
 /// process for a fresh one, since `enable`/`disable` alone never
 /// replaces a process that stayed enabled the whole time (see
 /// `request_restart`). Supervision is single per home: each plugin is held
-/// under an `flock` on `plugins-run/<name>.lock` for as long as its child
-/// lives, and a plugin whose lock another supervisor holds is skipped and
+/// under an `flock` on `plugins-run/<name>.lock` for as long as its process
+/// group lives (the group inherits the locked file description), and a plugin whose lock another supervisor holds is skipped and
 /// tried again on the next tick. `stop` signals every plugin before it
 /// waits on any, so the lock passes to a successor rather than overlapping.
 pub struct Supervisor {
