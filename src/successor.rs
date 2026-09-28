@@ -80,7 +80,9 @@ impl Succession {
         let daemon = opts.poll.is_some();
         let pid = std::process::id() as i64;
         let id = if daemon {
-            f.store.register_worker(pid, &version)?
+            let id = f.store.register_worker(pid, &version)?;
+            f.store.set_worker_slots(id, opts.jobs.max(1))?;
+            id
         } else {
             0
         };
