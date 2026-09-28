@@ -33,6 +33,7 @@ mod listing;
 mod login;
 mod messages;
 mod ops;
+mod plugin_refresh;
 mod plugins;
 mod presence;
 mod providers;

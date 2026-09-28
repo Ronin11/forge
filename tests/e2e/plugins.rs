@@ -1008,6 +1008,10 @@ fn the_signal_plugin_delivers_an_addressed_question_to_its_contact_and_records_h
         question_entry.starts_with(&format!("{alice_number}|")),
         "the question must go to alice's number, not the operator's: {question_entry:?}"
     );
+    assert!(
+        !question_entry.contains("task ") && !question_entry.contains("question: "),
+        "a person sees the bare question, no task id: {question_entry:?}"
+    );
 
     // Alice's own reply, at her own number, names no task: the plugin
     // finds the one open question addressed to her.
