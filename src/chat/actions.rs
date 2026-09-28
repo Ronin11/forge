@@ -384,3 +384,254 @@ pub fn reject(f: &Forge, action: &str) -> Result<Decided> {
         turn: recorded,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ctx::Paths;
+    use crate::store::{Store, Task};
+
+    fn fixture() -> (tempfile::TempDir, Forge) {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let paths = Paths {
+            worktrees: home.join("worktrees"),
+            logs: home.join("logs"),
+            home,
+        };
+        std::fs::create_dir_all(&paths.worktrees).unwrap();
+        std::fs::create_dir_all(&paths.logs).unwrap();
+        let store = Store::open(&paths.home.join("forge.db")).unwrap();
+        (dir, Forge::open_with(paths, store).unwrap())
+    }
+
+    /// A real repository the queue accepts a task in.
+    fn repo(dir: &std::path::Path) -> std::path::PathBuf {
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("forge.toml"), "[checks]\nok = [\"true\"]\n").unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["add", "-A"],
+            &["commit", "-q", "-m", "init"],
+        ] {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok);
+        }
+        repo
+    }
+
+    fn failed_task(f: &Forge, repo: &str) -> i64 {
+        f.store
+            .insert_task(&Task {
+                repo: repo.into(),
+                task: "make the thing".into(),
+                base_branch: "main".into(),
+                model: "m".into(),
+                max_turns: 1,
+                max_attempts: 1,
+                timeout_secs: 60,
+                state: TaskState::Failed,
+                reason: "test failed".into(),
+                workflow: "direct".into(),
+                created_at: crate::unix_now(),
+                ..Default::default()
+            })
+            .unwrap()
+    }
+
+    /// An assistant turn that proposed `retry_task` on `task`; its action id.
+    fn proposed_retry(f: &Forge, task: i64) -> (i64, String) {
+        let session = f.store.create_chat_session("s", "p").unwrap();
+        let (args, summary) = propose(f, "retry_task", &json!({"task": task})).unwrap();
+        let calls = vec![
+            ToolCall::read("task", json!({"id": task}), "", json!({})),
+            ToolCall::proposed("retry_task", args, "", summary),
+        ];
+        let turn = f
+            .store
+            .insert_chat_turn(&NewChatTurn {
+                session,
+                role: "assistant",
+                text: "I propose a retry.",
+                tool_calls: &record::calls_json(&calls),
+                cost_usd: 0.0,
+                provider: "p",
+                model: "m",
+                prompt_hash: "h",
+            })
+            .unwrap();
+        (session, record::action_id(turn, 1))
+    }
+
+    fn status_of(f: &Forge, action: &str) -> (Status, String) {
+        let (turn, index) = record::parse_action_id(action).unwrap();
+        let t = f.store.chat_turn(turn).unwrap().unwrap();
+        let p = record::parse_calls(&t.tool_calls)[index]
+            .proposal
+            .clone()
+            .unwrap();
+        (p.status, p.outcome)
+    }
+
+    #[tokio::test]
+    async fn nothing_runs_until_the_operator_confirms() {
+        let (dir, f) = fixture();
+        let repo = repo(dir.path());
+        let old = failed_task(&f, &repo.display().to_string());
+        let (session, action) = proposed_retry(&f, old);
+        assert_eq!(
+            f.store.queued_count().unwrap(),
+            0,
+            "proposing queued nothing"
+        );
+        assert_eq!(status_of(&f, &action).0, Status::Proposed);
+
+        let d = confirm(&f, &action).await.unwrap();
+        assert_eq!(d.status, Status::Confirmed, "{}", d.outcome);
+        assert_eq!(f.store.queued_count().unwrap(), 1);
+        assert!(
+            d.outcome.contains(&format!("retried task {old} as")),
+            "{}",
+            d.outcome
+        );
+        assert_eq!(status_of(&f, &action).0, Status::Confirmed);
+
+        // The session records the decision, and so does the decisions table.
+        let turns = f.store.chat_turns(session).unwrap();
+        let last = turns.last().unwrap();
+        assert_eq!((last.role.as_str(), last.id), ("action", d.turn));
+        assert!(
+            last.text.starts_with("Confirmed: retried task"),
+            "{}",
+            last.text
+        );
+        let decisions = f.store.decisions(&Default::default()).unwrap();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].kind, DECISION_KIND);
+        assert!(
+            decisions[0]
+                .citations
+                .contains(&format!("chat session {session}"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_confirmed_action_cannot_be_confirmed_or_rejected_again() {
+        let (dir, f) = fixture();
+        let old = failed_task(&f, &repo(dir.path()).display().to_string());
+        let (_, action) = proposed_retry(&f, old);
+        confirm(&f, &action).await.unwrap();
+        let e = confirm(&f, &action).await.unwrap_err().to_string();
+        assert!(e.contains("already confirmed"), "{e}");
+        let e = reject(&f, &action).unwrap_err().to_string();
+        assert!(e.contains("already confirmed"), "{e}");
+        assert_eq!(f.store.queued_count().unwrap(), 1, "it ran exactly once");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_action_never_runs() {
+        let (dir, f) = fixture();
+        let old = failed_task(&f, &repo(dir.path()).display().to_string());
+        let (session, action) = proposed_retry(&f, old);
+        let d = reject(&f, &action).unwrap();
+        assert_eq!(d.status, Status::Rejected);
+        assert_eq!(status_of(&f, &action).0, Status::Rejected);
+        let e = confirm(&f, &action).await.unwrap_err().to_string();
+        assert!(e.contains("already rejected"), "{e}");
+        assert_eq!(f.store.queued_count().unwrap(), 0);
+        assert!(f.store.decisions(&Default::default()).unwrap().is_empty());
+        let last = f.store.chat_turns(session).unwrap().pop().unwrap();
+        assert!(last.text.starts_with("Rejected:"), "{}", last.text);
+    }
+
+    #[tokio::test]
+    async fn an_action_that_fails_is_recorded_failed_and_is_not_run_again() {
+        let (_dir, f) = fixture();
+        let old = failed_task(&f, "/nowhere/at/all");
+        let (_, action) = proposed_retry(&f, old);
+        let d = confirm(&f, &action).await.unwrap();
+        assert_eq!(d.status, Status::Failed);
+        assert_eq!(status_of(&f, &action).0, Status::Failed);
+        let e = confirm(&f, &action).await.unwrap_err().to_string();
+        assert!(e.contains("already failed"), "{e}");
+        assert!(f.store.decisions(&Default::default()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn only_a_proposal_can_be_decided() {
+        let (dir, f) = fixture();
+        let old = failed_task(&f, &repo(dir.path()).display().to_string());
+        let (_, action) = proposed_retry(&f, old);
+        let (turn, _) = record::parse_action_id(&action).unwrap();
+        // Position 0 is a read tool's call, not a proposal; 7 is past the end.
+        for bad in [
+            format!("{turn}.0"),
+            format!("{turn}.7"),
+            "9999.0".into(),
+            "nope".into(),
+        ] {
+            assert!(confirm(&f, &bad).await.is_err(), "{bad}");
+            assert!(reject(&f, &bad).is_err(), "{bad}");
+        }
+        assert_eq!(f.store.queued_count().unwrap(), 0);
+        assert_eq!(status_of(&f, &action).0, Status::Proposed);
+    }
+
+    #[test]
+    fn of_two_racing_decisions_only_the_first_to_swap_wins() {
+        let (dir, f) = fixture();
+        let old = failed_task(&f, &repo(dir.path()).display().to_string());
+        let (_, action) = proposed_retry(&f, old);
+        let (turn, index) = record::parse_action_id(&action).unwrap();
+        let stale = f.store.chat_turn(turn).unwrap().unwrap();
+        let mut a = record::parse_calls(&stale.tool_calls);
+        let mut b = a.clone();
+        assert!(
+            settle(
+                &f,
+                turn,
+                &stale.tool_calls,
+                &mut a,
+                index,
+                Status::Rejected,
+                "x"
+            )
+            .unwrap()
+        );
+        assert!(
+            !settle(
+                &f,
+                turn,
+                &stale.tool_calls,
+                &mut b,
+                index,
+                Status::Confirmed,
+                "y"
+            )
+            .unwrap()
+        );
+        assert_eq!(status_of(&f, &action).0, Status::Rejected);
+    }
+
+    #[test]
+    fn a_proposal_for_a_missing_workflow_is_refused_when_it_is_made() {
+        let (_dir, f) = fixture();
+        let old = failed_task(&f, "/repo");
+        let e = propose(
+            &f,
+            "retry_task",
+            &json!({"task": old, "workflow": "no-such"}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("no workflow"), "{e}");
+    }
+}

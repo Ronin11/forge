@@ -441,7 +441,8 @@ mod tests {
 
     #[test]
     fn bound_cuts_strings_until_the_document_fits() {
-        let v = json!({"a": "x".repeat(5000), "b": ["y".repeat(5000); 5]});
+        let long = "y".repeat(5000);
+        let v = json!({"a": "x".repeat(5000), "b": [long, long, long, long, long]});
         let out = bound(v, 2000);
         assert!(out.to_string().len() <= 2000, "{}", out.to_string().len());
         assert!(out.to_string().contains("[cut]"));
