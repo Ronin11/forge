@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 
+mod adoption;
 mod arms;
 mod attempts;
 mod chat;
@@ -37,6 +38,7 @@ mod tasks;
 mod webhooks;
 mod workers;
 
+pub use adoption::{Adoption, ManualStat, Origin};
 pub use attempts::{Attempt, AttemptState, FinishAttempt, Op, RateLimitSample, seed_used};
 pub use chat::{ChatSession, ChatTurn, NewChatTurn};
 pub use daily::DailyStat;
@@ -147,6 +149,9 @@ pub struct TaskSummary {
     pub project: Option<String>,
     pub initiative: Option<i64>,
     pub trust: String,
+    /// `"agent"`, or `"adopted"` for a hand-made branch `forge adopt`
+    /// landed (see `Origin`).
+    pub origin: String,
     /// With `TaskFilter::touches`: how the row matched, `"changes"` (an
     /// attempt recorded a change under the path) or `"text"` (only the
     /// task's text mentions it, `touches_text`). `None` without the
@@ -256,6 +261,8 @@ const TASK_COLUMNS: &[&str] = &[
     "trust",
     "session_id",
     "handoff",
+    "origin",
+    "adoption_json",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -352,6 +359,12 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         )?,
         session_id: r.get("session_id")?,
         handoff: r.get("handoff")?,
+        origin: conv(
+            r,
+            "origin",
+            Origin::try_from(r.get::<_, String>("origin")?.as_str()),
+        )?,
+        adoption: adoption::from_column(&r.get::<_, String>("adoption_json")?),
     })
 }
 
@@ -540,7 +553,7 @@ impl Store {
                     (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id) AS attempts,
                     (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id) AS cost,
                     t.workflow AS workflow, t.created_at AS created_at, t.finished_at AS finished_at,
-                    t.project AS project, t.initiative AS initiative, t.trust AS trust,
+                    t.project AS project, t.initiative AS initiative, t.trust AS trust, t.origin AS origin,
                     CASE WHEN ?9 IS NULL THEN NULL WHEN {touched} THEN 'changes' ELSE 'text' END AS touch,
                     CASE WHEN ?5 IS NULL THEN NULL WHEN {by_text} THEN 'text' WHEN {by_title} THEN 'title'
                          WHEN {by_plan} THEN 'plan' ELSE 'summary' END AS matched
@@ -585,6 +598,7 @@ impl Store {
                     project: r.get("project")?,
                     initiative: r.get("initiative")?,
                     trust: r.get("trust")?,
+                    origin: r.get("origin")?,
                     touch: r.get("touch")?,
                     matched: r.get("matched")?,
                     failures: Vec::new(),

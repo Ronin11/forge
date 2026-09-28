@@ -585,6 +585,10 @@ pub struct StatsDoc {
     /// The last 30 UTC days' landings and spend, oldest first — the
     /// `/stats` page's chart source (see `StatsDailyRow`).
     pub daily: Vec<StatsDailyRow>,
+    /// Adopted tasks (`forge adopt`): hand-made branches Forge only
+    /// verified and landed, counted here and in no row above, since no
+    /// agent workflow did the work.
+    pub manual: crate::store::ManualStat,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Value>,
 }
@@ -1110,6 +1114,7 @@ pub async fn stats_doc(
             .map(Into::into)
             .collect(),
         daily: f.store.daily_stats(scope)?.iter().map(Into::into).collect(),
+        manual: f.store.manual_stats(scope)?,
         tools: None,
     })
 }

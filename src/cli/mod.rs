@@ -570,6 +570,28 @@ enum Cmd {
     Snapshot,
     /// Land an already-verified task's branch through the integrator: merge the base in, re-verify, push, fast-forward
     Land { id: i64 },
+    /// Land a branch made outside Forge, with no agent run: record it as
+    /// an adopted (manual) task, run the repository's checks on it as it
+    /// is, and land it through the integrator like `forge land` (see
+    /// docs/OPS.md, "Landing hand-made work")
+    Adopt {
+        /// Path to the git repository the branch belongs to
+        repo: PathBuf,
+        /// The branch (local, or on the push remote) or commit to adopt
+        branch_or_commit: String,
+        /// A title for the record (default: the commit's subject)
+        #[arg(long)]
+        title: Option<String>,
+        /// Verify only: leave the verified branch for a human (`forge land <id>` lands it)
+        #[arg(long)]
+        no_land: bool,
+        /// The project the task belongs to (default: the repository's own project)
+        #[arg(long)]
+        project: Option<String>,
+        /// Let the branch change the repo's [verify] protected paths; recorded as a decision
+        #[arg(long)]
+        allow_protected: bool,
+    },
     /// Merge verified tasks' branches together in order and re-verify after each, without landing:
     /// on success the result is a branch in the repository for a human to fast-forward
     Integrate {
@@ -683,6 +705,7 @@ pub async fn main() -> Result<()> {
         | Cmd::Trace { .. }
         | Cmd::Integrate { .. }
         | Cmd::Land { .. }
+        | Cmd::Adopt { .. }
         | Cmd::Journal { .. }
         | Cmd::Task { .. } => tasks::dispatch(cmd).await,
         Cmd::Ref { .. } | Cmd::Project { .. } | Cmd::Initiative { .. } | Cmd::Intake { .. } => {

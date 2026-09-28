@@ -276,7 +276,7 @@ impl Store {
             let mut stmt = c.prepare(
                 "SELECT id, workflow, shape_text_len, shape_path_tokens, landed_sha, explore_json FROM tasks
                  WHERE state IN ('succeeded','failed','blocked','unverified') AND started_at IS NOT NULL
-                   AND (?1 IS NULL OR project = ?1) AND (?2 IS NULL OR initiative = ?2)
+                   AND origin = 'agent' AND (?1 IS NULL OR project = ?1) AND (?2 IS NULL OR initiative = ?2)
                    AND (?3 IS NULL OR finished_at >= ?3)
                  ORDER BY id",
             )?;
@@ -332,7 +332,7 @@ impl Store {
                 "SELECT a.task_id AS task_id, a.step AS step, a.provider AS provider
                  FROM attempts a JOIN tasks t ON t.id = a.task_id
                  WHERE t.state IN ('succeeded','failed','blocked','unverified') AND t.started_at IS NOT NULL
-                   AND (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
+                   AND t.origin = 'agent' AND (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
                    AND (?3 IS NULL OR t.finished_at >= ?3)
                    AND a.step IN ({roles_sql})
                    AND a.attempt_no = (SELECT MIN(a2.attempt_no) FROM attempts a2

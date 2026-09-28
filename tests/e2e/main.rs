@@ -4,6 +4,7 @@
 
 mod support;
 
+mod adopt;
 mod capped;
 mod chat;
 mod concierge;

@@ -738,7 +738,7 @@ impl Attempt {
     /// check runs are on the record but are not the agent's work, so a
     /// rule about "the last attempt" skips them.
     pub fn is_agent(&self) -> bool {
-        self.step != "supervisor" && self.step != "integrate"
+        self.step != "supervisor" && self.step != "integrate" && self.step != "adopt"
     }
 }
 

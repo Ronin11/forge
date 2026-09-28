@@ -436,6 +436,39 @@ pub async fn fetch_branch(repo: &Path, remote: &str, branch: &str) -> Result<Str
         .await
 }
 
+/// Fetch one ref, by its full name, from any source (a path or a URL)
+/// into `dir` as FETCH_HEAD: how `forge adopt` brings a hand-made branch
+/// into the clone it verifies.
+pub async fn fetch_full_ref(dir: &Path, src: &str, full_ref: &str) -> Result<()> {
+    Git::new(dir)
+        .line(&["fetch", "--quiet", "--no-tags", "--", src, full_ref])
+        .await?;
+    Ok(())
+}
+
+/// Point `full_ref` at `sha` in `repo`, forced: only for a ref in Forge's
+/// own namespace (`refs/forge/...`), never a branch.
+pub async fn update_ref(repo: &Path, full_ref: &str, sha: &str) -> Result<()> {
+    if !full_ref.starts_with("refs/forge/") {
+        bail!("{full_ref} is not in Forge's own ref namespace");
+    }
+    Git::new(repo).line(&["update-ref", full_ref, sha]).await?;
+    Ok(())
+}
+
+/// The best common ancestor of `a` and `b` in `dir`; `None` when they
+/// share no history.
+pub async fn merge_base(dir: &Path, a: &str, b: &str) -> Option<String> {
+    Git::new(dir).line(&["merge-base", a, b]).await.ok()
+}
+
+/// A commit's subject line.
+pub async fn subject(dir: &Path, rev: &str) -> Result<String> {
+    Git::new(dir)
+        .line(&["log", "-1", "--format=%s", rev, "--"])
+        .await
+}
+
 pub async fn rev_parse(repo: &Path, rev: &str) -> Result<String> {
     Git::new(repo)
         .line(&["rev-parse", "--verify", "--quiet", rev])

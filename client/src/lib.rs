@@ -708,6 +708,10 @@ pub struct TaskRow {
     #[serde(default)]
     pub initiative: Option<i64>,
     pub trust: String,
+    /// `"agent"`, or `"adopted"` for a hand-made branch `forge adopt`
+    /// landed with no agent run; absent from an older forge.
+    #[serde(default)]
+    pub origin: String,
 }
 
 /// One row of `forge requests --json`: a blocked task and what it is
@@ -935,6 +939,9 @@ pub struct PortalLanded {
     /// The look step's screenshot file; never rendered.
     #[serde(default)]
     pub screenshot: Option<String>,
+    /// Made by hand, only verified and landed by Forge (`forge adopt`).
+    #[serde(default)]
+    pub manual: bool,
 }
 
 /// One line on [`PortalDoc`]'s "Your requests" list: `state` is one of
