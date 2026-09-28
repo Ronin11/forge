@@ -783,6 +783,15 @@ impl Sandbox {
 mod tests {
     use super::*;
 
+    /// `Sandbox::prepare`, as every launch awaits it before `command`.
+    fn prepared(sandbox: &Sandbox, worktree: &Path, env: &[(String, String)]) {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(sandbox.prepare(worktree, env));
+    }
+
     const CREDS: &str =
         r#"{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":32503680000000}}"#;
 
@@ -801,10 +810,12 @@ mod tests {
         std::fs::create_dir_all(&sandbox.config_dir).unwrap();
         std::fs::write(sandbox.config_dir.join("settings.json"), "settings").unwrap();
         let policy = Policy::new([]);
+        prepared(&sandbox, &worktree, &[]);
         let _ = sandbox.command(&worktree, &[], &[], &policy);
         std::fs::create_dir_all(coder.join("claude/projects")).unwrap();
         std::fs::write(coder.join("claude/projects/session"), "coder transcript").unwrap();
         let env = vec![("FORGE_CONTRACT".into(), "review".into())];
+        prepared(&sandbox, &worktree, &env);
         let cmd = sandbox.command(&worktree, &[], &env, &policy);
         assert!(args_of(&cmd).contains(&review.join("claude").display().to_string()));
         assert!(!args_of(&cmd).contains(&coder.join("claude").display().to_string()));
@@ -859,6 +870,7 @@ mod tests {
             granted: Mutex::new(BTreeMap::new()),
         };
         sandbox.set_cache_dir(&worktree, repo_cache.clone());
+        prepared(&sandbox, &worktree, &[]);
         let cmd = sandbox.command_for_worktree(&worktree, &["true".to_string()], &[]);
         let args: Vec<String> = cmd
             .get_args()

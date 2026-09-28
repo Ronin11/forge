@@ -1569,7 +1569,10 @@ mod tests {
         let waited_early = waited_rx.try_recv().is_ok();
         let _ = release_tx.send(());
         let waited = waited_rx.recv_timeout(Duration::from_secs(5));
-        assert!(progressed.is_ok(), "a task waiting on the lock held the only worker");
+        assert!(
+            progressed.is_ok(),
+            "a task waiting on the lock held the only worker"
+        );
         assert!(!waited_early, "the lock was taken while held");
         assert!(waited.is_ok(), "the waiter never took the released lock");
         rt.block_on(holder).unwrap();
