@@ -104,7 +104,7 @@ pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
             let refused = f
                 .store
                 .task(id)?
-                .is_some_and(|t| t.reason.starts_with(crate::executor::EGRESS_REFUSAL));
+                .is_some_and(|t| t.reason.starts_with(crate::ctx::EGRESS_REFUSAL));
             if refused {
                 // No ruling changes the backend; the operator's config does.
             } else if let Some(note) = addressed_elsewhere {

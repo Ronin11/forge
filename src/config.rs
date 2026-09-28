@@ -662,9 +662,7 @@ struct IntakeRaw {
 
 /// `[trust.operator]`, `[trust.contact]`, `[trust.public]`: the policy
 /// each of the three trust levels a task can carry (`store::Trust`) is
-/// judged against at enqueue (see docs/GTM.md item 1, docs/ROADMAP.md,
-/// `queue::apply_trust_policy`). `egress` and `auto_land` are declared
-/// here but enforced by a later task.
+/// judged against at enqueue (docs/GTM.md item 1, `queue::apply_trust_policy`).
 #[derive(Deserialize, Default)]
 struct TrustRaw {
     #[serde(default)]
@@ -689,11 +687,9 @@ struct TrustLevelRaw {
     allow_unsandboxed: Option<bool>,
 }
 
-/// An attempt's network policy at one trust level, once egress reads this
-/// (see docs/ROADMAP.md item 4): `Model` reaches only the configured
-/// providers' model endpoints; `Declared` also reaches the hosts the
-/// repository's own `forge.toml` names under `[sandbox] egress`, today's
-/// behavior for every task regardless of trust.
+/// An attempt's network policy at one trust level (docs/ROADMAP.md item 4):
+/// `Model` reaches only the configured providers' model endpoints;
+/// `Declared` also the hosts the repository's `[sandbox] egress` names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrustEgress {
     Model,
@@ -731,10 +727,7 @@ pub struct TrustPolicy {
     pub per_day: Option<u32>,
     /// Whether a task at this level may land itself once verified.
     pub auto_land: bool,
-    /// Whether a task at this level may run on a backend that does not
-    /// bound egress and keep the worktree private (host, ssh, no bwrap),
-    /// where a restricted level would otherwise be refused
-    /// (`executor::egress_gate`). Default false.
+    /// Opts this level out of `ctx::egress_gate`.
     pub allow_unsandboxed: bool,
 }
 
@@ -1005,17 +998,14 @@ max_questions_per_day = 8
 # --allow-over-trust-cap; unset means [budget]'s own per_task_usd),
 # per_initiative_usd (what an initiative's tasks may cost together, unset means
 # no cap), workflows (allowed workflow names, unset means every workflow),
-# allow_protected, egress (\"model\": only
-# the configured providers' model endpoints, or \"declared\": also the hosts
-# forge.toml's own [sandbox] egress names), per_day (how many tasks may start
-# at this level per day, unset means no cap), and auto_land (may a verified
-# task at this level land itself). The caps, workflows, allow_protected and
-# per_day are enforced at enqueue; egress and auto_land by a later task. A
-# level that is not operator, or whose egress is \"model\", is refused (at
-# enqueue, and blocked at claim) unless the backend it would run on bounds
-# egress and keeps the worktree private (bwrap); allow_unsandboxed = true
-# (default false) opts a level out, and forge doctor flags it. See
-# docs/ROADMAP.md and docs/GTM.md item 1.
+# allow_protected, egress (\"model\": only the configured providers' model
+# endpoints, or \"declared\": also the hosts forge.toml's own [sandbox] egress
+# names), per_day (how many tasks may start at this level per day, unset means
+# no cap), and auto_land (may a verified task at this level land itself). The
+# caps, workflows, allow_protected and per_day are enforced at enqueue; egress
+# and auto_land by a later task. A level that is not operator, or whose egress
+# is \"model\", needs a bwrap backend (refused at enqueue, blocked at claim)
+# unless allow_unsandboxed = true (forge doctor flags it). See docs/GTM.md.
 [trust.operator]
 allow_protected = true
 egress = \"declared\"
