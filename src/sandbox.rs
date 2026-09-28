@@ -21,6 +21,7 @@
 //! that forgoes; one that declares `backend = "bwrap"` still refuses.
 
 use crate::egress::{self, Policy, Proxies, Rule};
+use crate::workflows::Contract;
 use anyhow::{Context, Result, bail};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -199,11 +200,22 @@ fn provider_state_dir(worktree: &Path) -> PathBuf {
     PathBuf::from(format!("{}-provider", worktree.display()))
 }
 
+/// Keep review transcripts separate from the task's writing steps.
+fn provider_dir_for(worktree: &Path, contract: Option<Contract>) -> PathBuf {
+    if contract == Some(Contract::Review) {
+        PathBuf::from(format!("{}-review-provider", worktree.display()))
+    } else {
+        provider_state_dir(worktree)
+    }
+}
+
 /// Remove `worktree`'s private provider-state directory (see
 /// `provider_state_dir`): called where the worktree itself is removed, so
 /// nothing about the task's claude or codex sessions outlives its tree.
 pub fn discard_provider_state(worktree: &Path) {
-    let _ = std::fs::remove_dir_all(provider_state_dir(worktree));
+    for contract in [None, Some(Contract::Review)] {
+        let _ = std::fs::remove_dir_all(provider_dir_for(worktree, contract));
+    }
 }
 
 /// Resolve a binary the way the shell would, then follow symlinks.
@@ -609,13 +621,18 @@ impl Sandbox {
         // of codex's login and config: seeded from the operator's real
         // files here (read, never bound into a sandbox themselves), then
         // bound writable at the paths each CLI expects. The directory is
-        // the task's (see `provider_state_dir`): the seed files are
+        // the step's (see `provider_dir_for`): the seed files are
         // refreshed on every launch, everything else the CLIs wrote there
         // (session transcripts above all) is kept, so a resumed attempt and
         // the phase-two report find their thread. `discard_provider_state`
         // removes it with the worktree. The operator's real
         // `.claude`/`.codex` directories are never bound into a sandbox.
-        let provider_dir = provider_state_dir(worktree);
+        let contract = env
+            .iter()
+            .rev()
+            .find(|(k, _)| k == "FORGE_CONTRACT")
+            .and_then(|(_, v)| Contract::parse(v));
+        let provider_dir = provider_dir_for(worktree, contract);
         let claude_priv = provider_dir.join("claude");
         let codex_priv = provider_dir.join("codex");
         let _ = std::fs::create_dir_all(&claude_priv);
@@ -716,6 +733,36 @@ mod tests {
 
     const CREDS: &str =
         r#"{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":32503680000000}}"#;
+
+    #[test]
+    fn review_provider_state_is_separate_and_discarded_with_the_coders() {
+        let root = tempfile::tempdir().unwrap();
+        let worktree = root.path().join("task");
+        let coder = provider_dir_for(&worktree, Some(Contract::Code));
+        let review = provider_dir_for(&worktree, Some(Contract::Review));
+        assert_eq!(coder, root.path().join("task-provider"));
+        assert_eq!(review, root.path().join("task-review-provider"));
+        let mut sandbox = test_sandbox("api.anthropic.com");
+        sandbox.config_dir = root.path().join("host-claude");
+        std::fs::create_dir_all(&sandbox.config_dir).unwrap();
+        std::fs::write(sandbox.config_dir.join("settings.json"), "settings").unwrap();
+        let policy = Policy::new([]);
+        let _ = sandbox.command(&worktree, &[], &[], &policy);
+        std::fs::create_dir_all(coder.join("claude/projects")).unwrap();
+        std::fs::write(coder.join("claude/projects/session"), "coder transcript").unwrap();
+        let env = vec![("FORGE_CONTRACT".into(), "review".into())];
+        let cmd = sandbox.command(&worktree, &[], &env, &policy);
+        assert!(args_of(&cmd).contains(&review.join("claude").display().to_string()));
+        assert!(!args_of(&cmd).contains(&coder.join("claude").display().to_string()));
+        assert!(!review.join("claude/projects").exists());
+        assert_eq!(
+            std::fs::read_to_string(review.join("claude/settings.json")).unwrap(),
+            "settings"
+        );
+        discard_provider_state(&worktree);
+        assert!(!coder.exists());
+        assert!(!review.exists());
+    }
 
     #[test]
     fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
