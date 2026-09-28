@@ -825,11 +825,9 @@ impl Shutdown {
     }
 }
 
-/// Tasks and jobs a dead worker left running go back in the queue: at
-/// startup (`just_started`, when a row under this very pid is a previous
-/// incarnation's) and on every pass of the claim loop, so a surviving worker
-/// adopts a dead peer's rows. Each write is guarded on the owner the row was
-/// listed under, so a row claimed in between is left alone.
+/// Tasks and jobs a dead worker left running go back in the queue, at startup
+/// (`just_started`: a row under this very pid is a previous incarnation's) and
+/// on every claim-loop pass. Writes are guarded on the owner listed.
 fn recover_orphans(f: &Forge, just_started: bool) -> Result<()> {
     let caller = crate::store::Caller::this_process(just_started);
     for (id, owner) in f.store.orphans(&caller, pid_alive)? {
@@ -842,6 +840,18 @@ fn recover_orphans(f: &Forge, just_started: bool) -> Result<()> {
     }
     for (id, owner) in f.store.orphan_jobs(&caller, pid_alive)? {
         crate::job::recover_interrupted(f, id, &owner)?;
+    }
+    Ok(())
+}
+
+/// The double-signal abort: this worker's own work goes back in the queue.
+fn requeue_aborted(f: &Forge, ids: &mut Vec<i64>, job_ids: &mut Vec<i64>) -> Result<()> {
+    let own = crate::store::Owner::this_process();
+    for id in ids.drain(..) {
+        f.store.requeue(id, &own, crate::store::REQUEUE_ABORT)?;
+    }
+    for id in job_ids.drain(..) {
+        crate::job::recover_interrupted(f, id, &own)?;
     }
     Ok(())
 }
@@ -875,8 +885,7 @@ fn write_pid_file(paths: &Paths, pid: i64) {
     let exe = crate::binary::launch_path()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    // The second line is the worker's identity, which no reused pid shares:
-    // its start time, or a random id where `/proc` gives none.
+    // Line 2: the identity no reused pid shares (start time, or random id).
     let id = crate::store::start_of(pid).unwrap_or_default();
     let _ = std::fs::write(
         paths.home.join("worker.pid"),
@@ -1088,16 +1097,9 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     eprintln!("stopping: no new tasks or jobs; {} running attempt(s) will finish (signal again to abort them)", running.len());
                 } else {
                     eprintln!("aborting {} running attempt(s) and requeueing their tasks and jobs", running.len());
-                    let own = crate::store::Owner::this_process();
                     running.abort_all();
                     while running.join_next().await.is_some() {}
-                    for id in ids.drain(..) {
-                        f.store
-                            .requeue(id, &own, crate::store::REQUEUE_ABORT)?;
-                    }
-                    for id in job_ids.drain(..) {
-                        crate::job::recover_interrupted(&f, id, &own)?;
-                    }
+                    requeue_aborted(&f, &mut ids, &mut job_ids)?;
                     break;
                 }
             }

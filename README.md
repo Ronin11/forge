@@ -308,7 +308,7 @@ src/report.rs       typed events; the stderr printer is one consumer
 src/executor.rs     executor contract, backend selection, and guarantees
 src/sandbox.rs      bubblewrap
 src/successor.rs     the successor worker: a staged release starts forge work on it, the old worker drains
-src/store/          SQLite, forward-only migrations by user_version, one file per table family (workers.rs: the registered workers and their releases)
+src/store/          SQLite, forward-only migrations by user_version, one file per table family (workers.rs: the registered workers and their releases; owners.rs: a running row's owner, pid plus start time, and orphan detection)
   mod.rs            types, column lists, open, schema_version, the migration runner
   migrations.rs     MIGRATIONS: every forward-only schema migration, in order
   retry.rs          statement retries for SQLite busy and locked errors, with backoff up to one minute

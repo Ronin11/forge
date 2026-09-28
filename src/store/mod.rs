@@ -205,6 +205,7 @@ const TASK_COLUMNS: &[&str] = &[
     "finished_at",
     "pushed",
     "worker_pid",
+    "worker_start",
     "budget_usd",
     "worktree_removed_at",
     "allow_protected",

@@ -229,6 +229,7 @@ pub(super) const JOB_COLUMNS: &[&str] = &[
     "due_at",
     "retry_count",
     "worker_pid",
+    "worker_start",
 ];
 
 pub(super) const JOB_STEP_COLUMNS: &[&str] = &[
@@ -708,12 +709,12 @@ impl Store {
         Ok(self
             .lock()
             .retry_query_row(
-                "SELECT worker_pid, worker_start FROM jobs WHERE id=?1 AND state='running'",
+                "SELECT worker_pid AS pid, worker_start AS start FROM jobs WHERE id=?1 AND state='running'",
                 [id],
                 |r| {
                     Ok(Owner {
-                        pid: r.get(0)?,
-                        start: r.get(1)?,
+                        pid: r.get("pid")?,
+                        start: r.get("start")?,
                     })
                 },
             )
