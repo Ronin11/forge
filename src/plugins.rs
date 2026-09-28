@@ -3,6 +3,8 @@
 //! and for the same reason: one broken `plugin.toml` must not stop the
 //! others loading. See docs/PLUGINS.md.
 
+pub mod drift;
+
 use crate::ctx::Forge;
 use crate::workflows::Problem;
 use anyhow::{Context, Result, bail};
@@ -265,18 +267,24 @@ pub fn install(home: &Path, src: &Path) -> Result<Manifest> {
     copy_dir(src, &dest)
         .with_context(|| format!("copying {} to {}", src.display(), dest.display()))?;
 
+    drift::record_install(&dest, src)?;
+    run_build(&manifest, &dest)?;
+    Ok(manifest)
+}
+
+/// Runs the manifest's `build` argv, if it has one, in `dir`.
+fn run_build(manifest: &Manifest, dir: &Path) -> Result<()> {
     if let Some(build) = &manifest.build {
         let status = std::process::Command::new(&build[0])
             .args(&build[1..])
-            .current_dir(&dest)
+            .current_dir(dir)
             .status()
-            .with_context(|| format!("running build {build:?} in {}", dest.display()))?;
+            .with_context(|| format!("running build {build:?} in {}", dir.display()))?;
         if !status.success() {
-            bail!("build {build:?} failed in {}", dest.display());
+            bail!("build {build:?} failed in {}", dir.display());
         }
     }
-
-    Ok(manifest)
+    Ok(())
 }
 
 fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
@@ -500,7 +508,7 @@ async fn stop_child(child: &mut Child) {
 /// `FORGE_HOME` (and, for one release, `FORGE2_HOME` too — the name
 /// docs/PLUGINS.md promised before the rename, kept alongside the new one
 /// so a plugin written against the old name still works), `FORGE_PLUGIN_DIR`,
-/// `FORGE_PLUGIN_STATE`, plus the pass-through list every agent and check
+/// `FORGE_PLUGIN_NAME`, `FORGE_PLUGIN_STATE`, plus the pass-through list every agent and check
 /// gets (`agent::agent_env`).
 fn spawn_plugin(plugin: &Plugin, home: &Path, state_dir: &Path, log_path: &Path) -> Result<Child> {
     let stdout_file = std::fs::OpenOptions::new()
@@ -518,6 +526,7 @@ fn spawn_plugin(plugin: &Plugin, home: &Path, state_dir: &Path, log_path: &Path)
         .env("FORGE_BIN", bin)
         .env("FORGE_HOME", home)
         .env("FORGE2_HOME", home)
+        .env("FORGE_PLUGIN_NAME", &plugin.name)
         .env("FORGE_PLUGIN_DIR", &plugin.dir)
         .env("FORGE_PLUGIN_STATE", state_dir)
         .stdin(Stdio::null())
@@ -527,8 +536,42 @@ fn spawn_plugin(plugin: &Plugin, home: &Path, state_dir: &Path, log_path: &Path)
         // Its own process group, so `stop_child` can signal the whole
         // pipeline of a shell plugin, not just this leader.
         .process_group(0);
+    // A worker that is killed outright (SIGKILL, a crash, a test harness
+    // giving up on it) never runs `stop_child`; the kernel delivers SIGTERM
+    // to the plugin instead of leaving it to be reparented to init.
+    let parent = std::process::id() as libc::pid_t;
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // The worker may have died between fork and here, before the
+            // signal was armed: nothing would ever deliver it.
+            if libc::getppid() != parent {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
     cmd.spawn()
         .with_context(|| format!("spawning {:?}", plugin.manifest.run))
+}
+
+/// Kills a plugin's whole process group when dropped, however the
+/// supervising task ends (a normal stop, a restart, a panic, the runtime
+/// being torn down): `kill_on_drop` alone reaches only the group leader,
+/// and a shell plugin's `forge events --follow | while ...` pipeline
+/// outlives its shell.
+struct GroupGuard(libc::pid_t);
+
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        if self.0 > 1 {
+            unsafe {
+                libc::kill(-self.0, libc::SIGKILL);
+            }
+        }
+    }
 }
 
 /// One plugin, started, restarted per its manifest's policy, and stopped
@@ -575,6 +618,7 @@ async fn supervise_plugin(home: PathBuf, plugin: Plugin, mut stop: watch::Receiv
         };
 
         let pid = child.id().unwrap_or(0) as i64;
+        let _group = GroupGuard(pid as libc::pid_t);
         let started = Instant::now();
         write_run_state(
             &home,

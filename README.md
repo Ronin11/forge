@@ -193,7 +193,10 @@ asked a question or for another workflow). Attempt states:
 workflow, budget, and flags, on a fresh branch; everything that had been
 queued `--after` it now waits on the new task instead, and anything that
 had been blocked by its failure is queued again (`--chain` is accepted
-and no longer needed). `forge answer <id> <text>` answers a task blocked on a
+and no longer needed). A task that already has a live descendant (a
+retry or a review demotion's follow-up still queued, running or
+unverified) is not retried: the refusal names it, and `--again` retries
+anyway; `forge show` lists a task's live descendants. `forge answer <id> <text>` answers a task blocked on a
 question (state `blocked` with its last attempt `needs_input`; anything
 else is refused, naming why): it records the question and answer in a
 `decisions` table and re-queues the task through the same retry path
@@ -308,6 +311,7 @@ src/report.rs       typed events; the stderr printer is one consumer
 src/executor.rs     executor contract, backend selection, and guarantees
 src/sandbox.rs      bubblewrap
 src/login.rs        the agent login: a refreshed token written back over the host file, an empty one never seeded
+src/login_hold.rs   a provider whose agent login was refused, held until a probe answers; the worker's ten-minute probe and doctor's
 src/successor.rs     the successor worker: a staged release starts forge work on it, the old worker drains
 src/store/          SQLite, forward-only migrations by user_version, one file per table family (workers.rs: the registered workers and their releases; owners.rs: a running row's owner, pid plus start time, and orphan detection)
   mod.rs            types, column lists, open, schema_version, the migration runner
@@ -319,11 +323,14 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   jobs.rs           jobs, job_steps, job_effects
   job_runs.rs       recovered job run numbers and cumulative step costs
   deploys.rs        deploys, deploy_targets, assessments
+  descendants.rs    the live tasks below and beside a task in its retry lineage, and the `withdraw --abort` decision a worker reads
   projects.rs       projects, project_repos, backlog, initiatives, portal_tokens
   record.rs         decisions, task_refs, plugins
   messages.rs       messages: one row per inbound/outbound message on a channel, so a rule can ask "has this contact replied since"
+  holds.rs          provider_holds and provider_probes: a provider held for a refused login, and every probe of it with its cost
   webhooks.rs       webhook_tokens: per-hook tokens (only their hashes) that let `forge job fire` start a webhook-triggered job
   events.rs         event_cursors: per project and run workflow, the events.jsonl offset its event trigger has examined up to
+  schedule.rs       schedule_refusals: the schedules a per_day cap holds back, which the worker's tick records and `forge job list` prints
   stats.rs          forge stats: workflow/step/role/human-attention/time-to-live queries
   questions.rs      forge stats --questions: every task that blocked with a question, and how it was settled
   factors.rs        forge stats --factors: factor levels, the main-effects fit, size classes
@@ -335,7 +342,7 @@ src/release.rs      releases as directories under FORGE_HOME/bin, the atomic cur
 src/upgrade.rs      forge upgrade: verify, backup, unpack a release, flip current, migrate, restart
 src/verify.rs       L0/L1/L2, the claim rule, and the pure verdict table
 src/view.rs         shapes behind `log`, `requests`, `decisions`: text and JSON from one struct
-src/worker.rs       drive, the queue loop, signals
+src/worker.rs       drive, the queue loop, signals; worker/schedule.rs: the schedule tick and its refusal log
 src/workflows.rs    the workflow and action tables, loaded as one Catalog
 tests/e2e/          the real binary against fake agents in tests/fakes/
 

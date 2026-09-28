@@ -713,6 +713,48 @@ ALTER TABLE jobs ADD COLUMN worker_start TEXT;
 ALTER TABLE tasks ADD COLUMN session_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN handoff TEXT NOT NULL DEFAULT '';
 ",
+    // The kernel keeps each event subscriber's place in the log, so a
+    // restarted `forge events --follow` resumes after the last line it
+    // delivered instead of replaying from the start.
+    "
+CREATE TABLE subscriptions (
+  name TEXT PRIMARY KEY,
+  cursor TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+",
+    // A schedule whose `per_day` cap refuses its start: one row while the
+    // refusal lasts, written by the worker's schedule tick and read by
+    // `forge job list`, so the fact is queried rather than logged.
+    "
+CREATE TABLE schedule_refusals (
+  project TEXT NOT NULL,
+  workflow TEXT NOT NULL,
+  since INTEGER NOT NULL,
+  next_allowed INTEGER,
+  reason TEXT NOT NULL,
+  PRIMARY KEY (project, workflow)
+);
+",
+    // A provider whose agent login was refused is held until a probe
+    // answers or the operator runs `forge doctor` (src/login_hold.rs);
+    // every probe is recorded, with what it cost.
+    "
+CREATE TABLE provider_holds (
+  provider TEXT PRIMARY KEY,
+  since INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  probed_at INTEGER
+);
+CREATE TABLE provider_probes (
+  id INTEGER PRIMARY KEY,
+  provider TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  ok INTEGER NOT NULL,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  detail TEXT NOT NULL DEFAULT ''
+);
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

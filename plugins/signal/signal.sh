@@ -355,6 +355,14 @@ outbound() {
             continue
         fi
 
+        # A refused agent login holds its provider: one message per hold,
+        # never one per attempt, saying what the operator has to run.
+        if [ "$type" = provider_held ]; then
+            reason=$(printf '%s\n' "$line" | json_str reason)
+            signal_send "$SIGNAL_TO" "held $reason"
+            continue
+        fi
+
         if [ "$type" = project_created ]; then
             project=$(printf '%s\n' "$line" | json_str project)
             person=$(printf '%s\n' "$line" | json_str person)
@@ -393,6 +401,10 @@ outbound() {
             if [ -n "$to_name" ]; then
                 num=$(contact_number "$to_name") && [ -n "$num" ] && dest="$num"
                 notify_contact="$to_name"
+                # A person sees the bare question, never a task id or a
+                # state (docs/INTAKE.md, "What the person sees"); the
+                # operator's copy above keeps them.
+                [ "$dest" != "$SIGNAL_TO" ] && [ -n "$q" ] && msg="$q"
             fi
         fi
 

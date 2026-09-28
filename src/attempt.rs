@@ -535,6 +535,16 @@ pub async fn new_attempt(args: NewAttempt<'_>) -> Result<(Attempt, PathBuf), Fau
     Ok((a, log_path))
 }
 
+/// Resolves with the reason once an abort is recorded on task `id`.
+async fn abort_requested(f: &Forge, id: i64) -> String {
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        if let Ok(Some(why)) = f.store.abort_requested(id) {
+            return why;
+        }
+    }
+}
+
 async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
     let AttemptLaunch {
         f,
@@ -555,7 +565,7 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
         provider,
         model_pinned(&t.model_source),
     );
-    let outcome = crate::directive::launch(
+    let run = crate::directive::launch(
         f,
         crate::directive::Spec {
             id: t.id,
@@ -576,9 +586,19 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
             no_tools: false,
             judgment: None,
         },
-    )
-    .await
-    .env()?;
+    );
+    // `forge withdraw --abort` runs in another process: watch for its
+    // decision, and drop the run (the agent dies with it) when it lands.
+    let outcome = tokio::select! {
+        r = run => r.env()?,
+        why = abort_requested(f, t.id) => {
+            f.report.emit(t.id, Event::Note { text: &format!("aborted  {why}") });
+            agent::Outcome {
+                ended_early: Some(format!("aborted: {why}")),
+                ..Default::default()
+            }
+        }
+    };
     f.report.emit(
         t.id,
         Event::AgentDone {

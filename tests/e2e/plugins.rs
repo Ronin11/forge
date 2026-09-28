@@ -407,6 +407,79 @@ fn the_reference_plugin_runs_its_command_on_task_done() {
     worker.stop();
 }
 
+/// The reference notify plugin, installed, enabled and supervised by a
+/// worker; returns the worker and the plugin's pid once it is running.
+fn worker_running_notify(e: &Env) -> (Worker, i32) {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/notify");
+    assert!(
+        e.forge("ok.sh", &["plugin", "install", src.to_str().unwrap()])
+            .status
+            .success()
+    );
+    assert!(
+        e.forge("ok.sh", &["plugin", "enable", "notify"])
+            .status
+            .success()
+    );
+    let worker = Worker::spawn(e.cmd("ok.sh").args(["work", "--poll", "1"]));
+    let pid = std::cell::Cell::new(0);
+    assert!(
+        wait_until(
+            || {
+                let status = plugin_status_json(e, "notify");
+                pid.set(status["pid"].as_i64().unwrap_or(0) as i32);
+                status["state"] == "running" && pid.get() > 0
+            },
+            Duration::from_secs(30)
+        ),
+        "the worker never started the notify plugin"
+    );
+    (worker, pid.get())
+}
+
+fn pid_gone_within(pid: i32, limit: Duration) -> bool {
+    wait_until(
+        || {
+            // A zombie awaiting its reaper is not running.
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .map(|s| {
+                    s.rsplit_once(')')
+                        .is_some_and(|(_, r)| r.trim_start().starts_with('Z'))
+                })
+                .unwrap_or(true)
+        },
+        limit,
+    )
+}
+
+/// Dropping the test's worker handle stops the plugins the worker started.
+#[test]
+fn dropping_the_worker_stops_the_plugins_it_started() {
+    let e = Env::new();
+    let (worker, pid) = worker_running_notify(&e);
+    drop(worker);
+    assert!(
+        pid_gone_within(pid, Duration::from_secs(2)),
+        "notify plugin {pid} outlived its worker"
+    );
+}
+
+/// A worker that is killed outright never runs its own shutdown; the kernel
+/// (PR_SET_PDEATHSIG) takes its plugins with it.
+#[test]
+fn a_killed_worker_takes_its_plugins_with_it() {
+    let e = Env::new();
+    let (worker, pid) = worker_running_notify(&e);
+    unsafe {
+        libc::kill(worker.id() as i32, libc::SIGKILL);
+    }
+    assert!(
+        pid_gone_within(pid, Duration::from_secs(2)),
+        "notify plugin {pid} outlived its killed worker"
+    );
+    drop(worker);
+}
+
 /// A fake `rsync` for a `host=local` deploy target: records nothing, just
 /// copies its source into its destination (no `host:` prefix to strip,
 /// unlike the SSH-reaching fakes in tests/e2e/deploy.rs, since a local
@@ -1012,6 +1085,10 @@ fn the_signal_plugin_delivers_an_addressed_question_to_its_contact_and_records_h
         question_entry.starts_with(&format!("{alice_number}|")),
         "the question must go to alice's number, not the operator's: {question_entry:?}"
     );
+    assert!(
+        !question_entry.contains("task ") && !question_entry.contains("question: "),
+        "a person sees the bare question, no task id: {question_entry:?}"
+    );
 
     // Alice's own reply, at her own number, names no task: the plugin
     // finds the one open question addressed to her.
@@ -1457,7 +1534,7 @@ esac
         cmd.env("FORGE_SANDBOX", "0");
     }
 
-    let mut child = cmd.spawn().unwrap();
+    let mut child = Worker::spawn(&mut cmd);
 
     let sent = state_dir.join("sent");
     assert!(
@@ -1490,11 +1567,7 @@ esac
         "expected both sides of the exchange to be recorded"
     );
 
-    Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status()
-        .unwrap();
-    let _ = child.wait();
+    child.stop();
 
     let sent_text = std::fs::read_to_string(&sent).unwrap();
     assert!(sent_text.contains("SEND +15555550111 on it"), "{sent_text}");

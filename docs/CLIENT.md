@@ -360,7 +360,11 @@ and does not parse stdout.
   withdraws a blocked or queued task the operator has decided not to do
   — a stale description, superseded, or the product decision went the
   other way. Terminal, refused (non-zero exit) on a running or already-
-  landed task. Recorded as the task's own reason and as a decision row
+  landed task, except that `--abort` stops a running task that
+  duplicates a live sibling (another queued, running or unverified task
+  retrying the same one): the worker stops the attempt and the task ends
+  `capped`, as a budget cap ends one, with the decision recorded (kind
+  `withdraw-abort`). Recorded as the task's own reason and as a decision row
   (see [`DecisionRow`](#decisionrow)); releases any task that was
   waiting on this one, the same as landing or failing does. Not `--json`;
   a client re-reads `forge log`/`forge requests` for the task it just
@@ -1225,6 +1229,9 @@ One row of `forge plugin list --json`: a plugin as discovered.
 | `capabilities` | array of string | any combination of `events`, `intake`, `annotate`, `message`, `system`. |
 | `restart` | string | `always`, `on-failure`, or `never`. |
 | `enabled` | bool | Whether the operator has enabled it. |
+| `sync` | string or null | For a copy installed under `<FORGE_HOME>/plugins`: `current`, `behind`, `operator-edit`, `unrecorded`, or `source-missing`, comparing the installed `plugin.toml` and script with the directory it was installed from (docs/PLUGINS.md, "Drift"). Null for a plugin run in place from a `plugin_dirs` root. |
+| `diff_lines` | integer or null | Added plus removed lines between the installed files and the source's; null when there is no source to compare. |
+| `install_source` | string or null | The directory the installed copy was installed from. |
 
 ### `PluginStatusRow`
 
@@ -1344,6 +1351,8 @@ Every variant, with its own fields (beyond `type`/`text`/`ts`/`task`):
 | `project_created` | `project`, `person` | `forge intake accept` created `project` for the first time, on `person`'s confirmed brief (see docs/INTAKE.md); a plugin's cue to send them their customer portal link (see docs/PORTAL.md). |
 | `job_started` | `project`, `workflow`, `job_id`, `dry_run` | A job began running its steps, either `forge job start --now` or the worker's claimed run. |
 | `job_finished` | `project`, `workflow`, `job_id`, `state`, `cost_usd` | A job reached a final state: `ok`, `failed`, `needs_human` or `dropped`. |
+| `provider_held` | `provider`, `reason`, `since` | The provider's agent login was refused (expired, revoked): every task on it waits, and none of its refusals counts as an attempt, until a probe the worker makes every 10 minutes answers or the operator logs in and runs `forge doctor`. Once per hold; `task` is the task whose attempt was refused. |
+| `provider_released` | `provider` | The held provider's login answered a probe again; its tasks run. |
 | `initiative_settled` | `id`, `state`, `cost_usd` | The last of an initiative's tasks reached a terminal state and its own record closed (see docs/PROJECTS.md, "One notification and one report"); `task` (every event's own field) is the task whose change completed it, not the initiative — `id` here is the initiative's. |
 
 ### What to re-read on which event

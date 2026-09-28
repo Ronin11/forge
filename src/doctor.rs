@@ -499,10 +499,9 @@ fn check_workflows(paths: &Paths) -> Vec<Check> {
 
 /// Every plugin found across `<FORGE_HOME>/plugins` and the configured
 /// `plugin_dirs`, any problem loading one (a broken `plugin.toml`, a
-/// shadowed name, a configured root that does not exist), and each enabled
-/// plugin's last-known supervision state (running, restarting, or stopped;
-/// see `crate::plugins::Supervisor`). Never fails: a broken or crash-looping
-/// plugin is a warning, not a reason to fail doctor.
+/// shadowed name, a missing configured root), and each enabled plugin's
+/// last-known supervision state (see `crate::plugins::Supervisor`). Never
+/// fails: a broken or crash-looping plugin is a warning, not a failure.
 fn check_plugins(paths: &Paths, store: &Store) -> Vec<Check> {
     let cfg = match config::load_home(&paths.home) {
         Ok(c) => c,
@@ -528,16 +527,17 @@ fn check_plugins(paths: &Paths, store: &Store) -> Vec<Check> {
             .collect();
         detail = format!("{detail}; enabled: {}", states.join(", "));
     }
-    vec![if cat.problems.is_empty() {
-        check("plugins", Status::Ok, detail, "")
-    } else {
-        let first = &cat.problems[0];
-        check(
+    let (summary, drift_hint) = crate::plugins::drift::summarize(&cat, &paths.home);
+    detail.push_str(&summary);
+    vec![match cat.problems.first() {
+        Some(p) => check(
             "plugins",
             Status::Warn,
-            format!("{detail}: {} {}", first.file, first.what),
+            format!("{detail}: {} {}", p.file, p.what),
             "fix the plugin directory or its plugin.toml; other plugins still load",
-        )
+        ),
+        None if drift_hint.is_empty() => check("plugins", Status::Ok, detail, ""),
+        None => check("plugins", Status::Warn, detail, drift_hint),
     }]
 }
 
@@ -1244,7 +1244,7 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     out.extend(check_executors(&store, &paths));
     out.extend(check_project_purposes(&store));
     out.extend(check_egress(&paths, &store));
-    out.extend(login::anthropic());
+    out.extend(login::anthropic(&paths));
     out.extend(check_environment_grants(&store));
     out.extend(check_workflows(&paths));
     out.push(workflows::shadow::doctor_check(&paths.home));

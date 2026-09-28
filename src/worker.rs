@@ -17,13 +17,14 @@ use crate::unix_now;
 use crate::workflows;
 use crate::{config, git};
 use anyhow::{Result, bail};
-use croner::Cron;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinSet;
+
+mod schedule;
+use schedule::{RefusalLog, schedule_tick};
 
 /// What one slot of the worker's `--jobs` cap finished running: a task
 /// (`src/engine.rs`) or a job (`src/job.rs`) — the worker claims both from
@@ -180,13 +181,13 @@ pub fn day_budget_reached(f: &Forge) -> Result<Option<String>> {
     }))
 }
 
-/// `provider`'s subscription window at or over its own cap, by the latest
-/// sample any attempt on it recorded: the message and the unix second the
-/// hold ends. A window whose reset time has passed no longer holds
-/// anything. Each provider has its own samples and its own caps (see
-/// `agent::Provider::five_hour_max`/`seven_day_max`), so a provider with no
-/// samples of its own is never held by another's.
+/// `provider` held: its login refused (see `login_hold`), else its own window
+/// at or over its own cap by its latest sample (never another provider's), a
+/// passed reset holding nothing. The message and the second to look again.
 pub fn window_hold(f: &Forge, provider: &str) -> Result<Option<(String, i64)>> {
+    if let h @ Some(_) = crate::login_hold::held(f, provider)? {
+        return Ok(h);
+    }
     let Some(s) = f.store.latest_rate_limit(provider)? else {
         return Ok(None);
     };
@@ -402,55 +403,6 @@ fn new_holds(f: &Forge, held: &[i64], announced: &mut HashSet<i64>) -> Vec<Strin
     lines
 }
 
-/// One project's run workflow with a schedule trigger, resolved for this
-/// tick: its cron and the unix second (`Job::trigger_ref`) its last
-/// scheduled job recorded, or `None` when it has never started one.
-struct Schedule {
-    project: String,
-    workflow: String,
-    cron: Cron,
-    last_ref: Option<i64>,
-}
-
-/// One schedule due this tick, at the slot it is due for.
-struct Due {
-    project: String,
-    workflow: String,
-    slot: i64,
-}
-
-/// Pure (docs/JOBS.md, "Triggers"): which of `schedules` are due at `now`,
-/// and at which slot. A schedule is due when the latest cron occurrence at
-/// or before `now` is newer than its `last_ref` — `None` counts as
-/// "before everything", so a schedule that has never run is due at the
-/// current slot the first time a tick sees it, never backfilled from
-/// whenever the cron would first have matched. A gap of several missed
-/// slots (the worker was down) still yields one `Due`: the latest
-/// occurrence, never one per missed slot, so a restart cannot flood the
-/// queue or re-fire an old one. Ticking again inside the same slot (the
-/// poll interval is shorter than the cron's own granularity) yields
-/// nothing once `last_ref` catches up to it.
-fn due_schedules(now: i64, schedules: Vec<Schedule>) -> Vec<Due> {
-    let Some(now_dt) = chrono::DateTime::from_timestamp(now, 0) else {
-        return Vec::new();
-    };
-    schedules
-        .into_iter()
-        .filter_map(|s| {
-            let slot = s
-                .cron
-                .find_previous_occurrence(&now_dt, true)
-                .ok()?
-                .timestamp();
-            s.last_ref.is_none_or(|r| slot > r).then_some(Due {
-                project: s.project,
-                workflow: s.workflow,
-                slot,
-            })
-        })
-        .collect()
-}
-
 /// Every run workflow that resolves for `project` right now (the schedule
 /// tick keeps the ones with a schedule trigger, `message_triggers` the ones
 /// with a message trigger; `what` prefixes what is noted on stderr): its
@@ -644,77 +596,6 @@ async fn event_tick(f: &Forge, runs: &[TickRun]) -> Result<()> {
             && let Err(e) = f.store.set_event_cursor(project, name, &next)
         {
             eprintln!("event tick: {project}/{name}: {e:#}");
-        }
-    }
-    Ok(())
-}
-
-/// The worker's schedule trigger (docs/JOBS.md, "Triggers" and "Build
-/// order" step 3): for every project, every run workflow with `[trigger]
-/// on = "schedule"` that resolves for it, queue one job per cron slot due
-/// since its last scheduled job. Called once per pass of the poll loop
-/// (`work`, below); cheap when no project has a schedule due, since
-/// `due_schedules` alone decides what starts.
-async fn schedule_tick(f: &Forge, runs: &[TickRun]) -> Result<()> {
-    let now = unix_now();
-    let mut schedules = Vec::new();
-    let mut resolved: HashMap<
-        (String, String),
-        (&workflows::Workflow, workflows::JobSource, &str),
-    > = HashMap::new();
-    for run in runs {
-        let Some(trigger) = run.wf.trigger.as_ref() else {
-            continue;
-        };
-        if trigger.on != workflows::TriggerOn::Schedule {
-            continue;
-        }
-        // `workflows::parse` already refused an unparseable cron at load
-        // time (with the file and the line), so this always parses; a
-        // defensive skip rather than a panic if it somehow did not.
-        let Some(cron) = trigger.cron.as_deref().and_then(|e| Cron::from_str(e).ok()) else {
-            continue;
-        };
-        let last_ref = match f.store.last_scheduled_job(&run.project, &run.name) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("schedule tick: {}/{}: {e:#}", run.project, run.name);
-                continue;
-            }
-        };
-        schedules.push(Schedule {
-            project: run.project.clone(),
-            workflow: run.name.clone(),
-            cron,
-            last_ref,
-        });
-        resolved.insert(
-            (run.project.clone(), run.name.clone()),
-            (&run.wf, run.source, run.landed_sha.as_str()),
-        );
-    }
-    for due in due_schedules(now, schedules) {
-        let Some((wf, source, landed_sha)) =
-            resolved.get(&(due.project.clone(), due.workflow.clone()))
-        else {
-            continue;
-        };
-        match job::start_scheduled(
-            f,
-            &due.project,
-            &due.workflow,
-            landed_sha,
-            wf,
-            *source,
-            due.slot,
-        )
-        .await
-        {
-            Ok(id) => eprintln!(
-                "======== job {id} starting (schedule {} on {})",
-                due.workflow, due.project
-            ),
-            Err(e) => eprintln!("schedule tick: {}/{}: {e:#}", due.project, due.workflow),
         }
     }
     Ok(())
@@ -931,6 +812,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut claimed = 0u32;
     let mut hold_until: Option<i64> = None;
     let mut announced_holds: HashSet<i64> = HashSet::new();
+    let mut refusals = RefusalLog::default();
 
     loop {
         // Config reloads between claims: what is claimed from here on runs
@@ -942,7 +824,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         let pass: Result<()> = async {
             recover_orphans(&f, false)?;
             let runs = tick_run_workflows(&f).await?;
-            schedule_tick(&f, &runs).await?;
+            schedule_tick(&f, &runs, &mut refusals).await?;
             event_tick(&f, &runs).await?;
             superseded = succession.superseded(&f, &mut plugins).await?;
             if !stopping && succession.stop_requested() {
@@ -960,6 +842,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 && running.len() < jobs
                 && opts.max_tasks.is_none_or(|m| claimed < m)
             {
+                crate::login_hold::probe_due(&f).await;
                 let Some(held) = prepare_claim(&f)? else {
                     stopping = true;
                     break;
@@ -1256,100 +1139,6 @@ mod tests {
         assert_eq!(first_role(&f, &t), "review");
     }
 
-    /// A minute-aligned unix second: `Cron::find_previous_occurrence`
-    /// works in whole seconds, so every fixture below starts from one to
-    /// keep "the minute" unambiguous.
-    fn minute_boundary() -> i64 {
-        let t = unix_now();
-        t - (t % 60)
-    }
-
-    fn every_minute() -> Cron {
-        Cron::from_str("* * * * *").unwrap()
-    }
-
-    fn schedule(last_ref: Option<i64>) -> Schedule {
-        Schedule {
-            project: "equitizr".into(),
-            workflow: "snapshot".into(),
-            cron: every_minute(),
-            last_ref,
-        }
-    }
-
-    #[test]
-    fn due_once_at_the_minute() {
-        let now = minute_boundary();
-        let due = due_schedules(now, vec![schedule(None)]);
-        assert_eq!(due.len(), 1);
-        assert_eq!(due[0].project, "equitizr");
-        assert_eq!(due[0].workflow, "snapshot");
-        assert_eq!(due[0].slot, now);
-    }
-
-    #[test]
-    fn not_due_twice_in_the_same_minute() {
-        let now = minute_boundary();
-        // The tick already recorded this minute's slot; ticking again a
-        // few seconds later, still inside the same minute, finds nothing.
-        let due = due_schedules(now + 30, vec![schedule(Some(now))]);
-        assert!(
-            due.is_empty(),
-            "{:?}",
-            due.iter().map(|d| d.slot).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn catch_up_runs_the_latest_missed_slot_only() {
-        let now = minute_boundary();
-        // The worker was down for five minutes; only one job starts, for
-        // the latest slot, not one per minute missed.
-        let due = due_schedules(now, vec![schedule(Some(now - 5 * 60))]);
-        assert_eq!(due.len(), 1);
-        assert_eq!(due[0].slot, now);
-    }
-
-    #[test]
-    fn a_schedule_whose_slot_has_not_yet_come_is_not_due() {
-        let now = minute_boundary();
-        // Its last job already covers the latest slot at or before `now`.
-        let due = due_schedules(now, vec![schedule(Some(now))]);
-        assert!(due.is_empty());
-    }
-
-    #[test]
-    fn a_cron_is_evaluated_in_utc() {
-        // 2026-09-21T08:30:00Z: "0 7 * * *" last fired at 07:00 UTC that day,
-        // whatever zone the machine is in.
-        let now = 1_789_979_400;
-        let s = Schedule {
-            project: "p".into(),
-            workflow: "w".into(),
-            cron: Cron::from_str("0 7 * * *").unwrap(),
-            last_ref: None,
-        };
-        let due = due_schedules(now, vec![s]);
-        assert_eq!(due.len(), 1);
-        assert_eq!(due[0].slot, 1_789_974_000);
-    }
-
-    #[test]
-    fn every_five_minutes_only_matches_its_own_slots() {
-        let now = minute_boundary() - (minute_boundary() % 300) + 300; // a "*/5" boundary
-        let cron = Cron::from_str("*/5 * * * *").unwrap();
-        let s = Schedule {
-            project: "p".into(),
-            workflow: "w".into(),
-            cron,
-            last_ref: None,
-        };
-        let due = due_schedules(now, vec![s]);
-        assert_eq!(due.len(), 1);
-        assert_eq!(due[0].slot, now);
-        assert_eq!(due[0].slot % 300, 0);
-    }
-
     fn git_in(dir: &Path, args: &[&str]) {
         let o = std::process::Command::new("git")
             .arg("-C")
@@ -1620,6 +1409,44 @@ mod tests {
         let job = f.store.job(id).unwrap().unwrap();
         assert_eq!(job.state, JobState::Scheduled);
         assert!(job.due_at.unwrap() >= before + 3600);
+    }
+
+    #[tokio::test]
+    async fn a_schedule_tick_refused_by_per_day_records_the_refusal_once() {
+        let (dir, f) = message_fixture(&[("nightly", "on = \"schedule\"\ncron = \"* * * * *\"")]);
+        let repo = dir.path().join("repo");
+        let file = repo.join(".forge/workflows/nightly.toml");
+        let mut text = std::fs::read_to_string(&file).unwrap();
+        text.push_str("\n[limits]\nbudget_usd = 1.0\nper_day = 1\non_failure = \"drop\"\n");
+        std::fs::write(&file, text).unwrap();
+        git_in(&repo, &["commit", "-aqm", "cap"]);
+        f.store
+            .create_job(&crate::store::Job {
+                project: "demo".into(),
+                workflow: "nightly".into(),
+                trigger_kind: "manual".into(),
+                state: JobState::Ok,
+                started_at: unix_now() - 3600,
+                verdict_json: "[]".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let mut log = RefusalLog::default();
+        for _ in 0..3 {
+            let runs = tick_run_workflows(&f).await.unwrap();
+            schedule_tick(&f, &runs, &mut log).await.unwrap();
+        }
+        assert_eq!(f.store.jobs(Some("demo"), None).unwrap().len(), 1);
+        let rows = f.store.schedule_refusals().unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(
+            (rows[0].project.as_str(), rows[0].workflow.as_str()),
+            ("demo", "nightly")
+        );
+        assert_eq!(Some(rows[0].since), log.since("demo/nightly"));
+        let next = rows[0].next_allowed.expect("the window rolls");
+        assert!((next - (unix_now() + 23 * 3600)).abs() < 300, "{next}");
+        assert!(rows[0].reason.contains("per_day limit is 1"), "{rows:?}");
     }
 
     /// One pass of the event tick, as the poll loop runs it.

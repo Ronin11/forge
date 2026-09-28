@@ -73,7 +73,9 @@ documentation.
   and found sound.
 - **REVIEW-4.md** — the fourth review, triggered by engineering-weekly's
   size threshold crossing on `src/workflows.rs`, and what was found
-  reading the file and the job that caught it.
+  reading the file and the job that caught it; section 6 is the edges
+  read of plugin supervision and the successor handoff, with a task text
+  per confirmed defect.
 - **LATER.md** — ideas from Forge 1's backlog worth revisiting later, and
   which of them have already been ported.
 - **CONTEXT.md** — a running status note on what a coding agent is told

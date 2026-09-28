@@ -14,8 +14,10 @@ mod arms;
 mod attempts;
 mod daily;
 mod deploys;
+mod descendants;
 mod events;
 mod factors;
+mod holds;
 mod job_runs;
 mod jobs;
 mod messages;
@@ -25,6 +27,7 @@ mod projects;
 mod questions;
 mod record;
 mod retry;
+mod schedule;
 use retry::RetryConnection;
 mod stats;
 mod tasks;
@@ -35,7 +38,7 @@ pub use attempts::{Attempt, AttemptState, FinishAttempt, Op, RateLimitSample, se
 pub use daily::DailyStat;
 pub use deploys::{Assessment, Deploy, DeployTarget, FinishDeploy};
 pub use factors::{FactorLevelStat, ROLES};
-pub use jobs::{Job, JobEffect, JobStat, JobState, JobStep};
+pub use jobs::{Job, JobEffect, JobStat, JobState, JobStep, PerDayRefused};
 pub use messages::{Direction, InsertMessage, Message, MessageFilter};
 pub use owners::{Caller, Owner, start_of};
 pub use projects::{
@@ -46,13 +49,14 @@ pub use projects::{
 pub use questions::RetryFacts;
 pub use questions::{QuestionRecord, Resolution};
 pub use record::{Decision, InsertDecisionBy, TaskRef};
+pub use schedule::ScheduleRefusal;
 pub use stats::{
     HumanAttentionProjectStat, HumanAttentionStat, JournalStat, RoleStat, StatsFilter, StepStat,
     TaskTtl, WorkflowStat,
 };
 pub use tasks::{
-    REQUEUE_ABORT, REQUEUE_ORPHAN, REQUEUE_REASONS, RoleRouting, Routed, Task, TaskState,
-    TaskUpdate, Trust,
+    LineageRow, REQUEUE_ABORT, REQUEUE_ORPHAN, REQUEUE_REASONS, RoleRouting, Routed, Task,
+    TaskState, TaskUpdate, Trust,
 };
 pub use workers::WorkerRow;
 
@@ -1245,6 +1249,8 @@ mod column_tests {
             ("attempts.rs", include_str!("attempts.rs")),
             ("jobs.rs", include_str!("jobs.rs")),
             ("deploys.rs", include_str!("deploys.rs")),
+            ("descendants.rs", include_str!("descendants.rs")),
+            ("holds.rs", include_str!("holds.rs")),
             ("projects.rs", include_str!("projects.rs")),
             ("record.rs", include_str!("record.rs")),
             ("stats.rs", include_str!("stats.rs")),

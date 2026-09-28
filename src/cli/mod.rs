@@ -248,6 +248,11 @@ enum Cmd {
         /// only); recorded as a decision on the new task
         #[arg(long)]
         allow_over_trust_cap: bool,
+        /// Retry even though the task already has a live descendant (a
+        /// retry or a review demotion's follow-up still queued, running
+        /// or unverified)
+        #[arg(long)]
+        again: bool,
         /// Turns per attempt (default: as before)
         #[arg(long)]
         max_turns: Option<u32>,
@@ -277,9 +282,15 @@ enum Cmd {
     /// Withdraw a blocked or queued task the operator has decided not to
     /// do: written against a stale description, superseded, or the
     /// product decision went the other way. Terminal; refused on a
-    /// running or landed task.
+    /// running or landed task, except that `--abort` stops a running task
+    /// that duplicates a live sibling.
     Withdraw {
         id: i64,
+        /// Stop a running task that is a duplicate of a live sibling: its
+        /// attempt is stopped and it ends `capped`, as a budget cap ends
+        /// one; the decision is recorded
+        #[arg(long)]
+        abort: bool,
         /// Why: recorded as the task's reason and as a decision row
         #[arg(long)]
         reason: String,
@@ -522,7 +533,9 @@ enum Cmd {
     },
     /// The event log as JSON lines: a client's subscription
     Events {
-        /// Generation:offset cursor to start from (a snapshot's events_offset)
+        /// Generation:offset cursor to start from (a snapshot's events_offset).
+        /// With --follow and no --since, resume the subscription named by
+        /// FORGE_PLUGIN_NAME (default "default") after its last delivered line
         #[arg(long)]
         since: Option<String>,
         /// Keep printing as events arrive
