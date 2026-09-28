@@ -386,7 +386,10 @@ async fn login_problem(l: &Launch<'_>, dir: &Path) -> Option<String> {
 /// host file; and only if it is still near expiry, run a one-token probe
 /// through the attempts' own lean argv so the CLI refreshes it. The login's
 /// lock is never held across the probe, whose wait is up to two minutes
-/// (docs/REVIEW-4.md #1.10). The file as it stands.
+/// (docs/REVIEW-4.md #1.10). A probe runs at most once per five minutes,
+/// and after one the CLI did not refresh, not again until five minutes
+/// short of the expiry it saw (`login::probe_due`): a launch in between
+/// seeds the token as it is, still valid. The file as it stands.
 async fn refresh_on_host(l: &Launch<'_>, dir: &Path, window: i64) -> crate::login::Host {
     let _probing = crate::login::probe_lock(dir).await;
     let state = {
@@ -396,10 +399,35 @@ async fn refresh_on_host(l: &Launch<'_>, dir: &Path, window: i64) -> crate::logi
         }
         crate::login::CLAUDE.host_state(dir)
     };
+    let now = crate::unix_now() * 1000;
     match state {
-        crate::login::Host::Usable(c) if c.near_expiry(crate::unix_now() * 1000, window) => {
+        crate::login::Host::Usable(c)
+            if c.near_expiry(now, window)
+                && crate::login::probe_due(
+                    crate::login::last_probe(dir).as_ref(),
+                    c.expires_at_ms,
+                    now,
+                ) =>
+        {
             probe(l).await;
-            crate::login::CLAUDE.host_state(dir)
+            let after = crate::login::CLAUDE.host_state(dir);
+            let record = crate::login::ProbeRecord {
+                at_ms: now,
+                expires_before_ms: c.expires_at_ms,
+                expires_after_ms: match after {
+                    crate::login::Host::Usable(a) => a.expires_at_ms,
+                    _ => c.expires_at_ms,
+                },
+            };
+            let _ = crate::login::record_probe(dir, &record);
+            if !record.refreshed() {
+                let text = format!(
+                    "login    the refresh probe left the host login's expiry unchanged; no further probe before {}",
+                    crate::render::utc(record.next_probe_at(c.expires_at_ms) / 1000)
+                );
+                l.report.emit(l.task_id, Event::Note { text: &text });
+            }
+            after
         }
         s => s,
     }
