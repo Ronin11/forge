@@ -244,6 +244,10 @@ enum Cmd {
         /// Cost cap in USD (default: as before)
         #[arg(long)]
         budget: Option<f64>,
+        /// Let --budget exceed the cap of the task's trust level (operator
+        /// only); recorded as a decision on the new task
+        #[arg(long)]
+        allow_over_trust_cap: bool,
         /// Turns per attempt (default: as before)
         #[arg(long)]
         max_turns: Option<u32>,

@@ -142,6 +142,41 @@ fn allow_over_trust_cap_files_the_budget_and_records_a_decision() {
 }
 
 #[test]
+fn retry_holds_an_explicit_budget_to_the_trust_cap() {
+    let e = Env::new();
+    let o = add_public(&e, &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id = filed_id(&o).to_string();
+    let w = e.forge("ok.sh", &["withdraw", &id, "--reason", "x"]);
+    assert!(w.status.success(), "{}", String::from_utf8_lossy(&w.stderr));
+
+    let r = e.forge("ok.sh", &["retry", &id, "--budget", "50"]);
+    assert!(!r.status.success());
+    let stderr = String::from_utf8_lossy(&r.stderr);
+    assert!(stderr.contains("--allow-over-trust-cap"), "{stderr}");
+    let n: i64 = e
+        .db()
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 1);
+
+    let r = e.forge(
+        "ok.sh",
+        &["retry", &id, "--budget", "50", "--allow-over-trust-cap"],
+    );
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let n: i64 = e
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM decisions WHERE answer LIKE '%--allow-over-trust-cap%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+}
+
+#[test]
 fn task_set_holds_a_budget_edit_to_the_trust_cap() {
     let e = Env::new();
     let id = filed_id(&add_public(&e, &[]));

@@ -1103,6 +1103,8 @@ pub fn map_dep(f: &Forge, d: i64, made: &std::collections::HashMap<i64, i64>) ->
 pub struct RetryOverrides {
     pub retries: Option<u32>,
     pub budget: Option<f64>,
+    /// The operator's flag letting `budget` past the trust level's cap.
+    pub allow_over_trust_cap: bool,
     pub max_turns: Option<u32>,
     pub timeout_secs: Option<u32>,
     pub workflow: Option<String>,
@@ -1113,6 +1115,7 @@ impl RetryOverrides {
         RetryOverrides {
             retries: None,
             budget: None,
+            allow_over_trust_cap: false,
             max_turns: None,
             timeout_secs: None,
             workflow: None,
@@ -1159,9 +1162,9 @@ pub fn retry_request(
         } else {
             t.budget_usd
         },
-        // A retry re-files a budget already decided (or the operator's
-        // own `forge retry --budget`), not a new request from the source.
-        allow_over_trust_cap: true,
+        // A budget already decided is re-filed as it was; one named on
+        // `forge retry --budget` is a new request and needs the flag.
+        allow_over_trust_cap: !(first && o.budget.is_some()) || o.allow_over_trust_cap,
         checks: t.checks.clone(),
         allow_protected: t.allow_protected,
         workflow: Some(if first {

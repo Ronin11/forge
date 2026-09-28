@@ -400,6 +400,7 @@ async fn dispatch_retry(cmd: Cmd) -> Result<()> {
             chain,
             retries,
             budget,
+            allow_over_trust_cap,
             max_turns,
             timeout_secs,
             workflow,
@@ -410,6 +411,7 @@ async fn dispatch_retry(cmd: Cmd) -> Result<()> {
                 crate::queue::RetryOverrides {
                     retries,
                     budget,
+                    allow_over_trust_cap,
                     max_turns,
                     timeout_secs,
                     workflow,
