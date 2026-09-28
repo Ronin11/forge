@@ -186,9 +186,10 @@ pub fn transition(status: Status, pending: usize, lint_clean: bool) -> Status {
 }
 
 /// The status a draft is saved with: `Incomplete` while any placeholder's
-/// action is missing, else what it already was.
+/// action is missing (even a re-edited, already enabled draft, so `reconcile`
+/// re-enables it once the action lands), else what it already was.
 pub fn saved_status(status: Status, pending: usize) -> Status {
-    if pending > 0 && status != Status::Enabled {
+    if pending > 0 {
         Status::Incomplete
     } else {
         status

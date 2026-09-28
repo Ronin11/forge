@@ -106,7 +106,8 @@ fn an_incomplete_draft_enables_itself_only_when_complete_and_clean() {
     assert_eq!(transition(Enabled, 3, false), Enabled);
     assert_eq!(saved_status(Draft, 1), Incomplete);
     assert_eq!(saved_status(Draft, 0), Draft);
-    assert_eq!(saved_status(Enabled, 1), Enabled);
+    assert_eq!(saved_status(Enabled, 1), Incomplete);
+    assert_eq!(saved_status(Enabled, 0), Enabled);
 }
 
 #[test]
