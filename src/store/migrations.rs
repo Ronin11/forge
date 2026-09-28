@@ -819,6 +819,19 @@ pub fn is_contract(sql: &str) -> bool {
     sql.trim_start().starts_with(CONTRACT_MARKER)
 }
 
+/// The step's first non-blank line, for an error that names which SQL a
+/// failing step is (`ALTER TABLE workers ADD COLUMN slots ...`) and not
+/// only what SQLite said about it.
+pub fn first_line(sql: &str) -> &str {
+    sql.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+}
+
+#[cfg(test)]
+mod lock;
+
 #[cfg(test)]
 mod tests {
     use super::*;
