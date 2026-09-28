@@ -807,6 +807,14 @@ CREATE TABLE chat_turns (
 CREATE INDEX chat_turns_session ON chat_turns(session, id);
 CREATE INDEX chat_turns_at ON chat_turns(at);
 ",
+    // Where a task came from: `agent` for every task an agent codes, or
+    // `adopted` for a branch a human made outside Forge and `forge adopt`
+    // verified and landed with no agent run; the adopted branch, commit
+    // and who adopted it ride along as JSON (see `store::Adoption`).
+    "
+ALTER TABLE tasks ADD COLUMN origin TEXT NOT NULL DEFAULT 'agent';
+ALTER TABLE tasks ADD COLUMN adoption_json TEXT NOT NULL DEFAULT '';
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

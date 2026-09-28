@@ -69,6 +69,13 @@ async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
 async fn answer(id: i64, text: String, by: String, project: Option<String>) -> Result<()> {
     let f = Forge::open(false, false)?;
     if let Some(t) = f.store.task(id)?
+        && t.origin.is_manual()
+    {
+        bail!(
+            "task {id} was adopted: no agent answers or edits it; fix the branch by hand and run forge retry {id}"
+        );
+    }
+    if let Some(t) = f.store.task(id)?
         && t.state == TaskState::Blocked
         && t.proposal_json.is_some()
     {
@@ -135,6 +142,14 @@ async fn retry(id: i64, chain: bool, again: bool, o: crate::queue::RetryOverride
     let Some(old) = f.store.task(id)? else {
         bail!("no task {id}");
     };
+    if old.origin.is_manual() {
+        // No agent ever codes an adopted branch: its retry verifies the
+        // branch again, as it is now, and lands it if it passes.
+        drop(f);
+        let f = Forge::open(true, true)?;
+        let adopted = crate::adopt::retry(&f, &old, &crate::adopt::adopter()).await?;
+        return print_adopted(&f, &adopted).await;
+    }
     if matches!(old.state, TaskState::Queued | TaskState::Running) {
         bail!(
             "task {id} is {}; only a finished task is retried",
@@ -313,6 +328,25 @@ async fn land(id: i64) -> Result<()> {
     let line = land_task(&f, id, true).await?;
     out!("{line}");
     Ok(())
+}
+
+/// `forge adopt`: a hand-made branch verified as it is and landed through
+/// the integrator, with no agent run.
+async fn adopt(req: crate::adopt::AdoptRequest) -> Result<()> {
+    let f = Forge::open(true, true)?;
+    let adopted = crate::adopt::adopt(&f, &req).await?;
+    print_adopted(&f, &adopted).await
+}
+
+/// Print an adoption's outcome; one that did not land or verify fails the
+/// command, naming why.
+async fn print_adopted(f: &Forge, adopted: &crate::adopt::Adopted) -> Result<()> {
+    out!("{}", crate::adopt::render(f, adopted).await?);
+    match adopted {
+        crate::adopt::Adopted::Landed { .. } | crate::adopt::Adopted::Verified { .. } => Ok(()),
+        crate::adopt::Adopted::Blocked { id, reason } => bail!("task {id} is blocked: {reason}"),
+        crate::adopt::Adopted::Refused { id, reason } => bail!("task {id} {reason}"),
+    }
 }
 
 /// The integrator's merge-and-verify half, by hand, for a repository that
@@ -585,6 +619,26 @@ pub(super) async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Trace { .. } => dispatch_trace(cmd).await,
         Cmd::Integrate { .. } => dispatch_integrate(cmd).await,
         Cmd::Land { .. } => dispatch_land(cmd).await,
+        Cmd::Adopt {
+            repo,
+            branch_or_commit,
+            title,
+            no_land,
+            project,
+            allow_protected,
+        } => {
+            adopt(crate::adopt::AdoptRequest {
+                repo,
+                rev: branch_or_commit,
+                title,
+                no_land,
+                project,
+                allow_protected,
+                by: crate::adopt::adopter(),
+                retry_of: None,
+            })
+            .await
+        }
         Cmd::Journal { .. } => dispatch_journal(cmd).await,
         Cmd::Task { .. } => dispatch_task(cmd).await,
         _ => unreachable!("command routed to the wrong family"),
