@@ -1636,12 +1636,6 @@ async fn run_codex_phase(args: RunCodexPhase<'_>) -> Result<(Option<i32>, bool, 
 /// structured report `run_codex` parses as the attempt's result. Stdin is
 /// always closed in both phases: codex blocks forever reading it otherwise,
 /// unlike the claude CLI, which takes the prompt on stdin.
-fn write_codex_schema(path: &Path, schema: &str) -> Result<()> {
-    let strict = strict_schema(schema)?;
-    crate::login::replace_atomic(path, strict.as_bytes())
-        .with_context(|| format!("writing {}", path.display()))
-}
-
 async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
     let bin = crate::executor::agent_bin(l.sandbox, l.worktree, codex_bin_for(l.step));
     // The schema is text (`envelope::SCHEMA`), but codex takes a file, and
@@ -1654,7 +1648,7 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
         .worktree
         .join(".git")
         .join(format!("forge-{}-schema.json", l.step));
-    write_codex_schema(&schema_path, l.schema)?;
+    inputs::write_codex_schema(&schema_path, l.schema)?;
 
     let mut extra_env = crate::git::identity(&l.worktree.join(".git")).await;
     extra_env.extend(inputs::provider_env(l.provider));
@@ -2284,28 +2278,6 @@ mod tests {
         assert!(
             usage_limit_reset("usage limit; try again at 3:37 AM", now).unwrap()
                 <= now + FIVE_HOURS
-        );
-    }
-
-    #[test]
-    fn the_codex_schema_file_replaces_a_planted_symlink_and_never_writes_through_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let victim = dir.path().join("victim");
-        std::fs::write(&victim, "precious").unwrap();
-        let path = dir.path().join("forge-1-schema.json");
-        std::os::unix::fs::symlink(&victim, &path).unwrap();
-        write_codex_schema(&path, crate::envelope::SCHEMA).unwrap();
-        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
-        assert!(
-            std::fs::symlink_metadata(&path)
-                .unwrap()
-                .file_type()
-                .is_file()
-        );
-        assert!(
-            std::fs::read_to_string(&path)
-                .unwrap()
-                .contains("schema_version")
         );
     }
 

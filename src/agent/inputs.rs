@@ -70,3 +70,39 @@ pub(super) fn provider_env(provider: &Provider) -> Vec<(String, String)> {
     }
     env
 }
+
+/// Write the strict codex schema to `path`, a file the sandbox can write, by
+/// renaming a fresh sibling over it so a planted symlink is replaced, never
+/// followed.
+pub(super) fn write_codex_schema(path: &Path, schema: &str) -> Result<()> {
+    let strict = strict_schema(schema)?;
+    crate::login::replace_atomic(path, strict.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_codex_schema_file_replaces_a_planted_symlink_and_never_writes_through_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, "precious").unwrap();
+        let path = dir.path().join("forge-1-schema.json");
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+        write_codex_schema(&path, crate::envelope::SCHEMA).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_file()
+        );
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("schema_version")
+        );
+    }
+}
