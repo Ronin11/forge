@@ -82,9 +82,6 @@ pub struct Sandbox {
     /// The operator-warmed dependency cache, read-only (`[sandbox]
     /// dependency_cache`).
     dependency_cache: Option<PathBuf>,
-    /// The model endpoints every attempt may reach, whatever its repository
-    /// declares (see `egress::model_rules`).
-    model_hosts: Vec<Rule>,
     /// The forge binary, bound in so the wrapper can run its egress relay.
     relay_exe: PathBuf,
     /// The proxies this process runs, one per distinct policy.
@@ -93,6 +90,11 @@ pub struct Sandbox {
     /// (see `set_egress`); a worktree not in here gets the model endpoints
     /// alone.
     declared: Mutex<BTreeMap<PathBuf, Vec<Rule>>>,
+    /// The model endpoints of the provider each worktree's step resolved
+    /// (see `set_provider_hosts`), by the worktree its attempts run in; a
+    /// worktree not in here gets no model endpoint at all (nothing has
+    /// resolved a provider for it yet).
+    provider_hosts: Mutex<BTreeMap<PathBuf, Vec<Rule>>>,
     /// A repository's own cache directory (`FORGE_CACHE_DIR`), by the
     /// worktree its attempts run in (see `set_cache_dir`); a worktree not
     /// in here gets no cache bind at all. Keyed per repository so one
@@ -293,7 +295,6 @@ impl Sandbox {
         forge_home: PathBuf,
         extra_ro: Vec<PathBuf>,
         extra_rw: Vec<PathBuf>,
-        model_hosts: Vec<Rule>,
     ) -> Result<Sandbox> {
         let Ok((bwrap, _)) = resolve_binary("bwrap") else {
             bail!(
@@ -366,10 +367,10 @@ impl Sandbox {
             extra_rw: paths.rw.iter().cloned().chain(extra_rw).collect(),
             overlay,
             dependency_cache: paths.dependency_cache.clone(),
-            model_hosts,
             relay_exe,
             proxies: Arc::new(Proxies::default()),
             declared: Mutex::new(BTreeMap::new()),
+            provider_hosts: Mutex::new(BTreeMap::new()),
             caches: Mutex::new(BTreeMap::new()),
             granted: Mutex::new(BTreeMap::new()),
         })
@@ -391,6 +392,17 @@ impl Sandbox {
     /// trusted base. Called again whenever that config is re-read.
     pub fn set_egress(&self, worktree: &Path, rules: &[Rule]) {
         self.declared
+            .lock()
+            .unwrap()
+            .insert(worktree.to_path_buf(), rules.to_vec());
+    }
+
+    /// Declare the model endpoints attempts running in `worktree` may
+    /// reach: the provider its step resolved (see `egress::provider_rules`),
+    /// never every configured provider's. Called beside `set_egress`
+    /// wherever `ctx::Forge::allow_egress` is.
+    pub fn set_provider_hosts(&self, worktree: &Path, rules: &[Rule]) {
+        self.provider_hosts
             .lock()
             .unwrap()
             .insert(worktree.to_path_buf(), rules.to_vec());
@@ -421,11 +433,17 @@ impl Sandbox {
     }
 
     /// Everything a command in `worktree` (or a directory below it) may
-    /// reach: the model endpoints, what its repository declared and what
-    /// the environment policy granted it.
+    /// reach: the model endpoints of the provider its step resolved, what
+    /// its repository declared and what the environment policy granted it.
     pub fn policy_for(&self, worktree: &Path) -> Policy {
+        let provider_hosts = self.provider_hosts.lock().unwrap();
         let declared = self.declared.lock().unwrap();
         let granted = self.granted.lock().unwrap();
+        let model = worktree
+            .ancestors()
+            .find_map(|d| provider_hosts.get(d))
+            .into_iter()
+            .flatten();
         let extra = worktree
             .ancestors()
             .find_map(|d| declared.get(d))
@@ -436,7 +454,7 @@ impl Sandbox {
             .find_map(|d| granted.get(d))
             .into_iter()
             .flat_map(|g| g.hosts.iter());
-        Policy::new(self.model_hosts.iter().chain(extra).chain(more).cloned())
+        Policy::new(model.chain(extra).chain(more).cloned())
     }
 
     /// Declare where a command in `worktree` (or a directory below it) may
@@ -450,26 +468,39 @@ impl Sandbox {
             .insert(worktree.to_path_buf(), dir);
     }
 
-    /// Copy `worktree`'s private login back over the host file when the
-    /// attempt refreshed it (see `login`). Whether it did.
-    pub fn write_back_login(&self, worktree: &Path) -> bool {
+    /// The real config directory of `shape`'s CLI, which its login is
+    /// seeded from and written back to.
+    fn login_dir(&self, shape: &crate::login::Shape) -> &Path {
+        match shape.cli {
+            "codex" => &self.codex_dir,
+            "copilot" => &self.copilot_dir,
+            _ => &self.config_dir,
+        }
+    }
+
+    /// Copy `worktree`'s private `shape` login back over the host file when
+    /// the attempt refreshed it (see `login`). Whether it did.
+    pub fn write_back_login(&self, shape: &crate::login::Shape, worktree: &Path) -> bool {
         [None, Some(Contract::Review)]
             .into_iter()
             .fold(false, |any, contract| {
                 let private = provider_dir_for(worktree, contract)
-                    .join("claude")
-                    .join(crate::login::FILE);
-                crate::login::write_back(&self.config_dir, &self.forge_home, &private)
+                    .join(shape.cli)
+                    .join(shape.file);
+                shape
+                    .write_back(self.login_dir(shape), &self.forge_home, &private)
                     .unwrap_or(false)
                     || any
             })
     }
 
-    /// `write_back_login` for every task's private copy beside `worktree`,
-    /// for a caller that holds the login's lock (see `login::lock`).
+    /// `write_back_login` of the claude login for every task's private copy
+    /// beside `worktree`, for a caller that holds the login's lock (see
+    /// `login::lock`).
     pub fn write_back_siblings_locked(&self, worktree: &Path) {
-        for copy in crate::login::private_copies(worktree) {
-            let _ = crate::login::write_back_locked(&self.config_dir, &self.forge_home, &copy);
+        let claude = &crate::login::CLAUDE;
+        for copy in claude.private_copies(worktree) {
+            let _ = claude.write_back_locked(&self.config_dir, &self.forge_home, &copy);
         }
     }
 
@@ -495,10 +526,10 @@ impl Sandbox {
             extra_rw: vec![],
             overlay: true,
             dependency_cache: None,
-            model_hosts: vec![],
             relay_exe: PathBuf::from("/nonexistent/forge"),
             proxies: Arc::new(Proxies::default()),
             declared: Mutex::new(BTreeMap::new()),
+            provider_hosts: Mutex::new(BTreeMap::new()),
             caches: Mutex::new(BTreeMap::new()),
             granted: Mutex::new(BTreeMap::new()),
         }
@@ -659,32 +690,30 @@ impl Sandbox {
         let codex_priv = provider_dir.join("codex");
         let _ = std::fs::create_dir_all(&claude_priv);
         let _ = std::fs::create_dir_all(&codex_priv);
-        // The login is the kernel's (see `login`): a later private pair is
+        let copilot_priv = provider_dir.join("copilot");
+        let _ = std::fs::create_dir_all(&copilot_priv);
+        // Each login is the kernel's (see `login`): a later private login is
         // written back over the host file first, and an empty host file
-        // seeds nothing. Settings are plain copies.
-        crate::login::seed(
-            &self.config_dir,
-            &self.forge_home,
-            worktree,
-            &claude_priv.join(crate::login::FILE),
-        );
+        // seeds nothing. copilot's login lives in its `config.json`, beside
+        // its settings. The other settings are plain copies.
+        for shape in crate::login::SHAPES {
+            shape.seed(
+                self.login_dir(shape),
+                &self.forge_home,
+                worktree,
+                &provider_dir.join(shape.cli).join(shape.file),
+            );
+        }
         let _ = crate::login::seed_copy(
             &self.config_dir.join("settings.json"),
             &claude_priv.join("settings.json"),
         );
-        for name in ["auth.json", "config.toml"] {
-            let _ = crate::login::seed_copy(&self.codex_dir.join(name), &codex_priv.join(name));
-        }
+        let _ = crate::login::seed_copy(
+            &self.codex_dir.join("config.toml"),
+            &codex_priv.join("config.toml"),
+        );
         cmd.arg("--bind").arg(&claude_priv).arg(&self.config_dir);
         cmd.arg("--bind").arg(&codex_priv).arg(&self.codex_dir);
-        // copilot's login lives in its `config.json`; the same private,
-        // reseeded copy, bound where the CLI expects its home.
-        let copilot_priv = provider_dir.join("copilot");
-        let _ = std::fs::create_dir_all(&copilot_priv);
-        let _ = crate::login::seed_copy(
-            &self.copilot_dir.join("config.json"),
-            &copilot_priv.join("config.json"),
-        );
         cmd.arg("--bind").arg(&copilot_priv).arg(&self.copilot_dir);
         // What lives inside a directory just bound over (an agent under
         // `~/.claude/local`) is bound again on top of the private copy.
@@ -757,6 +786,8 @@ mod tests {
     const CREDS: &str =
         r#"{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":32503680000000}}"#;
 
+    const CODEX_AUTH: &str = r#"{"OPENAI_API_KEY":"sk-proj-abc","tokens":null}"#;
+
     #[test]
     fn review_provider_state_is_separate_and_discarded_with_the_coders() {
         let root = tempfile::tempdir().unwrap();
@@ -801,7 +832,7 @@ mod tests {
         std::fs::write(copilot_dir.join("config.json"), "login").unwrap();
         std::fs::write(config_dir.join(".credentials.json"), CREDS).unwrap();
         std::fs::write(config_dir.join("settings.json"), "settings").unwrap();
-        std::fs::write(codex_dir.join("auth.json"), "auth").unwrap();
+        std::fs::write(codex_dir.join("auth.json"), CODEX_AUTH).unwrap();
         std::fs::write(codex_dir.join("config.toml"), "cfg").unwrap();
         let npm_cache = root.path().join("opt/npm-cache");
         std::fs::create_dir_all(&npm_cache).unwrap();
@@ -820,13 +851,14 @@ mod tests {
             extra_rw: vec![npm_cache.clone()],
             overlay: true,
             dependency_cache: None,
-            model_hosts: vec![Rule::parse("api.example.com").unwrap()],
             relay_exe: PathBuf::from("/opt/forge/forge"),
             proxies: Arc::new(Proxies::default()),
             declared: Mutex::new(BTreeMap::new()),
+            provider_hosts: Mutex::new(BTreeMap::new()),
             caches: Mutex::new(BTreeMap::new()),
             granted: Mutex::new(BTreeMap::new()),
         };
+        sandbox.set_provider_hosts(&worktree, &[Rule::parse("api.example.com").unwrap()]);
         sandbox.set_cache_dir(&worktree, repo_cache.clone());
         let cmd = sandbox.command_for_worktree(&worktree, &["true".to_string()], &[]);
         let args: Vec<String> = cmd
@@ -922,7 +954,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(codex_priv.join("auth.json")).unwrap(),
-            "auth"
+            CODEX_AUTH
         );
         assert_eq!(
             std::fs::read_to_string(codex_priv.join("config.toml")).unwrap(),
@@ -1045,8 +1077,11 @@ mod tests {
         assert!(args.iter().any(|a| a == "--overlay-src"));
     }
 
+    /// `model` is the one host `/work/1` (the worktree most of these tests
+    /// use) resolves to via `set_provider_hosts`; a worktree this helper's
+    /// caller never names gets none.
     fn test_sandbox(model: &str) -> Sandbox {
-        Sandbox {
+        let sb = Sandbox {
             bwrap: PathBuf::from("/usr/bin/bwrap"),
             home: PathBuf::from("/home/attempt"),
             agent_dirs: vec![],
@@ -1059,13 +1094,15 @@ mod tests {
             extra_rw: vec![],
             overlay: true,
             dependency_cache: None,
-            model_hosts: vec![Rule::parse(model).unwrap()],
             relay_exe: PathBuf::from("/opt/forge/forge"),
             proxies: Arc::new(Proxies::default()),
             declared: Mutex::new(BTreeMap::new()),
+            provider_hosts: Mutex::new(BTreeMap::new()),
             caches: Mutex::new(BTreeMap::new()),
             granted: Mutex::new(BTreeMap::new()),
-        }
+        };
+        sb.set_provider_hosts(Path::new("/work/1"), &[Rule::parse(model).unwrap()]);
+        sb
     }
 
     #[tokio::test]
@@ -1195,12 +1232,64 @@ mod tests {
             names(&sb.policy_for(&wt)),
             ["api.example.com", "registry.npmjs.org"]
         );
-        // A directory below the worktree shares its policy; a sibling does not.
+        // A directory below the worktree shares its policy; a sibling does
+        // not, and gets no model endpoint at all unless its own provider
+        // resolved one for it.
         assert_eq!(names(&sb.policy_for(&wt.join("scratch"))).len(), 2);
-        assert_eq!(
-            names(&sb.policy_for(Path::new("/work/2"))),
-            ["api.example.com"]
+        assert!(names(&sb.policy_for(Path::new("/work/2"))).is_empty());
+    }
+
+    #[test]
+    fn a_claude_worktrees_policy_has_no_openai_host_when_a_codex_provider_exists() {
+        let mut providers = BTreeMap::new();
+        providers.insert("anthropic".to_string(), crate::agent::Provider::default());
+        providers.insert(
+            "codex".to_string(),
+            crate::agent::Provider {
+                runner: crate::agent::Runner::CodexCli,
+                ..crate::agent::Provider::default()
+            },
         );
+        let sb = test_sandbox("api.example.com");
+        let wt = PathBuf::from("/work/claude");
+        let claude = providers.get("anthropic").unwrap();
+        sb.set_provider_hosts(&wt, &egress::provider_rules(claude));
+        let names: Vec<String> = sb
+            .policy_for(&wt)
+            .rules()
+            .iter()
+            .map(|r| r.to_string())
+            .collect();
+        assert!(names.iter().any(|h| h.contains("anthropic")), "{names:?}");
+        assert!(!names.iter().any(|h| h.contains("openai")), "{names:?}");
+    }
+
+    #[test]
+    fn a_chat_providers_url_is_in_no_sandbox_policy() {
+        let mut providers = BTreeMap::new();
+        providers.insert("anthropic".to_string(), crate::agent::Provider::default());
+        providers.insert(
+            "chat".to_string(),
+            crate::agent::Provider {
+                runner: crate::agent::Runner::Chat,
+                base_url: Some("http://chat.lan:8080/v1".into()),
+                ..crate::agent::Provider::default()
+            },
+        );
+        let sb = test_sandbox("api.example.com");
+        for (name, wt) in [("anthropic", "/work/claude"), ("chat", "/work/chat")] {
+            let p = providers.get(name).unwrap();
+            sb.set_provider_hosts(Path::new(wt), &egress::provider_rules(p));
+        }
+        for wt in ["/work/claude", "/work/chat", "/work/1"] {
+            let names: Vec<String> = sb
+                .policy_for(Path::new(wt))
+                .rules()
+                .iter()
+                .map(|r| r.to_string())
+                .collect();
+            assert!(!names.iter().any(|h| h.contains("chat.lan")), "{names:?}");
+        }
     }
 
     #[tokio::test]

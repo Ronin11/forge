@@ -202,15 +202,13 @@ impl Execution {
         forge_home: PathBuf,
         ro: Vec<PathBuf>,
         rw: Vec<PathBuf>,
-        hosts: Vec<Rule>,
     ) -> anyhow::Result<Option<Self>> {
         if config::env("SANDBOX").as_deref() == Ok("0") {
             return Ok(None);
         }
         Ok(Some(Self {
             fallback: default_backend(),
-            bwrap: Sandbox::detect(agent, paths, forge_home, ro, rw, hosts)
-                .map_err(|e| format!("{e:#}")),
+            bwrap: Sandbox::detect(agent, paths, forge_home, ro, rw).map_err(|e| format!("{e:#}")),
             backends: Mutex::new(BTreeMap::new()),
             remotes: Mutex::new(BTreeMap::new()),
         }))
@@ -313,9 +311,9 @@ impl Execution {
     /// After a launch in `path`: write the attempt's private login back over
     /// the host file if it refreshed it (see `login`). Only a bwrap launch
     /// has a private copy; whether a write-back happened.
-    pub fn write_back_login(&self, path: &Path) -> bool {
+    pub fn write_back_login(&self, shape: &crate::login::Shape, path: &Path) -> bool {
         match &self.bwrap {
-            Ok(sb) if self.backend(path) == Backend::Bwrap => sb.write_back_login(path),
+            Ok(sb) if self.backend(path) == Backend::Bwrap => sb.write_back_login(shape, path),
             _ => false,
         }
     }
@@ -329,6 +327,11 @@ impl Execution {
     pub fn set_egress(&self, path: &Path, rules: &[Rule]) {
         if let Ok(sb) = &self.bwrap {
             sb.set_egress(path, rules);
+        }
+    }
+    pub fn set_provider_hosts(&self, path: &Path, rules: &[Rule]) {
+        if let Ok(sb) = &self.bwrap {
+            sb.set_provider_hosts(path, rules);
         }
     }
     pub fn set_cache_dir(&self, path: &Path, dir: PathBuf) {

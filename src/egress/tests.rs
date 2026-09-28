@@ -477,20 +477,43 @@ fn the_model_endpoint_is_always_in_the_rules() {
 }
 
 #[test]
-fn a_jev_provider_opens_the_workers_ai_host() {
+fn chat_and_jev_providers_open_nothing_of_their_own_even_with_a_base_url() {
+    let jev = crate::agent::Provider {
+        runner: crate::agent::Runner::Jev,
+        base_url: Some("https://api.cloudflare.com/client/v4".into()),
+        ..crate::agent::Provider::default()
+    };
+    assert!(provider_rules(&jev).is_empty());
+    let chat = crate::agent::Provider {
+        runner: crate::agent::Runner::Chat,
+        base_url: Some("http://chat.lan:8080".into()),
+        ..crate::agent::Provider::default()
+    };
+    assert!(provider_rules(&chat).is_empty());
     let mut providers = BTreeMap::new();
+    providers.insert("jev".to_string(), jev);
+    providers.insert("chat".to_string(), chat);
+    assert!(model_rules(&providers).is_empty());
+}
+
+#[test]
+fn a_providers_own_rules_leave_out_every_other_configured_providers_endpoints() {
+    let mut providers = BTreeMap::new();
+    providers.insert("anthropic".to_string(), crate::agent::Provider::default());
     providers.insert(
-        "jev".to_string(),
+        "codex".to_string(),
         crate::agent::Provider {
-            runner: crate::agent::Runner::Jev,
+            runner: crate::agent::Runner::CodexCli,
             ..crate::agent::Provider::default()
         },
     );
-    let rules: Vec<String> = model_rules(&providers)
+    let claude = providers.get("anthropic").unwrap();
+    let rules: Vec<String> = provider_rules(claude)
         .iter()
         .map(|r| r.to_string())
         .collect();
-    assert!(rules.iter().any(|r| r == "api.cloudflare.com"), "{rules:?}");
+    assert!(rules.iter().any(|r| r == "*.anthropic.com"), "{rules:?}");
+    assert!(!rules.iter().any(|r| r == "*.openai.com"), "{rules:?}");
 }
 
 #[test]

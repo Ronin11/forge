@@ -178,31 +178,38 @@ fn rule_for_url(url: &str) -> Option<Rule> {
     Rule::parse(&entry).ok()
 }
 
-/// The model endpoints every attempt may reach: for each configured
-/// provider, its runner's own hosts, its `base_url`, and any URL in its
-/// `env` (a local model's OLLAMA_HOST, codex's OSS base URL). These carry
-/// the token an attempt runs with, so they are the one thing always allowed.
-pub fn model_rules(providers: &BTreeMap<String, crate::agent::Provider>) -> Vec<Rule> {
+/// One provider's own model endpoints: its runner's own hosts, its
+/// `base_url`, and any URL in its `env` (a local model's OLLAMA_HOST,
+/// codex's OSS base URL). These carry the token an attempt runs with, so
+/// they are the one thing always allowed a sandboxed attempt under this
+/// provider. `Runner::Chat` and `Runner::Jev` run on the host, never inside
+/// a sandbox, so they open nothing here.
+pub fn provider_rules(p: &crate::agent::Provider) -> Vec<Rule> {
     use crate::agent::Runner;
-    let mut rules = Vec::new();
-    for p in providers.values() {
-        let own: &[&str] = match p.runner {
-            // The API, and the sign-in the CLI refreshes its token against.
-            Runner::ClaudeCli => &["*.anthropic.com", "*.claude.com", "claude.ai"],
-            Runner::CodexCli => &["*.openai.com", "chatgpt.com"],
-            // The Copilot API and the GitHub API its token is checked
-            // against; not github.com itself, which is not a model
-            // endpoint and would be a route out for anything.
-            Runner::CopilotCli => &["*.githubcopilot.com", "api.github.com"],
-            Runner::Chat => &[],
-            // Cloudflare Workers AI, whatever `base_url` says besides.
-            Runner::Jev => &["api.cloudflare.com"],
-        };
-        rules.extend(own.iter().filter_map(|h| Rule::parse(h).ok()));
-        rules.extend(p.base_url.as_deref().and_then(rule_for_url));
-        rules.extend(p.env.iter().filter_map(|(_, v)| rule_for_url(v)));
-    }
-    Policy::new(rules).rules
+    let own: &[&str] = match p.runner {
+        // The API, and the sign-in the CLI refreshes its token against.
+        Runner::ClaudeCli => &["*.anthropic.com", "*.claude.com", "claude.ai"],
+        Runner::CodexCli => &["*.openai.com", "chatgpt.com"],
+        // The Copilot API and the GitHub API its token is checked
+        // against; not github.com itself, which is not a model
+        // endpoint and would be a route out for anything.
+        Runner::CopilotCli => &["*.githubcopilot.com", "api.github.com"],
+        Runner::Chat | Runner::Jev => return Vec::new(),
+    };
+    let mut rules: Vec<Rule> = own.iter().filter_map(|h| Rule::parse(h).ok()).collect();
+    rules.extend(p.base_url.as_deref().and_then(rule_for_url));
+    rules.extend(p.env.iter().filter_map(|(_, v)| rule_for_url(v)));
+    rules
+}
+
+/// The model endpoints every configured provider's attempts may reach, in
+/// total: `provider_rules` for each provider, combined. Used only where the
+/// combined ceiling of every provider is wanted (what the environment
+/// policy may grant, `forge doctor`'s report) — a sandboxed launch's own
+/// policy carries only its own provider's rules (see
+/// `Sandbox::set_provider_hosts`), not this union.
+pub fn model_rules(providers: &BTreeMap<String, crate::agent::Provider>) -> Vec<Rule> {
+    Policy::new(providers.values().flat_map(provider_rules)).rules
 }
 
 /// The rules one proxy enforces: sorted and de-duplicated, so two attempts
