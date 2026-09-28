@@ -168,3 +168,739 @@ it at. Stage 2 finishes what edges, judgment, library and shadow started,
 with a guard so it stays finished. None of it changes what a workflow or
 an action does; every stage is checked by the same 561 unit and 377 e2e
 tests.
+
+# The edges, read cold: section 3, deploy and the release layout (2026-09-27)
+
+The kernel's edges (the sandbox and egress proxy; plugin supervision and
+the successor handoff; deploy and the release layout) were read cold, one
+task each, and only what was confirmed at a line is recorded, with the
+input that reaches that line and what goes wrong there. Suspicions are
+not recorded. Each defect ends with a paragraph a follow-up task can be
+filed from as written. This part is section 3. Sections 1 and 2 are
+written by their own tasks and are not in this tree; the closing table
+carries section 3's rows and says where theirs go.
+
+Unless a defect says *reproduced*, it was confirmed by reading and
+tracing the code, not by running it: no systemd user session and no
+`cargo build --release --workspace` ran for this read. Two claims were
+run and are marked.
+
+## 3. Deploy and the release layout
+
+Read as one system: `src/deploy.rs` (675 lines), `src/deploy_look.rs`
+(261), `src/release.rs` (192), `src/init.rs` (417, `--relink` lives here),
+the `deploy-self` and `deploy-user-service` builtin operations (196 and
+59 lines, `deploy-command` beside them for comparison), and doctor's
+release, worker, shadowing and plugins rows (`src/doctor.rs`,
+`src/workflows/shadow.rs`). Followed into: `src/successor.rs` and
+`worker.rs`'s loop (the handoff `deploy-self` now hands its result to),
+`src/upgrade.rs` (the other writer of `current`), `src/unit_path.rs`,
+`src/store/deploys.rs`, `src/operation.rs` and `src/checks.rs` (how a
+method is run and timed out), `src/git.rs` (`stage`, `kernel_repository`,
+`fresh_archive`), `src/workflows.rs`'s catalog loader, `src/queue.rs`'s
+`answer`, `src/landing/effects.rs`, `build.rs`, `deploy/forge-worker.service`,
+and docs/DEPLOY.md and docs/OPS.md for what each promises.
+
+### 3.1 Defects confirmed while reading
+
+Ordered by what they cost. Numbers are stable: the closing table uses
+them as `E3-n`.
+
+1. **A successor that dies, or is slow, takes the worker unit down with
+   it, and the staged release is tried again after every restart until
+   systemd gives up.**
+   `Succession::superseded` returns `true` the moment it has spawned the
+   successor (successor.rs:122-130). An idle old worker then leaves its
+   loop (worker.rs:1020-1023) and `leave` waits up to `HANDOVER_WAIT`,
+   120 s, for `bin/successor-capable` to name the child (successor.rs:
+   200-229). If the child exits first, or has not written it in 120 s,
+   `leave` returns `Err`, `work` returns it (worker.rs:1119-1122) and the
+   process exits non-zero. The unit `forge init` writes is
+   `Restart=on-failure`, `StartLimitBurst=5` in `StartLimitIntervalSec=
+   10800` (init.rs:69-70, 81). The restarted worker is on `current`, the
+   old release, `staged` still names the release that just failed (nothing
+   clears it, defect 3), and `failed` is an in-memory set
+   (successor.rs:53) that the restart emptied, so it spawns the same
+   successor, which dies the same way. The fifth restart in three hours
+   trips the start limit: the unit is `failed` and no worker runs.
+   *Input:* any staged release whose `forge work` exits before it writes
+   the capability file. The scratch doctor does not catch that (defect
+   6): a migration that fails on the live `forge.db` fails in
+   `Forge::open`, before `join`. The slow case needs no crash: a
+   successor still migrating a large `forge.db` at 120 s makes the old
+   worker, still the unit's main pid (`MAINPID=` is sent from `join`,
+   successor.rs:74), exit non-zero, which ends the service and takes the
+   rest of its cgroup, the successor, with it (systemd's behaviour for a
+   main process that exits; not run here). A related hole: the
+   successor flips `current` in `join` (successor.rs:72, 291-306)
+   before it has proven anything, and the unit's `ExecStart` runs
+   `current/forge` (init.rs:77). A successor that crashes after `join`
+   leaves `current` on the broken release, and every restart runs it.
+   Nothing ever flips back to `previous`.
+   *Task:* "A successor's failure must not cost the worker. In
+   `Succession::leave` (successor.rs:200-229) treat a successor that
+   exited or has not taken over as a handover failure, not a worker
+   failure: exit 0 after logging it, so `Restart=on-failure` does not
+   fire; make the wait cover a migration (poll the child's liveness and
+   `workers` row, not a fixed 120 s). Persist a failed release
+   (`bin/staged-failed`, the sha and the time) so a restarted worker
+   does not spawn it again, and clear or rename `staged` when it does.
+   Have the successor flip `current` only after its store is open, its
+   `MAINPID=` sent and its first pass done, and have the worker that
+   started a successor which then dies put `current` back to the release
+   it runs. Tests: a fake release whose `forge` exits 1 immediately
+   leaves the old worker running, `staged` retired and one restart, not
+   five; a successor that sleeps past the old wait is not killed."
+
+2. **A worker whose successor dies while it still holds tasks stops its
+   plugins and never starts them again.**
+   Before spawning, `superseded` stops this worker's plugins so their
+   locks pass to the successor (successor.rs:118-121). Only the spawn
+   error branch restarts them (successor.rs:135). When the child later
+   exits, the branch at successor.rs:106-112 marks the release failed and
+   the function falls through to `return Ok(false)` (successor.rs:139),
+   so the worker claims again with `plugins` still `None`. The channel
+   plugins are then dead for the life of that
+   worker.
+   *Input:* a staged release whose worker exits while the old one is
+   still running an attempt (long attempts are the norm; `TimeoutStopSec`
+   is 2400 s). *Task:* "When `superseded` sees its successor exit
+   (successor.rs:106-112), restart the supervisor it stopped:
+   `*plugins = Some(Supervisor::start(f.clone()))`, as the spawn-error
+   branch does. Test: a successor binary that exits at once; after the
+   next `superseded` the plugins row shows the plugins running under the
+   old worker."
+
+3. **`staged` is never consumed, so `forge upgrade` and a manual
+   rollback are undone by the next worker start.**
+   `staged_successor` returns `staged` whenever it names a runnable
+   release other than the one this worker runs and no live worker is on
+   it (successor.rs:149-158). Nothing removes or updates `staged` after
+   a handover; only `deploy-self` writes it. So after any self-deploy
+   `staged` names the last deployed release for good. Then `forge
+   upgrade` flips `current` to `releases/<version>`, and
+   `bring_up` restarts the worker (upgrade.rs:347-366, 300-310): the new
+   worker's version is `<version>` (its executable sits in that
+   directory, release.rs:47-51), `staged` is the older deploy, so it
+   starts a successor on the older release, which flips `current` back
+   (successor.rs:291-306) and restarts web and portal on it. The upgrade
+   is reversed within a poll interval, with no message beyond a line in
+   the worker log. An operator's emergency `ln -sfn` of `current` to
+   `previous`, followed by `systemctl --user restart forge-worker`, is
+   reversed the same way.
+   *Input:* `forge upgrade <tarball>` (or a hand flip of `current`) on a
+   machine that has done one self-deploy. *Task:* "Make `staged` a
+   request that is acknowledged. When a successor takes over
+   (`take_over`, successor.rs:291) or a worker finds `staged` equal to
+   the release it runs, remove `staged`; have `forge upgrade`
+   (upgrade.rs, before the flip) and `release::flip` callers other than
+   deploy-self drop `staged`, and have `staged_successor` ignore a
+   `staged` older than `current` in `previous`'s lineage. Doctor's worker
+   row should FAIL when `staged` names a release that is not `current`
+   and no successor is starting. Test: upgrade with a stale `staged`
+   leaves `current` on the upgraded release after the worker restarts."
+
+4. **A failing `deploy-self` writes its stale copy of the pointers over
+   whatever a successor has flipped since, and restarts web and portal
+   for a build error.**
+   The script reads `current`, `previous` and `staged` once, after it
+   takes the lock (deploy-self.toml:47-49), then builds for minutes.
+   Any failure with `armed=1` runs `restore`, which rewrites all three
+   pointers from those values unconditionally (60-71) and restarts
+   `$units` (68-70). The second landing of two back to back is the
+   common trigger: it waits on the lock while the first builds, reads the
+   pointers the instant the first exits (before the first's successor
+   has started, one poll interval later), and its build then outlasts the
+   successor's `take_over`. If that build fails: the successor has
+   flipped `current` to the first release and restarted web and portal;
+   `restore` sets `current` back to the release from before, `staged`
+   to the first release, and restarts web and portal onto the old
+   binary. The worker runs the first release, web and portal run the old
+   one, `current` names the old one, and the next unit restart brings
+   the worker up on it. Separately, any failure restarts `$units` even
+   when nothing was flipped (a `cargo build` error, a failed doctor):
+   healthy web and portal are bounced for nothing, and the restart
+   is only worth doing after a flip.
+   *Input:* two landings on the Forge repository within a build time of
+   each other, the second failing to build. *Task:* "Make `restore` in
+   deploy-self.toml touch only what this run wrote, and only if it is
+   still what this run wrote: write each pointer this run changes to a
+   variable, and in `restore` put a pointer back only when `readlink`
+   still equals the value this run set (compare-and-set); track `flipped`
+   and restart `$units` only when `current` was flipped by this run. Do
+   not read `was_*` from before the lock wait. Test: a script run whose
+   build fails while a fake successor flips `current` mid-build leaves
+   `current` on the successor's release."
+
+5. **`forge deploy forge self` reports success when it has only staged a
+   release; nothing checks that the release went live.**
+   In the default, successor-capable case the script exits 0 right after
+   `staged` is written (deploy-self.toml:136-140). `deploy::run` then
+   records `check_ok: true` and emits `DeployFinished { ok: true }`
+   (deploy.rs:358-382), and `forge deploy` exits 0; `forge deploy log`
+   prints `ok`. What is live is unchanged: `current` is the old release
+   and will not move until the worker's next poll, if a successor starts
+   at all (defect 1), and the takeover's web and portal restart is
+   `--no-block` and unchecked (successor.rs:299-305). The target's smoke
+   step and the deploy look (deploy.rs:300-356) run against the old web
+   client. The default check that would say whether the new release
+   serves, the `/tasks` fetch (deploy-self.toml:169-177), is only reached
+   in the legacy branch. The row then also becomes the rollback target
+   for the next failed deploy (deploy.rs:387-391), a release that may
+   never have been live.
+   *Input:* any self-deploy under a worker that starts successors.
+   *Task:* "Split 'staged' from 'live' in `deploy::run` for `deploy-self`.
+   After the method returns with the worker successor-capable, wait,
+   bounded, for the `workers` table to show a live worker on the deployed
+   sha and for `current` to name it, then run the target's check (the
+   web `/tasks` fetch) and the smoke step against that. Fail the deploy,
+   with the reason 'staged but never became live', if the wait times out,
+   and put `staged` back to what `current` names so it is not retried.
+   The deploy row's output should say 'staged' and 'live' as separate
+   lines. This runs inside the landing's slot, and the successor is
+   started by the main loop, so it cannot deadlock. Test with a fake
+   worker that never takes over: the deploy fails and exits 1."
+
+6. **The scratch doctor proves the schema on an empty store, and its
+   pass condition is a substring of JSON.**
+   deploy-self.toml:112-119 runs the new release's `forge doctor --json`
+   against `mktemp -d` and passes on `"name":"schema","status":"ok"`
+   after deleting spaces and newlines. The check is `PRAGMA
+   user_version` on a store the binary just created (doctor.rs:452-457),
+   so it proves the migration ladder runs on nothing. A migration that
+   fails on real data, or a new binary that cannot open the live store,
+   still passes and fails later in the successor (defect 1). The match
+   also depends on serde's field order in `Check` (doctor.rs:28-33),
+   which docs say is not a stable contract (doctor.rs:20-27).
+   `forge upgrade` does it the right way round (`backup_store` then the
+   new doctor against the real home, upgrade.rs:186-206, 316-343).
+   *Task:* "Have `deploy-self` copy the live `forge.db` with `sqlite3
+   .backup` (as `upgrade::backup_store` does) into the scratch home
+   before the new binary's doctor runs, and require `schema` `ok` there;
+   parse the JSON with the new binary itself (a `forge doctor --json
+   --only schema` that exits non-zero) instead of grepping. Test: a
+   release whose migration 'N+1' fails on a store with a row in it is
+   refused at staging."
+
+7. **A catalog copy of a kernel-coupled operation shadows the built-in
+   without notice, and doctor calls it fine.**
+   `deploy::run` resolves the method through the catalog
+   (deploy.rs:251, operation.rs:445-456) and hands it `FORGE_WORKER_
+   SUCCESSORS` (deploy.rs:43-49), a contract between this binary and
+   the script text. A file in `<home>/workflows/actions/deploy-self.toml`
+   wins over the built-in unless `has_operator_commit` calls it a
+   stale seed, which it does by author and subject only: any commit on
+   the file by an author other than `forge`, or whose subject does not
+   start `catalog: built-in`, makes it an operator edit
+   (shadow.rs:83-95). An operator edit is loaded and is not a fault:
+   `doctor_check` is `Warn` only for stale seeds (shadow.rs:329-341), so
+   for an edit it prints `deploy-self.toml (operator edit, 1d old, 40
+   diff line(s))` with status ok, and nothing at deploy time says which
+   text ran. A day-old copy from before the successor handoff therefore
+   ignores `FORGE_WORKER_SUCCESSORS`, restarts the unit itself and races
+   the successor, on every self-deploy, with every check green. (I could
+   not inspect the operator's catalog for how that copy came to be
+   classified as an edit; the classification rule is the only path
+   here.)
+   *Input:* a catalog copy of `deploy-self` (or `deploy-smoke`,
+   `deploy-static`) committed by anyone but Forge, older than the
+   binary. *Task:* "Never resolve `deploy-self` from the catalog:
+   `deploy::run` should take its text from `BUILTIN_OPERATIONS` for
+   `SELF_METHOD`, and say in a `Note` when any other deploy method came
+   from a catalog copy with its diff line count. Make doctor's
+   shadowing row `Warn` for an operator edit that shadows a built-in
+   whose text changed after the copy's last commit (the copy's blob
+   is not any historical built-in and the built-in's hash is newer),
+   and `Fail` for a shadow of `deploy-self`. Test: a catalog with a
+   copy of deploy-self, committed by someone other than Forge, is not
+   what runs, and the release is staged, not restarted."
+
+8. **The stale-seed rule reads git history, so an edit not yet committed
+   (or committed by `forge init`) is 'a stale seed', ignored, and then
+   deleted without a trace.**
+   `has_operator_commit` is false for a file with no commits
+   (untracked) and for one whose only commits are authored `Forge`
+   (shadow.rs:83-95). `forge init` runs `commit_all` (init.rs:355,
+   git.rs:691-703): `git add -A` then a commit authored `Forge`, so
+   whatever the operator had left uncommitted in the catalog, including
+   an edited `actions/*.toml`, is committed as a seed. From then on the
+   loader skips the file (workflows.rs:1470-1476) and the built-in
+   applies: the operator's edit silently stops working. `forge
+   workflows refresh` then removes stale seeds (cli/workflows.rs:590-
+   594): for an untracked or uncommitted file `shadow::remove` is a
+   plain `remove_file` with no commit (shadow.rs:279-298), and the edit
+   is gone from disk and from history.
+   *Input:* `cp` a built-in into `workflows/actions/`, edit it, run
+   `forge init` (or just `forge workflows refresh`). *Task:* "Classify
+   by content, not by who committed it: a copy is a stale seed only if
+   its blob equals a built-in text this or an earlier release shipped
+   (keep the list of historical hashes next to `BUILTIN_*`); anything
+   else, committed or not, is an operator edit. `forge init` must not
+   `commit_all` the catalog; commit only files it wrote. `shadow::remove`
+   must refuse an untracked or dirty file. Tests: an uncommitted edit
+   survives `refresh` and is reported as an edit; a copy equal to an old
+   built-in is a seed whoever committed it."
+
+9. **The deploy question is one `forge answer` refuses, and asking it
+   flips a landed task to blocked.**
+   `ask` picks the project's newest terminal task on the repository,
+   including `Succeeded`, sets it `Blocked` with the failure text and
+   `update_task`s it whole (deploy.rs:179-221), or files a no-work
+   `direct` task in that state when none exists. But
+   `queue::answer` only answers a task whose last agent attempt is
+   `NeedsInput` (queue.rs:1252-1262). A landed task's last attempt
+   succeeded; the filed task has no attempts. So `forge answer` on the
+   question docs/DEPLOY.md ends every failed deploy at fails with 'not
+   blocked on a question'. And landing/effects.rs:41-43 promises "a
+   deploy's own failure never changes the task's landed state", which
+   `ask` does: the task that landed is now `blocked`.
+   *Input:* any deploy check failing after a landing, or `forge deploy`
+   by hand on a project whose last task succeeded. *Task:* "`deploy::ask`
+   must not edit an existing task. File a new no-work task, with its
+   own `question_to` and a `deploy_id`, and let `queue::answer` (and
+   the web client's answer verb) close a deploy question: record the
+   decision and move the task to `withdrawn` without re-running
+   anything. Tests: after a rolled-back deploy the landed task is still
+   `succeeded`, and `forge answer <question-id> 'ok'` succeeds."
+
+10. **An error after the deploy has started skips both the rollback and
+    the question, and can overwrite the recorded outcome.**
+    Everything inside `run`'s async block that uses `?` ends in
+    `record_deploy_error` (deploy.rs:483), which finishes the row as a
+    failure and returns the error, and nothing else. The smoke step's
+    `?` (deploy.rs:304, `run_deploy_smoke` fails when it cannot create
+    its output directory) fires after the method has succeeded: the
+    new commit stays deployed, the row says failed, no rollback runs,
+    nobody is asked. The rollback's own `deploy_at(...).await?`
+    (deploy.rs:429-438) does the same when `previous.sha` cannot be
+    archived: for an operator-run `forge deploy`, `src` is the
+    registered checkout (deploy.rs:146-154), which lacks a sha an
+    on-landing deploy staged only in the kernel repository (the case
+    deploy.rs:124-130 describes). The failed deploy stays live, the row
+    has `rolled_back_to: None`, no question. And `ask(...)?` at
+    deploy.rs:420-425 and 479 comes after `finish_deploy` recorded the
+    rollback: an error there reaches `record_deploy_error`, whose
+    `finish_deploy` is unconditional (store/deploys.rs:310-312) and
+    overwrites `rolled_back_to` with `None` and the reason with the
+    error text.
+    *Input:* `forge deploy demo prod` where the previous passing deploy
+    was on-landing. *Task:* "Resolve the rollback's source the way an
+    on-landing deploy does: archive `previous.sha` from the kernel
+    repository when the registered checkout lacks it. Turn a smoke-run
+    error into a failed smoke result (`sr.ok = false`, the error as its
+    tail) so the normal rollback and question run. Make
+    `record_deploy_error` refuse to overwrite a row that already has
+    `finished_at` (`WHERE id=? AND finished_at IS NULL`), and file the
+    question from `record_deploy_error` when a rollback was not
+    attempted. Tests for each of the three."
+
+11. **The 'older than live' guard fails open, runs before the lock, and
+    looks only at `current`.**
+    `origin_truth` refuses a commit that is an ancestor of the live
+    release (deploy.rs:107-120), which is what keeps migrations from
+    running backwards. Three holes. (a) Every step that can fail is
+    swallowed into 'allowed': the live id is read as a commit with `if
+    let Ok(..) = rev_parse(..)`, and `is_ancestor` returns `false` for
+    any git error (git.rs:522-527). A live release whose id is not a
+    commit the kernel repository has (`forge upgrade`'s release is
+    named `0.4.0`; a `--relink` id is a short sha) skips the guard
+    silently. (b) It compares with `current`, not with `staged`: between
+    a stage and the successor's flip a deploy of an older commit passes.
+    (c) It runs at deploy.rs:262-263, outside `.deploy-self.lock`, which
+    the script takes later; the lock is not fair, so of two waiting
+    deploys the older commit can stage last, and the guard ran before
+    either.
+    *Input:* on-landing deploys of two landings whose deploys reach the
+    lock out of order, or `forge deploy forge self --sha <old>` while a
+    newer release is staged. *Task:* "Take `bin/.deploy-self.lock`
+    in `deploy::run` for `SELF_METHOD` around `origin_truth` and the
+    method (pass `FORGE_DEPLOY_LOCK_HELD=1` so the script skips its own
+    flock, which would otherwise wait on its parent), compare against
+    the newer of `current` and `staged`, and fail closed: a live or
+    staged id that does not resolve to a commit is refused unless
+    `--force`, saying so. Tests: with `staged` naming a descendant, an
+    ancestor is refused; a live id of `0.4.0` refuses rather than
+    skips."
+
+12. **Nothing serialises deploys of any method but `deploy-self`, and the
+    rollback target can be the commit that just failed.**
+    `deploy::run` takes no lock (deploy.rs:238-484). The other methods
+    (`deploy-static`, `deploy-command`, `deploy-user-service`) `rsync
+    --delete` to one destination and restart one unit. Two on-landing
+    deploys on one target from two worker slots (`--jobs 4`), or a
+    landing and a `forge deploy`, run both rsyncs into the same
+    directory; the last to finish wins, not the newest commit, and one
+    deploy's failed check rolls the destination back under the other's
+    check. The rollback target is the newest row with `check_ok ==
+    Some(true)` other than this one (deploy.rs:387-391), without regard
+    to sha: a redeploy of a commit that passed before and now fails
+    'rolls back' to the same commit.
+    *Input:* two landings on a repository with an on-landing target,
+    finishing together. *Task:* "Hold an exclusive `flock` on
+    `FORGE_HOME/deploys/<project>-<target>.lock` for the whole of
+    `deploy::run` after target resolution, as `git::kernel_lock` does,
+    and choose `previous` as the newest passing row whose `sha`
+    differs from this deploy's, saying 'nothing else to roll back to'
+    otherwise. Test: two `deploy::run` calls on one target, the second
+    starting while the first sleeps in its method, run one after the
+    other."
+
+13. **A `deploy-self` that runs past its timeout is killed with `SIGKILL`,
+    so its trap never restores anything.**
+    The method runs under `cfg.check_timeout_secs`, 600 by default
+    (config.rs:248; the Forge repository sets 900), through `run_one`,
+    which on timeout calls `child.kill()` and then `kill -KILL` on the
+    process group (checks.rs:209-227). `deploy_at` ignores the action's
+    own `timeout_secs` (deploy.rs:267). The script's `on_exit` trap
+    (deploy-self.toml:73-81) cannot run on `SIGKILL`. The script's own
+    `flock -w 600` (line 41) is by itself the default timeout, and a
+    cold `cargo build --release --workspace` adds to it. In the legacy
+    branch, a timeout in the restart or check waits leaves `current`
+    flipped to a release whose check never passed, and the
+    `.doctor.XXXXXX` directory and a half-copied `releases/.<sha>.tmp`
+    behind. The generic rollback (deploy.rs:387-427) then redeploys the
+    last passing commit, which repairs `current` only when there is one.
+    docs/DEPLOY.md's 'the whole method has to finish inside
+    `check_timeout_secs`' is the only guard.
+    *Input:* a self-deploy with a cold `bin/target` cache, or one that
+    waits on the lock. *Task:* "Give operations a timeout of their own
+    (`ActionDef.timeout_secs`, which `deploy-self` should declare, ample
+    for a cold build) and make `run_one_capped` send `SIGTERM` to the
+    group and wait a few seconds before `SIGKILL` when a check times
+    out, so an operation's trap runs. Test: a script whose trap writes a
+    file, killed by the timeout, has written it."
+
+14. **The pointers have three writers and no shared lock.**
+    `deploy-self` flips under `.deploy-self.lock`, but `successor::take_
+    over` (successor.rs:291-306), `forge upgrade` (upgrade.rs:378-437)
+    and `init --relink` (init.rs:285-289) call `release::flip` and
+    `restore` (release.rs:97-129) with none. `flip` reads `current` and
+    `previous` and writes them in two renames, so two flips can both read
+    the same `was` and both set `previous` to it, losing a release from
+    `previous`. `point` uses one temp name per pointer, `.current.new`
+    (release.rs:88; the script's `point` uses the same, deploy-self.toml:
+    55), so two writers of one pointer can rename each other's link, or
+    fail on `symlink` (`EEXIST`) and report 'could not flip'. `forge
+    upgrade` racing a self-deploy is the realistic pair. The install
+    temp name has the same shape: `releases/.<id>.tmp` (release.rs:71).
+    *Task:* "Put the lock in `release.rs`: `release::lock(root)` takes
+    `flock` on `bin/.deploy-self.lock` and every caller of `flip`,
+    `restore`, `install` and `point` holds it; give temp names a pid
+    suffix. The script and Rust then agree on one file. Test: two
+    threads flipping alternately never leave `previous` naming the
+    release `current` names."
+
+15. **`forge init` writes unit files that systemd mis-parses when a path
+    contains a space, and loses the tail of PATH silently.**
+    `worker_unit` and `web_unit` interpolate the home, the binary and
+    the composed PATH unquoted into `Environment=` and `ExecStart=`
+    (init.rs:75-77, 102-105). systemd splits `Environment=` on
+    whitespace. *Reproduced* with `systemd-analyze verify` (systemd
+    261): `Environment=FORGE_HOME=/tmp/my forge` warns 'Invalid
+    environment assignment, ignoring: forge' and the unit runs with
+    `FORGE_HOME=/tmp/my`, a different home; `Environment=PATH=/a:/mnt/c/
+    Program Files/Git/cmd:/usr/bin` drops everything after the space
+    (`Files/Git/cmd:/usr/bin`), which is what WSL puts in PATH. This is
+    a third way for the PATH to be lost after task 707's two:
+    `unit_path::compose` keeps any absolute directory (unit_path.rs:
+    39-43) and `declared_path` reads it back quote-tolerant
+    (unit_path.rs:51-58) though the writer never quotes. `%` is also a
+    systemd specifier in both settings.
+    *Input:* `forge init --home '/srv/my forge'`, or `forge init` from
+    a shell whose PATH has a directory with a space. *Task:* "Quote and
+    escape what `worker_unit` and `web_unit` write: `Environment=
+    "KEY=value"`, `ExecStart` with each argument quoted, `%` as `%%`,
+    `\` and `"` escaped, and refuse a newline. Add a unit test that
+    parses the generated text back with `declared_path` for a home and
+    a PATH with spaces, and an e2e that runs `systemd-analyze verify`
+    when it exists."
+
+16. **Re-running `forge init` reports 'already installed and enabled'
+    without asking systemd, and applies nothing to the running worker.**
+    `install_units` returns 'already installed and enabled' whenever the
+    files are unchanged (init.rs:211-221), never running `systemctl
+    is-enabled`: a home whose first `init` ran with no session (the
+    files written, the by-hand commands printed, init.rs:196-209) is
+    reported enabled forever after. When the files did change,
+    `systemctl --user enable --now` (init.rs:243-251) does not restart
+    an active unit, so the new `PATH` or `ExecStart` is on disk and the
+    worker still runs the old, while the step says 'installed and
+    enabled' (253-261); `require_on_path`'s hint (unit_path.rs:86)
+    tells the operator to re-run init and restart, and init never says
+    the restart is the part that applies it. And the PATH it writes is
+    the current shell's, not merged with the unit's own
+    (init.rs:191-193): re-running from a narrower environment (an ssh
+    command, cron, an agent's sandbox) replaces a good PATH with a poor
+    one, silently, on every re-run. That is how the PATH was lost the
+    second time.
+    *Input:* `forge init` from a shell without the agent CLIs' directory
+    when the unit has it. *Task:* "In `install_units`, ask `systemctl
+    --user is-enabled` for each unit and enable what is not; after
+    writing a changed unit report 'restart forge-worker to apply' and
+    name the worker's live PATH when it differs from the unit's; keep
+    the entries of the unit's existing `PATH` (`declared_path`) that the
+    new one lacks, after the new ones, unless `--reset-path` is
+    passed. Tests for each."
+
+17. **The checked-in `deploy/forge-worker.service` is unsafe with the
+    successor handoff, and docs/DEPLOY.md cites it as the truth.**
+    The template is `Type=simple`, without `NotifyAccess=all`, with
+    `ExecStart` in `~/Projects/forge/target/release/` and no
+    `StartLimit*` (deploy/forge-worker.service:11-15). Under it
+    `MAINPID=` is ignored (successor.rs:74), so when the old worker
+    exits after a handover systemd sees the main process exit and stops
+    the unit, killing the successor; and `capable` (successor.rs:236-
+    241) still says yes, so `deploy-self` only stages. docs/DEPLOY.md
+    ('How a deploy survives its own worker restart') cites the file for
+    the drain semantics. The unit `init` writes is the other definition.
+    *Task:* "Delete `deploy/forge-worker.service` or generate it from
+    `init::worker_unit` (a test that fails when they differ), and point
+    docs/DEPLOY.md and docs/OPS.md at `forge init` as the only source of
+    the unit."
+
+18. **`deploy-user-service` and `deploy-command` with `host=local` cannot
+    reach systemd: the operation's environment has no
+    `XDG_RUNTIME_DIR`.**
+    `agent_env` passes `PATH`, `HOME`, `LANG`, `TERM` and a few provider
+    variables (agent.rs:286-312), and operations run with only that
+    (operation.rs:473-480). `deploy-self` knows and exports
+    `XDG_RUNTIME_DIR` (deploy-self.toml:28-30);
+    `deploy-user-service`'s `run_remote` does `bash -c "$1"` for
+    `host=local` with none (deploy-user-service.toml:25-31).
+    *Reproduced:* `env -i PATH=$PATH HOME=$HOME systemctl --user
+    is-active x` prints 'Failed to connect to user scope bus via local
+    transport: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not
+    defined'. The restart fails (the script is `set -e`), the deploy's
+    check fails, and the rollback runs into the same failure. The e2e
+    suite uses a fake `systemctl`, which cannot show it. Over ssh a
+    login session sets the variable, so only `local` is affected.
+    *Task:* "In `deploy-user-service`, export `XDG_RUNTIME_DIR=${XDG_
+    RUNTIME_DIR:-/run/user/$(id -u)}` before the local `systemctl`
+    calls, as `deploy-self` does. Test: a fake `systemctl` that fails
+    without the variable."
+
+19. **`deploy-user-service` and `deploy-command` never check `dest`, and an
+    empty one makes rsync target the remote's `/`.**
+    `unit` is validated (deploy-user-service.toml:21-24); `host` and
+    `dest` are not, and `add_target` accepts a target without either
+    arg (deploy.rs:558-589). With `dest` empty the script runs `rsync -a
+    --delete "$src"/ "$host:$dest"/` (deploy-user-service.toml:37,
+    deploy-command.toml:26), which expands to `host:/`. `--delete`
+    removes anything the ssh user can delete under `/` that is not in
+    the source tree. (Not executed: it would delete files. The expansion
+    is what was confirmed.) `host=local` fails first, at `mkdir -p ""`.
+    *Input:* `forge project deploy add p t --method deploy-command --arg
+    host=box --check true` (a forgotten `--arg dest=`). *Task:* "Refuse
+    at `add_target`/`set_target` a method whose required args are
+    missing (give an operation a `required_args` list for this), and in
+    both scripts exit 1 when `host` or `dest` is empty or `/`. Test for
+    both."
+
+20. **Doctor has no release row, and the worker and plugins rows say
+    'fine' about things that are not.**
+    (a) There is no row for the release layout: not `current`,
+    `previous`, `staged`, nor whether a pointer dangles, nor which
+    release the worker runs (the only mention of `staged` is inside
+    `check_succession`, doctor.rs:619). (b) The worker row's staleness
+    is 'the worker's binary is deleted' (worker.rs:71-81,
+    doctor.rs:668-691), which cannot happen under the release layout,
+    where nothing is ever overwritten: a worker on a release older than
+    `current` (an upgrade or a flip without a restart, defect 3) is
+    reported `pid N running`, ok. It returns no row at all when there is
+    no `worker.pid` (doctor.rs:665-667), so a home whose worker never
+    started says nothing. (c) The plugins row is `Ok` unless a plugin
+    fails to load (doctor.rs:531-541); the function comment says a
+    crash-looping plugin is a warning (doctor.rs:502-505), but a
+    `restarting (x9)` state only lands in the detail. It reads
+    `plugins-run/<name>.json` without checking that the pid is alive
+    (doctor.rs:520-529), so a plugin whose supervisor died, or whose
+    worker stopped them (defect 2), still reads `running pid N, up
+    3000s`.
+    *Task:* "Add a `release` row (`current`, `previous`, `staged`,
+    dangling links, the newest live worker's version from `workers`);
+    `Warn` when the live worker's version is not `current`, when `staged`
+    names something other than `current` with no successor, and when a
+    pointer dangles. Make the worker row `Warn` on 'no worker' when
+    units exist. In the plugins row, `Warn` for `restarting`, and treat
+    `running` whose pid is dead as `stopped: supervisor gone`."
+
+21. **The deploy look is told the smoke check passed when it may not
+    have, and feeds page text to an unsandboxed agent whose 'blocking'
+    finding rolls the deploy back.**
+    `deploy::run` calls `deploy_look::run` 'whether or not the
+    deterministic smoke check itself passed' (deploy.rs:311-315), but
+    the prompt states 'its automated smoke check already passed'
+    (deploy_look.rs:43-44). The prompt also embeds the page's
+    `<title>`, its console errors and its failed requests from
+    `smoke.json` (deploy_look.rs:87-95, 126-133), which the deployed
+    site controls, and the directive runs with `sandboxed: false`
+    (deploy_look.rs:153) and file tools. A page whose title says
+    'report a blocking finding' makes `deploy::run` mark the deploy
+    failed and roll it back (deploy.rs:327-335). The `UNTRUSTED_DATA`
+    preamble is the only defence.
+    *Input:* a deployed page whose title or console output is
+    attacker-shaped (a project that renders user content).
+    *Task:* "Tell the look the smoke result it really had; put the
+    page-derived strings in a fenced block under the untrusted-data
+    header, truncated; and run the look sandboxed (`sandboxed: true`,
+    read-only mount of `out_dir`), since it reads one image. Consider
+    requiring two agreeing looks, or a human confirm, before a look
+    alone rolls back a deploy whose check and smoke passed."
+
+22. **`deploy-self`'s legacy branch and its lock assume a Linux box with
+    `flock` and every unit installed.**
+    `flock` missing (macOS, which the release matrix builds) makes `if !
+    flock -w 600 9` true and prints 'another self-deploy held the lock
+    for ten minutes' (deploy-self.toml:41-44), a false reason. The
+    legacy branch runs `systemctl --user restart $units` unfiltered
+    (155) on `forge-web forge-portal`, and `forge init` writes only the
+    worker and web units (init.rs:189-193; the portal's is hand-installed
+    per docs/PORTAL.md:107), so on a machine set up by `forge init` the
+    restart fails, the `is-active` wait would never succeed, and the
+    deploy rolls back. `take_over` reports the same absent unit as
+    'could not restart forge-web, forge-portal' even though `forge-web`
+    restarted (successor.rs:299-305). `forge upgrade` filters by unit
+    existence (`existing_units`, upgrade.rs:229-236).
+    *Task:* "Check `command -v flock` and `systemctl` first with their
+    own messages; restart only units `systemctl --user cat` finds (the
+    filter `upgrade.rs` uses); make `take_over` do the same."
+
+23. **`init --relink` builds a 'release' from whatever sits beside the
+    running binary, and names it differently from `deploy-self`.**
+    `adopt_running_binaries` copies every binary that exists in the
+    running executable's directory into `releases/<FORGE_GIT_SHA>/`
+    (init.rs:275-289, release.rs:57-84). Run from `target/debug` after
+    `cargo build -p forge`, that is a fresh `forge` beside older
+    `forge-web`, `forge-portal` and `forge-tui` from earlier builds:
+    a mixed release becomes `current`, and `install` never touches it
+    again (release.rs:63-65). The id is the short sha `build.rs`
+    emits (build.rs:20), while `deploy-self` names its release by the
+    full sha (deploy-self.toml:35): the same commit lives under two
+    names, so a self-deploy of the commit that is already live builds it
+    again and stages a 'different' release, which the worker treats as a
+    successor (successor.rs:153).
+    *Task:* "Have `--relink` require all of `release::BINS` but
+    `forge-test` in the executable's directory, else refuse with the
+    missing names, and resolve the id to the full sha (`git rev-parse`
+    of `FORGE_GIT_SHA` in the kernel repository, or embed it in
+    `build.rs` in full). Test: a directory with only `forge` is refused."
+
+### 3.2 Read and found sound
+
+- **`release.rs`'s primitives.** `point` renames a temporary symlink into
+  place, so a reader sees the old link or the new, never none. `flip`
+  writes `previous` before `current`, so a crash between them leaves
+  `previous` naming a release that is still live, never a lost one.
+  `install` copies into a `.tmp` sibling and renames it, and never
+  touches an existing release. Defect 14 is about who calls them, not
+  about them.
+- **Where the deploy's tree comes from.** `origin_truth` fetches origin's
+  base branch into the kernel-owned bare repository by an explicit
+  refspec (`git::stage`, under `kernel_lock`, hooks off), resolves a
+  `--sha` with `^{commit}` there and requires it to be an ancestor of
+  that tip, and archives from that repository; the registered
+  checkout's working tree and refs are never read. `non_self_src`
+  keeps an on-landing deploy independent of the checkout's best-effort
+  fetch. `fresh_archive` removes the destination first and `deploy_at`
+  removes the scratch tree both on success and failure of the method.
+- **The lock itself.** `exec 9>` then `flock -w 600 9` is released when
+  the script exits; the children it starts (cargo, the release's
+  doctor) end with it, and on timeout the whole process group is
+  killed, so no orphan can hold the descriptor. What is not sound is
+  what it does not cover (defects 4, 11, 14).
+- **Staging and the build.** The release is built into a `.tmp`
+  directory and `mv -T`-ed into place, so it is never half-written; an
+  existing release is reused without a rebuild; the required binaries
+  are checked before the copy; the scratch doctor's home is removed by
+  the trap; `FORGE_BUILD_SHA` gives an archive with no `.git` its
+  commit. The description in the operation's toml and steps 1-7 of
+  docs/DEPLOY.md match the script.
+- **`deploy::run`'s bookkeeping.** `record_deploy_error` now finishes
+  the row on every error after `start_deploy` (REVIEW-3, defect 9's
+  open row), the smoke step runs only after the check passed, and a
+  look that itself errors never fails the deploy
+  (deploy.rs:339-347); only a `blocking` finding does, and
+  `check_severity` rejects any other severity string.
+  `parse_target_args` refuses keys that shadow the target's own flags,
+  and `add_target`/`set_target` require a check unless the method
+  supplies its own.
+- **The successor mechanics that are right.** The successor gets its own
+  process group, `FORGE_HOME`, `FORGE_RELEASE` and the same arguments
+  (successor.rs:163-181); `take_over` is a no-op when `current` already
+  names the release; the capability file is written by rename
+  (successor.rs:251-259); the old worker waits for it before leaving so
+  systemd never sees the main pid go before `MAINPID=` moved (the wait's
+  length and outcome are defect 1); `capable` accepts either a live
+  registered worker or a live capability pid. `register_worker`'s
+  double registration is harmless, as REVIEW-3 already found.
+- **Shadowing's diff and cache.** `diff_of` uses a unique temp file per
+  call and treats only exit 0 and 1 as a diff, `scan` never caches a
+  failed diff, and a stale seed is noted once per process.
+  `has_operator_commit`'s rule is the defect (7, 8); the mechanics
+  around it are not.
+- **`unit_path::compose`** puts the binary directory first, deduplicates,
+  drops relative entries and falls back to the system directories only
+  when the shell has no absolute one, all under unit tests; quoting is
+  defect 15.
+- **`deploy-user-service` otherwise.** It validates `unit`, quotes it
+  in the remote command, builds its `--exclude` list as an array and
+  bounds the active wait (20 tries), and `host=local` and ssh share
+  one `run_remote`.
+- **`deploy-self`'s legacy branch, as far as it goes.** Flip, restart,
+  bounded `is-active` waits, a bounded check and the worker restarted
+  last with `--no-block` do what docs/DEPLOY.md says on a machine that
+  has both units; the worker is never restarted after a failed check.
+
+### 3.3 Not readable from this checkout
+
+**The bare origin's post-update mirror hook.** docs/OPS.md:359 says
+`main` and `v*` tags are mirrored to GitHub by a post-update hook on the
+bare repository. That hook lives in the bare repository, not in this
+one, and no bare origin exists on the machine this was read on (`git
+remote -v` is empty here; `find / -name post-update` finds only git's
+`.sample`). Nothing about it is recorded as a defect because none can be
+confirmed at a line. What could be read is what depends on it: `deploy-
+self` fetches origin with `git::stage` and does not use `refs/tags`, so a
+failing or slow mirror cannot change what is deployed, but a hook that
+mirrors synchronously runs inside every push (`receive-pack`) and would
+hold the landing's push open. To settle it, whoever has the bare
+repository should read `hooks/post-update`, check that it runs in the
+background or bounds its network call, that it does not fail the push
+when GitHub is unreachable, and that it mirrors by explicit refspec; and
+the hook should be committed under `deploy/` so it can be reviewed and
+installed by `forge init`.
+
+## Closing table: every defect across the three sections
+
+Section 3's rows are below. Rows for sections 1 (sandbox and egress) and
+2 (plugin supervision and the successor handoff) belong here too, ids
+`E1-n` and `E2-n`; those sections were written by their own tasks and
+are not in this tree, so their rows are to be added when they merge.
+Defects 1, 2 and 3 above touch the successor handoff and may duplicate or
+overlap section 2's; the fix initiative should file them once.
+
+| id | file:line | defect |
+|----|-----------|--------|
+| E3-1 | src/successor.rs:200-229, worker.rs:1119-1122, init.rs:69-81 | a dead or slow successor makes the old worker exit non-zero; restart loop until the unit hits its start limit; `current` flipped before the successor is proven |
+| E3-2 | src/successor.rs:106-112, 135 | plugins stopped for a successor are not restarted when it dies |
+| E3-3 | src/successor.rs:149-158, src/upgrade.rs:347-366 | `staged` never consumed: `forge upgrade` and manual flips of `current` are reversed by a new successor |
+| E3-4 | src/builtins/operations/deploy-self.toml:47-49, 60-71 | `restore` writes stale pointers over a successor's flip and restarts web and portal for any failure |
+| E3-5 | deploy-self.toml:136-140, src/deploy.rs:358-382 | `forge deploy forge self` is `ok` when only staged; nothing checks the release went live |
+| E3-6 | deploy-self.toml:112-119 | scratch doctor proves the schema on an empty store; pass condition is a JSON substring |
+| E3-7 | src/workflows/shadow.rs:83-95, 329-341, src/deploy.rs:251 | a catalog copy of `deploy-self` shadows the built-in; classification by commit author; doctor says ok |
+| E3-8 | src/workflows/shadow.rs:83-95, 279-298, src/init.rs:355 | uncommitted or init-committed edits are 'stale seeds', ignored and deleted by `refresh` |
+| E3-9 | src/deploy.rs:179-221, src/queue.rs:1252-1262 | deploy question unanswerable by `forge answer`; a landed task is flipped to blocked |
+| E3-10 | src/deploy.rs:304, 429-438, 483 | errors after start skip rollback and question; a later error overwrites the recorded rollback |
+| E3-11 | src/deploy.rs:107-120, 262-263 | 'older than live' guard fails open, runs before the lock, ignores `staged` |
+| E3-12 | src/deploy.rs:238-484, 387-391 | no per-target lock for non-self methods; rollback target may be the failed sha |
+| E3-13 | src/deploy.rs:267, src/checks.rs:209-227, deploy-self.toml:73-81 | `SIGKILL` at `check_timeout_secs`; the restore trap never runs; the action's own timeout ignored |
+| E3-14 | src/release.rs:87-129, src/successor.rs:291-306, src/upgrade.rs:378-437 | pointer writers share no lock; temp names collide |
+| E3-15 | src/init.rs:75-77, 102-105 | unit values unquoted: a space in home or PATH truncates them (reproduced) |
+| E3-16 | src/init.rs:191-193, 211-221, 243-261 | re-run says 'enabled' without asking; change not applied to the running worker; PATH replaced, not merged |
+| E3-17 | deploy/forge-worker.service:11-15 | template is `Type=simple`: unsafe with the successor handoff; cited by docs |
+| E3-18 | src/builtins/operations/deploy-user-service.toml:25-31 | `host=local` has no `XDG_RUNTIME_DIR`; `systemctl --user` fails (reproduced) |
+| E3-19 | deploy-user-service.toml:37, deploy-command.toml:26, src/deploy.rs:558-589 | empty `dest` rsyncs `--delete` to the remote's `/`; args not validated |
+| E3-20 | src/doctor.rs:531-541, 657-692, 520-529 | no release row; worker staleness cannot fire under the layout; plugins row ok while crash-looping or dead |
+| E3-21 | src/deploy_look.rs:43-44, 87-95, 153, src/deploy.rs:311-335 | look told smoke passed when it may not have; page text into an unsandboxed agent whose finding rolls back |
+| E3-22 | deploy-self.toml:41-44, 155, src/successor.rs:299-305 | `flock`/units assumed; false lock message; unfiltered `restart $units` |
+| E3-23 | src/init.rs:275-289, src/release.rs:57-84 | `--relink` adopts a mixed set of binaries and names the release by short sha |
