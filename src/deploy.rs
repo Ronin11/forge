@@ -154,22 +154,66 @@ async fn non_self_src(
     Ok((repo.to_path_buf(), sha))
 }
 
+/// Where the rollback archives `previous_sha` from: `src`, the tree this
+/// deploy came from, when it has that commit, and otherwise the kernel
+/// repository, where an on-landing deploy staged it (see
+/// [`non_self_src`]). An operator's `forge deploy` archives from the
+/// registered checkout, which need not have a commit only a landing
+/// staged, and a rollback must not fail on that.
+async fn rollback_src(home: &Path, src: &Path, repo: &Path, previous_sha: &str) -> Result<PathBuf> {
+    let rev = format!("{previous_sha}^{{commit}}");
+    if git::rev_parse(src, &rev).await.is_ok() {
+        return Ok(src.to_path_buf());
+    }
+    let kernel = git::kernel_repository(home, repo).await?;
+    git::rev_parse(&kernel, &rev).await.with_context(|| {
+        format!(
+            "rolling back to {}: neither {} nor the kernel repository has it",
+            short(previous_sha),
+            src.display()
+        )
+    })?;
+    Ok(kernel)
+}
+
 /// Finish `deploy_id`'s row as a failure with `e`'s text as the reason, so
 /// an error after `start_deploy` never leaves the row open, and return `e`
-/// unchanged for the caller to propagate.
-fn record_deploy_error(f: &Forge, deploy_id: i64, e: anyhow::Error) -> anyhow::Error {
-    let _ = f.store.finish_deploy(crate::store::FinishDeploy {
+/// unchanged for the caller to propagate. A row `run` already finished (a
+/// recorded rollback, or nothing to roll back to) is left as it is; only
+/// when this finishes the row, so no rollback was recorded and nobody was
+/// asked, does it file the question itself.
+fn record_deploy_error(
+    f: &Forge,
+    project: &str,
+    repo: &str,
+    deploy_id: i64,
+    sha: &str,
+    e: anyhow::Error,
+) -> anyhow::Error {
+    let reason = format!("{e:#}");
+    let finished = f.store.finish_open_deploy(crate::store::FinishDeploy {
         id: deploy_id,
         at: unix_now(),
         check_ok: false,
         check_output: "",
         rolled_back_to: None,
-        reason: &format!("{e:#}"),
+        reason: &reason,
         smoke_ok: None,
         smoke_json: None,
         look_ok: None,
         look_json: None,
     });
+    if matches!(finished, Ok(true)) {
+        let _ = ask(
+            f,
+            project,
+            repo,
+            format!(
+                "the deploy of {} failed with an error and was not rolled back; it may still be live:\n{reason}",
+                short(sha)
+            ),
+        );
+    }
     e
 }
 
@@ -301,7 +345,16 @@ pub async fn run(
             match (&target.smoke_url, &smoke_action) {
                 (Some(url), Some(smoke_action)) => {
                     let out_dir = f.paths.home.join("deploys").join(deploy_id.to_string());
-                    let sr = operation::run_deploy_smoke(smoke_action, url, &out_dir, timeout).await?;
+                    // A smoke step that cannot even run is a failed one: the
+                    // method already succeeded, so the normal rollback and
+                    // question must still follow.
+                    let sr = operation::run_deploy_smoke(smoke_action, url, &out_dir, timeout)
+                        .await
+                        .unwrap_or_else(|e| crate::checks::CheckResult {
+                            ok: false,
+                            tail: format!("the smoke step could not run: {e:#}"),
+                            ..Default::default()
+                        });
                     let json = std::fs::read_to_string(out_dir.join("smoke.json")).ok();
                     if !sr.ok {
                         r.ok = false;
@@ -426,10 +479,11 @@ pub async fn run(
             return Ok(false);
         };
 
+        let rb_src = rollback_src(&f.paths.home, &src, &repo, &previous.sha).await?;
         let rb = deploy_at(
             &action,
             &target,
-            &src,
+            &rb_src,
             &previous.sha,
             f,
             timeout,
@@ -480,7 +534,7 @@ pub async fn run(
         Ok(false)
     }
     .await;
-    outcome.map_err(|e| record_deploy_error(f, deploy_id, e))
+    outcome.map_err(|e| record_deploy_error(f, project, &target.repo, deploy_id, &sha, e))
 }
 
 /// `forge project deploy add`'s fields, parsed by clap but not yet

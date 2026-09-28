@@ -359,6 +359,11 @@ enum Cmd {
         /// Machine-readable: a JSON array of {name, status, detail, hint}
         #[arg(long)]
         json: bool,
+        /// Run only the named check (`schema`: open and migrate the store,
+        /// nothing else) and exit non-zero unless it is present and not
+        /// FAIL; repeatable
+        #[arg(long, value_name = "CHECK")]
+        only: Vec<String>,
     },
     /// Print the crate version and, if built from a git checkout, its commit
     Version,
