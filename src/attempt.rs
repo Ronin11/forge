@@ -44,6 +44,8 @@ struct AttemptLaunch<'a> {
     writes: bool,
     start_sha: &'a str,
     provider: &'a agent::Provider,
+    /// How long the checks after the attempt may take (`check_timeout_secs`).
+    check_timeout: Duration,
 }
 
 use crate::audit::{Inputs, Outputs};
@@ -305,6 +307,7 @@ pub async fn run_attempt(
         writes: contract.writes(),
         start_sha: &a.start_sha,
         provider,
+        check_timeout: Duration::from_secs(cfg.check_timeout_secs),
     })
     .await?;
     let refused = crate::egress::read_refused(&spec.dir);
@@ -581,6 +584,7 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
         writes,
         start_sha,
         provider,
+        check_timeout,
     } = args;
     let model = attempt_model(
         step,
@@ -600,6 +604,7 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
             model: &model,
             max_turns: t.max_turns as u32,
             timeout: Duration::from_secs(t.timeout_secs as u64),
+            check_timeout,
             log_path,
             provider,
             schema: crate::envelope::SCHEMA,
