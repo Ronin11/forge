@@ -195,6 +195,16 @@ impl Execution {
             remotes: Mutex::new(BTreeMap::new()),
         }))
     }
+    /// An execution that runs everything through `sandbox`.
+    #[cfg(test)]
+    pub(crate) fn bwrap_only(sandbox: Sandbox) -> Self {
+        Self {
+            bwrap: Ok(sandbox),
+            fallback: Backend::Bwrap,
+            backends: Mutex::new(BTreeMap::new()),
+            remotes: Mutex::new(BTreeMap::new()),
+        }
+    }
     pub fn set_backend(&self, path: &Path, backend: Backend) {
         self.backends
             .lock()

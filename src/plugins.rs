@@ -326,7 +326,7 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
 }
 
 /// Removes `<home>/plugins/<name>`, the installed copy `install` made.
-/// Stopping the plugin and clearing its enabled flag is the caller's job
+/// Clearing its enabled flag is the caller's job
 /// (the same store update `forge plugin disable` makes; see `cli::deploy::plugin_uninstall`),
 /// because that needs the store, which this module does not hold.
 /// `<home>/plugins-state/<name>` is left alone, deliberately: it is the
@@ -336,6 +336,20 @@ pub fn remove_installed(home: &Path, name: &str) -> Result<()> {
     if !dir.is_dir() {
         bail!("no installed plugin named {name:?} at {}", dir.display());
     }
+    // Keep the directory intact until reconciliation has stopped supervision.
+    // RunState alone is insufficient: backoff and failed starts can still
+    // restart, and a stopped state can precede the process group's exit.
+    let deadline =
+        Instant::now() + Duration::from_secs(RECONCILE_SECS) + STOP_GRACE + Duration::from_secs(10);
+    let _lock = loop {
+        if let Some(lock) = try_lock_plugin(home, name) {
+            break lock;
+        }
+        if Instant::now() >= deadline {
+            bail!("timed out waiting for plugin {name:?} to stop; installed directory retained");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
     std::fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))
 }
 
