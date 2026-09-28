@@ -973,10 +973,12 @@ fn create_private(path: &Path) -> Result<()> {
     verify_private(path)
 }
 
+/// The directory this process made, if it has.
+static MADE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
 /// The process's one proxy directory, shared by every `Proxies` in it: made
 /// on first use, never wiped here, only removed at exit.
 fn own_dir_ready() -> Result<PathBuf> {
-    static MADE: Mutex<Option<PathBuf>> = Mutex::new(None);
     let mut made = MADE.lock().unwrap();
     if let Some(path) = &*made
         && path.is_dir()
@@ -984,6 +986,10 @@ fn own_dir_ready() -> Result<PathBuf> {
         verify_private(path)?;
         return Ok(path.clone());
     }
+    // Nothing of this process has made its directory yet, so one under its
+    // pid is a dead process's whose pid was reused; dead pids' are swept.
+    remove_own_dir();
+    sweep_dead_in_run_root();
     let path = own_dir();
     create_private(&path)?;
     *made = Some(path.clone());
@@ -997,6 +1003,18 @@ pub fn remove_own_dir() {
 
 /// Removes the process's proxy directory when dropped.
 pub struct OwnDirGuard;
+
+/// Removes the proxy directory when dropped, if this process made one: held
+/// by `main` so that every command that ran a sandboxed step cleans up.
+pub struct MadeDirGuard;
+
+impl Drop for MadeDirGuard {
+    fn drop(&mut self) {
+        if MADE.lock().is_ok_and(|m| m.is_some()) {
+            remove_own_dir();
+        }
+    }
+}
 
 impl Drop for OwnDirGuard {
     fn drop(&mut self) {
