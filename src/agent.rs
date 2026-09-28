@@ -101,8 +101,8 @@ pub enum Runner {
     /// GitHub Copilot CLI, `copilot -p`; see `run_copilot`.
     CopilotCli,
     Chat,
-    /// TypeSafe's Jev through Cloudflare Workers AI: typed judgment, one
-    /// HTTP call, never text; see `run_jev`.
+    /// TypeSafe's Jev: typed judgment, one HTTP call, never text; see
+    /// `jev::run`.
     Jev,
 }
 
@@ -154,6 +154,14 @@ pub struct Provider {
     pub api_key_env: Option<String>,
     /// Names the variable holding a jev provider's Cloudflare account id.
     pub account_id_env: Option<String>,
+    /// Which host a jev provider posts to; see `jev::JevBackend`.
+    pub jev_backend: JevBackend,
+    /// A jev provider's Cloudflare Workers AI endpoint, while it is used.
+    pub cloudflare_url: Option<String>,
+    /// Names the variable holding a jev provider's Cloudflare API token.
+    pub cloudflare_key_env: Option<String>,
+    /// The model Cloudflare names Jev by.
+    pub cloudflare_model: Option<String>,
     pub env: Vec<(String, String)>,
     /// Extra argv this provider always adds, after the launcher's own
     /// flags and before the prompt (e.g. codex's `--oss --local-provider
@@ -197,6 +205,10 @@ impl Default for Provider {
             base_url: None,
             api_key_env: None,
             account_id_env: None,
+            jev_backend: JevBackend::Auto,
+            cloudflare_url: None,
+            cloudflare_key_env: None,
+            cloudflare_model: None,
             env: Vec::new(),
             extra_args: Vec::new(),
             notes: None,

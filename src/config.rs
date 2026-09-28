@@ -430,6 +430,13 @@ struct ProviderRaw {
     /// The environment variable holding the Cloudflare account id, for the
     /// jev runner; see `agent::Provider::account_id_env`.
     account_id_env: Option<String>,
+    /// The jev runner's host: `auto`, `cloudflare` or `typesafe`; see
+    /// `agent::JevBackend`.
+    backend: Option<String>,
+    /// The jev runner's Cloudflare endpoint, token variable and model.
+    cloudflare_url: Option<String>,
+    cloudflare_api_key_env: Option<String>,
+    cloudflare_model: Option<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
     #[serde(default)]
@@ -960,20 +967,30 @@ journal_control = 0.0
 # base_url = \"http://dev.home:11434/v1\"
 # model = \"qwen3-coder:30b\"
 #
-# runner = \"jev\" is typed judgment, not text: TypeSafe's Jev through
-# Cloudflare Workers AI, one HTTP call answering a directive step's outcomes
-# (and its [[questions]]) with a choice, probabilities and a confidence. Also
-# refused for anything but such a step. Every key below is its default;
-# `account_id_env` and `api_key_env` name environment variables, never hold
-# the values. Output tokens are free.
+# runner = \"jev\" is typed judgment, not text: TypeSafe's Jev, one HTTP
+# call answering a directive step's outcomes (and its [[questions]]) with a
+# choice, probabilities and a confidence. Also refused for anything but such
+# a step. Every key below is its default; the `*_env` keys name environment
+# variables, never hold the values. Output tokens are free.
+#
+# Until Cloudflare's AI Gateway credits run out, `backend = \"auto\"` posts
+# through Cloudflare Workers AI first (when its token is set); its 402
+# (insufficient balance) switches the process to TypeSafe for good and
+# leaves `jev-cloudflare-exhausted` beside the worker's credentials drop-in
+# so later processes go straight there. `cloudflare` or `typesafe` forces one.
 #
 # [providers.jev]
 # runner = \"jev\"
-# base_url = \"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run\"
-# account_id_env = \"CLOUDFLARE_ACCOUNT_ID\"
-# api_key_env = \"CLOUDFLARE_API_TOKEN\"
-# model = \"typesafe/jev\"
+# backend = \"auto\"
+# base_url = \"https://api.typesafe.ai/v1/systemone\"
+# api_key_env = \"TYPESAFE_API_KEY\"
+# model = \"jev-latest\"
 # price_usd_per_million_input = 0.042
+# price_usd_per_million_output = 0
+# cloudflare_url = \"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run\"
+# account_id_env = \"CLOUDFLARE_ACCOUNT_ID\"
+# cloudflare_api_key_env = \"CLOUDFLARE_API_TOKEN\"
+# cloudflare_model = \"typesafe/jev\"
 
 # [providers.openai-chat]
 # runner = \"chat\"
@@ -1186,23 +1203,52 @@ fn build_providers(
             None => bail!("providers.{name}: needs a `runner`"),
         };
         let jev = runner == Runner::Jev;
+        let mut p = p;
+        // A jev table written for Cloudflare alone (its `base_url` naming
+        // `{account_id}`) keeps its keys as Cloudflare's; TypeSafe gets the
+        // defaults.
+        if jev
+            && p.cloudflare_url.is_none()
+            && p.base_url.as_deref().is_some_and(|u| u.contains("{account_id}"))
+        {
+            p.cloudflare_url = p.base_url.take();
+            if p.cloudflare_api_key_env.is_none() {
+                p.cloudflare_api_key_env = p.api_key_env.take();
+            }
+            if p.cloudflare_model.is_none() {
+                p.cloudflare_model = p.model.take();
+            }
+        }
+        let jev_backend = match &p.backend {
+            Some(b) if jev => b
+                .parse::<crate::agent::JevBackend>()
+                .map_err(|e| anyhow::anyhow!("providers.{name}.backend: {e}"))?,
+            Some(_) => bail!("providers.{name}.backend: only a jev provider has a backend"),
+            None => crate::agent::JevBackend::Auto,
+        };
+        let jev_default = |v: Option<String>, d: &str| v.or_else(|| jev.then(|| d.into()));
         providers.insert(
             name.clone(),
             Provider {
                 name,
                 runner,
-                model: p
-                    .model
-                    .or_else(|| jev.then(|| crate::agent::JEV_DEFAULT_MODEL.into())),
-                base_url: p
-                    .base_url
-                    .or_else(|| jev.then(|| crate::agent::JEV_DEFAULT_URL.into())),
-                api_key_env: p
-                    .api_key_env
-                    .or_else(|| jev.then(|| crate::agent::JEV_DEFAULT_KEY_ENV.into())),
-                account_id_env: p
-                    .account_id_env
-                    .or_else(|| jev.then(|| crate::agent::JEV_DEFAULT_ACCOUNT_ENV.into())),
+                model: jev_default(p.model, crate::agent::JEV_DEFAULT_MODEL),
+                base_url: jev_default(p.base_url, crate::agent::JEV_DEFAULT_URL),
+                api_key_env: jev_default(p.api_key_env, crate::agent::JEV_DEFAULT_KEY_ENV),
+                account_id_env: jev_default(
+                    p.account_id_env,
+                    crate::agent::JEV_DEFAULT_ACCOUNT_ENV,
+                ),
+                jev_backend,
+                cloudflare_url: jev_default(p.cloudflare_url, crate::agent::JEV_CLOUDFLARE_URL),
+                cloudflare_key_env: jev_default(
+                    p.cloudflare_api_key_env,
+                    crate::agent::JEV_CLOUDFLARE_KEY_ENV,
+                ),
+                cloudflare_model: jev_default(
+                    p.cloudflare_model,
+                    crate::agent::JEV_CLOUDFLARE_MODEL,
+                ),
                 env: p.env.into_iter().collect(),
                 extra_args: p.extra_args,
                 notes: p.notes,
