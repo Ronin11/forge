@@ -124,7 +124,7 @@ fn forge_init_leaves_an_uncommitted_catalog_edit_uncommitted() {
         .output()
         .unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let status = git(&cat, &["status", "--porcelain"]);
+    let status = git(&cat, &["status", "--porcelain", "-uall"]);
     assert!(status.contains("?? actions/fmt.toml"), "{status}");
     assert_eq!(
         std::fs::read_to_string(cat.join("actions/fmt.toml")).unwrap(),
