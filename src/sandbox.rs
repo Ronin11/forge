@@ -446,10 +446,14 @@ impl Sandbox {
     /// Copy `worktree`'s private login back over the host file when the
     /// attempt refreshed it (see `login`). Whether it did.
     pub fn write_back_login(&self, worktree: &Path) -> bool {
-        let private = provider_state_dir(worktree)
-            .join("claude")
-            .join(crate::login::FILE);
-        crate::login::write_back(&self.config_dir, &private).unwrap_or(false)
+        [None, Some(Contract::Review)]
+            .into_iter()
+            .fold(false, |any, contract| {
+                let private = provider_dir_for(worktree, contract)
+                    .join("claude")
+                    .join(crate::login::FILE);
+                crate::login::write_back(&self.config_dir, &private).unwrap_or(false) || any
+            })
     }
 
     fn cache_dir_for(&self, worktree: &Path) -> Option<PathBuf> {
