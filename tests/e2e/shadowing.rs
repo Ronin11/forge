@@ -250,3 +250,26 @@ fn a_git_diff_that_dies_reports_the_failure_not_zero_diff_lines() {
     assert!(row.contains("diff line(s)"), "{out}");
     assert!(!row.contains("diff failed"), "{out}");
 }
+
+#[test]
+fn a_hash_line_added_inside_a_string_is_an_operator_edit_refresh_keeps() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let cat = e.home.join("workflows");
+    let hetzner = include_str!("../../src/builtins/operations/provision-hetzner.toml");
+    let edited = hetzner.replacen(
+        "\n    User root\n",
+        "\n    User root\n#StrictHostKeyChecking no\n",
+        1,
+    );
+    assert_ne!(edited, hetzner);
+    commit_copy(&cat, "provision-hetzner", &edited, "operator");
+    let o = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    let row = out.lines().find(|l| l.contains("shadowing")).unwrap_or("");
+    assert!(row.contains("provision-hetzner"), "{out}");
+    assert!(row.contains("operator edit"), "{out}");
+    let o = e.forge("ok.sh", &["workflows", "refresh"]);
+    assert!(!o.status.success());
+    assert!(cat.join("actions/provision-hetzner.toml").exists());
+}

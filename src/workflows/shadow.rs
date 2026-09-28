@@ -76,10 +76,13 @@ fn squeezed(text: &str) -> Vec<String> {
 }
 
 /// Whether a catalog copy says nothing the built-in does not: its text is
-/// the built-in's byte for byte, or differs only in whitespace or comments
-/// (they parse to the same TOML, or their lines match once whitespace and
-/// comment-only lines are set aside). Such a copy is a stale seed, not an
-/// operator edit, however it got there.
+/// the built-in's byte for byte, or differs only in whitespace or comments.
+/// Such a copy is a stale seed, not an operator edit, however it got there.
+/// The order matters: identical text is equivalent; when both texts parse as
+/// TOML, their parsed values decide and nothing else (a `#` line inside a
+/// multi-line string is content, not a comment); only when at least one fails
+/// to parse do the lines compare once whitespace and comment-only lines are
+/// set aside.
 pub fn equivalent(builtin: &str, copy: &str) -> bool {
     if builtin == copy {
         return true;
@@ -87,9 +90,8 @@ pub fn equivalent(builtin: &str, copy: &str) -> bool {
     if let (Ok(a), Ok(b)) = (
         toml::from_str::<toml::Value>(builtin),
         toml::from_str::<toml::Value>(copy),
-    ) && a == b
-    {
-        return true;
+    ) {
+        return a == b;
     }
     squeezed(builtin) == squeezed(copy)
 }
@@ -425,6 +427,19 @@ mod tests {
         assert!(!equivalent(BUILTIN, &extra));
         let joined = BUILTIN.replace("cargo fmt", "cargofmt");
         assert!(!equivalent(BUILTIN, &joined));
+    }
+
+    #[test]
+    fn a_hash_line_inside_a_multiline_string_is_content_not_a_comment() {
+        let builtin = "name = \"x\"\nscript = \"\"\"\n    User root\n\"\"\"\n";
+        let edited =
+            "name = \"x\"\nscript = \"\"\"\n    User root\n#StrictHostKeyChecking no\n\"\"\"\n";
+        assert!(!equivalent(builtin, edited));
+        let changed = edited.replace("no\n", "yes\n");
+        assert!(!equivalent(edited, &changed));
+        let outside =
+            "# a real comment\nname = \"x\"\nscript = \"\"\"\n    User root\n\"\"\"\n# another\n";
+        assert!(equivalent(builtin, outside));
     }
 
     #[test]
