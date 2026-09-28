@@ -175,10 +175,11 @@ pub(crate) fn failure_rules(reason: &str, verdict: &[crate::checks::CheckResult]
     if !l0.is_empty() {
         return l0;
     }
-    let Some((level, rest)) = ["L1", "L2"]
-        .into_iter()
-        .find_map(|l| reason.strip_prefix(&format!("{l} failed: ")).map(|r| (l, r)))
-    else {
+    let Some((level, rest)) = ["L1", "L2"].into_iter().find_map(|l| {
+        reason
+            .strip_prefix(&format!("{l} failed: "))
+            .map(|r| (l, r))
+    }) else {
         return Vec::new();
     };
     names_of(rest)

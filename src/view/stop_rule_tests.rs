@@ -73,10 +73,7 @@ fn a_landing_or_a_different_rule_ends_the_streak() {
 fn a_check_failing_on_different_tests_is_a_different_rule_each_time() {
     let verdicts = [
         failed_test_check(&["portal::conversation_is_threaded"]),
-        failed_test_check(&[
-            "worker::window_hold_waits",
-            "worker::window_hold_releases",
-        ]),
+        failed_test_check(&["worker::window_hold_waits", "worker::window_hold_releases"]),
         failed_test_check(&["plugins::a_held_lock_is_exclusive"]),
     ];
     let seq: Vec<_> = verdicts
