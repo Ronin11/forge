@@ -130,19 +130,20 @@ impl Store {
     /// The adopted tasks within `scope`, by outcome.
     pub fn manual_stats(&self, scope: &StatsFilter) -> Result<ManualStat> {
         Ok(self.lock().retry_query_row(
-            "SELECT COUNT(*), COALESCE(SUM(landed_sha != ''), 0),
-                    COALESCE(SUM(state = 'succeeded' AND landed_sha = ''), 0),
-                    COALESCE(SUM(state = 'blocked'), 0), COALESCE(SUM(state = 'failed'), 0)
+            "SELECT COUNT(*) AS tasks, COALESCE(SUM(landed_sha != ''), 0) AS landed,
+                    COALESCE(SUM(state = 'succeeded' AND landed_sha = ''), 0) AS verified,
+                    COALESCE(SUM(state = 'blocked'), 0) AS blocked,
+                    COALESCE(SUM(state = 'failed'), 0) AS failed
              FROM tasks WHERE origin = 'adopted'
                AND (?1 IS NULL OR project = ?1) AND (?2 IS NULL OR initiative = ?2)",
             params![scope.project, scope.initiative],
             |r| {
                 Ok(ManualStat {
-                    tasks: r.get(0)?,
-                    landed: r.get(1)?,
-                    verified: r.get(2)?,
-                    blocked: r.get(3)?,
-                    failed: r.get(4)?,
+                    tasks: r.get("tasks")?,
+                    landed: r.get("landed")?,
+                    verified: r.get("verified")?,
+                    blocked: r.get("blocked")?,
+                    failed: r.get("failed")?,
                 })
             },
         )?)

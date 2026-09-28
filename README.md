@@ -299,6 +299,7 @@ src/intake.rs       intake acceptance: a confirmed brief becomes a project
 src/job.rs          forge job start: the executor for operation-only run workflows
 src/journal.rs      what earlier attempts in a piece of work said, and what the kernel found
 src/landing.rs      the integrator: merge base in, re-verify, push, fast-forward
+src/adopt.rs        forge adopt: a hand-made branch verified as it is and landed through the integrator, no agent run
 src/main.rs         entry, unix_now
 src/operation.rs    a workflow step that is a command, not an agent
 src/plugins.rs      plugins: directories named for their plugin.toml, one broken manifest never stops the rest
@@ -321,6 +322,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   retry.rs          statement retries for SQLite busy and locked errors, with backoff up to one minute
   run_cursor.rs     the task's stored run cursor (tasks.run_json): the step a requeued or orphaned run resumes at
   tasks.rs          tasks: claim, queue, dependents, lineage
+  adoption.rs       a task's origin (agent or adopted), the adopted branch and commit, and the manual count in forge stats
   arms.rs           insert_task_armed: insert a task and draw its journal/explore arms in one transaction
   attempts.rs       attempts and ops: insert, finish, rate limits, tool facts
   jobs.rs           jobs, job_steps, job_effects

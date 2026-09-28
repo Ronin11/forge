@@ -323,6 +323,7 @@ fn two_adoptions_and_an_agent_task_landing_at_once_all_land_verified() {
         assert!(origin_file(&e, "main", path).is_some(), "{path} lost");
     }
     let main = origin_sha(&e, "main");
+    git(&e.repo, &["fetch", "-q", "origin", "main"]);
     let landed: Vec<(i64, String, String)> = e
         .db()
         .prepare("SELECT id, landed_sha, origin FROM tasks ORDER BY id")
@@ -337,8 +338,6 @@ fn two_adoptions_and_an_agent_task_landing_at_once_all_land_verified() {
         // Every landing re-verified what it pushed.
         let ops = op_names(&e, *id);
         assert!(ops.contains(&("integrate".into(), true)), "{id}: {ops:?}");
-        let t = git(&e.repo, &["fetch", "-q", "origin", "main"]);
-        let _ = t;
         assert!(
             git(&e.repo, &["merge-base", "--is-ancestor", sha, &main]).is_empty(),
             "task {id}'s landing is on main"
