@@ -440,11 +440,7 @@ pub async fn integrate(
                             text: &format!("integrate {d}"),
                         },
                     );
-                    let feedback = format!(
-                        "The base branch `{base}` has moved since your branch started, and merging it into your branch conflicts in:\n{files}\nThe current `{base}` is in your clone as the local branch `{placed}`. Run `git merge {placed}`, resolve those conflicts, run the checks, and commit the merge. Report the files you resolved as your changes.",
-                        base = t.base_branch,
-                        files = files.join("\n"),
-                    );
+                    let feedback = conflict_feedback(&t.base_branch, &placed, &files);
                     return Ok(Integrate::Rewind {
                         feedback,
                         first: d,
@@ -831,6 +827,28 @@ pub struct IntegrateReport {
     dir: PathBuf,
     steps: Vec<IntegrateStep>,
     pub outcome: IntegrateOutcome,
+}
+
+/// What the coder is told when the moved base conflicts with its branch.
+/// A conflict in the schema migration ladder gets its own rule: the live
+/// store has run the base's steps by index, so interleaving the branch's
+/// steps among them (bc36fdb) re-runs a shipped step under a new index.
+fn conflict_feedback(base: &str, placed: &str, files: &[String]) -> String {
+    let mut feedback = format!(
+        "The base branch `{base}` has moved since your branch started, and merging it into your branch conflicts in:\n{}\nThe current `{base}` is in your clone as the local branch `{placed}`. Run `git merge {placed}`, resolve those conflicts, run the checks, and commit the merge. Report the files you resolved as your changes.",
+        files.join("\n"),
+    );
+    if files.iter().any(|f| is_migration_ladder(f)) {
+        feedback.push_str(&format!(
+            "\nMigrations are append-only. In the migration ladder, never interleave: keep every step of `{placed}` exactly as it is and in its order, then append your branch's new steps after the last of them. In `src/store/migrations.lock` keep `{placed}`'s lines and drop your branch's, then re-run the lock test (`FORGE_LOCK_MIGRATIONS=1 cargo test --bin forge migrations_lock_matches_every_shipped_step`) so it appends the hashes of your steps under their new indexes, and run it once more without the variable to confirm it passes."
+        ));
+    }
+    feedback
+}
+
+fn is_migration_ladder(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name == "migrations.rs" || name == "migrations.lock"
 }
 
 fn short(sha: &str) -> &str {
@@ -1262,6 +1280,20 @@ async fn land_integrated(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_migrations_conflict_tells_the_coder_to_append_after_the_base() {
+        let files = vec!["src/store/migrations.rs".to_string()];
+        let f = conflict_feedback("main", "forge/base-7", &files);
+        assert!(f.contains("never interleave"), "{f}");
+        assert!(f.contains("append your branch's new steps after"), "{f}");
+        assert!(
+            f.contains("migrations_lock_matches_every_shipped_step"),
+            "{f}"
+        );
+        let f = conflict_feedback("main", "forge/base-7", &["src/a.rs".to_string()]);
+        assert!(!f.contains("interleave"), "{f}");
+    }
 
     #[test]
     fn render_shows_each_step_and_the_ff_only_instructions() {
