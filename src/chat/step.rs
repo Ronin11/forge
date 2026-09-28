@@ -122,6 +122,15 @@ async fn model_step(
     scratch: &std::path::Path,
     log: &std::path::Path,
 ) -> Result<(Step, f64)> {
+    // Only the chat runner has a system channel; the CLIs get it all as
+    // one prompt, the way a job's directive step does.
+    let whole;
+    let prompt = if s.provider.runner == crate::agent::Runner::Chat {
+        prompt
+    } else {
+        whole = format!("{}\n\n{prompt}", s.system);
+        &whole
+    };
     let o = crate::directive::launch(
         f,
         crate::directive::Spec {

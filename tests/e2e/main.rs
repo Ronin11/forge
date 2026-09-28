@@ -5,6 +5,7 @@
 mod support;
 
 mod capped;
+mod chat;
 mod concierge;
 mod contracts;
 mod deploy;
