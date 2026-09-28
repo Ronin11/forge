@@ -768,6 +768,12 @@ CREATE TABLE job_resolutions (
   at INTEGER NOT NULL
 );
 ",
+    // The run cursor of a task between workers (`engine::cursor`): the
+    // resolved workflow's hash, the step to resume at, and what the later
+    // steps consume, so a requeue resumes instead of starting over.
+    "
+ALTER TABLE tasks ADD COLUMN run_json TEXT NOT NULL DEFAULT '';
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

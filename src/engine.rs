@@ -13,8 +13,10 @@
 //! full disk stops the worker rather than failing the task.
 
 mod capped;
+pub(crate) mod cursor;
 pub(crate) use capped::landable_capped;
 use capped::{check_abort, check_cap};
+use cursor::RunCursor;
 mod terminal;
 use terminal::finish;
 pub(crate) use terminal::{finish_fault, settle_ready_initiatives};
@@ -217,7 +219,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         None => None,
     };
 
+    let had_worktree = !t.worktree.is_empty();
     let merged_base_retry = prepare_worktree(&f, &mut t, &repo, &base_cfg, &remote_url).await?;
+    let resumed = cursor::resume(&f, &mut t, &resolved, had_worktree)?;
     f.store.update_task(&t).env()?;
     let wt = PathBuf::from(&t.worktree);
     // Checks and rules come from the trusted base, never from the branch under test.
@@ -225,36 +229,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     cfg.protected = f.effective_protected(&t, &cfg.protected);
     f.allow_egress(&wt, &cfg, t.trust);
 
-    f.report.emit(
-        id,
-        Event::TaskStarted {
-            worktree: &t.worktree,
-            branch: &t.branch,
-            base_branch: &t.base_branch,
-            base_sha: &t.base_sha,
-            model: &t.model,
-            max_turns: t.max_turns,
-            max_attempts: t.max_attempts,
-            timeout_secs: t.timeout_secs,
-            sandboxed: f.sandboxed(&wt),
-        },
-    );
-    f.report.emit(
-        id,
-        Event::Note {
-            text: &format!(
-                "workflow {} {} ({})",
-                t.workflow,
-                &t.workflow_hash[..t.workflow_hash.len().min(8)],
-                resolved
-                    .steps
-                    .iter()
-                    .map(|s| s.action.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" → ")
-            ),
-        },
-    );
+    announce(&f, &t, &resolved, &wt);
 
     let task_cap = f.effective_per_task_usd(&t);
     let prior = f.store.attempts(id).env()?;
@@ -265,11 +240,15 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         .map(|o| o.seq)
         .collect();
     let mut attempt_no = prior.len() as i64;
+    if let Some(text) = &resumed.note {
+        f.report.emit(id, Event::Note { text });
+    }
     let mut run = Run {
-        idx: 0,
+        hash: resumed.hash,
+        idx: resumed.idx,
         seq: 0,
         used: crate::store::seed_used(&prior, &f.store.refunded_attempts(id).env()?),
-        owed: HashMap::new(),
+        owed: resumed.owed,
         done: resume_done(&prior),
     };
     // The cap is checked at claim as well as before every attempt.
@@ -324,15 +303,24 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                 }
             };
             match flow {
-                StepFlow::Next => run.idx += 1,
-                StepFlow::Again => {}
+                StepFlow::Next => {
+                    run.idx += 1;
+                    save_cursor(&f, &t, &run, attempt_no)?;
+                }
+                StepFlow::Again => save_cursor(&f, &t, &run, attempt_no)?,
                 StepFlow::End(e) => {
                     end = Some(e);
                     break;
                 }
                 StepFlow::Requeue(reason) => {
+                    let cursor = run.cursor(&t, attempt_no).to_json();
                     f.store
-                        .requeue(id, &crate::store::Owner::this_process(), &reason)
+                        .requeue_at(
+                            id,
+                            &crate::store::Owner::this_process(),
+                            &reason,
+                            Some(&cursor),
+                        )
                         .env()?;
                     return Ok(TaskState::Queued);
                 }
@@ -360,7 +348,10 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                 end = Some(e);
                 break 'run;
             }
-            None => continue 'run,
+            None => {
+                save_cursor(&f, &t, &run, attempt_no)?;
+                continue 'run;
+            }
         }
     }
     let mut end = end.unwrap_or(End::Verified);
@@ -375,6 +366,41 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         }
     }
     finish(&f, &mut t, &end, compare, &wt).await
+}
+
+/// The run's start on the report: where it works, and which workflow it runs.
+fn announce(f: &Forge, t: &Task, resolved: &workflows::Resolved, wt: &Path) {
+    let id = t.id;
+    f.report.emit(
+        id,
+        Event::TaskStarted {
+            worktree: &t.worktree,
+            branch: &t.branch,
+            base_branch: &t.base_branch,
+            base_sha: &t.base_sha,
+            model: &t.model,
+            max_turns: t.max_turns,
+            max_attempts: t.max_attempts,
+            timeout_secs: t.timeout_secs,
+            sandboxed: f.sandboxed(wt),
+        },
+    );
+    f.report.emit(
+        id,
+        Event::Note {
+            text: &format!(
+                "workflow {} {} ({})",
+                t.workflow,
+                &t.workflow_hash[..t.workflow_hash.len().min(8)],
+                resolved
+                    .steps
+                    .iter()
+                    .map(|s| s.action.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" → ")
+            ),
+        },
+    );
 }
 
 /// The environment path after a directive's attempt failed: a failed check
@@ -935,6 +961,9 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
         // read against this same record) waits for the reset and claims
         // this task again once it is free.
         if let Some((msg, _)) = crate::worker::window_hold(f, &ts.provider).env()? {
+            if let Some(fb) = feedback {
+                run.owed.insert(seq, fb);
+            }
             return Ok(StepFlow::Requeue(msg));
         }
         // Would the next attempt cross the cap? A decision for a human,
@@ -968,6 +997,7 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
             attempt_no: *attempt_no,
             feedback: feedback.as_deref(),
             resume: resume.as_ref(),
+            cursor: Some(run.cursor(t, *attempt_no).after(*attempt_no)),
         })
         .await?;
         // `forge withdraw --abort` stopped this attempt (see
@@ -1606,6 +1636,8 @@ async fn publish(
 /// side effects the caller owns (resetting the tree, reloading the
 /// config, refunding an attempt) stay at the call site, named.
 struct Run {
+    /// Hash of the resolved steps `idx` indexes into (`cursor::workflow_hash`).
+    hash: String,
     idx: usize,
     /// The op sequence number of the current step; landing and push
     /// continue from it.
@@ -1637,7 +1669,25 @@ pub(crate) fn resume_done(prior: &[crate::store::Attempt]) -> HashSet<i64> {
     done
 }
 
+/// Record where the run stands: the step it is about to run.
+fn save_cursor(f: &Forge, t: &Task, run: &Run, attempt_no: i64) -> Result<(), Fault> {
+    f.store
+        .set_run_cursor(t.id, &run.cursor(t, attempt_no).to_json())
+        .env()
+}
+
 impl Run {
+    fn cursor(&self, t: &Task, attempt_no: i64) -> RunCursor {
+        RunCursor {
+            workflow_hash: self.hash.clone(),
+            idx: self.idx,
+            attempt: attempt_no,
+            owed: self.owed.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            interface: t.interface.clone(),
+            plan: t.plan.clone(),
+        }
+    }
+
     fn step_seq(&self) -> i64 {
         self.idx as i64 + 1
     }

@@ -14,6 +14,9 @@ pub struct RunAttempt<'a> {
     pub attempt_no: i64,
     pub feedback: Option<&'a str>,
     pub resume: Option<&'a Resume>,
+    /// The run cursor to store, in the same transaction as the attempt's
+    /// state, if the attempt verifies: the step after this one.
+    pub cursor: Option<RunCursor>,
 }
 
 /// Inputs and provider identity recorded when opening an attempt row.
@@ -45,6 +48,7 @@ struct AttemptLaunch<'a> {
 
 use crate::audit::{Inputs, Outputs};
 use crate::ctx::Forge;
+use crate::engine::cursor::RunCursor;
 use crate::engine::{Classify, Fault};
 use crate::landing::overlay_refs;
 use crate::prompts::{
@@ -103,6 +107,7 @@ pub async fn run_attempt(
         attempt_no,
         feedback,
         resume,
+        cursor,
     } = args;
     let contract = step.action.contract;
     let repo = Path::new(&t.repo);
@@ -362,8 +367,25 @@ pub async fn run_attempt(
     )
     .await
     .task()?;
-    record(f, &mut a, &spec.dir, &verdict, &outcome, spec.verify_ref).await?;
+    let extra = RecordExtra {
+        verify_ref: spec.verify_ref,
+        cursor: cursor_json(cursor, contract, &verdict),
+    };
+    record(f, &mut a, &spec.dir, &verdict, &outcome, extra).await?;
     Ok((a, verdict, outcome))
+}
+
+/// The cursor to store if the attempt verifies, with what this contract
+/// hands the later steps.
+fn cursor_json(cursor: Option<RunCursor>, contract: Contract, verdict: &Verdict) -> Option<String> {
+    let mut c = cursor?;
+    let summary = verdict.envelope.as_ref().map(|e| e.summary.clone());
+    match contract {
+        Contract::Tests => c.interface = summary.unwrap_or_default(),
+        Contract::Plan => c.plan = summary.unwrap_or_default(),
+        _ => {}
+    }
+    Some(c.to_json())
 }
 
 pub fn tests_clone_dir(worktree: &str) -> PathBuf {
@@ -615,14 +637,60 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
     Ok(outcome)
 }
 
+/// What `record` writes beyond the attempt itself.
+#[derive(Default)]
+pub struct RecordExtra {
+    /// The ref the attempt's commits are recorded under (tests only).
+    pub verify_ref: Option<String>,
+    /// The run cursor stored with the attempt if it verified.
+    pub cursor: Option<String>,
+}
+
+fn finish_row(a: &Attempt) -> FinishAttempt {
+    FinishAttempt {
+        id: a.id,
+        state: a.state,
+        reason: a.reason.clone(),
+        finished_at: a.finished_at,
+        agent_exit: a.agent_exit,
+        timed_out: a.timed_out,
+        num_turns: a.num_turns,
+        tool_calls: a.tool_calls,
+        cost_usd: a.cost_usd,
+        cli_cost_usd: a.cli_cost_usd,
+        agent_ms: a.agent_ms,
+        commits: a.commits,
+        files_changed: a.files_changed,
+        dirty: a.dirty,
+        verdict_json: a.verdict_json.clone(),
+        result_text: a.result_text.clone(),
+        envelope_json: a.envelope_json.clone(),
+        rl_five_hour: a.rl_five_hour,
+        rl_seven_day: a.rl_seven_day,
+        rl_five_hour_resets: a.rl_five_hour_resets,
+        rl_seven_day_resets: a.rl_seven_day_resets,
+        end_sha: a.end_sha.clone(),
+        outputs_json: a.outputs_json.clone(),
+        session_id: a.session_id.clone(),
+        first_edit: a.first_edit,
+        input_tokens: a.input_tokens,
+        output_tokens: a.output_tokens,
+        cache_read_input_tokens: a.cache_read_input_tokens,
+        cache_creation_input_tokens: a.cache_creation_input_tokens,
+        early_signals: a.early_signals.clone(),
+        early_near: a.early_near.clone(),
+    }
+}
+
 pub async fn record(
     f: &Forge,
     a: &mut Attempt,
     dir: &Path,
     verdict: &Verdict,
     outcome: &agent::Outcome,
-    verify_ref: Option<String>,
+    extra: RecordExtra,
 ) -> Result<(), Fault> {
+    let RecordExtra { verify_ref, cursor } = extra;
     let end_sha = git::head(dir).await.task()?;
     a.session_id = outcome.session_id.clone().unwrap_or_default();
     let mut outputs = Outputs {
@@ -689,41 +757,14 @@ pub async fn record(
     a.rl_seven_day_resets = outcome.rate_limits.seven_day.map(|(_, r)| r);
     a.early_signals = serde_json::to_string(&outcome.early_signals).env()?;
     a.early_near = serde_json::to_string(&outcome.early_near).env()?;
-    f.store
-        .finish_attempt(&FinishAttempt {
-            id: a.id,
-            state: a.state,
-            reason: a.reason.clone(),
-            finished_at: a.finished_at,
-            agent_exit: a.agent_exit,
-            timed_out: a.timed_out,
-            num_turns: a.num_turns,
-            tool_calls: a.tool_calls,
-            cost_usd: a.cost_usd,
-            cli_cost_usd: a.cli_cost_usd,
-            agent_ms: a.agent_ms,
-            commits: a.commits,
-            files_changed: a.files_changed,
-            dirty: a.dirty,
-            verdict_json: a.verdict_json.clone(),
-            result_text: a.result_text.clone(),
-            envelope_json: a.envelope_json.clone(),
-            rl_five_hour: a.rl_five_hour,
-            rl_seven_day: a.rl_seven_day,
-            rl_five_hour_resets: a.rl_five_hour_resets,
-            rl_seven_day_resets: a.rl_seven_day_resets,
-            end_sha: a.end_sha.clone(),
-            outputs_json: a.outputs_json.clone(),
-            session_id: a.session_id.clone(),
-            first_edit: a.first_edit,
-            input_tokens: a.input_tokens,
-            output_tokens: a.output_tokens,
-            cache_read_input_tokens: a.cache_read_input_tokens,
-            cache_creation_input_tokens: a.cache_creation_input_tokens,
-            early_signals: a.early_signals.clone(),
-            early_near: a.early_near.clone(),
-        })
-        .env()?;
+    let finished = finish_row(a);
+    match cursor {
+        Some(c) if a.state == AttemptState::Succeeded => {
+            f.store.finish_attempt_with_cursor(&finished, &c)
+        }
+        _ => f.store.finish_attempt(&finished),
+    }
+    .env()?;
     f.report.emit(
         a.task_id,
         Event::AttemptDone {

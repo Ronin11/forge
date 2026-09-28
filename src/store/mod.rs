@@ -28,6 +28,7 @@ mod projects;
 mod questions;
 mod record;
 mod retry;
+mod run_cursor;
 mod schedule;
 use retry::RetryConnection;
 mod stats;
@@ -222,6 +223,7 @@ const TASK_COLUMNS: &[&str] = &[
     "workflow_hash",
     "workflow_text",
     "actions_json",
+    "run_json",
     "land",
     "after_json",
     "verify_base",

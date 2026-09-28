@@ -945,12 +945,31 @@ impl Store {
     /// task another worker has claimed since is left alone, and the pair of
     /// writes is one transaction. Returns whether the task was requeued.
     pub fn requeue(&self, id: i64, owner: &Owner, why: &str) -> Result<bool> {
+        self.requeue_at(id, owner, why, None)
+    }
+
+    /// `requeue`, also recording `cursor` (the run cursor as JSON) in the
+    /// same transaction when given: the step the interrupted run was on.
+    pub fn requeue_at(
+        &self,
+        id: i64,
+        owner: &Owner,
+        why: &str,
+        cursor: Option<&str>,
+    ) -> Result<bool> {
         let mut c = self.lock();
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let n = tx.execute(
-            "UPDATE tasks SET state='queued', worker_pid=NULL, worker_start=NULL, reason=?2
+            "UPDATE tasks SET state='queued', worker_pid=NULL, worker_start=NULL, reason=?2,
+             run_json=COALESCE(?5, run_json)
              WHERE id=?1 AND state='running' AND worker_pid IS ?3 AND worker_start IS ?4",
-            params![id, format!("requeued: {why}"), owner.pid, owner.start],
+            params![
+                id,
+                format!("requeued: {why}"),
+                owner.pid,
+                owner.start,
+                cursor
+            ],
         )?;
         if n == 1 {
             tx.execute(

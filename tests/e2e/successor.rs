@@ -625,3 +625,111 @@ fn a_unit_that_does_not_come_back_active_flips_current_back() {
         "restarted again on the old release: {calls}"
     );
 }
+
+fn plugin_row(e: &Env) -> String {
+    let out = e.forge("ok.sh", &["doctor"]);
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find(|l| l.contains("plugins"))
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn keeper_status(e: &Env) -> serde_json::Value {
+    let o = e.forge("ok.sh", &["plugin", "status", "keeper", "--json"]);
+    serde_json::from_slice(&o.stdout).unwrap()
+}
+
+#[test]
+fn a_successor_that_dies_after_claiming_gives_the_plugins_back_to_the_worker_that_still_claims() {
+    let e = Env::new();
+    let plugin = e.home.join("plugins/keeper");
+    std::fs::create_dir_all(&plugin).unwrap();
+    std::fs::write(
+        plugin.join("plugin.toml"),
+        "name = \"keeper\"\nrun = [\"./run.sh\"]\ncapabilities = [\"events\"]\nrestart = \"always\"\n",
+    )
+    .unwrap();
+    std::fs::write(plugin.join("run.sh"), "#!/bin/bash\nexec sleep 300\n").unwrap();
+    std::fs::set_permissions(
+        plugin.join("run.sh"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    assert!(
+        e.forge("ok.sh", &["plugin", "enable", "keeper"])
+            .status
+            .success()
+    );
+
+    // A successor that takes the capability file, as a claiming worker
+    // does, and is gone four seconds later.
+    let root = e.home.join("bin");
+    let bin = root.join("releases/new/forge");
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    std::fs::write(
+        &bin,
+        "#!/bin/sh\necho $$ > \"$FORGE_HOME/bin/successor-capable\"\nexec sleep 4\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    let first = e.add(&["--retries", "0"]);
+    let mut old = Worker::spawn(
+        e.cmd("slow-ok.sh")
+            .env("FORGE_RELEASE", "old")
+            .args(["work", "--poll", "1"]),
+    );
+    let _reap = Reap(e.home.clone());
+    let running = |e: &Env| keeper_status(e)["state"] == "running";
+    assert!(
+        wait_until(
+            || running_pid(&e, first).is_some() && running(&e),
+            Duration::from_secs(30)
+        ),
+        "the worker never claimed task {first} with the plugin up"
+    );
+    let before = keeper_status(&e)["pid"].as_i64().unwrap();
+
+    std::os::unix::fs::symlink("releases/new", root.join("staged")).unwrap();
+    let handed = |e: &Env| {
+        let s = keeper_status(e);
+        (s["state"] == "stopped")
+            .then(|| s["last_exit"].as_str().unwrap_or_default().to_string())
+            .filter(|t| t.contains("handoff"))
+    };
+    assert!(
+        wait_until(|| handed(&e).is_some(), Duration::from_secs(30)),
+        "the plugin was never handed to the successor that claimed"
+    );
+    let successor = std::fs::read_to_string(root.join("successor-capable"))
+        .unwrap()
+        .trim()
+        .to_string();
+    assert_eq!(
+        handed(&e).unwrap(),
+        format!("stopped by worker for handoff to pid {successor}")
+    );
+    assert!(
+        !plugin_row(&e).starts_with("FAIL"),
+        "a plugin handed to a live successor is not unattended: {}",
+        plugin_row(&e)
+    );
+
+    // The successor exits; the worker that still claims takes them back.
+    assert!(
+        wait_until(
+            || running(&e) && keeper_status(&e)["pid"].as_i64() != Some(before),
+            Duration::from_secs(30)
+        ),
+        "the plugin was not restarted after the successor died: {}",
+        keeper_status(&e)
+    );
+    assert_eq!(running_pid(&e, first), Some(i64::from(old.id())));
+    assert!(
+        plugin_row(&e).starts_with("OK"),
+        "status row: {}",
+        plugin_row(&e)
+    );
+    old.stop();
+}
