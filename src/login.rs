@@ -678,7 +678,12 @@ mod tests {
         };
         let seed_text = with(r#""user:inference""#, "pro", "r0", far());
         let (took, host) = offered(&seed_text, |p| {
-            let widened = with(r#""user:inference","user:admin""#, "pro", "r1", far() + 1000);
+            let widened = with(
+                r#""user:inference","user:admin""#,
+                "pro",
+                "r1",
+                far() + 1000,
+            );
             std::fs::write(p, widened).unwrap();
         });
         assert!(!took, "changed scopes");
@@ -719,7 +724,10 @@ mod tests {
         let (_root, _dir, state, _wt, _private) = seeded(&login("a0", "r0-secret", far()));
         for e in std::fs::read_dir(state.join(SEEDS)).unwrap().flatten() {
             let text = std::fs::read_to_string(e.path()).unwrap();
-            assert!(!text.contains("r0-secret") && !text.contains("a0\""), "{text}");
+            assert!(
+                !text.contains("r0-secret") && !text.contains("a0\""),
+                "{text}"
+            );
         }
     }
 

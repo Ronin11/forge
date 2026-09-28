@@ -69,7 +69,11 @@ fn a_token_a_sandbox_refreshed_is_written_back_and_seeds_the_next_attempt() {
         "the host seed carries the later stamp: {host}"
     );
     let prev = std::fs::read_to_string(config.join(".credentials.json.forge-prev")).unwrap();
-    assert_eq!(prev, login("a0", "r0", seeded_at), "the replaced login is kept");
+    assert_eq!(
+        prev,
+        login("a0", "r0", seeded_at),
+        "the replaced login is kept"
+    );
     assert!(
         std::fs::read_dir(&config)
             .unwrap()

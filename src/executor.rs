@@ -191,7 +191,8 @@ impl Execution {
         }
         Ok(Some(Self {
             fallback: default_backend(),
-            bwrap: Sandbox::detect(agent, paths, forge_home, ro, rw, hosts).map_err(|e| format!("{e:#}")),
+            bwrap: Sandbox::detect(agent, paths, forge_home, ro, rw, hosts)
+                .map_err(|e| format!("{e:#}")),
             backends: Mutex::new(BTreeMap::new()),
             remotes: Mutex::new(BTreeMap::new()),
         }))
