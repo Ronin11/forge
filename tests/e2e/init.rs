@@ -479,3 +479,30 @@ fn forge_init_units_survive_a_home_and_path_with_spaces_under_systemd_analyze_ve
         assert!(bad.is_empty(), "{name}: {text}");
     }
 }
+
+/// REVIEW-4 E3-17: a checked-in `deploy/forge-worker.service` had drifted
+/// from the unit `forge init` actually writes (`Type=simple`, no
+/// `NotifyAccess=all`, no `StartLimit*`), so `MAINPID=` from a successor
+/// was ignored and the old worker's exit after a handover killed it, while
+/// `docs/DEPLOY.md` cited the stale file for the drain semantics.
+/// `init::worker_unit` is now the only source: this fails if the file
+/// comes back, and pins the fields the successor handoff depends on.
+#[test]
+fn forge_init_is_the_only_source_of_the_worker_unit() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(
+        !root.join("deploy/forge-worker.service").exists(),
+        "deploy/forge-worker.service must stay deleted: `forge init` \
+         (init::worker_unit) is the only source of the worker unit"
+    );
+
+    let e = Env::new();
+    let o = forge_init_no_session(&e, &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    let unit =
+        std::fs::read_to_string(e.xdg_config.join("systemd/user/forge-worker.service")).unwrap();
+    assert!(unit.contains("Type=notify"), "{unit}");
+    assert!(unit.contains("NotifyAccess=all"), "{unit}");
+    assert!(unit.contains("StartLimitIntervalSec="), "{unit}");
+    assert!(unit.contains("StartLimitBurst="), "{unit}");
+}

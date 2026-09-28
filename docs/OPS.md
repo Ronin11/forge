@@ -356,11 +356,12 @@ copies, verifies and prunes to seven.
 `scripts/release.sh [target-triple]` builds the workspace in release mode
 and packs one archive: `forge`, `forge-web`, `forge-portal`, `forge-tui`,
 `forge-repomap` (and `forge-test`, once that crate exists),
-`deploy/forge-worker.service`, `docs/ops/forge-web.service` and a
-`config.toml` template, into `dist/forge-<version>-<target>.tar.gz` beside
-`dist/SHA256SUMS`. The target defaults to the host `rustc` reports; naming
-a different one assumes its toolchain is already installed and passes it
-to `cargo build --target`.
+`docs/ops/forge-web.service` and a `config.toml` template, into
+`dist/forge-<version>-<target>.tar.gz` beside `dist/SHA256SUMS`. The target
+defaults to the host `rustc` reports; naming a different one assumes its
+toolchain is already installed and passes it to `cargo build --target`.
+The worker unit is not packed: `forge init` (`init::worker_unit`) is its
+only source, so an installed unit can never drift from a checked-in copy.
 
 The version is never typed by hand: the script reads it back from the
 binary it just built (`forge version`), so the archive's own name — and
