@@ -22,47 +22,25 @@ fn main() {
     builtin_history();
 }
 
-/// Writes `builtin_history.rs` to `OUT_DIR`: for every built-in action file,
-/// the blob hashes it has had in this repository's history and the time
-/// (unix seconds) of the commit that last changed it. `forge doctor` uses it
-/// to tell a catalog copy of an old built-in that the built-in has since
-/// outgrown. A build with no git history writes an empty table, which
-/// makes no such claim.
+/// Writes `builtin_history.rs` to `OUT_DIR` from the checked-in
+/// `src/builtins/history.tsv` (`scripts/builtin-history.sh` regenerates it):
+/// for every built-in action file, the blob hashes it has had and the time
+/// (unix seconds) it last changed. `forge doctor` uses it to tell a catalog
+/// copy of an old built-in that the built-in has since outgrown. The table
+/// is a file and not a `git log` at build time because `forge deploy` builds
+/// from a `git archive` tree that has no history.
 fn builtin_history() {
     let out = std::env::var("OUT_DIR").expect("OUT_DIR");
-    let log = std::process::Command::new("git")
-        .args([
-            "log",
-            "--raw",
-            "--no-abbrev",
-            "--no-renames",
-            "--format=@%ct",
-            "--",
-            "src/builtins/actions",
-            "src/builtins/operations",
-        ])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
+    let table = std::fs::read_to_string("src/builtins/history.tsv").unwrap_or_default();
     let mut files: std::collections::BTreeMap<String, (i64, Vec<String>)> = Default::default();
-    let mut when = 0i64;
-    for line in log.lines() {
-        if let Some(t) = line.strip_prefix('@') {
-            when = t.trim().parse().unwrap_or(0);
-        } else if let Some((meta, path)) = line.split_once('\t') {
-            let hash = meta.split_whitespace().nth(3).unwrap_or("");
-            let Some(name) = path.rsplit('/').next() else {
-                continue;
-            };
-            if hash.is_empty() || hash.bytes().all(|b| b == b'0') {
-                continue;
-            }
-            let e = files.entry(name.to_string()).or_default();
-            e.0 = e.0.max(when);
-            e.1.push(hash.to_string());
-        }
+    for line in table.lines() {
+        let mut cols = line.split('\t');
+        let (Some(name), Some(when), Some(hash)) = (cols.next(), cols.next(), cols.next()) else {
+            continue;
+        };
+        let e = files.entry(name.to_string()).or_default();
+        e.0 = e.0.max(when.parse().unwrap_or(0));
+        e.1.push(hash.to_string());
     }
     let mut src = String::from("&[\n");
     for (name, (changed, hashes)) in &files {
@@ -71,5 +49,5 @@ fn builtin_history() {
     src.push_str("]\n");
     std::fs::write(std::path::Path::new(&out).join("builtin_history.rs"), src)
         .expect("write builtin_history.rs");
-    println!("cargo:rerun-if-changed=src/builtins");
+    println!("cargo:rerun-if-changed=src/builtins/history.tsv");
 }

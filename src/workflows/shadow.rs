@@ -23,9 +23,10 @@ const SEED_MESSAGE: &str = "catalog: built-in";
 /// script text.
 const KERNEL_COUPLED: &str = "deploy-self.toml";
 
-/// Per built-in file, from the repository's history at build time (see
-/// build.rs): every blob hash it has had, and when it last changed. Empty
-/// for a build without history.
+/// Per built-in file, from the checked-in src/builtins/history.tsv (see
+/// build.rs): every blob hash it has had, and when it last changed. It
+/// is a file so that a build from a `git archive` tree, which has no .git,
+/// has it too.
 const BUILTIN_HISTORY: &[(&str, i64, &[&str])] =
     include!(concat!(env!("OUT_DIR"), "/builtin_history.rs"));
 
@@ -477,6 +478,22 @@ pub fn doctor_check(home: &Path) -> crate::doctor::Check {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn builtin_history_lists_every_built_in_current_text() {
+        assert!(!BUILTIN_HISTORY.is_empty());
+        for (file, text) in BUILTIN_ACTIONS.iter().chain(BUILTIN_OPERATIONS) {
+            let hash = text_blob_hash(text).unwrap();
+            let listed = BUILTIN_HISTORY
+                .iter()
+                .any(|(f, _, hashes)| f == file && hashes.contains(&hash.as_str()));
+            assert!(
+                listed,
+                "{file} is not in src/builtins/history.tsv at its current text: \
+                 run scripts/builtin-history.sh"
+            );
+        }
+    }
 
     const BUILTIN: &str =
         "name = \"fmt\"\n# the formatter\ndescription = \"format\"\nrun = [\"cargo fmt\"]\n";

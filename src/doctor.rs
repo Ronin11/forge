@@ -9,7 +9,7 @@ use serde::Serialize;
 
 mod login;
 
-#[derive(PartialEq, Eq, Clone, Copy, Serialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     Ok,

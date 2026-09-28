@@ -273,3 +273,50 @@ fn a_hash_line_added_inside_a_string_is_an_operator_edit_refresh_keeps() {
     assert!(!o.status.success());
     assert!(cat.join("actions/provision-hetzner.toml").exists());
 }
+
+fn shadowing_row(e: &Env) -> serde_json::Value {
+    let o = e.forge("ok.sh", &["doctor", "--json", "--only", "shadowing"]);
+    let rows: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    rows.as_array()
+        .and_then(|a| a.iter().find(|r| r["name"] == "shadowing"))
+        .cloned()
+        .unwrap_or_else(|| panic!("no shadowing row in {rows}"))
+}
+
+/// The table behind the Warn is compiled from the checked-in
+/// `src/builtins/history.tsv`, not read from `git log` at build time, so a
+/// release built from a `git archive` tree (no `.git`) warns too.
+#[test]
+fn an_operator_edit_of_a_built_in_that_changed_since_is_a_warning_not_ok() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let cat = e.home.join("workflows");
+    let edited = FMT.replacen("description = \"", "description = \"EDITED: ", 1);
+    std::fs::write(cat.join("actions/fmt.toml"), edited).unwrap();
+    git(&cat, &["add", "actions/fmt.toml"]);
+    let committed = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&cat)
+        .args([
+            "-c",
+            "user.name=operator",
+            "-c",
+            "user.email=x@localhost",
+            "commit",
+            "-qm",
+            "tune",
+        ])
+        .env("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
+        .env("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z")
+        .status()
+        .unwrap();
+    assert!(committed.success());
+    let row = shadowing_row(&e);
+    assert_eq!(row["status"], "warn", "{row}");
+    assert!(
+        row["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("the built-in changed after this copy's last commit")),
+        "{row}"
+    );
+}
