@@ -420,12 +420,13 @@ fn check_config(paths: &Paths) -> Vec<Check> {
                 "config",
                 Status::Ok,
                 format!(
-                    "windows 5h ≤ {:.0}% / 7d ≤ {:.0}%, per_task_usd {:.2}, per_day_usd {}; sandbox ro {}/{} present, rw {}/{} present",
+                    "windows 5h ≤ {:.0}% / 7d ≤ {:.0}%, per_task_usd {:.2}, per_day_usd {}; trust caps: {}; sandbox ro {}/{} present, rw {}/{} present",
                     b.five_hour_max * 100.0,
                     b.seven_day_max * 100.0,
                     b.per_task_usd,
                     b.per_day_usd
                         .map_or("none".to_string(), |d| format!("{d:.2}")),
+                    crate::ctx::describe_trust_caps(&c.trust, b),
                     present(&c.sandbox.ro),
                     c.sandbox.ro.len(),
                     present(&c.sandbox.rw),

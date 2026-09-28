@@ -152,11 +152,21 @@ itself:
 - **contact** (`--trust contact`): someone the operator knows. The Signal
   plugin and the portal (through `forge ask`) file at
   this level. Only the contact workflows (`reviewed`, `tdd-reviewed`,
-  `concierge`, `intake`), no protected paths, and it lands itself.
+  `concierge`, `intake`), a cap of 10 USD a task and 50 an initiative, no
+  protected paths, and it lands itself.
 - **public** (`--trust public`): a stranger. The github-issues plugin
-  files at this level. Only `reviewed`, a 1.00 USD budget, at most 5 a
-  day, model-only egress, no protected paths, and it never lands itself:
+  files at this level. Only `reviewed`, a cap of 5 USD a task and 25 an
+  initiative (`per_task_usd`, `per_initiative_usd`; the plugin comments
+  "Forge will spend up to $5 on this; a maintainer can raise it" on the
+  issue when it files), at most 5 a day, model-only egress, no protected paths, and it never lands itself:
   it ends unverified and a person runs `forge land <task>`.
+
+A task filed at a level gets that level's `per_task_usd` unless `--budget`
+says less; a `--budget` over the cap is refused unless the operator adds
+`--allow-over-trust-cap` (also on `forge task set --budget`), which is
+recorded as a decision on the task. The operator level's caps are the
+`[budget]` values, as before. `forge doctor`'s config row prints the three
+levels' caps.
 
 A webhook token carries a level too (`forge project webhook token
 <project> <name> --trust <level>`, default public); `forge job fire`

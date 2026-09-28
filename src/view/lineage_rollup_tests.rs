@@ -132,3 +132,16 @@ fn project_show_counts_the_same_lineage_once() {
     assert_eq!(row.succeeded, 1);
     assert_eq!(row.blocked, 0);
 }
+
+#[test]
+fn an_initiative_counts_a_capped_task_as_open_not_failed() {
+    let task = |state| Task {
+        state,
+        ..Task::default()
+    };
+    let tasks = [task(TaskState::Succeeded), task(TaskState::Capped)];
+    assert_eq!(initiative_state(&tasks, None), "open");
+    assert_eq!(initiative_state(&tasks, Some("budget")), "held");
+    let failed = [task(TaskState::Succeeded), task(TaskState::Failed)];
+    assert_eq!(initiative_state(&failed, None), "done with failures");
+}

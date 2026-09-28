@@ -112,6 +112,7 @@ pub struct ProjectTaskStats {
     pub unverified: i64,
     pub blocked: i64,
     pub withdrawn: i64,
+    pub capped: i64,
     pub cost: f64,
 }
 
@@ -575,7 +576,7 @@ impl Store {
             "SELECT SUM(state='queued') AS queued, SUM(state='running') AS running,
                     SUM(state='succeeded') AS succeeded, SUM(state='failed') AS failed,
                     SUM(state='unverified') AS unverified, SUM(state='blocked') AS blocked,
-                    SUM(state='withdrawn') AS withdrawn,
+                    SUM(state='withdrawn') AS withdrawn, SUM(state='capped') AS capped,
                     COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN
                         (SELECT id FROM tasks WHERE project=?1)), 0) AS cost
              FROM tasks WHERE project=?1",
@@ -589,6 +590,7 @@ impl Store {
                     unverified: r.get::<_, Option<i64>>("unverified")?.unwrap_or(0),
                     blocked: r.get::<_, Option<i64>>("blocked")?.unwrap_or(0),
                     withdrawn: r.get::<_, Option<i64>>("withdrawn")?.unwrap_or(0),
+                    capped: r.get::<_, Option<i64>>("capped")?.unwrap_or(0),
                     cost: r.get("cost")?,
                 })
             },

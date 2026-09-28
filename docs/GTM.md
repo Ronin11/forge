@@ -141,7 +141,7 @@ to sell; the rest are plumbing on tenancy that already exists.
    and `forge doctor` reports it. That is what the github-issues plugin
    was held for, and it is unheld, on a condition: every task it files
    carries **public** trust, and the trust policy bounds it. Public may
-   run only `reviewed`, at a capped budget, at most 5 a day, with
+   run only `reviewed`, at a capped budget ($5 a task, $25 an initiative unless the operator's `[trust.public]` says otherwise; `--allow-over-trust-cap` is the operator's way past it), at most 5 a day, with
    model-only egress (not even the repository's declared hosts), no
    protected paths, and it never lands itself: a person runs `forge
    land`. Contacts (Signal, the portal) file at **contact** trust: the

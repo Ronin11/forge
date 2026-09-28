@@ -230,14 +230,15 @@ fn print_project_row(r: &crate::view::ProjectRow) {
         }
     }
     out!(
-        "tasks      queued={} running={} succeeded={} failed={} unverified={} blocked={} withdrawn={}",
+        "tasks      queued={} running={} succeeded={} failed={} unverified={} blocked={} withdrawn={} capped={}",
         r.queued,
         r.running,
         r.succeeded,
         r.failed,
         r.unverified,
         r.blocked,
-        r.withdrawn
+        r.withdrawn,
+        r.capped
     );
     out!("cost       ${:.2}", r.cost_usd);
     out!(

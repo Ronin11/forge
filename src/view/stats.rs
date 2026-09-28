@@ -28,6 +28,9 @@ pub struct StatsWorkflowRow {
     pub blocked: i64,
     /// Tasks that finished in state `unverified`.
     pub unverified: i64,
+    /// Tasks that finished in state `capped`: stopped at their budget
+    /// cap, kept for a human, and not counted as `failed`.
+    pub capped: i64,
     /// Attempts run across all of this workflow's tasks.
     pub attempts: i64,
     /// Cost, in USD, of every attempt across this workflow's tasks.
@@ -115,6 +118,7 @@ impl From<&WorkflowStat> for StatsWorkflowRow {
         legacy.insert("FAIL".into(), Value::from(w.failed));
         legacy.insert("BLK".into(), Value::from(w.blocked));
         legacy.insert("UNV".into(), Value::from(w.unverified));
+        legacy.insert("CAP".into(), Value::from(w.capped));
         legacy.insert("ATT".into(), Value::from(w.attempts));
         legacy.insert("COST".into(), Value::from(w.cost));
         legacy.insert("$/OK".into(), serde_json::json!(cost_per_success_usd));
@@ -128,6 +132,7 @@ impl From<&WorkflowStat> for StatsWorkflowRow {
             failed: w.failed,
             blocked: w.blocked,
             unverified: w.unverified,
+            capped: w.capped,
             attempts: w.attempts,
             mean_cost_usd: w.cost,
             cost_per_success_usd,

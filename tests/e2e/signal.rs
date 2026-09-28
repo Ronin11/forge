@@ -86,7 +86,7 @@ esac
 
 /// Runs `signal.sh` directly (as the sibling test in plugins.rs does)
 /// with the given fake concierge agent.
-fn spawn_signal(e: &Env, f: &SignalFixture, fake: &str) -> std::process::Child {
+fn spawn_signal(e: &Env, f: &SignalFixture, fake: &str) -> Worker {
     let signal_sh =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/signal/signal.sh");
     let claude_fake = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -109,7 +109,7 @@ fn spawn_signal(e: &Env, f: &SignalFixture, fake: &str) -> std::process::Child {
         cmd.env("FORGE_SANDBOX", "0");
     }
 
-    cmd.spawn().unwrap()
+    Worker::spawn(&mut cmd)
 }
 
 /// The concierge's "unclear" decision blocks a task with a question
@@ -162,11 +162,7 @@ fn the_signal_plugin_records_a_concierge_question_against_its_task() {
         },
         Duration::from_secs(30),
     );
-    Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status()
-        .unwrap();
-    let _ = child.wait();
+    child.stop();
 
     let requests = e.requests_json();
     assert!(delivered, "delivered_at never set: {requests:?}");

@@ -2,6 +2,8 @@
 //! plus small helpers for driving the real binary and reading its output.
 
 use rusqlite::Connection;
+use std::cell::RefCell;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output};
 use std::time::{Duration, Instant};
@@ -19,36 +21,132 @@ pub struct Env {
 }
 
 /// A spawned `forge work` (or other long-lived process a test drives by
-/// hand): SIGTERM, then SIGKILL if it outlives a grace period, and reaped
-/// on drop. Every test that spawns a worker should hold one of these
-/// rather than a bare `Child`, so a failing assertion between spawn and an
-/// explicit stop can never leave the process running past the test (five
-/// idle `forge work` processes were once found still running after an e2e
-/// binary had already exited, one per test that only stopped its worker on
-/// the success path).
-pub struct Worker(Option<Child>);
+/// hand, a plugin run directly included): SIGTERM, then SIGKILL if it
+/// outlives a grace period, and reaped on drop. Every test that spawns a
+/// worker should hold one of these rather than a bare `Child`, so a failing
+/// assertion between spawn and an explicit stop can never leave the process
+/// running past the test (five idle `forge work` processes were once found
+/// still running after an e2e binary had already exited, one per test that
+/// only stopped its worker on the success path).
+///
+/// The process leads its own process group, and stopping it signals the
+/// group, so a shell plugin's pipeline dies with its shell. Whatever the
+/// process had forked (the plugins a worker supervises sit in groups of
+/// their own) is remembered as the test signals it, and once the process
+/// is gone none of it may survive: a survivor is killed and reported.
+pub struct Worker {
+    child: Option<Child>,
+    seen: RefCell<Vec<Proc>>,
+}
+
+/// A process identified by pid and start time, so a recycled pid is not
+/// mistaken for the process that used to hold it.
+#[derive(Clone, PartialEq)]
+struct Proc {
+    pid: i32,
+    started: String,
+}
+
+/// `(pid, ppid, state, start time)` for every process in `/proc`.
+fn process_table() -> Vec<(i32, i32, char, String)> {
+    let mut rows = Vec::new();
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return rows;
+    };
+    for entry in dir.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        // `pid (comm) S ppid ...`: comm may hold spaces and parentheses, so
+        // the fields are counted from the last `)`.
+        let Some(rest) = stat.rsplit_once(')').map(|(_, r)| r) else {
+            continue;
+        };
+        let f: Vec<&str> = rest.split_whitespace().collect();
+        if f.len() > 19 {
+            let state = f[0].chars().next().unwrap_or('?');
+            rows.push((pid, f[1].parse().unwrap_or(0), state, f[19].to_string()));
+        }
+    }
+    rows
+}
+
+/// Every live descendant of `root` right now.
+fn descendants(root: i32) -> Vec<Proc> {
+    let table = process_table();
+    let mut found: Vec<i32> = vec![root];
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < found.len() {
+        let parent = found[i];
+        i += 1;
+        for (pid, ppid, state, started) in &table {
+            if *ppid == parent && *state != 'Z' && !found.contains(pid) {
+                found.push(*pid);
+                out.push(Proc {
+                    pid: *pid,
+                    started: started.clone(),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// True while `p` is still running (a zombie awaiting its reaper is gone).
+fn alive(p: &Proc) -> bool {
+    process_table()
+        .iter()
+        .any(|(pid, _, state, started)| *pid == p.pid && *state != 'Z' && *started == p.started)
+}
 
 impl Worker {
     pub fn spawn(cmd: &mut Command) -> Worker {
-        Worker(Some(cmd.spawn().expect("spawn worker")))
+        cmd.process_group(0);
+        Worker {
+            child: Some(cmd.spawn().expect("spawn worker")),
+            seen: RefCell::new(Vec::new()),
+        }
     }
 
     pub fn id(&self) -> u32 {
-        self.0.as_ref().expect("worker already taken").id()
+        self.child.as_ref().expect("worker already taken").id()
+    }
+
+    /// Remembers what the worker has forked so far.
+    fn note_children(&self) {
+        let mut seen = self.seen.borrow_mut();
+        for p in descendants(self.id() as i32) {
+            if !seen.contains(&p) {
+                seen.push(p);
+            }
+        }
     }
 
     pub fn signal(&self, sig: libc::c_int) {
+        self.note_children();
         unsafe {
             libc::kill(self.id() as i32, sig);
         }
     }
 
     pub fn wait(&mut self) -> ExitStatus {
-        self.0
+        let status = self
+            .child
             .as_mut()
             .expect("worker already taken")
             .wait()
-            .expect("wait worker")
+            .expect("wait worker");
+        self.reap_group();
+        self.assert_no_survivors();
+        status
     }
 
     /// SIGTERM and wait for a clean exit: the shape most tests want.
@@ -60,37 +158,101 @@ impl Worker {
     /// SIGTERM and wait for a clean exit, returning captured output.
     pub fn stop_with_output(mut self) -> Output {
         self.signal(libc::SIGTERM);
-        self.0
+        let out = self
+            .child
             .take()
             .expect("worker already taken")
             .wait_with_output()
-            .expect("wait worker")
+            .expect("wait worker");
+        self.reap_group();
+        self.assert_no_survivors();
+        out
+    }
+
+    /// SIGKILL the worker to simulate a crash and reap it. A crashed worker
+    /// cannot stop the operation steps it was running (only its plugins are
+    /// tied to its life, by the parent-death signal), so those are killed
+    /// here rather than reported as survivors.
+    pub fn crash(&mut self) -> ExitStatus {
+        self.signal(libc::SIGKILL);
+        let status = self
+            .child
+            .as_mut()
+            .expect("worker already taken")
+            .wait()
+            .expect("wait worker");
+        for p in self.seen.take().iter().filter(|p| alive(p)) {
+            unsafe {
+                libc::kill(p.pid, libc::SIGKILL);
+            }
+        }
+        self.reap_group();
+        status
+    }
+
+    /// SIGKILL whatever is left of the worker's own process group (a shell
+    /// plugin's pipeline, once its shell has gone).
+    fn reap_group(&self) {
+        if let Some(child) = &self.child {
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+        }
+    }
+
+    /// Test-only check that nothing the worker forked outlives it, given two
+    /// seconds for the kernel to deliver the parent-death signals. Anything
+    /// still running is killed, then reported.
+    fn assert_no_survivors(&self) {
+        let seen = self.seen.take();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut left: Vec<Proc> = seen.into_iter().filter(alive).collect();
+        while !left.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+            left.retain(alive);
+        }
+        for p in &left {
+            unsafe {
+                libc::kill(p.pid, libc::SIGKILL);
+            }
+        }
+        if !left.is_empty() && !std::thread::panicking() {
+            let pids: Vec<i32> = left.iter().map(|p| p.pid).collect();
+            panic!("processes the worker started outlived it: {pids:?}");
+        }
     }
 }
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        let Some(child) = self.0.as_mut() else {
+        let Some(child) = self.child.as_mut() else {
             return;
         };
-        if matches!(child.try_wait(), Ok(Some(_))) {
-            return;
-        }
-        unsafe {
-            libc::kill(child.id() as i32, libc::SIGTERM);
-        }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => return,
-                Ok(None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(50));
+        let pid = child.id() as i32;
+        let exited = matches!(child.try_wait(), Ok(Some(_)));
+        if !exited {
+            self.note_children();
+            let child = self.child.as_mut().expect("checked above");
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    _ => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break;
+                    }
                 }
-                _ => break,
             }
         }
-        let _ = child.kill();
-        let _ = child.wait();
+        self.reap_group();
+        self.assert_no_survivors();
     }
 }
 

@@ -244,6 +244,8 @@ const TASK_COLUMNS: &[&str] = &[
     "workflow_source",
     "routing_json",
     "trust",
+    "session_id",
+    "handoff",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -338,6 +340,8 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
             "trust",
             Trust::try_from(r.get::<_, String>("trust")?.as_str()),
         )?,
+        session_id: r.get("session_id")?,
+        handoff: r.get("handoff")?,
     })
 }
 
