@@ -135,6 +135,12 @@ impl Succession {
             self.child = None;
         }
         let live = f.store.live_workers(pid_alive)?;
+        // After `live` is read: a successor that died since is seen dead here,
+        // and one that dies after is still in `live`, so it is not started
+        // again on this tick and is settled on a later one.
+        if self.child.is_none() {
+            settle_started(&release::root(&f.paths.home), &self.version);
+        }
         let newer: Vec<_> = live
             .iter()
             .filter(|w| w.id > self.id && w.version != self.version)
@@ -310,7 +316,9 @@ fn mark_failed(root: &std::path::Path, release: &str) {
 /// What became of the successor the last worker started: gone, with
 /// `current` never moved to its release, it failed after taking over (or
 /// before) and this restarted worker records it; one that flipped `current`
-/// or is this release needs no record any more.
+/// or is this release needs no record any more. Checked at join and on every
+/// tick of `superseded`, so a successor that dies while this worker runs is
+/// settled too.
 fn settle_started(root: &std::path::Path, version: &str) {
     let Some((pid, release)) = read_started(root) else {
         return;

@@ -792,3 +792,63 @@ fn a_successor_that_claims_and_dies_is_not_started_again_by_a_restarted_worker()
         "staged was not retired"
     );
 }
+
+#[test]
+fn a_successor_that_dies_after_a_restarted_worker_joined_is_not_started_again() {
+    let e = Env::new();
+    let root = e.home.join("bin");
+    let starts = e.home.join("starts.log");
+    let bin = root.join("releases/new/forge");
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\necho start >> \"{}\"\necho $$ > \"$FORGE_HOME/bin/successor-capable\"\nsleep 3\nexit 1\n",
+            starts.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink("releases/new", root.join("staged")).unwrap();
+
+    let restart = |cmd: &mut std::process::Command| {
+        cmd.env("FORGE_RELEASE", "old")
+            .env("NOTIFY_SOCKET", e.home.join("missing.sock"))
+            .env_remove("FORGE_SUCCESSOR_OF")
+            .args(["work", "--poll", "1"]);
+    };
+    let mut cmd = e.cmd("ok.sh");
+    restart(&mut cmd);
+    // Output goes to a file: the successor inherits it, and a pipe would
+    // hold `output()` until the successor died.
+    let log = std::fs::File::create(e.home.join("worker1.log")).unwrap();
+    let status = cmd
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "{}",
+        std::fs::read_to_string(e.home.join("worker1.log")).unwrap_or_default()
+    );
+    // No pause: the restarted workers join while the successor is still
+    // alive, and it dies a moment later.
+    for _ in 0..1 {
+        let _ = std::fs::remove_file(root.join("successor-capable"));
+        let mut cmd = e.cmd("ok.sh");
+        restart(&mut cmd);
+        let mut w = Worker::spawn(&mut cmd);
+        std::thread::sleep(Duration::from_secs(6));
+        w.signal(libc::SIGTERM);
+        assert!(w.wait().success());
+    }
+    let started = std::fs::read_to_string(&starts).unwrap().lines().count();
+    assert_eq!(started, 1, "the failed release was started again");
+    let failed = std::fs::read_to_string(root.join("staged-failed")).unwrap();
+    assert_eq!(failed.split_whitespace().next(), Some("new"), "{failed}");
+    assert!(
+        std::fs::symlink_metadata(root.join("staged")).is_err(),
+        "staged was not retired"
+    );
+}
