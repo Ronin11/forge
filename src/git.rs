@@ -452,9 +452,7 @@ pub async fn update_ref(repo: &Path, full_ref: &str, sha: &str) -> Result<()> {
     if !full_ref.starts_with("refs/forge/") {
         bail!("{full_ref} is not in Forge's own ref namespace");
     }
-    Git::new(repo)
-        .line(&["update-ref", full_ref, sha])
-        .await?;
+    Git::new(repo).line(&["update-ref", full_ref, sha]).await?;
     Ok(())
 }
 

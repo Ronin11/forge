@@ -103,7 +103,11 @@ async fn resolve(repo: &Path, url: Option<&str>, rev: &str) -> Result<Source> {
             && rev.bytes().all(|b| b.is_ascii_hexdigit())
             && commit.starts_with(&rev.to_ascii_lowercase());
         return Ok(Source {
-            branch: if bare_sha { String::new() } else { rev.to_string() },
+            branch: if bare_sha {
+                String::new()
+            } else {
+                rev.to_string()
+            },
             commit,
             from: repo.display().to_string(),
             // Set by `prepare` once the task has an id.
@@ -219,7 +223,12 @@ pub async fn adopt(f: &Forge, req: &AdoptRequest) -> Result<Adopted> {
     }
     t = f.store.task(t.id)?.context("the task went away")?;
     t.branch = format!("forge/{}-adopt-{}", t.id, crate::engine::slug(&name));
-    t.worktree = f.paths.worktrees.join(t.id.to_string()).display().to_string();
+    t.worktree = f
+        .paths
+        .worktrees
+        .join(t.id.to_string())
+        .display()
+        .to_string();
     f.store.update_task(&t)?;
     f.report.emit(
         t.id,
@@ -235,7 +244,10 @@ pub async fn adopt(f: &Forge, req: &AdoptRequest) -> Result<Adopted> {
     }
     let result = run(f, &mut t, &cfg, remote.as_ref(), &src, req).await;
     if let Err(e) = &result {
-        let reason = format!("adoption stopped: {e:#}; forge retry {} verifies it again", t.id);
+        let reason = format!(
+            "adoption stopped: {e:#}; forge retry {} verifies it again",
+            t.id
+        );
         block(f, &mut t, &reason, None)?;
     }
     result
@@ -297,8 +309,12 @@ async fn run(
     op(f, t.id, &timer, row(1, "clone", true, &detail)).map_err(fault)?;
     let cfg_base = config::load_at(&repo, &wt, &base_sha).await?;
     let changed = git::changed_paths(&wt, &base_sha).await?;
-    let hits = protected_hits(&cfg_base.protected, &changed, req.allow_protected);
-    if let Some(reason) = record_protected(f, t, &cfg_base, &changed, &hits)? {
+    // The repository's own config is always protected, as it is for an
+    // agent's attempt: the checks come from the trusted base.
+    let mut guarded = cfg_base.protected.clone();
+    guarded.push(cfg_base.config_path.clone());
+    let hits = protected_hits(&guarded, &changed, req.allow_protected);
+    if let Some(reason) = record_protected(f, t, &guarded, &changed, &hits)? {
         return refuse(f, t, &reason);
     }
     let v = verify_as_is(f, t, &cfg_base, &base_sha, &tip, &src.commit).await?;
@@ -385,13 +401,13 @@ fn needs_input_base() -> NeedsInput {
 fn record_protected(
     f: &Forge,
     t: &Task,
-    cfg: &config::Config,
+    protected: &[String],
     changed: &[String],
     hits: &[String],
 ) -> Result<Option<String>> {
     let allowed: Vec<&String> = changed
         .iter()
-        .filter(|p| config::is_protected(&cfg.protected, p))
+        .filter(|p| config::is_protected(protected, p))
         .collect();
     let (answer, refusal) = if !hits.is_empty() {
         let reason = format!(
@@ -690,7 +706,10 @@ pub async fn render(f: &Forge, adopted: &Adopted) -> Result<String> {
     let t = f.store.task(id)?.with_context(|| format!("no task {id}"))?;
     let mut lines = vec![format!(
         "task     {id}: {}",
-        t.adoption.as_ref().map(|a| a.describe()).unwrap_or_default()
+        t.adoption
+            .as_ref()
+            .map(|a| a.describe())
+            .unwrap_or_default()
     )];
     let checks = f
         .store

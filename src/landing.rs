@@ -1094,7 +1094,10 @@ pub(crate) enum LandOutcome {
     Landed(String),
     /// A conflict with the moved base, or checks failing with it merged
     /// in: the first line, and the whole feedback with the check output.
-    Rewind { first: String, feedback: String },
+    Rewind {
+        first: String,
+        feedback: String,
+    },
     Failed(String),
 }
 

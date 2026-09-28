@@ -8,7 +8,13 @@ use std::process::{Command, Output, Stdio};
 
 fn origin_sha(e: &Env, branch: &str) -> String {
     let o = Command::new("git")
-        .args(["--git-dir", e.origin.to_str().unwrap(), "rev-parse", "--verify", "--quiet"])
+        .args([
+            "--git-dir",
+            e.origin.to_str().unwrap(),
+            "rev-parse",
+            "--verify",
+            "--quiet",
+        ])
         .arg(format!("refs/heads/{branch}"))
         .output()
         .unwrap();
@@ -196,7 +202,9 @@ fn an_adopted_branch_editing_forge_toml_is_refused_without_allow_protected() {
     // No check ran on a refused branch.
     let attempts: i64 = e
         .db()
-        .query_row("SELECT COUNT(*) FROM attempts WHERE task_id=1", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM attempts WHERE task_id=1", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(attempts, 0);
     let d = e.decisions_json();
@@ -211,7 +219,10 @@ fn allow_protected_records_the_decision_and_verifies() {
     hand_branch(
         &e.repo,
         "protected",
-        &[("answer.txt", "42\n"), ("hello.sh", "#!/bin/bash\necho hi\n")],
+        &[
+            ("answer.txt", "42\n"),
+            ("hello.sh", "#!/bin/bash\necho hi\n"),
+        ],
     );
     std::fs::write(
         e.repo.join("forge.toml"),
@@ -243,7 +254,10 @@ fn an_adopted_branch_that_conflicts_with_the_moved_base_is_blocked_and_nothing_l
     hand_branch(
         &e.repo,
         "stale",
-        &[("answer.txt", "42\n"), ("hello.sh", "#!/bin/bash\necho hi\n")],
+        &[
+            ("answer.txt", "42\n"),
+            ("hello.sh", "#!/bin/bash\necho hi\n"),
+        ],
     );
     std::fs::write(e.repo.join("hello.sh"), "#!/bin/bash\necho howdy\n").unwrap();
     git(&e.repo, &["commit", "-qam", "base moves"]);
@@ -343,8 +357,16 @@ fn two_adoptions_and_an_agent_task_landing_at_once_all_land_verified() {
             "task {id}'s landing is on main"
         );
     }
-    assert_eq!(
-        landed.iter().filter(|(_, _, o)| o == "adopted").count(),
-        2
-    );
+    assert_eq!(landed.iter().filter(|(_, _, o)| o == "adopted").count(), 2);
+    // Whoever landed after another found the base moved: it merged the
+    // base in and verified the merged tree before pushing.
+    let merged: i64 = e
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM ops WHERE name='integrate' AND ok=1 AND detail LIKE 'merged main @ %verified against main%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(merged >= 1, "{merged} landing(s) merged the moved base");
 }
