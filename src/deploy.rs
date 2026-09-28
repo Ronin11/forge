@@ -516,6 +516,11 @@ pub async fn run(
         .deploy_target(project, name)?
         .with_context(|| format!("no deploy target {name} in project {project}"))?;
     let action = operation::resolve_deploy_method(f, &target.method)?;
+    if let Some(text) =
+        crate::workflows::shadow::copy_note(&f.paths.home.join("workflows"), &target.method)
+    {
+        f.report.emit(event_task, Event::Note { text: &text });
+    }
     let smoke_action = target
         .smoke_url
         .is_some()
