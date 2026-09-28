@@ -1342,10 +1342,17 @@ mod tests {
             "the lock is held while the plugin runs"
         );
         sup.stop().await;
-        assert!(
-            try_lock_plugin(dir.path(), "held").is_some(),
-            "the lock is released once the plugin is stopped"
-        );
+        // A sibling test's fork can hold a copy of the lock's descriptor
+        // for the instant before it execs; the lock is free right after.
+        let mut released = false;
+        for _ in 0..50 {
+            if try_lock_plugin(dir.path(), "held").is_some() {
+                released = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(released, "the lock is released once the plugin is stopped");
     }
 
     fn running_pid(home: &Path, name: &str) -> Option<i64> {
