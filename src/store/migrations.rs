@@ -707,6 +707,12 @@ CREATE UNIQUE INDEX jobs_schedule_slot ON jobs(project, workflow, trigger_ref)
 ALTER TABLE tasks ADD COLUMN worker_start TEXT;
 ALTER TABLE jobs ADD COLUMN worker_start TEXT;
 ",
+    // A capped task keeps the CLI session it stopped in and the handoff
+    // a continuation would start from, on the row a human reads.
+    "
+ALTER TABLE tasks ADD COLUMN session_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN handoff TEXT NOT NULL DEFAULT '';
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

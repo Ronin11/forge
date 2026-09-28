@@ -31,17 +31,13 @@ fn task_state_maps_every_end_variant() {
             TaskState::Failed,
         ),
         (
-            End::Budget("task budget reached".to_string()),
-            TaskState::Failed,
-        ),
-        (
-            // Budget hit after the code step verified but before review
-            // completed: not a failure, a human review the same as a
-            // review that could not finish.
-            End::Unverified(
-                "budget reached after the code step verified; review did not run".to_string(),
-            ),
-            TaskState::Unverified,
+            // The cap would be crossed: a decision, never a failure,
+            // whether or not the code step had verified.
+            End::Capped {
+                reason: "$5.12 of $5.00; code step verified, review not run".to_string(),
+                pushes: true,
+            },
+            TaskState::Capped,
         ),
     ];
     for (end, expected) in cases {

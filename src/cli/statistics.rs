@@ -241,7 +241,7 @@ pub(super) async fn stats(args: StatsOptions) -> Result<()> {
     }
     let doc = crate::view::stats_doc(&f, &scope, None).await?;
     out!(
-        "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9} {:>6} {:>9} {:>5}",
+        "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9} {:>6} {:>9} {:>5}",
         "WF",
         "HASH",
         "TASKS",
@@ -249,6 +249,7 @@ pub(super) async fn stats(args: StatsOptions) -> Result<()> {
         "FAIL",
         "BLK",
         "UNV",
+        "CAP",
         "ATT",
         "COST",
         "$/OK",
@@ -258,7 +259,7 @@ pub(super) async fn stats(args: StatsOptions) -> Result<()> {
     );
     for w in &doc.workflows {
         out!(
-            "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9} {:>6} {:>9} {:>5}",
+            "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9} {:>6} {:>9} {:>5}",
             w.workflow,
             w.hash,
             w.pieces,
@@ -266,6 +267,7 @@ pub(super) async fn stats(args: StatsOptions) -> Result<()> {
             w.failed,
             w.blocked,
             w.unverified,
+            w.capped,
             w.attempts,
             format!("${:.2}", w.mean_cost_usd),
             match w.cost_per_success_usd {
