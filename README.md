@@ -322,6 +322,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   jobs.rs           jobs, job_steps, job_effects
   job_runs.rs       recovered job run numbers and cumulative step costs
   deploys.rs        deploys, deploy_targets, assessments
+  descendants.rs    the live tasks below and beside a task in its retry lineage, and the `withdraw --abort` decision a worker reads
   projects.rs       projects, project_repos, backlog, initiatives, portal_tokens
   record.rs         decisions, task_refs, plugins
   messages.rs       messages: one row per inbound/outbound message on a channel, so a rule can ask "has this contact replied since"
