@@ -168,18 +168,50 @@ state plus typed questions in; a `choice`, `score` or `noul`, with its
 probabilities and a confidence, out, never text. Through Cloudflare
 Workers AI it took 687 ms and 500 input tokens for a short email
 (verified by hand, 2026-09-26), at $0.042 per million input tokens and
-free output.
+free output. TypeSafe serves the same request directly (the operator's
+account, 2026-09-28): `POST https://api.typesafe.ai/v1/systemone` with
+`Authorization: Bearer <key>`, the body `{"model", "state", "questions"}`,
+the response `{"model", "answers", "usage"}` at the top level.
 
 ```toml
 # config.toml; every key but `runner` is its default
 [providers.jev]
 runner = "jev"
-base_url = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run"
-account_id_env = "CLOUDFLARE_ACCOUNT_ID"   # names the variable, never holds the id
-api_key_env = "CLOUDFLARE_API_TOKEN"
-model = "typesafe/jev"
+backend = "auto"                             # auto | cloudflare | typesafe
+base_url = "https://api.typesafe.ai/v1/systemone"
+api_key_env = "TYPESAFE_API_KEY"             # names the variable, never holds the key
+model = "jev-latest"
 price_usd_per_million_input = 0.042
+price_usd_per_million_output = 0
+# Cloudflare Workers AI, used first until its credits run out:
+cloudflare_url = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run"
+account_id_env = "CLOUDFLARE_ACCOUNT_ID"
+cloudflare_api_key_env = "CLOUDFLARE_API_TOKEN"
+cloudflare_model = "typesafe/jev"
 ```
+
+Two hosts, until the Cloudflare AI Gateway's remaining credits are used
+up. Under `backend = "auto"` a call goes to Cloudflare first (when its
+token's variable is set), wrapped the way Workers AI takes it
+(`{"model", "input": {"state", "questions"}}`, answers read from
+`result.result`). When Cloudflare answers 402 (the gateway's
+"Insufficient balance"), the process asks TypeSafe instead, stays on
+TypeSafe for the rest of its life, logs one line saying so, and writes
+`jev-cloudflare-exhausted` (the date) beside the worker's credentials
+drop-in, `$XDG_CONFIG_HOME/systemd/user/forge-worker.service.d/` (else
+`~/.config/...`), so every later process goes straight to TypeSafe.
+`backend = "cloudflare"` or `"typesafe"` forces one host, and never
+switches. Once the marker exists, the Cloudflare code, keys and these
+paragraphs are deleted (a later task). A table written before TypeSafe,
+whose `base_url` names `{account_id}`, keeps its `base_url`, `api_key_env`
+and `model` as Cloudflare's.
+
+A 429 or 529 is retried with exponential backoff (one second, doubling)
+up to three times inside one call; past that the call fails as the
+provider refusing it (`rate_limited`, a five-minute window-style hold),
+not as the step's own failure. `forge doctor`'s `providers` row names
+each jev provider's host and warns when a variable its key (or, while
+Cloudflare is in use, its account id and token) is read from is unset.
 
 An action opts in by describing its outcomes (the list form still works,
 each name then being its own description) and may add questions and a
@@ -221,8 +253,8 @@ the provider's price; the log carries the request and the response.
 
 The runner is HTTP only and has no tools, so it is refused for anything
 but a job's directive step whose action declares outcomes; the step's
-`schema` is not what it answers against, the outcomes are. Its host,
-`api.cloudflare.com`, joins the model rules of the egress allowlist.
+`schema` is not what it answers against, the outcomes are. It runs on the
+host, never in a sandbox, so it adds no rule to the egress allowlist.
 
 ### Measuring it: `forge eval jev`
 

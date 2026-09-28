@@ -1324,10 +1324,11 @@ the built-in `anthropic`, which needs no entry.
 | field | type | meaning |
 |---|---|---|
 | `name` | string | The provider's name, as `--provider NAME` and `[providers.<name>]` name it. |
-| `runner` | string | `claude-cli`, `codex-cli`, `copilot-cli`, or `chat`. |
+| `runner` | string | `claude-cli`, `codex-cli`, `copilot-cli`, `chat`, or `jev`. |
 | `model` | string or null | The model this provider runs when a task or its workflow step names none; `null` leaves it to the runner's own default. |
-| `base_url` | string or null | Set for `runner = "chat"` and an OpenAI-compatible endpoint that isn't the default. |
-| `api_key_env` | string or null | The environment variable holding the provider's API key; never the key itself. |
+| `base_url` | string or null | Set for `runner = "chat"` and an OpenAI-compatible endpoint that isn't the default; for `runner = "jev"`, TypeSafe's endpoint (default `https://api.typesafe.ai/v1/systemone`). |
+| `api_key_env` | string or null | The environment variable holding the provider's API key; never the key itself. A `jev` provider's defaults to `TYPESAFE_API_KEY`. |
+| `backend` | string or null | For `runner = "jev"` only: the host its next call goes to, `cloudflare` (Workers AI, while its AI Gateway credits last and its token is set) or `typesafe`; `null` for every other runner. |
 | `env` | array of string | The names (not values) of extra environment variables this provider's process always gets. |
 | `extra_args` | array of string | Extra argv this provider always adds to its runner's launch command. |
 | `notes` | string or null | Free text from the config, e.g. how the provider is signed in. |
