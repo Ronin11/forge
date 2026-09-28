@@ -789,7 +789,10 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
                      (docs/JOBS.md, \"Steps\"); route this step's role to a claude provider instead"
                 );
             }
-            refusal::read_stderr(run_codex(l).await)
+            let after = refusal::WriteBack::of(&l, &crate::login::CODEX);
+            let out = refusal::read_stderr(run_codex(l).await);
+            after.run();
+            out
         }
         Runner::CopilotCli => {
             if l.no_tools {
@@ -798,7 +801,10 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
                      (docs/JOBS.md, \"Steps\"); route this step's role to a claude provider instead"
                 );
             }
-            refusal::read_stderr(run_copilot(l).await)
+            let after = refusal::WriteBack::of(&l, &crate::login::COPILOT);
+            let out = refusal::read_stderr(run_copilot(l).await);
+            after.run();
+            out
         }
         Runner::Chat => {
             if !l.no_tools {

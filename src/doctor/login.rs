@@ -1,9 +1,9 @@
-//! The `anthropic` row: the agent login the sandboxes are seeded from (see
-//! `crate::login`).
+//! The `anthropic`, `codex-login` and `copilot-login` rows: the agent logins
+//! the sandboxes are seeded from (see `crate::login`).
 
 use super::{Check, Status, check};
 use crate::ctx::{Forge, Paths};
-use crate::login::{self, Host};
+use crate::login::{self, Host, Shape};
 use crate::store::Store;
 use crate::unix_now;
 
@@ -52,10 +52,18 @@ pub(super) fn anthropic(paths: &Paths) -> Vec<Check> {
     out
 }
 
+/// The rows of the logins beside claude's: codex's and copilot's.
+pub(super) fn others() -> Vec<Check> {
+    [&login::CODEX, &login::COPILOT]
+        .into_iter()
+        .flat_map(login_file)
+        .collect()
+}
+
 /// The login file's row; `held`, the anthropic provider's hold row, leads
 /// it: a FAIL for a hold keeps the file's detail beside its own words.
 fn file_row(held: Option<Check>) -> Vec<Check> {
-    let mut rows = login_file();
+    let mut rows = login_file(&login::CLAUDE);
     match (held, rows.first_mut()) {
         (Some(h), Some(row)) if h.status == Status::Fail => {
             row.detail = format!("{}; {}", h.detail, row.detail);
@@ -71,31 +79,61 @@ fn file_row(held: Option<Check>) -> Vec<Check> {
 
 /// The login's expiry and whether the kernel has written a refreshed token
 /// back to the host file lately. FAIL when the file holds an empty token,
-/// which is what every attempt would die on.
-fn login_file() -> Vec<Check> {
-    let Some(dir) = login::config_dir() else {
+/// which is what every attempt would die on. Only claude's login is needed
+/// by every host: no codex or copilot file is no more than a runner unused.
+fn login_file(shape: &Shape) -> Vec<Check> {
+    let Some(dir) = shape.config_dir() else {
         return Vec::new();
     };
-    let file = dir.join(login::FILE);
+    let file = dir.join(shape.file);
     let now = unix_now();
-    let wrote = match login::last_write_back(&dir) {
-        Some(at) if now - at <= login::WRITE_BACK_WINDOW_SECS => {
-            format!("write-back yes ({}m ago)", (now - at) / 60)
+    let wrote = if !shape.rotates() {
+        "it does not rotate: never written back".to_string()
+    } else {
+        match login::last_write_back(&dir) {
+            Some(at) if now - at <= login::WRITE_BACK_WINDOW_SECS => {
+                format!("write-back yes ({}m ago)", (now - at) / 60)
+            }
+            _ => "no write-back in the last 8h".to_string(),
         }
-        _ => "no write-back in the last 8h".to_string(),
     };
-    let row = |status, detail: String, hint: &str| check("anthropic", status, detail, hint);
-    vec![match login::host_state(&dir) {
-        Host::Missing => row(
+    let row = |status, detail: String, hint: String| check(shape.row, status, detail, hint);
+    let claude = std::ptr::eq(shape, &login::CLAUDE);
+    vec![match shape.host_state(&dir) {
+        Host::Missing if claude => row(
             Status::Warn,
             format!("no login at {}", file.display()),
-            "run `claude login`, unless the provider uses an api_key_env",
+            format!(
+                "run `{}`, unless the provider uses an api_key_env",
+                shape.login
+            ),
+        ),
+        Host::Missing => row(
+            Status::Ok,
+            format!("no login at {}", file.display()),
+            String::new(),
+        ),
+        // copilot keeps its token in the keychain when it can, and its file
+        // then holds settings only.
+        Host::Empty if !shape.rotates() => row(
+            Status::Ok,
+            format!(
+                "no token in {} (the keychain or an api_key_env holds it)",
+                file.display()
+            ),
+            String::new(),
         ),
         Host::Empty => row(
             Status::Fail,
             format!("{}: empty token; {wrote}", file.display()),
-            "run `claude login`: attempts are refused until a login is there",
+            format!(
+                "run `{}`: attempts are refused until a login is there",
+                shape.login
+            ),
         ),
+        Host::Usable(c) if c.expires_at_ms == login::NEVER => {
+            row(Status::Ok, format!("login does not expire; {wrote}"), String::new())
+        }
         Host::Usable(c) => {
             let at = c.expires_at_ms / 1000;
             let detail = format!(
@@ -108,13 +146,17 @@ fn login_file() -> Vec<Check> {
                 }
             );
             if c.near_expiry(now * 1000, crate::login::REFRESH_WINDOW_MS) {
-                row(
-                    Status::Warn,
-                    detail,
-                    "the worker refreshes it on the host before the next launch",
-                )
+                let hint = if claude {
+                    "the worker refreshes it on the host before the next launch".to_string()
+                } else {
+                    format!(
+                        "the next attempt's refresh is written back; if it expires first, run `{}`",
+                        shape.login
+                    )
+                };
+                row(Status::Warn, detail, hint)
             } else {
-                row(Status::Ok, detail, "")
+                row(Status::Ok, detail, String::new())
             }
         }
     }]
