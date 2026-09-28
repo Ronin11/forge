@@ -133,8 +133,14 @@ who holds the pointer: **the store and every running binary agree.**
   worker restart (and its 40-minute drain) it took on 2026-09-25.
 - **Doctor tells the truth about it.** Built: the worker row reads
   "release <id> staged; successor pid N claiming; M attempts draining on
-  <old id>" while two versions are live, instead of "runs a binary rebuilt
-  since it started" (still shown for a worker that has no successor).
+  <old id>; N of M slots: predecessor a, successor b" while two versions
+  are live, instead of "runs a binary rebuilt since it started" (still
+  shown for a worker that has no successor). The row WARNs when a plus b
+  exceeds M.
+- **Slots are one budget per machine.** Each worker records its `--jobs`
+  in the `workers` table, and a successor claims `jobs` less the attempts
+  the other live workers still run, re-read every pass, so a draining
+  predecessor's attempts are not added to the successor's full count.
 
 Not a daemon, and not containers: the binary has nothing to isolate
 (SQLite and TLS are bundled) and everything a container would separate
