@@ -148,6 +148,7 @@ echo "doctor of ${sha:0:8}: schema ok against a copy of the live store"
 
 old_staged="$(link_of staged)"
 set_staged="releases/$sha"
+rm -f "$root/staged-failed"
 point staged "$set_staged"
 echo "staged ${sha:0:8}: $root/staged -> releases/$sha"
 
