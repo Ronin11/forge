@@ -352,6 +352,22 @@ impl Forge {
         }
     }
 
+    /// Whether a task at `level` may start on the backend a repository
+    /// declaring `cfg` would run on: `Err` names the backend and the level.
+    /// Without a resolved sandbox, `FORGE_SANDBOX=0` puts every launch on
+    /// the host.
+    pub fn egress_gate(
+        &self,
+        cfg: &config::Config,
+        level: crate::store::Trust,
+    ) -> Result<(), String> {
+        let (backend, guarantees) = match &self.sandbox {
+            Some(execution) => execution.guarantees_for(&cfg.execution),
+            None => crate::executor::guarantees_unresolved(&cfg.execution),
+        };
+        crate::executor::egress_gate(level, self.trust_policy(level), backend, guarantees)
+    }
+
     pub fn sandboxed(&self, worktree: &Path) -> bool {
         self.sandbox
             .as_ref()

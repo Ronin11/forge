@@ -101,7 +101,13 @@ pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
                 .store
                 .task(id)?
                 .and_then(|t| crate::supervisor::addressed_elsewhere(&t));
-            if let Some(note) = addressed_elsewhere {
+            let refused = f
+                .store
+                .task(id)?
+                .is_some_and(|t| t.reason.starts_with(crate::executor::EGRESS_REFUSAL));
+            if refused {
+                // No ruling changes the backend; the operator's config does.
+            } else if let Some(note) = addressed_elsewhere {
                 f.report.emit(id, Event::Note { text: &note });
             } else if let Some(n) = crate::supervisor::demotion_as_task(&f, id)
                 .await

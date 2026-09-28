@@ -194,6 +194,18 @@ pub(crate) fn op(f: &Forge, task_id: i64, timer: &Timer, row: OpRow) -> Result<(
     Ok(())
 }
 
+/// The backend can change under a queued task: leave it blocked with the
+/// reason, never failed, before anything runs.
+fn block_on_egress(f: &Forge, mut t: Task, reason: String) -> Result<TaskState, Fault> {
+    t.state = TaskState::Blocked;
+    t.reason = reason;
+    t.finished_at = Some(unix_now());
+    t.worker_pid = None;
+    f.store.update_task(&t).env()?;
+    f.report.emit(t.id, Event::Note { text: &t.reason });
+    Ok(TaskState::Blocked)
+}
+
 pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     let mut t = f
         .store
@@ -227,6 +239,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     // Checks and rules come from the trusted base, never from the branch under test.
     let mut cfg = config::load_at(&repo, &wt, &t.base_sha).await.task()?;
     cfg.protected = f.effective_protected(&t, &cfg.protected);
+    if let Err(reason) = f.egress_gate(&cfg, t.trust) {
+        return block_on_egress(&f, t, reason);
+    }
     f.allow_egress(&wt, &cfg, t.trust);
 
     announce(&f, &t, &resolved, &wt);
