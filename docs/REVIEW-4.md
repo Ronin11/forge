@@ -168,3 +168,469 @@ it at. Stage 2 finishes what edges, judgment, library and shadow started,
 with a guard so it stays finished. None of it changes what a workflow or
 an action does; every stage is checked by the same 561 unit and 377 e2e
 tests.
+
+## 6. Edges, section 2: plugin supervision and the successor handoff (2026-09-27)
+
+This is the second of the edges reads (the initiative filed from this
+review's closing table); the first covers the sandbox and the egress
+proxy. Same rules as section 1: a finding is recorded only when it was
+confirmed at its line, with the input that reaches it, what goes wrong and
+a task text a follow-up can be filed from; what was read and found sound
+is listed at the end. Read as one system: `src/plugins.rs`,
+`src/successor.rs`, `src/release.rs`, the plugin and drain paths of
+`src/worker.rs` (`work`, 907-1123), `src/store/workers.rs`,
+`Store::open`/`migrate`/`apply_contracts` (`src/store/mod.rs`),
+`report::log` and the reference plugins' event loops. Nothing was run
+against the operator's machine: the 118 orphaned plugin processes from
+test runs could not be counted from here, so finding 10 is derived from
+the code paths that produce them, not from the process table. No code was
+changed.
+
+Who owns a plugin process today, so the findings can be read against it:
+the worker is its parent (a tokio `Child`), the plugin is its own process
+group leader (`spawn_plugin`, plugins.rs:505-532, `process_group(0)`), it
+stays in the worker's session and cgroup, it has no parent-death signal,
+and `kill_on_drop(true)` (plugins.rs:526) reaches only the leader. What
+dies with the worker: on SIGTERM/SIGINT, everything, after the drain
+(`Supervisor::stop`, worker.rs:1108); on the double-signal abort, the
+leader only (finding 10); on SIGKILL, the OOM killer or a crash, nothing,
+unless systemd's cgroup cleanup does it (`KillMode=mixed`, init.rs:79,
+which is why no crashed worker's plugins were found on the machine).
+
+### 6.1 The successor handoff
+
+1. **A predecessor that stops its plugins for a successor which then
+   exits before claiming never starts them again (2026-09-27 21:25,
+   task 818).** `superseded` takes the supervisor (`plugins.take()` and
+   `p.stop().await`, successor.rs:119-121) *before* it spawns the
+   successor, and puts it back only if the spawn itself fails (135). If
+   the spawn succeeds and the successor dies later, the next pass reaps
+   it (106-112), inserts its release into `failed`, finds no newer live
+   worker and returns `Ok(false)` at 139: the worker claims again, with
+   `plugins` still `None` for the rest of its life. Input: any successor
+   that exits between its spawn and its first claim (a bad release, a
+   failed migration, a stop job, `kill`). What goes wrong: every enabled
+   plugin is stopped for as long as the worker lives; the run states say
+   "stopped by worker", nothing is wrong to the worker, and `forge
+   doctor` reports the plugins row `ok` (finding 18). That is the evening
+   of the 27th. *Task:* in `Succession::superseded`, when the child has
+   exited and no newer worker is live, and the caller's supervisor is
+   `None` for a daemon worker, start a new `Supervisor` (the same call as
+   successor.rs:135), and close the dead successor's row with
+   `stop_worker` (finding 2); put the restart behind a small function
+   both paths use, and add an e2e beside `tests/e2e/successor.rs` that
+   stages a release whose `forge` exits immediately, with an enabled
+   plugin, and asserts the plugin's run state is `running` again and the
+   worker claims.
+
+2. **The dead successor's row in `workers` is never closed, and
+   `live_workers` trusts the bare pid.** A registers the child's row at
+   successor.rs:124 and the child registers itself (`join`, 65); only
+   the process itself calls `stop_worker` (`leave`, 227), so a killed
+   successor's row stays open. `live_workers` (store/workers.rs:55-69)
+   keeps a row when `pid_alive(pid)` (kill 0, worker.rs:40) says the pid
+   exists. Once the pid is reused by any process (or the row's pid is
+   another user's, which `EPERM` counts as alive), the row is a live
+   worker of a newer version: the old worker sees `w.id > self.id &&
+   w.version != self.version` (successor.rs:114-116), claims nothing and
+   exits when its attempts end, `staged_successor` refuses the release
+   because a "live worker" runs it (156), and `apply_contracts` never
+   runs (store/mod.rs:729-735). Task ownership already solved this
+   (`store::start_of`, worker.rs:889, the identity no reused pid
+   shares); the workers table did not take it. *Task:* record
+   `start_of(pid)` on the `workers` row (an additive migration), have
+   `live_workers`' callers compare it the way orphan recovery does, and
+   have `superseded` call `stop_worker` for a child it reaped.
+
+3. **Any exit of the successor, a clean drain included, makes the
+   predecessor claim again.** successor.rs:106-112 treats every
+   `try_wait` result as "the successor died". Under the stop job the
+   docs describe (OPS.md, "The running binary"): the operator's
+   `systemctl --user stop forge-worker` sends SIGTERM to the main pid,
+   which after `MAINPID=` is the successor (`KillMode=mixed` signals only
+   the main process until the timeout, as OPS.md and doctor.rs:633-636
+   describe; not reproduced under systemd here); the successor drains and
+   exits 0;
+   the old worker, still draining a running attempt and in the unit's
+   cgroup but no longer main, reaps it, finds no newer live worker and
+   claims new tasks while the unit is `deactivating`, until
+   `TimeoutStopSec` (2400 s) SIGKILLs it and whatever it claimed.
+   `stop_requested` (187-195) only covers the successor's own view. Input:
+   a stop or restart while a predecessor still holds attempts. *Task:*
+   `superseded` must distinguish "exited without taking the unit over"
+   (the capability file does not name it, `read_capability`, 243) from
+   "exited after it did": in the second case the predecessor must stay
+   draining and exit, not claim; add an e2e that stops the successor
+   cleanly while the predecessor holds a running attempt and asserts no
+   new claim by the predecessor.
+
+4. **A worker that is stopping still starts a successor.** `work` calls
+   `succession.superseded` on every pass (worker.rs:947) and reads
+   `stopping` only afterwards (948, and in the claim guard at 957);
+   `superseded` never sees `stopping`, and `staged_successor` (118) only
+   asks whether a release is staged and not running. Input: SIGTERM (or
+   Ctrl-C on a hand-run `forge work`) to a worker while `bin/staged`
+   names another release. What goes wrong: the stop is answered by a new
+   detached worker in its own process group (successor.rs:178) that flips
+   `current`, restarts `forge-web` and `forge-portal` (291-306) and
+   claims; on a hand-run worker nothing tells it to stop, and under
+   systemd it stops only because `stop_requested` happens to see
+   `deactivating`. *Task:* pass `stopping` into `superseded` (or check
+   it before the call) so that a stopping worker starts no successor,
+   and add a worker test that signals a worker with a staged release and
+   asserts no second worker registers.
+
+5. **`current` is flipped, and web and portal restarted, before the
+   successor has proved itself; nothing puts them back when it dies.**
+   `join` runs `take_over` (successor.rs:72; flip and `systemctl
+   restart`, 291-306) first, then `MAINPID`/`READY` (74), the capability
+   file (75) and `apply_contracts` (76). A successor that exits after 72
+   leaves `current` on the dead release; `superseded` records the
+   failure (106-112) and never flips back. The unit's `ExecStart` is
+   `<home>/bin/current/forge` (init.rs:150-157, 79), so the next start of
+   the unit runs the release that just failed: if the successor dies after
+   `MAINPID=` (74) systemd sees its main pid exit and `Restart=on-failure`
+   starts that release ten seconds later, and an operator's restart or a
+   crash of the old worker does the same, up to five times in three
+   hours (`StartLimitBurst=5`, init.rs:69-70) until the unit is refused. The same holds one step earlier for the schema: `forge
+   work` opens the store (cli/tasks.rs:344, `Store::open`) and migrates it
+   before `join`, and a release older than the schema refuses to open it
+   (store/mod.rs:782, "newer than this forge"), so after a failed
+   successor every fresh process of the old release (a plugin's `forge`
+   call through `current`, a restarted worker) fails on the store until
+   someone stages a release at least as new. Input: a successor that
+   passes migration and then dies (or is killed) before claiming.
+   *Task:* make the flip the last step of the handoff: run `take_over`
+   after the capability file is written and after the successor's first
+   completed pass, or have the predecessor call `release::restore`
+   (release.rs:115) with the pointers it read when it reaps a successor
+   that never took the unit over; decide and document what the old
+   binary does with a schema newer than itself (docs/OPS.md says two
+   versions share the store; a fresh old process cannot), and add a test
+   that a successor killed after `join`'s flip leaves `current` on the
+   release that claims.
+
+6. **Two workers of one release can each start a successor.**
+   successor.rs:113 reads the live set, 118 decides from it, then 119-121
+   awaits `Supervisor::stop` (up to `STOP_SETTLE` plus ten seconds of
+   grace) before `spawn` (122) and the registration (124); nothing
+   re-checks after the await and nothing is held across it. Input: two
+   daemon workers of the same release live at once (a hand-started
+   `forge work` beside the unit, which nothing prevents) and a staged
+   release. What goes wrong: two successors of one release, which never
+   supersede each other (`w.version != self.version`, 116), both claim,
+   both send `MAINPID=` (74), and one of them is not the unit's main pid.
+   `claim` is an atomic `UPDATE ... WHERE state='queued'`
+   (store/tasks.rs:707-713), so a task does not run twice; the rest of
+   the handoff's guarantees are gone. *Task:* take an exclusive `flock` on a
+   file beside `bin/staged` across the check, the plugin stop and the
+   spawn-and-register, or register a claiming row before stopping the
+   plugins, and re-run `live_workers` after the stop.
+
+7. **Contract migrations are applied at one moment only, which a chain
+   of successors never reaches.** `apply_contracts` runs once, in `join`
+   (successor.rs:76), and returns 0 when any live worker is on another
+   version (store/mod.rs:729-735); the predecessor is alive at exactly
+   that moment, by construction. Nothing calls it again when the
+   predecessor exits (grep: only successor.rs:76 and the fresh-database
+   path, store/mod.rs:379). Every deploy that goes through a successor
+   therefore leaves its contract steps pending until something else
+   restarts the worker with no other version alive. Input: any release
+   with a `-- contract` migration, deployed through the successor path.
+   *Task:* have the worker's pass call `apply_contracts` when it is not
+   superseded (it is one `SELECT` when everything is applied), so the
+   step runs on the first pass after the last older worker is gone; add
+   a store test with two registered versions and one exit.
+
+8. **The drain keeps ticking.** `tick_run_workflows`, `schedule_tick`
+   and `event_tick` (worker.rs:944-946) run on every pass before
+   `superseded` is computed (947) and are not gated on `stopping` or
+   `superseded`; so a draining worker, for up to the drain's 40 minutes,
+   resolves workflows with its own older code and queues scheduled and
+   event-triggered jobs (`job::start_scheduled`, job.rs:638;
+   `start_event`, job.rs:765) beside the successor doing the same, and
+   moves the shared per-workflow event cursor (worker.rs:643-647) past
+   events "whatever its type". The docs promise claims go to the newest
+   version only (OPS.md); triggers are not claims and both versions fire
+   them. The two ticks racing on one event (`start_event` checks
+   `job_for_trigger` and then inserts, job.rs:780-796, without the
+   unique-index handling `start_webhook` has) log a spurious `event tick:
+   UNIQUE constraint failed`. *Task:* compute `superseded` first and run
+   the three ticks only when the worker is neither superseded nor
+   stopping; give `start_event` the same unique-conflict handling as
+   `start_webhook`.
+
+9. **One tick error skips the successor check and the claim.** The pass
+   is a single `async` block whose ticks use `?` (worker.rs:944-946), so
+   an `Err` from `event_tick` returns before `superseded` (947) and the
+   claim loop (957). `event_tick`'s reads go through `report::log::read`,
+   whose `read_line` (log.rs:152) fails on a line that is not UTF-8;
+   the log is written by Rust only, so the reachable input is a torn
+   `write_all` (a full disk) or a hand edit, and the failure repeats on
+   every pass because the cursor never moves. The worker logs "worker
+   pass failed; retrying" every ten seconds, claims nothing and never
+   starts a successor. (By reading; not reproduced.) *Task:* run each
+   tick as its own step whose error is logged and does not end the pass
+   (as `schedule_tick` already does per workflow), and make `read_file`
+   skip a line that is not UTF-8 the way `forge events` skips one that
+   is not JSON.
+
+### 6.2 Plugin supervision
+
+10. **A plugin has no owner beyond the worker's life, and nothing
+    collects what the worker leaves.** Three paths, all confirmed. (a)
+    The double-signal abort: `requeue_aborted(...)?` (worker.rs:1101)
+    returns from `work` before `plugins.stop()` (1108) and
+    `succession.leave` (1111); the runtime then drops the supervising
+    tasks and `kill_on_drop` SIGKILLs each leader, but the rest of its
+    group (a shell plugin's `forge events --follow`) is not the `Child`
+    and survives. (b) A worker killed while it is stopping plugins:
+    `Supervisor::stop` takes up to 400 ms plus ten seconds per stubborn
+    plugin (plugins.rs:323, 333, 478-496); the e2e `Worker` guard
+    SIGTERMs, waits five seconds and SIGKILLs the worker
+    (tests/e2e/support.rs:71-96), so a plugin that answers SIGTERM slowly
+    is left running and never gets its SIGKILL. (c) SIGKILL or a crash
+    outside systemd (a hand-run or test-run worker): no parent-death
+    signal is set (`client/src/lib.rs:489` sets one for its own
+    subscription; `spawn_plugin` does not), the group is left, and
+    `Supervisor::start` does not look for it: `plugins-run/<name>.json`
+    still says `Running { pid }` (plugins.rs:341-345) and no one reads it
+    back. These are the shapes that leave the 118 processes a run of the
+    plugin e2e tests accumulates (worker killed by `Reap`,
+    tests/e2e/successor.rs, or by `child.kill()`), each one a `sh` looping
+    on `forge events --follow` until something kills it. *Task:* at `Supervisor::start`, read
+    each `plugins-run/<name>.json`; for a `Running { pid }` whose group
+    still exists and whose start identity (`store::start_of`) matches the
+    one recorded with it, SIGTERM then SIGKILL the group before the lock
+    is taken; record the start identity in the state file; make the
+    abort path stop the supervisor before returning; and set
+    `PR_SET_PDEATHSIG` on the leader in a `pre_exec` (from the thread
+    that spawns, which is a runtime worker for the life of the runtime).
+
+11. **The per-plugin lock does not follow the plugin, so an orphan and
+    its replacement run together.** `try_lock_plugin` (plugins.rs:399-409)
+    opens the lock file with std's default `O_CLOEXEC` and holds it in the
+    worker; docs/PLUGINS.md (181-183) and the comment at plugins.rs:395
+    say it is held "for as long as the plugin's process lives". When the
+    worker dies without stopping its plugins (finding 10) the lock is
+    released with it, the next worker takes it and starts a second copy
+    beside the survivor: two notify plugins send every message twice,
+    two signal plugins both poll the inbound side. *Task:* let the
+    plugin's group inherit the locked file description (clear
+    `FD_CLOEXEC` on it in a `pre_exec`), so the flock lives exactly as
+    long as any member of the group and a second copy cannot start while
+    one member survives; test it by killing a worker with SIGKILL and
+    asserting the next supervisor does not start the plugin until the
+    group is gone.
+
+12. **The group is only signalled while the leader is alive.** On
+    SIGTERM `stop_child` (plugins.rs:478-496) escalates to SIGKILL only
+    in the timeout branch; a leader that exits inside the grace (a
+    shell's default SIGTERM) returns at 484 with a group member that
+    ignored or is slowly handling SIGTERM still running, unowned, and the
+    lock (a `Supervised` field) released once the task returns. The other
+    exit, the leader ending by itself, never signals the group at all
+    (supervise_plugin, plugins.rs:593-651): `statusline.sh` backgrounds
+    `forge events --follow` and a reader (`statusline.sh:97-105`) and
+    relies on a `trap` (113-114) to kill them, so a leader that dies by
+    SIGKILL, or between starting them and installing the trap, leaves both, and `restart`
+    starts a new leader (and new followers) beside them at up to one per
+    backoff. *Task:* after the leader has been reaped, on both paths,
+    `kill(-pgid, SIGKILL)` the group (an `ESRCH` is the normal answer),
+    with a comment on the pid-reuse window this leaves and how it is
+    closed (do it before the leader is reaped with `waitid(WNOWAIT)`, or
+    keep the leader's pid unreaped until the sweep is done); test with a
+    plugin whose leader exits and whose child `sleep 1000`s.
+
+13. **`enabled_plugins_now` turns "cannot read" into "nothing is
+    enabled".** plugins.rs:658-660 and 662-664 return an empty map when
+    `config::load_home` or `enabled_plugins()` fails, and the reconciler
+    treats absence as "disabled" (`gone`, 758-767): every running plugin
+    is stopped (SIGTERM, up to ten seconds, cursors mid-flight) and
+    restarted ten seconds later when the file parses again. Input: any
+    tick that lands while `config.toml` is being edited (an invalid
+    file), or while a plugin's `plugin.toml` is being rewritten (the
+    catalog reports a problem, so the plugin is not in `cat.plugins`,
+    667). The worker's own reload keeps the previous config when a new
+    one does not validate (reload.rs:1-9, OPS.md "Config reloads between
+    claims"); the supervisor re-reads the file from disk and bypasses
+    that. *Task:* on an error from either read, keep the current running
+    set and log once; distinguish a plugin the catalog lists as broken
+    from one that is absent; and use the config the worker has already
+    validated (`reload.rs`) rather than the file.
+
+14. **`forge plugin uninstall` does not stop the plugin it removes.**
+    cli/deploy.rs:346-351 clears the flag and runs `remove_installed`
+    (plugins.rs:305-311, `remove_dir_all`) at once; the running plugin
+    keeps its deleted working directory for up to `RECONCILE_SECS`
+    (plugins.rs:326), and a plugin that exits in that window with
+    `restart = always` is respawned by `supervise_plugin` into a
+    directory that no longer exists (a "failed to start" state, retried
+    with backoff, until the tick stops it). The command's help says "Stop
+    a plugin, clear its enabled flag, and remove the installed copy".
+    *Task:* wait, bounded, for the run state to leave `running` (or ask
+    the reconciler through the same request file `restart` uses) before
+    removing the directory.
+
+### 6.3 The store, the CLI a plugin calls, and the event subscription
+
+15. **Every `forge` call takes the database's write lock, and a release
+    older than the schema refuses to open it.** `migrate`
+    (store/mod.rs:778-807) starts `BEGIN IMMEDIATE` (779) on every
+    `Store::open`, before it has read `user_version`, so a plugin's
+    read-only `forge show`, `forge snapshot` or `forge message record`
+    waits behind, and blocks, every other writer, and while a successor
+    is running a long migration (the data steps run inside that
+    transaction, 793-798) each such call waits up to `busy_timeout`
+    (60 s, store/mod.rs:364) and then fails with "database is locked";
+    the plugins call the CLI with `2>/dev/null` (`signal.sh:310, 403`) and
+    carry on, so the failure is a dropped notification or a message not
+    recorded. Between the successor's `Store::open` and its flip
+    (finding 5) every `forge` call through `current` is the old binary,
+    which errors at 782. *Task:* read `user_version` under a deferred
+    transaction first and take `BEGIN IMMEDIATE` only when it is below
+    the target (re-reading inside), so the common open is read-only; add
+    a store test with a held writer that asserts a current-version
+    `Store::open` returns without waiting on it.
+
+16. **A plugin that fails its first `forge snapshot`, or finds an empty
+    cursor file, exits 0 and is never restarted.** `notify.sh:27-42`,
+    `github-issues.sh:85-94`, `signal.sh:322-331` take their start offset
+    from `forge snapshot | sed` when no cursor file exists, or from
+    `cat cursor`; a `snapshot` that fails (store locked past its timeout,
+    finding 15; a release skew) or a cursor file truncated by a kill
+    between `>` and the write (`notify.sh:73`) gives an empty offset,
+    `forge events --since ""` fails to parse it (`Cursor::from_str`,
+    log.rs:21-25) and exits non-zero, but the script's status is the
+    `while` at the end of the pipeline, which is 0 (no `pipefail`, `set
+    -u` only). `restart = "on-failure"` (the default, plugins.rs:621) does
+    not restart a zero exit, so the plugin is `stopped: exit 0` until the
+    worker restarts. *Task:* in the four plugins, exit non-zero when the
+    offset is empty or the `events` process fails (`set -o pipefail` where
+    the shell allows it, else check `$?` through a fifo as `statusline.sh`
+    does), write the cursor through a temporary file and `mv`, and add
+    the case to `tests/e2e/event_cursors.rs`.
+
+17. **The subscription replays, or drops, depending on the plugin, and
+    the one signal the CLI gives to say so is ignored (the 249-message
+    replay, task 820).** `report::log::read` (log.rs:126-137) answers a
+    cursor whose generation is not the current one, or is not the
+    immediately previous one with its tail present, or whose offset is
+    past the file, with `resync` and then reads the whole current
+    generation from its start; docs/CLIENT.md (1302-1305) tells
+    consumers to refresh their snapshot on `resync`, and none of the
+    four reference plugins mentions it (`grep resync plugins/` is empty).
+    So a plugin stopped across two rotations, or whose cursor was made
+    for another log, delivers a generation (up to 50 MB,
+    `EVENT_LOG_SIZE_LIMIT`, report.rs:13) of `task_done` events as new
+    notifications; and with finding 1 a plugin can be down for hours,
+    after which the ordinary catch-up (correctly gap-free) also arrives
+    as a burst of stale "task N failed" messages, since nothing looks at
+    the event's `ts`. The ordering differs by plugin as well: `signal.sh`
+    writes its cursor before it handles the event (333), so a plugin
+    killed mid-handler loses that notification, while `notify.sh:73` and
+    `github-issues.sh:120` write it after, so the same kill sends it
+    twice. I could not recompute the 249 from here (it needs that
+    machine's `events.jsonl` and cursor); the mechanism is confirmed, the
+    count is not. *Task:* teach the four plugins the three cases: on a
+    `resync` event reset the cursor to `forge snapshot`'s
+    `events_offset` and drop the batch; skip events whose `ts` is older
+    than a per-plugin bound (default one hour) unless configured
+    otherwise; and pick one cursor order (after handling, with the
+    handlers idempotent) for all four, documented in docs/PLUGINS.md.
+
+18. **`forge doctor` cannot see any of this.** `check_plugins`
+    (doctor.rs:506-540) is `ok` whenever the catalog has no problem,
+    whatever the enabled plugins' run states say; `read_run_state`
+    (plugins.rs:370-375) is the last file written, so after a worker
+    crash a dead plugin still reads `running pid N, up …` forever
+    (`RunState::Running` is never checked with `pid_alive`), and after
+    finding 1 an enabled plugin reads `stopped: stopped by worker` under
+    a green row. *Task:* warn for an enabled plugin whose state is
+    `Stopped` while a worker is live, or whose `Running` pid is not
+    alive; add both to the doctor tests.
+
+19. **Smaller: fixed temporary names and blocking calls in async code.**
+    `release::point` (release.rs:88-91) and `install` (71-72) use one
+    temporary name per pointer or release id and delete it first, so two
+    flips (the successor's `take_over` and a deploy's fallback flip)
+    can fail with `EEXIST`, and two installs of one id delete each
+    other's half-copied directory; `request_restart` (plugins.rs:437)
+    does the same with `<name>.restart.tmp`. `stop_requested` runs
+    `systemctl --user is-active` with no timeout on the runtime thread on
+    every pass (successor.rs:194, 277-286), `leave` sleeps 200 ms at a
+    time for up to 120 s on it (209-214), and `enabled_plugins_now` does
+    file and SQLite work, with the connection's mutex held and
+    `retry`'s `thread::sleep` (store/retry.rs:15), on the reconciler's
+    task (plugins.rs:657-669): a hung user bus or a locked store stops
+    signal handling for as long as it lasts. *Task:* unique temporary
+    names (the pid and a counter), a bounded `systemctl` (a timeout and
+    `kill_on_drop`), and `spawn_blocking` for the reconciler's reads.
+
+### 6.4 Read and found sound
+
+- **Stopping a live plugin's group** (plugins.rs:478-496, 505-532): its
+  own process group, SIGTERM to `-pid`, SIGKILL after ten seconds, all
+  plugins signalled before any is waited on (`Supervisor::stop`, 799;
+  the unit tests at plugins.rs:1015-1157 hold this), and the reconciler
+  draining what a racing restart spawned (777-791). The gaps are in
+  findings 10-12, outside this path.
+- **The restart generation** (plugins.rs:415-441, 733-757): a counter, not
+  a timestamp; the generation is read at 751 before the process is
+  spawned (754), so a request that lands during a stop is either seen by
+  the next tick or already covered by the process that starts after
+  it. Two concurrent `forge plugin restart` calls coalesce into one
+  restart, which is what either wanted; only the shared temporary name
+  (finding 19) can make one of them fail. `disable` then `enable` inside
+  one 10-second tick is never seen and restarts nothing; documented
+  (plugins.rs:426-430), `restart` is the verb.
+- **Single supervision on the clean path**: the lock is held by
+  `Supervised` until its task ends (681-701), `stop` signals every
+  plugin before it waits (697-700), and a supervisor that finds the lock
+  held skips and retries (747-757); the handoff order (stop, then
+  spawn) in successor.rs:119-122 is right, and the tests at
+  plugins.rs:1163-1189 hold it. The failure is when the holder dies
+  (finding 11).
+- **The `MAINPID` handover itself** (successor.rs:59-92, 200-229, 308-331):
+  `Type=notify` with `NotifyAccess=all`, the successor is a child in the
+  unit's cgroup, `READY=1` and `MAINPID=` go on the inherited
+  `NOTIFY_SOCKET` (abstract sockets included), the capability file is
+  written by rename, and `leave` waits for it (bounded at 120 s) before
+  the old main pid exits. What was found is around it (findings 3-5), not
+  in the datagram.
+- **`pid_alive`** (worker.rs:40-52): kill 0, `EPERM` counted as alive,
+  non-positive and out-of-range pids refused. The gap is the row it is
+  applied to (finding 2).
+- **Release layout** (release.rs:27-145): symlinks flipped by `rename`,
+  `previous` kept, `flip` a no-op on the live id, `restore` symmetric,
+  `install` through a temporary directory and never touching an existing
+  release, `running()` resolving `FORGE_RELEASE`, then the executable's
+  directory, then `current`. `binary::through_current` gives a plugin a
+  `FORGE_BIN` that survives a flip (binary.rs:11-26).
+- **The event log's own I/O** (report/log.rs): one lock for readers and
+  writers, generation header written through `pending` and recovered
+  before the next append, torn tails not consumed, a bounded read
+  budget; the unit tests at log.rs:176-284 cover rotation, a lost
+  archive and a torn tail. The problem is what the consumers do with
+  `resync` (finding 17), not the log.
+- **Migrations for two versions** (store/mod.rs:778-807, migrations.rs:
+  720-726): additive steps only on the ladder, a contract step tagged and
+  deferred until no older worker is alive, a test that parses every
+  migration, `BEGIN IMMEDIATE` so two openers do not both migrate. The
+  gaps are when a contract step is finally applied (finding 7) and the
+  lock's cost on every open (finding 15).
+
+### 6.5 The plan
+
+Ordered by what it stops: **stage 0** is findings 1, 3 and 4 (one change
+to `Succession::superseded`: restart the supervisor, close the reaped
+row, do not claim after a clean exit, do not start a successor while
+stopping), which is what turned a failed handoff into a quiet evening;
+**stage 1** is finding 5 (move the flip after the successor has proved
+itself, or undo it), the only one that can leave the unit restarting a
+broken release; **stage 2** is findings 10-12 (ownership of the group and
+of the lock), after which the e2e suite stops leaving processes behind;
+**stage 3** is findings 7-9, 13 and 15 (the pass structure, contracts and
+the write lock); **stage 4** is 16-18 (the plugins' own loops and
+doctor); findings 2, 6, 14 and 19 ride with whichever stage touches the
+same function.
