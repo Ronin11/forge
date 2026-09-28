@@ -613,10 +613,7 @@ fn a_unit_that_does_not_come_back_active_flips_current_back() {
         "{log}"
     );
     assert!(log.contains("forge-portal: unit not found"), "{log}");
-    assert!(
-        log.contains("putting current back to releases/old"),
-        "{log}"
-    );
+    assert!(log.contains("putting current back to old"), "{log}");
     assert_eq!(current, "releases/old", "{log}");
     let calls = std::fs::read_to_string(e.home.join("calls.log")).unwrap();
     let web_restarts = calls
