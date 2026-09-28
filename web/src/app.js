@@ -78,6 +78,7 @@
     if (m) {
       const name = m[1] ? decodeURIComponent(m[1]) : null;
       if (name === 'new') return { page: 'workflow-new' };
+      if (name === 'draft') { const q = new URLSearchParams(location.search); return { page: 'workflow-draft', name: q.get('name') || null, project: q.get('project') || null }; }
       return { page: 'workflows', name, project: new URLSearchParams(location.search).get('project') || null };
     }
     m = location.pathname.match(/^\/tasks(?:\/(\d+)(\/run)?)?\/?$/);
@@ -129,7 +130,7 @@
       : '';
     const activeKey = r.page === 'project' ? 'projects'
       : (r.page === 'initiative' || r.page === 'initiatives-list') ? 'initiatives'
-      : r.page === 'workflow-new' ? 'workflows'
+      : (r.page === 'workflow-new' || r.page === 'workflow-draft') ? 'workflows'
       : r.page;
     $('#nav').innerHTML = ForgeShell.renderNav(activeKey, taskLinks + graphLinks);
   }
@@ -152,6 +153,7 @@
       : r.page === 'stats' ? statsView()
       : r.page === 'jobs' ? (r.id === null ? jobsView() : jobView(r.id))
       : r.page === 'workflow-new' ? promptView()
+      : r.page === 'workflow-draft' ? draftView(r.name, r.project)
       : r.page === 'workflows' ? (r.name === null ? workflowsView() : workflowView(r.name, r.project))
       : (r.id === null ? listView(r.filters, r.before) : (r.run ? runView(r.id) : detailView(r.id)));
     await view.show();
@@ -676,7 +678,7 @@
     return {
       async show() {
         $('#main').innerHTML = `
-          <h2>Workflows <a href="/workflows/new">+ new</a></h2>
+          <h2>Workflows <a href="/workflows/draft">+ draft</a> <a href="/workflows/new">+ describe</a></h2>
           <table><thead><tr><th>name</th><th>kind</th><th>source</th><th>steps</th><th>measured</th></tr></thead><tbody id="workflow-rows"></tbody></table>`;
         $('#workflow-rows').addEventListener('click', ev => {
           if (ev.target.closest('a')) return;
@@ -747,7 +749,7 @@
     function draw(d) {
       const saveLabel = d.source === 'repo' ? 'file as a task' : 'save';
       $('#main').innerHTML = `
-        <h2>Workflow ${esc(d.name)} <span class="mute">${esc(d.kind)} · ${d.source === 'repo' ? esc(project) : 'catalog'}</span> <a href="/workflows">← workflows</a></h2>
+        <h2>Workflow ${esc(d.name)} <span class="mute">${esc(d.kind)} · ${d.source === 'repo' ? esc(project) : 'catalog'}</span> <a href="/workflows/draft?name=${encodeURIComponent(d.name)}${d.source === 'repo' ? '&project=' + encodeURIComponent(project) : ''}">edit as a draft</a> <a href="/workflows">← workflows</a></h2>
         <div class="two">
           <section>${editorHtml(d.text, saveLabel)}</section>
           <section>
@@ -875,6 +877,167 @@
         if (text !== null) { jobId = e.job_id; setStatus(text); }
       },
       teardown() { if (teardownEditor) teardownEditor(); },
+    };
+  }
+
+  // ---- the draft editor: /workflows/draft[?name=NAME&project=P], the
+  // workflow as a step list with edges, composed from the catalog in one
+  // sitting (docs/WORKFLOWS.md, "The draft editor"). Every change is sent
+  // whole to `/api/drafts/check`, which runs the catalog's own linter, and
+  // the annotated answer is what renders: the draft is always clean or
+  // annotated. The author directive is a helper here ("suggest steps"),
+  // never the path a draft has to take.
+  function draftView(name, project) {
+    let draft = null, annotated = null, actions = [], picked = '', seq = 0, note = '';
+    const app = ForgeDrafts;
+
+    async function check() {
+      const mine = ++seq;
+      let a;
+      try { a = await postBody('/api/drafts/check', JSON.stringify(app.bare(draft)), 'application/json'); }
+      catch { return; }
+      if (mine !== seq) return; // a newer change already started another check
+      if (a.error) { note = a.error; } else { annotated = a; draft.tasks = a.tasks; draft.status = a.status; }
+      paint();
+    }
+    // A change: the draft moves first (so the list answers at once), the
+    // linter's answer follows.
+    function change(next) { draft = next; if (annotated) annotated = Object.assign({}, annotated, draft); paint(); check(); }
+
+    const value = sel => ($(sel) ? $(sel).value : '');
+    function paint() {
+      const a = annotated || Object.assign({ problems: [], info: [], pending: [] }, draft);
+      const main = $('#main'); if (!main) return;
+      main.innerHTML = `
+        <h2>Draft ${esc(draft.name || '(unnamed)')} <span class="mute">${esc(draft.kind)}</span> <a href="/workflows">← workflows</a></h2>
+        <div class="card">
+          <input data-h="name" placeholder="name" value="${esc(draft.name)}">
+          <select data-h="kind">${['build', 'run'].map(k => `<option${draft.kind === k ? ' selected' : ''}>${k}</option>`).join('')}</select>
+          <input data-h="project" placeholder="project (for placeholder tasks)" value="${esc(draft.project || '')}">
+          <input data-h="description" placeholder="description" style="width:40%" value="${esc(draft.description)}">
+        </div>
+        <div class="two">
+          <section>
+            <h2>Steps</h2>
+            <div class="card" id="draft-steps">${app.renderStepList(a)}</div>
+            <div class="card">
+              <select id="draft-pick">${app.renderActionOptions(actions, picked)}</select>
+              <button data-act="add">add step</button>
+              <div id="draft-contract">${app.renderActionContract(actions, picked)}</div>
+            </div>
+            <div class="card">
+              <b>an action that does not exist yet</b>
+              <input id="ph-name" placeholder="action name" size="16">
+              <select id="ph-kind"><option>operation</option><option>directive</option></select>
+              <input id="ph-inputs" placeholder="inputs" size="14"> <input id="ph-outputs" placeholder="outputs" size="14">
+              <button data-act="add-placeholder">add placeholder</button>
+            </div>
+            <div class="card">
+              <textarea id="suggest-desc" placeholder="or describe it and ask for suggested steps" style="width:100%;height:4em"></textarea>
+              <button data-act="suggest">suggest steps</button> <span id="suggest-status" class="mute"></span>
+            </div>
+            ${app.renderProposal(draft)}
+          </section>
+          <section>
+            <h2>Graph</h2>
+            <div class="card" id="draft-graph">${app.renderGraph(draft.steps)}</div>
+            <h2>Lint</h2>
+            <div class="card" id="draft-problems">${app.renderProblems(a.problems)}</div>
+            <div class="card" id="draft-pending">${app.renderPending(a)}</div>
+            <div class="card">
+              <input id="draft-message" placeholder="commit message" style="width:50%">
+              ${draft.project ? '<label><input type="checkbox" id="draft-repo"> file as a repository task</label>' : ''}
+              <button data-act="save">save draft</button>
+              <button data-act="put">put</button>
+              <div id="draft-result" class="mute">${esc(note)}</div>
+            </div>
+            <details><summary>the file</summary><pre>${esc(a.toml || '')}</pre></details>
+          </section>
+        </div>`;
+    }
+
+    async function suggest() {
+      const description = value('#suggest-desc').trim() || draft.description;
+      if (!description) return;
+      const status = $('#suggest-status'); status.textContent = 'asking…';
+      try {
+        const r = await postBody('/api/workflows/draft', JSON.stringify({ description }), 'application/json');
+        if (r.error) { status.textContent = r.error; return; }
+        const doc = await get(`/api/job/${r.job}`);
+        const out = ForgeWorkflows.draftOutput(doc);
+        if (!out) { status.textContent = `job ${r.job} ${doc.state}, no draft`; return; }
+        const imp = await postBody('/api/drafts/import', out.toml, 'text/plain');
+        if (imp.error) { status.textContent = imp.error; return; }
+        draft = Object.assign({}, draft, { proposal: imp.steps });
+        note = out.rationale || '';
+        change(draft);
+      } catch (e) { status.textContent = String(e); }
+    }
+
+    async function send(kind) {
+      const body = { draft: app.bare(draft), message: value('#draft-message'), to_repo: !!($('#draft-repo') && $('#draft-repo').checked) };
+      const url = kind === 'put' ? `/api/drafts/${encodeURIComponent(draft.name)}/put` : '/api/drafts/save';
+      const r = await postBody(url, JSON.stringify(body), 'application/json');
+      if (r.error) note = r.error;
+      else if (kind === 'save') { annotated = r; draft = app.bare(r); note = `saved (${r.status})`; }
+      else if (r.result === 'incomplete') { note = `saved incomplete; filed ${r.filed.length} build task(s): ${r.filed.map(t => 'task ' + t.task_id).join(', ') || 'none new'}`; draft.tasks = r.tasks; draft.status = r.status; }
+      else note = r.result === 'filed' ? `filed as task ${r.task_id}` : `committed ${(r.hash || '').slice(0, 8)}`;
+      await check();
+    }
+
+    function onClick(ev) {
+      const b = ev.target.closest('button[data-act]'); if (!b) return;
+      const i = Number(b.dataset.i), act = b.dataset.act;
+      if (act === 'add') change(app.addStep(draft, value('#draft-pick') || picked));
+      else if (act === 'add-placeholder') {
+        change(app.addPlaceholder(draft, value('#ph-name').trim(), { kind: value('#ph-kind'), inputs: value('#ph-inputs'), outputs: value('#ph-outputs') }));
+      }
+      else if (act === 'rm') change(app.removeStep(draft, i));
+      else if (act === 'up') change(app.moveStep(draft, i, -1));
+      else if (act === 'down') change(app.moveStep(draft, i, 1));
+      else if (act === 'unedge') change(app.removeEdge(draft, i, b.dataset.key));
+      else if (act === 'edge') {
+        const card = b.closest('.step-card');
+        const key = card.querySelector('[data-f="edge-key"]').value.trim() || 'failure';
+        const to = card.querySelector('[data-f="edge-to"]').value.trim();
+        if (to) change(app.setEdge(draft, i, key, to));
+      }
+      else if (act === 'accept') change(app.acceptProposal(draft, [i]));
+      else if (act === 'accept-all') change(app.acceptProposal(draft, []));
+      else if (act === 'suggest') suggest();
+      else if (act === 'save' || act === 'put') send(act).catch(e => { note = String(e); paint(); });
+    }
+    function onChange(ev) {
+      const t = ev.target;
+      if (t.id === 'draft-pick') { picked = t.value; $('#draft-contract').innerHTML = app.renderActionContract(actions, picked); return; }
+      if (t.dataset.h) {
+        if (t.dataset.h === 'kind') return change(app.setKind(draft, t.value));
+        return change(Object.assign({}, draft, { [t.dataset.h]: t.dataset.h === 'project' && !t.value ? null : t.value }));
+      }
+      const i = Number(t.dataset.i), f = t.dataset.f;
+      if (f && f.startsWith('ph-')) change(app.setPlaceholderField(draft, i, f.slice(3), t.value));
+      else if (f === 'role' || f === 'judgment' || f === 'effect') change(app.setField(draft, i, f, t.value));
+    }
+
+    return {
+      async show() {
+        $('#main').innerHTML = '<div class="mute" style="margin:16px">loading…</div>';
+        actions = await get('/api/drafts/actions').catch(() => []);
+        picked = actions.length ? actions[0].name : '';
+        if (name) {
+          annotated = await get(`/api/drafts/${encodeURIComponent(name)}`).catch(() => null);
+          if (annotated) draft = app.bare(annotated);
+        }
+        if (!draft) draft = app.emptyDraft(name || '', 'build');
+        if (project) draft.project = project;
+        paint();
+        const main = $('#main');
+        main.addEventListener('click', onClick);
+        main.addEventListener('change', onChange);
+        if (draft.name) check();
+      },
+      onEvent(e) { if (INVALIDATES.workflows.includes(e.type) && draft && draft.name) check(); },
+      teardown() { seq++; const main = $('#main'); if (main) { main.removeEventListener('click', onClick); main.removeEventListener('change', onChange); } },
     };
   }
 

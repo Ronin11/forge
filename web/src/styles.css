@@ -126,6 +126,17 @@ details { margin: var(--space-1) 0 } summary { cursor: pointer; color: var(--mut
 #wf-steps .step-card { display: block; margin-bottom: 4px }
 #wf-text { font: var(--font-mono); padding: var(--space-2); border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--fg); resize: vertical }
 .lint-problem { font-size: var(--text-sm); padding: 2px 0; color: var(--bad) }
+/* draft editor */
+.draft-graph { display: block; max-width: 100% }
+.draft-graph .graph-node rect { fill: var(--panel); stroke: var(--line) }
+.draft-graph .graph-node.placeholder rect { stroke-dasharray: 4 2 }
+.draft-graph text { font-size: var(--text-sm); fill: var(--fg) }
+.draft-graph .graph-next { stroke: var(--mute) }
+.draft-graph .graph-edge { fill: none; stroke: var(--bad); stroke-dasharray: 3 2 }
+.draft-graph marker path { fill: var(--mute) }
+#draft-steps .step-card { display: block; margin-bottom: 6px; padding: 4px 6px }
+#draft-steps .step-card.has-problem { border-color: var(--bad) }
+.edge-chip { font-size: var(--text-sm); color: var(--mute) }
 /* placeholder pages for a page 'named' by the nav but not yet built */
 .stub { margin: var(--space-5) var(--space-4); color: var(--mute) }
 /* initiative view: cost-vs-budget bar */

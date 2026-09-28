@@ -93,6 +93,41 @@ case "$1" in
         else
           echo '{"problems":[]}'
         fi ;;
+      draft)
+        # `forge workflows draft VERB`: a draft document in on stdin, the
+        # annotated one out. What it prints is canned for the two-step
+        # draft the test composes (one placeholder, `lint-docs`); what it
+        # was given is logged, so the test sees the web layer pass the
+        # document and the arguments through.
+        shift
+        verb="$1"; shift
+        case "$verb" in
+          list) echo '[]' ;;
+          actions) echo '[{"name":"code","kind":"directive","contract":"code","description":"writes the change","consumes":["branch"],"produces":["branch"],"outcomes":[]},{"name":"setup","kind":"operation","contract":"setup","description":"prepares the tree","consumes":["branch"],"produces":[],"outcomes":[]}]' ;;
+          show)
+            if [ -f "$FORGE_HOME/draft-put" ]; then
+              echo '{"name":"docs-lint","kind":"build","description":"","project":"demo","steps":[{"action":"code"},{"action":"lint-docs","placeholder":{"kind":"operation","inputs":"the tree","outputs":"a verdict"}}],"settings":{},"status":"incomplete","tasks":[{"action":"lint-docs","task_id":51}],"toml":"","problems":[],"info":[],"clean":true,"pending":["lint-docs"]}'
+            else
+              echo "no draft $1" >&2; exit 1
+            fi ;;
+          import)
+            cat >/dev/null
+            echo '{"name":"docs-lint","kind":"build","description":"","project":null,"steps":[{"action":"code"}],"settings":{},"status":"draft","tasks":[],"toml":"","problems":[],"info":[],"clean":true,"pending":[]}' ;;
+          check|save)
+            cat >"$FORGE_HOME/draft-$verb.json"
+            echo '{"name":"docs-lint","kind":"build","description":"","project":"demo","steps":[{"action":"code"},{"action":"lint-docs","placeholder":{"kind":"operation","inputs":"the tree","outputs":"a verdict"}}],"settings":{},"status":"draft","tasks":[],"toml":"name = \"docs-lint\"\n","problems":[],"info":[],"clean":true,"pending":["lint-docs"]}' ;;
+          put)
+            name="$1"; shift
+            cat >"$FORGE_HOME/draft-put.json"
+            echo "$name $*" >"$FORGE_HOME/draft-put"
+            if grep -q '"placeholder"' "$FORGE_HOME/draft-put.json"; then
+              echo '{"result":"incomplete","status":"incomplete","tasks":[{"action":"lint-docs","task_id":51}],"filed":[{"action":"lint-docs","task_id":51}],"pending":["lint-docs"]}'
+            elif grep -q -- '--repo' "$FORGE_HOME/draft-put"; then
+              echo '{"result":"filed","task_id":42}'
+            else
+              echo '{"result":"committed","hash":"abc123abc123abc123abc123abc123abc123abcd"}'
+            fi ;;
+        esac ;;
       put)
         name="$2"; shift 2
         cat >/dev/null
@@ -1065,6 +1100,93 @@ fn the_workflows_page_lists_catalog_and_repo_workflows_and_the_editor_lints_and_
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["result"], "filed");
     assert_eq!(v["task_id"], 42);
+}
+
+#[test]
+fn a_two_step_draft_with_a_placeholder_is_put_files_its_build_task_and_is_marked_incomplete() {
+    let w = start();
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+
+    // The Draft view and the editor's own script are served.
+    let (status, _, body) = get(&w.addr, "/workflows/draft", &cookie);
+    assert_eq!(status, 200);
+    assert!(body.contains(r#"<script src="/drafts.js">"#), "{body}");
+    let (_, _, js) = get(&w.addr, "/drafts.js", &cookie);
+    assert!(
+        js.contains("renderGraph") && js.contains("addPlaceholder"),
+        "{js}"
+    );
+
+    // The picker: every action a step may name, with its contract.
+    let (status, _, body) = get(&w.addr, "/api/drafts/actions", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v[0]["contract"], "code");
+
+    // Compose two steps — `code`, and `lint-docs`, which is not in the
+    // catalog and so carries the one-line contract the operator wrote —
+    // and lint: clean, with the placeholder pending.
+    let draft = r#"{"name":"docs-lint","kind":"build","description":"","project":"demo","steps":[{"action":"code"},{"action":"lint-docs","placeholder":{"kind":"operation","inputs":"the tree","outputs":"a verdict"}}],"settings":{},"status":"draft","tasks":[]}"#;
+    let (status, _, body) = post_body(&w.addr, "/api/drafts/check", &cookie, draft);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["clean"], true, "{body}");
+    assert_eq!(v["pending"][0], "lint-docs");
+    let seen = std::fs::read_to_string(w.home.path().join("draft-check.json")).unwrap();
+    assert!(
+        seen.contains("\"lint-docs\"") && seen.contains("the tree"),
+        "the document reaches forge whole: {seen}"
+    );
+
+    // Before anything is put, there is no saved draft.
+    let (status, _, _) = get(&w.addr, "/api/drafts/docs-lint", &cookie);
+    assert_eq!(status, 502);
+
+    // Put: the build task is filed and the draft is incomplete.
+    let (status, _, body) = post_body(
+        &w.addr,
+        "/api/drafts/docs-lint/put",
+        &cookie,
+        &format!(r#"{{"draft":{draft},"message":"add docs-lint","to_repo":false}}"#),
+    );
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["result"], "incomplete");
+    assert_eq!(v["filed"][0]["action"], "lint-docs");
+    assert_eq!(v["filed"][0]["task_id"], 51);
+    let args = std::fs::read_to_string(w.home.path().join("draft-put")).unwrap();
+    assert_eq!(args.trim(), "docs-lint --message add docs-lint");
+
+    // ...and reading the draft back says so, with the task it waits on.
+    let (status, _, body) = get(&w.addr, "/api/drafts/docs-lint", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["status"], "incomplete");
+    assert_eq!(v["tasks"][0]["task_id"], 51);
+
+    // A draft with no placeholder commits; to_repo files a task on the
+    // project's first repository, as `forge workflows put --repo` does.
+    let plain = r#"{"name":"plain","kind":"build","description":"","project":"demo","steps":[{"action":"code"}],"settings":{}}"#;
+    let (_, _, body) = post_body(
+        &w.addr,
+        "/api/drafts/plain/put",
+        &cookie,
+        &format!(r#"{{"draft":{plain},"message":"m","to_repo":true}}"#),
+    );
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["result"], "filed", "{body}");
+    let args = std::fs::read_to_string(w.home.path().join("draft-put")).unwrap();
+    assert!(args.contains("--repo /repos/demo"), "{args}");
+
+    // Import turns a suggestion's file text into a step list.
+    let (status, _, body) = post_body(&w.addr, "/api/drafts/import", &cookie, "name = \"x\"\n");
+    assert_eq!(status, 200, "{body}");
+
+    // Writes need the token, and only POST writes.
+    let (status, _, _) = post_body(&w.addr, "/api/drafts/check", "", draft);
+    assert_eq!(status, 401);
+    let (status, _, _) = get(&w.addr, "/api/drafts/docs-lint/put", &cookie);
+    assert_eq!(status, 405);
 }
 
 #[test]
