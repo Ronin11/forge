@@ -29,6 +29,7 @@ mod landing_concurrency;
 mod landing_fetch;
 mod landing_rewind;
 mod listing;
+mod login;
 mod messages;
 mod ops;
 mod plugins;
