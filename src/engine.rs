@@ -1080,10 +1080,8 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
             continue;
         }
         consecutive_refusals = 0;
-        // An environment need the policy covers (a host the proxy
-        // refused, a host cache) is applied and the attempt runs again;
-        // it does not count against the directive. What the table does
-        // not cover falls through as it always has.
+        // An environment need the policy covers (a refused host, a host cache) is
+        // applied and rerun without counting; anything else falls through.
         match environment_after(f, t, cfg, &a, &verdict).await? {
             Environment::Applied => {
                 run.refund(f, seq, a.id)?;
@@ -1757,10 +1755,6 @@ enum End {
     },
 }
 
-/// Names the L0 rows the last attempt's verdict failed, the same shape
-/// `verify::decide` reports them in ("L0 failed: has-commits"). `None`
-/// when nothing at L0 failed, so the caller falls back to the attempt
-/// state's own reason (an agent failure or a question carries no rows).
 /// A review whose demotion cited files only its sandbox had is asked,
 /// once, to inline the reproduction (`verify::review::reask`): that
 /// attempt does not count against the step, and the ask becomes the
@@ -1791,6 +1785,10 @@ fn reask_reproduction(
     Ok(true)
 }
 
+/// Names the L0 rows the last attempt's verdict failed, the same shape
+/// `verify::decide` reports them in ("L0 failed: has-commits"). `None`
+/// when nothing at L0 failed, so the caller falls back to the attempt
+/// state's own reason (an agent failure or a question carries no rows).
 fn l0_failure_reason(checks: &[CheckResult]) -> Option<String> {
     let failed: Vec<&str> = checks
         .iter()
