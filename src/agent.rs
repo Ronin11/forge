@@ -5,7 +5,7 @@
 
 mod inputs;
 mod jev;
-mod refusal;
+pub mod refusal;
 use inputs::{AgentRun, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
 pub use jev::*;
 
@@ -63,6 +63,8 @@ pub struct Outcome {
     pub max_turns_hit: bool,
     /// The provider refused the run for a rate window: not the agent's fault.
     pub rate_limited: bool,
+    /// The refusal was of the login itself: held until a probe answers.
+    pub login_refused: bool,
     /// The result frame's own `subtype` (e.g. `"success"`,
     /// `"error_max_turns"`, `"error_during_execution"`); `None` when no
     /// result frame ever arrived. A directive job step quotes this in its
@@ -649,11 +651,7 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
                     }
                     out.subtype = v["subtype"].as_str().map(str::to_string);
                     out.max_turns_hit = v["subtype"].as_str() == Some("error_max_turns");
-                    let text = v["result"].as_str().unwrap_or("").to_ascii_lowercase();
-                    if out.is_error && (text.contains("rate limit") || text.contains("rate-limit"))
-                    {
-                        refusal::hold_text_only(&mut out);
-                    }
+                    refusal::read_claude_error(&mut out, &v);
                     out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
                     out.cost_usd = v["total_cost_usd"].as_f64();
                     out.input_tokens = v["usage"]["input_tokens"].as_i64();
@@ -802,7 +800,7 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
                      (docs/JOBS.md, \"Steps\"); route this step's role to a claude provider instead"
                 );
             }
-            run_codex(l).await
+            refusal::read_stderr(run_codex(l).await)
         }
         Runner::CopilotCli => {
             if l.no_tools {
@@ -811,7 +809,7 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
                      (docs/JOBS.md, \"Steps\"); route this step's role to a claude provider instead"
                 );
             }
-            run_copilot(l).await
+            refusal::read_stderr(run_copilot(l).await)
         }
         Runner::Chat => {
             if !l.no_tools {
@@ -1195,12 +1193,10 @@ fn apply_codex_event(
             _ => {}
         },
         // A failed turn, or a top-level error frame: codex reports a spent
-        // usage window this way ("You've hit your usage limit ... try
-        // again at 3:37 AM"), not as a rate-limit event, and until
-        // 2026-09-22 that was read as an ordinary agent failure: the
-        // attempt counted, and the worker kept launching into the closed
-        // window. It is a refusal: the attempt is refunded and the
-        // provider held until the time the message names.
+        // usage window this way ("You've hit your usage limit ... try again
+        // at 3:37 AM"), and a refused login. Each is a refusal, refunded:
+        // the window held until the time it names, the login until it
+        // answers a probe.
         Some("turn.failed") | Some("error") => {
             let msg = v["error"]["message"]
                 .as_str()
@@ -1210,6 +1206,8 @@ fn apply_codex_event(
             if let Some(reset) = usage_limit_reset(msg, crate::unix_now()) {
                 out.rate_limited = true;
                 out.rate_limits.five_hour = Some((1.0, reset));
+            } else if refusal::login_failure(msg) {
+                refusal::login_refused(out);
             }
         }
         Some("turn.completed") => {
@@ -1993,6 +1991,8 @@ fn apply_copilot_event(
             {
                 out.rate_limited = true;
                 out.rate_limits.five_hour = Some((1.0, crate::unix_now() + 3600));
+            } else if refusal::login_failure(&msg) {
+                refusal::login_refused(out);
             }
         }
         Some("result") => {

@@ -311,6 +311,7 @@ src/report.rs       typed events; the stderr printer is one consumer
 src/executor.rs     executor contract, backend selection, and guarantees
 src/sandbox.rs      bubblewrap
 src/login.rs        the agent login: a refreshed token written back over the host file, an empty one never seeded
+src/login_hold.rs   a provider whose agent login was refused, held until a probe answers; the worker's ten-minute probe and doctor's
 src/successor.rs     the successor worker: a staged release starts forge work on it, the old worker drains
 src/store/          SQLite, forward-only migrations by user_version, one file per table family (workers.rs: the registered workers and their releases; owners.rs: a running row's owner, pid plus start time, and orphan detection)
   mod.rs            types, column lists, open, schema_version, the migration runner
@@ -320,12 +321,14 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   arms.rs           insert_task_armed: insert a task and draw its journal/explore arms in one transaction
   attempts.rs       attempts and ops: insert, finish, rate limits, tool facts
   jobs.rs           jobs, job_steps, job_effects
+  job_resolutions.rs how a job's needs_human closed, by the answer to its job question
   job_runs.rs       recovered job run numbers and cumulative step costs
   deploys.rs        deploys, deploy_targets, assessments
   descendants.rs    the live tasks below and beside a task in its retry lineage, and the `withdraw --abort` decision a worker reads
   projects.rs       projects, project_repos, backlog, initiatives, portal_tokens
   record.rs         decisions, task_refs, plugins
   messages.rs       messages: one row per inbound/outbound message on a channel, so a rule can ask "has this contact replied since"
+  holds.rs          provider_holds and provider_probes: a provider held for a refused login, and every probe of it with its cost
   webhooks.rs       webhook_tokens: per-hook tokens (only their hashes) that let `forge job fire` start a webhook-triggered job
   events.rs         event_cursors: per project and run workflow, the events.jsonl offset its event trigger has examined up to
   schedule.rs       schedule_refusals: the schedules a per_day cap holds back, which the worker's tick records and `forge job list` prints

@@ -1472,6 +1472,17 @@ fn failure_reason(
     format!("job {job_id} ({workflow}) failed: {failed}\n\nEffects:\n{effects}")
 }
 
+/// The job a `job question`'s reason names: `failure_reason` opens with
+/// `job <id> (`. `None` when the text is not one of ours.
+pub(crate) fn question_job_id(reason: &str) -> Option<i64> {
+    reason
+        .strip_prefix("job ")?
+        .split_once(" (")?
+        .0
+        .parse()
+        .ok()
+}
+
 /// File a blocked no-work task on the project, the human rung a job's
 /// `ask:*` on_failure ends at (docs/JOBS.md, "The human rung") — the same
 /// shape `deploy::ask` files for a failed deploy, so `forge requests`, the

@@ -84,7 +84,11 @@ async fn answer(id: i64, text: String, by: String, project: Option<String>) -> R
     }
     let scope = project.as_deref().map(|p| (p, by.as_str()));
     let (_, n) = crate::queue::answer(&f, id, &text, &by, "", scope).await?;
-    out!("answered task {id} as {}", n.id);
+    if n.id == id {
+        out!("answered task {id}: {}", n.reason);
+    } else {
+        out!("answered task {id} as {}", n.id);
+    }
     Ok(())
 }
 

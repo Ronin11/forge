@@ -736,6 +736,38 @@ CREATE TABLE schedule_refusals (
   PRIMARY KEY (project, workflow)
 );
 ",
+    // A provider whose agent login was refused is held until a probe
+    // answers or the operator runs `forge doctor` (src/login_hold.rs);
+    // every probe is recorded, with what it cost.
+    "
+CREATE TABLE provider_holds (
+  provider TEXT PRIMARY KEY,
+  since INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  probed_at INTEGER
+);
+CREATE TABLE provider_probes (
+  id INTEGER PRIMARY KEY,
+  provider TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  ok INTEGER NOT NULL,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  detail TEXT NOT NULL DEFAULT ''
+);
+",
+    // How a job's `needs_human` ended: the answer to its `job question`
+    // task (docs/JOBS.md, "The human rung, per run"), read by `forge job
+    // show`. One row per job; the job's own state stays as it ended.
+    "
+CREATE TABLE job_resolutions (
+  job_id INTEGER PRIMARY KEY REFERENCES jobs(id),
+  resolution TEXT NOT NULL,
+  answer TEXT NOT NULL,
+  answered_by TEXT NOT NULL,
+  task_id INTEGER,
+  at INTEGER NOT NULL
+);
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs
