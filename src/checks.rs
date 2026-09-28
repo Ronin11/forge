@@ -213,6 +213,7 @@ async fn run_one_capped_once(args: &RunOneCapped<'_>) -> CheckResult {
         name: name.to_string(),
         ..Default::default()
     };
+    crate::agent::prepare_in(sandbox, cwd, env).await;
     let mut std_cmd = crate::agent::command_in(sandbox, cwd, argv, env);
     // Unsandboxed checks get their own process group so a backgrounded
     // child can be killed with them; bwrap's --new-session does the same.

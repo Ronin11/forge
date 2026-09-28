@@ -194,8 +194,8 @@ pub(crate) fn shell_quote(s: &str) -> String {
 /// Where the attempts in `worktree` get their private copy of the claude
 /// and codex CLIs' state: a sibling of the worktree, under its parent, in
 /// the same style as `attempt::tests_clone_dir`. Created and seeded by the
-/// first `command` call, reseeded (credentials and settings only) by every
-/// later one, and removed by `discard_provider_state` when the worktree
+/// first launch's `Sandbox::prepare`, reseeded (credentials and settings
+/// only) by every later one, and removed by `discard_provider_state` when the worktree
 /// itself goes. It lives as long as the task, not one attempt: a capped or
 /// failed attempt is resumed by `--resume <session>`, and the phase-two
 /// report resumes the same thread, so the CLI's session transcripts must
@@ -212,6 +212,15 @@ fn provider_dir_for(worktree: &Path, contract: Option<Contract>) -> PathBuf {
     } else {
         provider_state_dir(worktree)
     }
+}
+
+/// The contract a launch's environment names, which picks its provider
+/// directory.
+fn contract_of(env: &[(String, String)]) -> Option<Contract> {
+    env.iter()
+        .rev()
+        .find(|(k, _)| k == "FORGE_CONTRACT")
+        .and_then(|(_, v)| Contract::parse(v))
 }
 
 /// Remove `worktree`'s private provider-state directory (see
@@ -462,18 +471,18 @@ impl Sandbox {
 
     /// Copy `worktree`'s private `shape` login back over the host file when
     /// the attempt refreshed it (see `login`). Whether it did.
-    pub fn write_back_login(&self, shape: &crate::login::Shape, worktree: &Path) -> bool {
-        [None, Some(Contract::Review)]
-            .into_iter()
-            .fold(false, |any, contract| {
-                let private = provider_dir_for(worktree, contract)
-                    .join(shape.cli)
-                    .join(shape.file);
-                shape
-                    .write_back(self.login_dir(shape), &self.forge_home, &private)
-                    .unwrap_or(false)
-                    || any
-            })
+    pub async fn write_back_login(&self, shape: &crate::login::Shape, worktree: &Path) -> bool {
+        let mut any = false;
+        for contract in [None, Some(Contract::Review)] {
+            let private = provider_dir_for(worktree, contract)
+                .join(shape.cli)
+                .join(shape.file);
+            any |= shape
+                .write_back(self.login_dir(shape), &self.forge_home, &private)
+                .await
+                .unwrap_or(false);
+        }
+        any
     }
 
     /// `write_back_login` of the claude login for every task's private copy
@@ -578,6 +587,40 @@ impl Sandbox {
         )
     }
 
+    /// Everything a launch in `worktree` with `env` does to the host before
+    /// its `command` is built: seed the step's private logins and settings
+    /// from the operator's (see `login`), waiting on the logins' locks
+    /// without holding a thread (docs/REVIEW-4.md #1.10). Every launch
+    /// awaits this first; `command` itself never touches a login.
+    pub async fn prepare(&self, worktree: &Path, env: &[(String, String)]) {
+        let provider_dir = provider_dir_for(worktree, contract_of(env));
+        for cli in ["claude", "codex", "copilot"] {
+            let _ = std::fs::create_dir_all(provider_dir.join(cli));
+        }
+        // Each login is the kernel's (see `login`): a later private login is
+        // written back over the host file first, and an empty host file
+        // seeds nothing. copilot's login lives in its `config.json`, beside
+        // its settings. The other settings are plain copies.
+        for shape in crate::login::SHAPES {
+            shape
+                .seed(
+                    self.login_dir(shape),
+                    &self.forge_home,
+                    worktree,
+                    &provider_dir.join(shape.cli).join(shape.file),
+                )
+                .await;
+        }
+        let _ = crate::login::seed_copy(
+            &self.config_dir.join("settings.json"),
+            &provider_dir.join("claude/settings.json"),
+        );
+        let _ = crate::login::seed_copy(
+            &self.codex_dir.join("config.toml"),
+            &provider_dir.join("codex/config.toml"),
+        );
+    }
+
     pub fn command(
         &self,
         worktree: &Path,
@@ -654,46 +697,21 @@ impl Sandbox {
         cmd.arg("--bind").arg(worktree).arg(worktree);
         // A private copy of the claude CLI's credentials and settings, and
         // of codex's login and config: seeded from the operator's real
-        // files here (read, never bound into a sandbox themselves), then
-        // bound writable at the paths each CLI expects. The directory is
+        // files by `prepare` (read, never bound into a sandbox themselves),
+        // then bound writable here at the paths each CLI expects. The directory is
         // the step's (see `provider_dir_for`): the seed files are
         // refreshed on every launch, everything else the CLIs wrote there
         // (session transcripts above all) is kept, so a resumed attempt and
         // the phase-two report find their thread. `discard_provider_state`
         // removes it with the worktree. The operator's real
         // `.claude`/`.codex` directories are never bound into a sandbox.
-        let contract = env
-            .iter()
-            .rev()
-            .find(|(k, _)| k == "FORGE_CONTRACT")
-            .and_then(|(_, v)| Contract::parse(v));
-        let provider_dir = provider_dir_for(worktree, contract);
+        let provider_dir = provider_dir_for(worktree, contract_of(env));
         let claude_priv = provider_dir.join("claude");
         let codex_priv = provider_dir.join("codex");
-        let _ = std::fs::create_dir_all(&claude_priv);
-        let _ = std::fs::create_dir_all(&codex_priv);
         let copilot_priv = provider_dir.join("copilot");
-        let _ = std::fs::create_dir_all(&copilot_priv);
-        // Each login is the kernel's (see `login`): a later private login is
-        // written back over the host file first, and an empty host file
-        // seeds nothing. copilot's login lives in its `config.json`, beside
-        // its settings. The other settings are plain copies.
-        for shape in crate::login::SHAPES {
-            shape.seed(
-                self.login_dir(shape),
-                &self.forge_home,
-                worktree,
-                &provider_dir.join(shape.cli).join(shape.file),
-            );
+        for d in [&claude_priv, &codex_priv, &copilot_priv] {
+            let _ = std::fs::create_dir_all(d);
         }
-        let _ = crate::login::seed_copy(
-            &self.config_dir.join("settings.json"),
-            &claude_priv.join("settings.json"),
-        );
-        let _ = crate::login::seed_copy(
-            &self.codex_dir.join("config.toml"),
-            &codex_priv.join("config.toml"),
-        );
         cmd.arg("--bind").arg(&claude_priv).arg(&self.config_dir);
         cmd.arg("--bind").arg(&codex_priv).arg(&self.codex_dir);
         cmd.arg("--bind").arg(&copilot_priv).arg(&self.copilot_dir);

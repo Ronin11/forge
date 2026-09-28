@@ -42,6 +42,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Held while the host file is read, replaced or seeded from.
 const LOCK: &str = ".forge-credentials.lock";
 
+/// Held while a probe refreshes the host file (see `refusal::refresh_on_host`),
+/// so that a seed waits for the refreshed login rather than copying the one
+/// about to rotate. Always taken before `LOCK`, never while holding it.
+const PROBE_LOCK: &str = ".forge-refresh.lock";
+
 /// Unix seconds of the last write-back, for `forge doctor`.
 const MARK: &str = ".forge-writeback";
 
@@ -500,8 +505,13 @@ impl Shape {
 
     /// Copy `private`'s login back over the host file in `dir` when it is a
     /// later one the CLI could have made from its seed. Whether it did.
-    pub fn write_back(&self, dir: &Path, state: &Path, private: &Path) -> std::io::Result<bool> {
-        let _lock = lock(dir);
+    pub async fn write_back(
+        &self,
+        dir: &Path,
+        state: &Path,
+        private: &Path,
+    ) -> std::io::Result<bool> {
+        let _lock = lock(dir).await;
         self.write_back_locked(dir, state, private)
     }
 
@@ -511,9 +521,11 @@ impl Shape {
     /// `private` from the host file, recording in `state` (FORGE_HOME) what
     /// was seeded. An unusable host file seeds nothing (unless it holds the
     /// CLI's settings too), and a copy left from an earlier launch is removed
-    /// with it, so an attempt never starts on a dead login.
-    pub fn seed(&self, dir: &Path, state: &Path, worktree: &Path, private: &Path) {
-        let _lock = lock(dir);
+    /// with it, so an attempt never starts on a dead login. A refresh
+    /// probe running on the host is waited out first (see `probe_lock`).
+    pub async fn seed(&self, dir: &Path, state: &Path, worktree: &Path, private: &Path) {
+        let _probe = probe_lock(dir).await;
+        let _lock = lock(dir).await;
         for copy in self.private_copies(worktree) {
             let _ = self.write_back_locked(dir, state, &copy);
         }
@@ -598,18 +610,45 @@ pub fn seed_copy(from: &Path, dest: &Path) -> std::io::Result<()> {
 /// against another process.
 pub struct Lock(#[allow(dead_code)] Option<std::fs::File>);
 
+/// How long a waiter sleeps between tries of a held lock.
+const LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(10);
+
 /// Wait for the lock on `dir`'s login. A directory that cannot be locked (it
-/// does not exist, so there is no login to race over) locks nothing.
-pub fn lock(dir: &Path) -> Lock {
+/// does not exist, so there is no login to race over) locks nothing. The
+/// wait never blocks the thread: it is reached from every launch on a tokio
+/// worker, and a worker parked in `flock` cannot drive the task that holds
+/// the lock (a refresh probe) to release it.
+pub async fn lock(dir: &Path) -> Lock {
+    lock_named(dir, LOCK).await
+}
+
+/// Wait for the lock a refresh probe on `dir`'s login runs under. Taken
+/// before `lock`, never while holding it.
+pub async fn probe_lock(dir: &Path) -> Lock {
+    lock_named(dir, PROBE_LOCK).await
+}
+
+async fn lock_named(dir: &Path, name: &str) -> Lock {
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(dir.join(LOCK))
+        .open(dir.join(name))
         .ok();
     if let Some(f) = &file {
-        // SAFETY: the descriptor is open for the life of `f`.
-        unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) };
+        loop {
+            // SAFETY: the descriptor is open for the life of `f`.
+            if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                break;
+            }
+            match std::io::Error::last_os_error().raw_os_error() {
+                Some(libc::EWOULDBLOCK) => tokio::time::sleep(LOCK_RETRY).await,
+                Some(libc::EINTR) => {}
+                // Not lockable at all (as a blocking flock would have
+                // failed): go on unlocked, as before.
+                _ => break,
+            }
+        }
     }
     Lock(file)
 }
@@ -748,6 +787,14 @@ pub fn last_write_back(dir: &Path) -> Option<i64> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
 
     /// One shape's fixtures: a login from two raw tokens and an expiry, and
     /// tokens shaped as its CLI writes them, tagged so an assertion can
@@ -1012,7 +1059,7 @@ mod tests {
         std::fs::create_dir_all(private.parent().unwrap()).unwrap();
         std::fs::write(dir.join(shape.file), text).unwrap();
         let state = state_of(&root);
-        shape.seed(&dir, &state, &worktree, &private);
+        block_on(shape.seed(&dir, &state, &worktree, &private));
         Seeded {
             root,
             dir,
@@ -1036,17 +1083,17 @@ mod tests {
             let host = t.dir.join(s.file);
             std::fs::write(&t.private, f.good("new-a", "new-r", far() + 1000)).unwrap();
             assert!(
-                s.write_back(&t.dir, &t.state, &t.private).unwrap(),
+                block_on(s.write_back(&t.dir, &t.state, &t.private)).unwrap(),
                 "{}",
                 s.cli
             );
             assert!(std::fs::read_to_string(&host).unwrap().contains("new-r"));
             assert!(last_write_back(&t.dir).is_some());
             // The same login again is not later: nothing to do.
-            assert!(!s.write_back(&t.dir, &t.state, &t.private).unwrap());
+            assert!(!block_on(s.write_back(&t.dir, &t.state, &t.private)).unwrap());
             // An older one never goes back over a newer.
             std::fs::write(&t.private, f.good("older-a", "older-r", far() - 1000)).unwrap();
-            assert!(!s.write_back(&t.dir, &t.state, &t.private).unwrap());
+            assert!(!block_on(s.write_back(&t.dir, &t.state, &t.private)).unwrap());
             assert!(std::fs::read_to_string(&host).unwrap().contains("new-r"));
         }
     }
@@ -1059,7 +1106,7 @@ mod tests {
             let seed_text = f.login("a0", "r0", far());
             let t = seeded(s, &seed_text);
             std::fs::write(&t.private, f.good("a1", "r1", far() + 1000)).unwrap();
-            assert!(s.write_back(&t.dir, &t.state, &t.private).unwrap());
+            assert!(block_on(s.write_back(&t.dir, &t.state, &t.private)).unwrap());
             let prev = t.dir.join(s.prev());
             assert_eq!(std::fs::read_to_string(&prev).unwrap(), seed_text);
             assert_eq!(
@@ -1067,7 +1114,7 @@ mod tests {
                 0o600
             );
             std::fs::write(&t.private, f.good("a2", "r2", far() + 2000)).unwrap();
-            assert!(s.write_back(&t.dir, &t.state, &t.private).unwrap());
+            assert!(block_on(s.write_back(&t.dir, &t.state, &t.private)).unwrap());
             assert!(
                 std::fs::read_to_string(&prev).unwrap().contains("r1"),
                 "one copy: the latest replaced"
@@ -1082,7 +1129,7 @@ mod tests {
         let t = seeded(shape, seed_text);
         std::fs::remove_file(&t.private).unwrap();
         forged(&t.private);
-        let took = shape.write_back(&t.dir, &t.state, &t.private).unwrap();
+        let took = block_on(shape.write_back(&t.dir, &t.state, &t.private)).unwrap();
         assert_eq!(
             t.dir.join(shape.prev()).exists(),
             took,
@@ -1297,7 +1344,7 @@ mod tests {
             let t = seeded(f.shape, &f.login("a0", "r0", far()));
             std::fs::remove_dir_all(&t.state).unwrap();
             std::fs::write(&t.private, f.good("a1", "r1", far() + 1000)).unwrap();
-            assert!(!f.shape.write_back(&t.dir, &t.state, &t.private).unwrap());
+            assert!(!block_on(f.shape.write_back(&t.dir, &t.state, &t.private)).unwrap());
         }
     }
 
@@ -1325,7 +1372,7 @@ mod tests {
             let t = seeded(f.shape, &f.login("a0", "r0", far()));
             std::fs::remove_file(t.dir.join(f.shape.file)).unwrap();
             std::fs::write(&t.private, f.good("a1", "r1", far())).unwrap();
-            assert!(!f.shape.write_back(&t.dir, &t.state, &t.private).unwrap());
+            assert!(!block_on(f.shape.write_back(&t.dir, &t.state, &t.private)).unwrap());
             assert!(!t.dir.join(f.shape.file).exists());
         }
     }
@@ -1343,7 +1390,7 @@ mod tests {
             // anything.
             std::fs::write(t.dir.join(s.file), f.login("", "", 0)).unwrap();
             std::fs::write(&t.private, f.login("a", "r", 1_000)).unwrap();
-            s.seed(&t.dir, &state_of(&t.root), &t.worktree, &t.private);
+            block_on(s.seed(&t.dir, &state_of(&t.root), &t.worktree, &t.private));
             assert!(!t.private.exists(), "{}", s.cli);
             assert_eq!(s.host_state(&t.dir), Host::Empty);
             assert!(
@@ -1370,8 +1417,8 @@ mod tests {
             assert!(!Seed::path(&t.state, &t.private).exists());
             let later = copilot_raw(&format!("gho_{:x<36}", "planted"), "", 0);
             std::fs::write(&t.private, &later).unwrap();
-            assert!(!s.write_back(&t.dir, &t.state, &t.private).unwrap());
-            s.seed(&t.dir, &t.state, &t.worktree, &t.private);
+            assert!(!block_on(s.write_back(&t.dir, &t.state, &t.private)).unwrap());
+            block_on(s.seed(&t.dir, &t.state, &t.worktree, &t.private));
             assert_eq!(std::fs::read_to_string(t.dir.join(s.file)).unwrap(), text);
             assert_eq!(std::fs::read_to_string(&t.private).unwrap(), text);
             assert!(!t.dir.join(s.prev()).exists());
@@ -1386,7 +1433,7 @@ mod tests {
             let host = t.dir.join(f.shape.file);
             std::fs::remove_file(&t.private).unwrap();
             std::os::unix::fs::symlink(&host, &t.private).unwrap();
-            f.shape.seed(&t.dir, &t.state, &t.worktree, &t.private);
+            block_on(f.shape.seed(&t.dir, &t.state, &t.worktree, &t.private));
             assert_eq!(std::fs::read_to_string(&host).unwrap(), text);
             assert!(is_regular_file(&t.private));
             assert_eq!(std::fs::read_to_string(&t.private).unwrap(), text);
@@ -1402,7 +1449,7 @@ mod tests {
             std::fs::write(&victim, "precious").unwrap();
             std::fs::remove_file(&t.private).unwrap();
             std::os::unix::fs::symlink(&victim, &t.private).unwrap();
-            f.shape.seed(&t.dir, &t.state, &t.worktree, &t.private);
+            block_on(f.shape.seed(&t.dir, &t.state, &t.worktree, &t.private));
             assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
             assert!(is_regular_file(&t.private));
             assert_eq!(std::fs::read_to_string(&t.private).unwrap(), text);
@@ -1424,7 +1471,7 @@ mod tests {
                 .join(s.cli)
                 .join(s.file);
             std::fs::create_dir_all(next.parent().unwrap()).unwrap();
-            s.seed(&t.dir, &t.state, &t.worktree, &next);
+            block_on(s.seed(&t.dir, &t.state, &t.worktree, &next));
             assert!(!old.exists());
             assert!(Seed::path(&t.state, &next).exists());
         }
@@ -1443,10 +1490,10 @@ mod tests {
                 .join(s.cli)
                 .join(s.file);
             std::fs::create_dir_all(other.parent().unwrap()).unwrap();
-            s.seed(&t.dir, &t.state, &t.worktree, &other);
+            block_on(s.seed(&t.dir, &t.state, &t.worktree, &other));
             std::fs::write(&other, f.good("b", "live", far() + 5000)).unwrap();
             std::fs::remove_file(&t.private).unwrap();
-            s.seed(&t.dir, &t.state, &t.worktree, &t.private);
+            block_on(s.seed(&t.dir, &t.state, &t.worktree, &t.private));
             let host = std::fs::read_to_string(t.dir.join(s.file)).unwrap();
             assert!(host.contains("live"), "{}", s.cli);
             assert!(
@@ -1462,7 +1509,7 @@ mod tests {
         let t = seeded(&CODEX, &codex_raw("a0", "r0", far()));
         let good = codex_raw("a1", &format!("rt.1.{:x<40}", "r1"), far() + 1000);
         std::fs::write(&t.private, good).unwrap();
-        assert!(CODEX.write_back(&t.dir, &t.state, &t.private).unwrap());
+        assert!(block_on(CODEX.write_back(&t.dir, &t.state, &t.private)).unwrap());
         for name in [LOCK, MARK, "auth.json.forge-prev"] {
             assert!(t.dir.join(name).exists(), "{name}");
         }
@@ -1478,5 +1525,79 @@ mod tests {
             CODEX.private_copies(&t.worktree),
             std::slice::from_ref(&t.private)
         );
+    }
+
+    /// docs/REVIEW-4.md #1.10: a launch waiting on the login lock must not
+    /// hold a worker thread, or with every worker waiting nothing is left to
+    /// drive the holder (a refresh probe) to release it.
+    #[test]
+    fn waiting_on_the_login_lock_leaves_the_only_worker_thread_free() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().to_path_buf();
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        // The holder: another task, on the same one worker, that keeps the
+        // lock until it is told to let go.
+        let holder = rt.spawn({
+            let dir = dir.clone();
+            async move {
+                let _lock = lock(&dir).await;
+                held_tx.send(()).unwrap();
+                let _ = release_rx.await;
+            }
+        });
+        held_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (waited_tx, waited_rx) = std::sync::mpsc::channel();
+        rt.spawn({
+            let dir = dir.clone();
+            async move {
+                let _lock = lock(&dir).await;
+                waited_tx.send(()).unwrap();
+            }
+        });
+        let (ran_tx, ran_rx) = std::sync::mpsc::channel();
+        rt.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            ran_tx.send(()).unwrap();
+        });
+        let progressed = ran_rx.recv_timeout(Duration::from_secs(5));
+        let waited_early = waited_rx.try_recv().is_ok();
+        let _ = release_tx.send(());
+        let waited = waited_rx.recv_timeout(Duration::from_secs(5));
+        assert!(progressed.is_ok(), "a task waiting on the lock held the only worker");
+        assert!(!waited_early, "the lock was taken while held");
+        assert!(waited.is_ok(), "the waiter never took the released lock");
+        rt.block_on(holder).unwrap();
+    }
+
+    #[test]
+    fn a_seed_waits_for_a_refresh_probe_on_the_host() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let t = seeded(&CLAUDE, &claude_raw("a0", "r0", far()));
+        rt.block_on(async {
+            let probing = probe_lock(&t.dir).await;
+            let seed = CLAUDE.seed(&t.dir, &t.state, &t.worktree, &t.private);
+            tokio::pin!(seed);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), &mut seed)
+                    .await
+                    .is_err(),
+                "seeded while a probe was refreshing the host login"
+            );
+            // The main lock is free throughout: a write-back is not held up.
+            drop(lock(&t.dir).await);
+            drop(probing);
+            tokio::time::timeout(Duration::from_secs(5), seed)
+                .await
+                .unwrap();
+        });
     }
 }
