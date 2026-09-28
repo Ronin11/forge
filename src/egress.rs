@@ -715,7 +715,6 @@ pub fn clear_refused(dir: &Path) {
 /// own socket in a private directory that goes away with the process.
 #[derive(Default)]
 pub struct Proxies {
-    dir: Mutex<Option<PathBuf>>,
     running: Mutex<BTreeMap<Policy, (PathBuf, tokio::task::JoinHandle<()>)>>,
 }
 
@@ -732,25 +731,7 @@ impl Proxies {
         {
             return Ok(path.clone());
         }
-        let dir = {
-            let mut d = self.dir.lock().unwrap();
-            match &*d {
-                Some(d) => d.clone(),
-                None => {
-                    // The process's one directory, shared by every `Proxies`
-                    // in it: never wiped here, only removed at exit.
-                    let path = own_dir();
-                    use std::os::unix::fs::DirBuilderExt;
-                    std::fs::DirBuilder::new()
-                        .recursive(true)
-                        .mode(0o700)
-                        .create(&path)
-                        .with_context(|| format!("creating {}", path.display()))?;
-                    *d = Some(path.clone());
-                    path
-                }
-            }
-        };
+        let dir = own_dir_ready()?;
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = dir.join(format!("p{n}.sock"));
@@ -775,14 +756,99 @@ impl Drop for Proxies {
     }
 }
 
+static RUN_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Name the home whose `run` directory holds the proxy directories: the
+/// first home a process opens (`ctx::Paths::for_home`) is the one it uses.
+pub fn set_run_root(home: &Path) {
+    let _ = RUN_ROOT.set(home.join("run"));
+}
+
+/// The directory proxy directories live in: `$FORGE_HOME/run` (as named to
+/// `set_run_root`), else `$XDG_RUNTIME_DIR/forge`. Never the shared temp
+/// directory, where another local user could pre-create the name.
+pub fn run_root() -> Result<PathBuf> {
+    if let Some(root) = RUN_ROOT.get() {
+        return Ok(root.clone());
+    }
+    match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(d) if !d.is_empty() => Ok(PathBuf::from(d).join("forge")),
+        _ => bail!(
+            "no forge home opened and XDG_RUNTIME_DIR is not set: nowhere private for the egress proxy"
+        ),
+    }
+}
+
 /// This process's proxy directory.
-pub fn own_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("forge-egress-{}", std::process::id()))
+pub fn own_dir() -> Result<PathBuf> {
+    Ok(run_root()?.join(format!("egress-{}", std::process::id())))
+}
+
+/// `path` is a real directory (not a link) of this user that no one else
+/// can enter or write: nothing to trust in it but us.
+fn verify_private(path: &Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let m =
+        std::fs::symlink_metadata(path).with_context(|| format!("checking {}", path.display()))?;
+    let euid = unsafe { libc::geteuid() };
+    if !m.file_type().is_dir() {
+        bail!("{} is not a directory", path.display());
+    }
+    if m.uid() != euid {
+        bail!("{} is owned by uid {}, not {euid}", path.display(), m.uid());
+    }
+    if m.mode() & 0o077 != 0 {
+        bail!(
+            "{} has mode {:04o}: group or other can reach it",
+            path.display(),
+            m.mode() & 0o7777
+        );
+    }
+    Ok(())
+}
+
+/// Create `path` afresh, private to this user: `mkdir` that fails on an
+/// existing name (planted or stale), then `verify_private` before anything
+/// is bound in it. The parents are made 0700 if missing and verified too.
+fn create_private(path: &Path) -> Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    if let Some(parent) = path.parent() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+        verify_private(parent)?;
+    }
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(path)
+        .with_context(|| format!("creating {}", path.display()))?;
+    verify_private(path)
+}
+
+/// The process's one proxy directory, shared by every `Proxies` in it: made
+/// on first use, never wiped here, only removed at exit.
+fn own_dir_ready() -> Result<PathBuf> {
+    static MADE: Mutex<Option<PathBuf>> = Mutex::new(None);
+    let mut made = MADE.lock().unwrap();
+    if let Some(path) = &*made
+        && path.is_dir()
+    {
+        verify_private(path)?;
+        return Ok(path.clone());
+    }
+    let path = own_dir()?;
+    create_private(&path)?;
+    *made = Some(path.clone());
+    Ok(path)
 }
 
 /// Remove this process's proxy directory: a worker does it once, at exit.
 pub fn remove_own_dir() {
-    let _ = std::fs::remove_dir_all(own_dir());
+    if let Ok(dir) = own_dir() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 /// Removes the process's proxy directory when dropped.
@@ -794,11 +860,11 @@ impl Drop for OwnDirGuard {
     }
 }
 
-/// Remove the `forge-egress-<pid>` directories under `tmp` whose pid is
+/// Remove the `egress-<pid>` directories under `root` whose pid is
 /// dead (`kill(pid, 0)` says `ESRCH`) and no others: not a live worker's,
 /// not this process's, however old. Returns how many it removed.
-pub fn sweep_dead(tmp: &Path) -> usize {
-    let Ok(entries) = std::fs::read_dir(tmp) else {
+pub fn sweep_dead(root: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(root) else {
         return 0;
     };
     let me = std::process::id() as i64;
@@ -807,7 +873,7 @@ pub fn sweep_dead(tmp: &Path) -> usize {
         let name = e.file_name();
         let Some(pid) = name
             .to_str()
-            .and_then(|n| n.strip_prefix("forge-egress-"))
+            .and_then(|n| n.strip_prefix("egress-"))
             .and_then(|p| p.parse::<i64>().ok())
         else {
             continue;
@@ -827,6 +893,11 @@ pub fn sweep_dead(tmp: &Path) -> usize {
     swept
 }
 
+/// `sweep_dead` over `run_root()`: 0 when there is none.
+pub fn sweep_dead_in_run_root() -> usize {
+    run_root().map_or(0, |root| sweep_dead(&root))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -838,11 +909,9 @@ mod tests {
     #[test]
     fn the_sweep_removes_dead_pids_and_keeps_live_ones() {
         let tmp = tempfile::tempdir().unwrap();
-        let live = tmp
-            .path()
-            .join(format!("forge-egress-{}", std::process::id()));
+        let live = tmp.path().join(format!("egress-{}", std::process::id()));
         // pid_max is at most 2^22: this pid cannot exist.
-        let dead = tmp.path().join("forge-egress-2147483646");
+        let dead = tmp.path().join("egress-2147483646");
         let other = tmp.path().join("forge-egress-refused.jsonl");
         for d in [&live, &dead] {
             std::fs::create_dir(d).unwrap();
@@ -850,6 +919,42 @@ mod tests {
         std::fs::write(&other, "").unwrap();
         assert_eq!(sweep_dead(tmp.path()), 1);
         assert!(live.exists() && !dead.exists() && other.exists());
+    }
+
+    #[test]
+    fn a_preexisting_world_writable_proxy_dir_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("egress-1");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(create_private(&dir).is_err());
+        // Refused, and left as it was.
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o777);
+        // Nor is a directory that exists but is not private accepted as ours.
+        assert!(verify_private(&dir).is_err());
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(verify_private(&dir).is_ok());
+        assert!(
+            create_private(&dir).is_err(),
+            "an existing name is never adopted"
+        );
+    }
+
+    #[test]
+    fn a_fresh_proxy_dir_is_private_and_a_symlink_is_not_ours() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("run").join("egress-1");
+        create_private(&dir).unwrap();
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o077,
+            0
+        );
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        assert!(verify_private(&link).is_err());
     }
 
     #[test]

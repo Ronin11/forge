@@ -140,7 +140,7 @@ use presence::check_presence;
 fn check_egress(paths: &Paths, store: &Store) -> Vec<Check> {
     let mut out = Vec::new();
     // Dead workers' proxy directories, which a crashed worker leaves behind.
-    let swept = crate::egress::sweep_dead(&std::env::temp_dir());
+    let swept = crate::egress::sweep_dead_in_run_root();
     let model: Vec<String> = match config::load_home(&paths.home) {
         Ok(c) => crate::egress::model_rules(&c.providers)
             .iter()
