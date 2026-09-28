@@ -33,9 +33,8 @@ pub struct Spec<'a> {
     pub provider: &'a agent::Provider,
     pub schema: &'a str,
     /// Whether the run goes through the operator's sandbox. A job's
-    /// directive step and the deploy look never do: the first has no
-    /// tools, the second reads a screenshot from a scratch directory,
-    /// and `forge deploy` never sandboxes its own steps.
+    /// directive step never does: it has no tools. The deploy look does,
+    /// in an empty scratch directory with the smoke output bound read-only.
     pub sandboxed: bool,
     pub writes: bool,
     pub start_sha: &'a str,

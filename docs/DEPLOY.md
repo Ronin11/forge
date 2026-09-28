@@ -46,6 +46,14 @@ outright, so a repository it was `--on-landing` for stops deploying it on
 future landings; it is refused while a deploy of that target is still
 running, since there would be nothing left to record the result on.
 
+A method may declare `required_args` in its action file: `add` and `set`
+refuse a target that leaves one missing or blank (`deploy-command` needs
+`host` and `dest`; `deploy-user-service` also needs `unit`). A target
+waiting on `forge provision` for its host gives a placeholder `host`,
+which provisioning replaces. The two methods also refuse at run time an
+empty `host` or a `dest` that is empty or `/`, so their `rsync --delete`
+never targets the host's root.
+
 ## Methods
 
 A method is an action file under `src/builtins/operations/deploy-*.toml`,
@@ -142,11 +150,22 @@ case a placeholder or empty page can hide behind.
 
 The verdict lands on the deploy row as `look_ok` and `look_json`, shown
 by `forge deploy log` and the initiative report. A `blocking` finding
-fails the deploy exactly like a failed check: rollback and the human
+fails the deploy like a failed check (subject to the confirming look
+above): rollback and the human
 rung below both apply, the finding's sentence named in the question. A
 `notable` finding is recorded but does not fail the deploy. A run that
 fails on its own — the agent errors, or its result does not fit the
 schema — is logged and ignored, never failing the deploy for it.
+
+The look is told the smoke result the step really had. The page's title
+and the smoke step's console-error and failed-request lists are strings
+the deployed site controls, so they reach the look only truncated, in a
+fenced block under the untrusted-data header. The look runs sandboxed,
+in an empty scratch directory with the deploy's output directory bound
+read-only, since all it reads is one image. And a look alone never rolls
+back a deploy whose check and smoke passed: a `blocking` finding then
+needs a second, confirming look to also find something blocking; if it
+does not, the deploy stands and a note says a person should look.
 
 ## When a deploy runs
 
@@ -295,7 +314,17 @@ successor's take-over around every write to the pointers and
    once it has told systemd it is ready. Restarting the unit as well
    left it `deactivating` for its whole `TimeoutStopSec` on 2026-09-26:
    the stop's SIGTERM went to the old pid, and systemd never re-sends it
-   to the pid that took the unit over. Only for a worker too old to
+   to the pid that took the unit over. Staged is not live, so `forge
+   deploy` does not stop there: after the method returns under such a
+   worker it waits, bounded (the target's `tries` arg, default 40, at
+   three seconds each), for a live worker on the deployed sha in the
+   `workers` table and for `current` to name it, and only then runs the
+   target's check (default: the web client's `/tasks`) and the smoke
+   step against that. The row's output says `staged` and `live` on
+   separate lines. When the wait times out the deploy fails with the
+   reason "staged but never became live", `staged` is put back to what
+   `current` names so no worker retries it, nothing is rolled back (nothing
+   went live), and the project is asked. Only for a worker too old to
    start a successor does the method go on to put the release live
    exactly as before:
 4. Flip `FORGE_HOME/bin/current` to `releases/<sha>`, with `previous`
@@ -347,9 +376,12 @@ passing commit through the same method (its release is still on disk, so
 without a rebuild), and the project gets its question. A first-ever
 deploy has no passing commit to roll back to; the record says so.
 
-The whole method has to finish inside the repository's
-`check_timeout_secs`, a cold `cargo build` included; the build cache in
-`FORGE_HOME/bin/target` is what makes a warm one fit.
+The whole method has to finish inside the action's own `timeout_secs`
+(3600 for `deploy-self`, ample for a cold `cargo build`; an action that
+declares none gets the repository's `check_timeout_secs`). A method that
+overruns is sent SIGTERM to its process group and has five seconds to run
+its exit trap, which puts the pointers back and cleans the scratch, before
+SIGKILL.
 
 ## Rollback and the human rung
 

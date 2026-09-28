@@ -49,6 +49,10 @@ pub(super) enum TaskCmd {
         /// Drop the task's own acceptance commands
         #[arg(long = "no-checks")]
         no_checks: bool,
+        /// Route every role of the task to this provider by hand (the
+        /// worker never re-draws a task that names one)
+        #[arg(long)]
+        provider: Option<String>,
     },
 }
 
@@ -119,6 +123,8 @@ async fn run(args: TaskArgs) -> Result<()> {
     }
     eprintln!("task     {}", t.id);
     if worker::drive(f, t.id).await? != TaskState::Succeeded {
+        // `exit` skips destructors: remove the proxy directory here.
+        drop(crate::egress::MadeDirGuard);
         std::process::exit(1);
     }
     Ok(())
@@ -415,6 +421,7 @@ async fn dispatch_retry(cmd: Cmd) -> Result<()> {
             max_turns,
             timeout_secs,
             workflow,
+            provider,
         } => {
             retry(
                 id,
@@ -427,6 +434,7 @@ async fn dispatch_retry(cmd: Cmd) -> Result<()> {
                     max_turns,
                     timeout_secs,
                     workflow,
+                    provider,
                 },
             )
             .await
@@ -531,6 +539,7 @@ async fn dispatch_task(cmd: Cmd) -> Result<()> {
                 no_after,
                 checks,
                 no_checks,
+                provider,
             } => {
                 let text = match text_file {
                     Some(p) => Some(
@@ -551,6 +560,7 @@ async fn dispatch_task(cmd: Cmd) -> Result<()> {
                         workflow,
                         after: (no_after || !after.is_empty()).then_some(after),
                         checks: (no_checks || !checks.is_empty()).then_some(checks),
+                        provider,
                     },
                 )
                 .await

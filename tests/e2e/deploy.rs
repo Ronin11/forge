@@ -45,6 +45,10 @@ fn deploy_targets_are_added_listed_and_forge_deploy_log_starts_empty() {
             "deploy-user-service",
             "--arg",
             "unit=demo.service",
+            "--arg",
+            "host=box1",
+            "--arg",
+            "dest=/srv/demo",
             "--check",
             "systemctl --user is-active demo.service",
             "--on-landing",
@@ -85,6 +89,10 @@ fn deploy_targets_are_added_listed_and_forge_deploy_log_starts_empty() {
             repo,
             "--method",
             "deploy-command",
+            "--arg",
+            "host=local",
+            "--arg",
+            "dest=/srv/demo",
             "--check",
             "true",
         ],
@@ -104,6 +112,10 @@ fn deploy_targets_are_added_listed_and_forge_deploy_log_starts_empty() {
             repo,
             "--method",
             "deploy-command",
+            "--arg",
+            "host=local",
+            "--arg",
+            "dest=/srv/demo",
             "--check",
             "true",
         ],
@@ -1089,6 +1101,8 @@ fn deploy_static_rsyncs_and_defaults_the_check_to_a_url_fetch_with_a_marker() {
 mod errors;
 #[path = "deploy/landing.rs"]
 mod landing;
+#[path = "deploy/required_args.rs"]
+mod required_args;
 
 /// An on-landing deploy's row shows up where people look at the task: a
 /// `forge show` line starting with "deploy" (target, sha, ok or rolled
@@ -1213,6 +1227,8 @@ fn deploy_set_changes_one_arg_and_keeps_the_rest() {
             "unit=demo.service",
             "--arg",
             "host=box1",
+            "--arg",
+            "dest=/srv/demo",
             "--check",
             "systemctl --user is-active demo.service",
             "--smoke",

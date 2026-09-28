@@ -18,6 +18,18 @@ use std::time::SystemTime;
 
 const SEED_MESSAGE: &str = "catalog: built-in";
 
+/// The built-in whose copy in the catalog never runs, however it is
+/// edited: `deploy::run` hands it a contract between this binary and the
+/// script text.
+const KERNEL_COUPLED: &str = "deploy-self.toml";
+
+/// Per built-in file, from the checked-in src/builtins/history.tsv (see
+/// build.rs): every blob hash it has had, and when it last changed. It
+/// is a file so that a build from a `git archive` tree, which has no .git,
+/// has it too.
+const BUILTIN_HISTORY: &[(&str, i64, &[&str])] =
+    include!(concat!(env!("OUT_DIR"), "/builtin_history.rs"));
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
     StaleSeed,
@@ -43,6 +55,10 @@ pub struct Shadow {
     /// The copy has no real difference from the built-in (see `equivalent`).
     /// Such a copy is always a stale seed, whatever its history says.
     pub equivalent: bool,
+    /// An operator edit of a built-in whose text changed after the copy's
+    /// last commit, and the copy is not any past version of that built-in:
+    /// the copy was tuned against text this binary no longer carries.
+    pub outdated: bool,
     /// The unified diff, built-in to catalog copy, or the reason `git diff`
     /// could not produce one. `Err` must never be folded into an empty or
     /// zero-line diff: that would look exactly like "no differences".
@@ -127,6 +143,30 @@ fn has_operator_commit(dir: &Path, rel: &str) -> bool {
         let (author, subject) = l.split_once('\t').unwrap_or((l, ""));
         !author.eq_ignore_ascii_case("forge") && !subject.starts_with(SEED_MESSAGE)
     })
+}
+
+/// Whether the copy at `rel` was last committed before the built-in `file`
+/// changed, and is not a version the built-in has had.
+fn outdated(dir: &Path, rel: &str, file: &str, copy: &str) -> bool {
+    let Some((_, changed, hashes)) = BUILTIN_HISTORY.iter().find(|(f, _, _)| *f == file) else {
+        return false;
+    };
+    if text_blob_hash(copy).is_ok_and(|h| hashes.contains(&h.as_str())) {
+        return false;
+    }
+    let committed = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["log", "-1", "--format=%ct", "--", rel])
+        .output()
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<i64>()
+                .ok()
+        });
+    committed.is_some_and(|c| *changed > c)
 }
 
 /// The unified diff between a built-in and a catalog copy, run through a
@@ -220,12 +260,14 @@ fn scan_uncached(catalog: &Path) -> Vec<Shadow> {
             continue;
         };
         let rel = format!("actions/{file}");
-        let equivalent = std::fs::read_to_string(&path).is_ok_and(|t| equivalent(builtin, &t));
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let equivalent = equivalent(builtin, &text);
         let origin = if !equivalent && has_operator_commit(catalog, &rel) {
             Origin::OperatorEdit
         } else {
             Origin::StaleSeed
         };
+        let outdated = origin == Origin::OperatorEdit && outdated(catalog, &rel, file, &text);
         let age_secs = std::fs::metadata(&path)
             .and_then(|m| m.modified())
             .ok()
@@ -240,6 +282,7 @@ fn scan_uncached(catalog: &Path) -> Vec<Shadow> {
             origin,
             age_secs,
             equivalent,
+            outdated,
             diff,
         });
     }
@@ -301,6 +344,23 @@ pub(super) fn stale_seeds(catalog: &Path) -> HashSet<String> {
     out
 }
 
+/// What to tell the operator when the action `name` about to run is a
+/// catalog copy rather than the built-in: `None` when it is the built-in
+/// (no copy, or a stale seed the loader ignores).
+pub fn copy_note(catalog: &Path, name: &str) -> Option<String> {
+    let file = format!("{name}.toml");
+    let s = scan(catalog)
+        .into_iter()
+        .find(|s| s.file == file && s.origin == Origin::OperatorEdit)?;
+    let lines = match &s.diff {
+        Ok(_) => format!("{} diff line(s) from the built-in", s.diff_lines()),
+        Err(e) => format!("diff from the built-in failed: {e}"),
+    };
+    Some(format!(
+        "{name} runs from the catalog copy actions/{file} ({lines}), not the built-in"
+    ))
+}
+
 /// Age as the doctor and refresh print it: `3d`, `5h`, `12m`.
 pub fn age_text(secs: u64) -> String {
     match secs {
@@ -333,20 +393,24 @@ pub async fn remove(catalog: &Path, file: &str) -> Result<()> {
     Ok(())
 }
 
-/// The doctor's shadowing row: whether to warn, the detail, and the hint.
-/// A stale seed warns and points at `forge workflows refresh`; an operator
-/// edit is listed but is not a fault. Only copies with real diff lines are
-/// listed: one that does not differ from the built-in (or only in
-/// whitespace or comments) is a seed `refresh` removes without a flag, not
-/// something to read; a failed diff is still listed, as it hides nothing.
-pub fn report(catalog: &Path) -> (bool, String, String) {
+/// The doctor's shadowing row: its status, the detail, and the hint.
+/// A shadow of `deploy-self` fails (it is never what runs, see
+/// `deploy::run`). A stale seed warns and points at `forge workflows
+/// refresh`, and so does an operator edit the built-in has outgrown; any
+/// other operator edit is listed but is not a fault. Only copies with real
+/// diff lines are listed: one that does not differ from the built-in (or
+/// only in whitespace or comments) is a seed `refresh` removes without a
+/// flag, not something to read; a failed diff is still listed, as it hides
+/// nothing.
+pub fn report(catalog: &Path) -> (crate::doctor::Status, String, String) {
+    use crate::doctor::Status;
     let all: Vec<Shadow> = scan(catalog)
         .into_iter()
         .filter(|s| !s.equivalent || s.diff.is_err())
         .collect();
     if all.is_empty() {
         return (
-            false,
+            Status::Ok,
             "no catalog file shadows a built-in".into(),
             String::new(),
         );
@@ -358,28 +422,43 @@ pub fn report(catalog: &Path) -> (bool, String, String) {
                 Ok(_) => format!("{} diff line(s)", s.diff_lines()),
                 Err(e) => format!("diff failed: {e}"),
             };
+            let note = if s.file == KERNEL_COUPLED {
+                ", never used: deploy-self always runs the built-in"
+            } else if s.outdated {
+                ", the built-in changed after this copy's last commit"
+            } else {
+                ""
+            };
             format!(
-                "{} ({}, {} old, {})",
+                "{} ({}, {} old, {}{})",
                 s.file,
                 s.origin.as_str(),
                 age_text(s.age_secs),
-                state
+                state,
+                note
             )
         })
         .collect::<Vec<_>>()
         .join("; ");
-    let stale = all.iter().any(|s| s.origin == Origin::StaleSeed);
-    let hint = if stale { "forge workflows refresh" } else { "" };
-    (stale, detail, hint.into())
+    if all.iter().any(|s| s.file == KERNEL_COUPLED) {
+        let hint = "forge workflows refresh --take-builtin deploy-self";
+        return (Status::Fail, detail, hint.into());
+    }
+    let warn = all
+        .iter()
+        .any(|s| s.origin == Origin::StaleSeed || s.outdated);
+    let hint = if warn { "forge workflows refresh" } else { "" };
+    let status = if warn { Status::Warn } else { Status::Ok };
+    (status, detail, hint.into())
 }
 
 /// The `shadowing` row of `forge doctor`.
 pub fn doctor_check(home: &Path) -> crate::doctor::Check {
-    use crate::doctor::{Check, Status};
-    let (stale, detail, hint) = report(&home.join("workflows"));
+    use crate::doctor::Check;
+    let (status, detail, hint) = report(&home.join("workflows"));
     Check {
         name: "shadowing".into(),
-        status: if stale { Status::Warn } else { Status::Ok },
+        status,
         detail,
         hint,
         provider: None,
@@ -399,6 +478,22 @@ pub fn doctor_check(home: &Path) -> crate::doctor::Check {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn builtin_history_lists_every_built_in_current_text() {
+        assert!(!BUILTIN_HISTORY.is_empty());
+        for (file, text) in BUILTIN_ACTIONS.iter().chain(BUILTIN_OPERATIONS) {
+            let hash = text_blob_hash(text).unwrap();
+            let listed = BUILTIN_HISTORY
+                .iter()
+                .any(|(f, _, hashes)| f == file && hashes.contains(&hash.as_str()));
+            assert!(
+                listed,
+                "{file} is not in src/builtins/history.tsv at its current text: \
+                 run scripts/builtin-history.sh"
+            );
+        }
+    }
 
     const BUILTIN: &str =
         "name = \"fmt\"\n# the formatter\ndescription = \"format\"\nrun = [\"cargo fmt\"]\n";
@@ -486,7 +581,7 @@ mod tests {
         assert!(found[0].equivalent);
         assert_eq!(found[0].origin, Origin::StaleSeed);
         let (stale, detail, _) = report(&catalog);
-        assert!(!stale, "{detail}");
+        assert_eq!(stale, crate::doctor::Status::Ok, "{detail}");
         assert!(!detail.contains("fmt.toml"), "{detail}");
     }
 
@@ -557,7 +652,7 @@ mod tests {
         assert!(failed[0].diff.is_err(), "{:?}", failed[0].diff);
         assert_eq!(failed[0].diff_lines(), 0);
         let (stale, detail, _hint) = report(&catalog2);
-        assert!(stale);
+        assert_eq!(stale, crate::doctor::Status::Warn);
         assert!(detail.contains("diff failed"), "{detail}");
         assert!(!detail.contains("0 diff line(s)"), "{detail}");
 

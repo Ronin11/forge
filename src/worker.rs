@@ -284,32 +284,81 @@ fn first_role(f: &Forge, t: &Task) -> String {
         .unwrap_or_else(|| "code".into())
 }
 
-/// Whether the provider that `t`'s next agent step will actually run
-/// under (see `first_role`) is currently held.
+/// How the claim loop treats `t` now: run under the provider its next
+/// agent step resolves to (see `first_role`), or, when that provider is
+/// held and `t`'s arm for the role was drawn from `experiment.toml`, under
+/// an arm of the same role that is not (`redraw::decide`). `None` when the
+/// provider does not resolve: the real error surfaces when the task runs.
+/// Nothing is written here.
+fn route_candidate(f: &Forge, t: &Task) -> Option<crate::redraw::Routing> {
+    let role = first_role(f, t);
+    let provider = f.effective_provider(t, &role).ok()?.name.clone();
+    let hold = |p: &str| window_hold(f, p).ok().flatten();
+    // The experiment is read only once the drawn provider is known to be
+    // held, so a free queue never touches `experiment.toml`.
+    let weights = hold(&provider)
+        .and_then(|_| crate::redraw::arms(&f.paths.home, &role, |p| f.providers.contains_key(p)));
+    Some(crate::redraw::decide(
+        t,
+        &role,
+        &provider,
+        weights.as_ref(),
+        hold,
+    ))
+}
+
+/// Whether the claim loop must skip `t` for its provider: held, and no
+/// other arm of its role could take it. A held drawn arm that another
+/// provider can run is re-drawn instead (recorded on the task's
+/// `explore`, noted on its event stream, and announced), and the task is
+/// not skipped.
 fn provider_is_held(f: &Forge, t: &Task) -> bool {
-    f.effective_provider(t, &first_role(f, t))
-        .ok()
-        .and_then(|p| window_hold(f, &p.name).ok().flatten())
-        .is_some()
+    match route_candidate(f, t) {
+        None | Some(crate::redraw::Routing::Free) => false,
+        Some(crate::redraw::Routing::Held { .. }) => true,
+        Some(crate::redraw::Routing::Redrawn { explore, note }) => {
+            match f.store.set_explore(t.id, &explore) {
+                Ok(true) => {
+                    eprintln!("task {}: {note}", t.id);
+                    f.report.emit(t.id, Event::Note { text: &note });
+                    false
+                }
+                // Claimed or edited in between: leave it to the next pass.
+                _ => true,
+            }
+        }
+    }
+}
+
+/// `msg` led by the provider it is about, unless it already is (a login
+/// hold's message names its provider).
+fn named(provider: &str, msg: &str) -> String {
+    if msg.starts_with(&format!("{provider}:")) {
+        msg.to_string()
+    } else {
+        format!("{provider}: {msg}")
+    }
 }
 
 /// The tightest (soonest-resetting) hold among every queued, unblocked
 /// task's own provider (the one `first_role` says its next agent step
-/// will run under), when *none* of them can be claimed right now;
-/// `None` as soon as one candidate's provider is not held, since the
-/// caller can claim it instead of waiting.
+/// will run under, or an arm it would be re-drawn to), when *none* of
+/// them can be claimed right now; `None` as soon as one candidate can run
+/// under a provider that is not held, since the caller can claim it
+/// instead of waiting. The message names the provider.
 fn tightest_provider_hold(f: &Forge, held_initiatives: &[i64]) -> Result<Option<(String, i64)>> {
     let mut tightest: Option<(String, i64)> = None;
     for t in f.store.queued_unblocked(held_initiatives)? {
-        let role = first_role(f, &t);
-        let Ok(provider) = f.effective_provider(&t, &role) else {
-            return Ok(None);
-        };
-        match window_hold(f, &provider.name)? {
-            None => return Ok(None),
-            Some((msg, until)) => {
+        match route_candidate(f, &t) {
+            None | Some(crate::redraw::Routing::Free) => return Ok(None),
+            Some(crate::redraw::Routing::Redrawn { .. }) => return Ok(None),
+            Some(crate::redraw::Routing::Held {
+                provider,
+                msg,
+                until,
+            }) => {
                 if tightest.as_ref().is_none_or(|(_, u)| until < *u) {
-                    tightest = Some((msg, until));
+                    tightest = Some((named(&provider, &msg), until));
                 }
             }
         }
@@ -518,6 +567,39 @@ fn event_project(f: &Forge, ev: &serde_json::Value) -> Option<String> {
     f.store.task(task).ok().flatten()?.project
 }
 
+/// The ticks a live worker runs each pass: run-workflow resolution, then
+/// the schedule and event triggers over what it resolved, then the drafts
+/// whose last missing action has landed (`workflows::draft::reconcile`). A worker
+/// that is superseded or stopping fires none of them: its older code would
+/// resolve workflows, queue jobs beside the successor and move the shared
+/// event cursor. Each tick is its own step: one that fails is logged and
+/// the others still run, so a tick that fails every pass (an event log it
+/// cannot read) never keeps the pass from claiming. Whether the ticks ran.
+async fn run_ticks(
+    f: &Forge,
+    refusals: &mut RefusalLog,
+    superseded: bool,
+    stopping: bool,
+) -> Result<bool> {
+    if superseded || stopping {
+        return Ok(false);
+    }
+    let runs = tick_run_workflows(f).await.unwrap_or_else(|e| {
+        eprintln!("worker tick failed (workflows); continuing: {e:#}");
+        Vec::new()
+    });
+    if let Err(e) = schedule_tick(f, &runs, refusals).await {
+        eprintln!("worker tick failed (schedule); continuing: {e:#}");
+    }
+    if let Err(e) = event_tick(f, &runs).await {
+        eprintln!("worker tick failed (event); continuing: {e:#}");
+    }
+    if let Err(e) = workflows::draft::reconcile(&f.paths.home).await {
+        eprintln!("worker tick failed (drafts); continuing: {e:#}");
+    }
+    Ok(true)
+}
+
 /// The worker's event trigger (docs/JOBS.md, "Triggers" and "Build order"
 /// step 3): for every project's run workflow with `[trigger] on = "event"`,
 /// read the events in `events.jsonl` past the offset this workflow last
@@ -666,6 +748,13 @@ pub async fn webhook_workflow(
     }
 }
 
+/// The slots this worker may fill: the machine's `jobs`, less the attempts
+/// other live workers still run (a draining predecessor's, or the
+/// successor's), so a handoff never takes the box past `jobs` between them.
+pub fn slot_budget(jobs: usize, running_elsewhere: usize) -> usize {
+    jobs.saturating_sub(running_elsewhere).min(jobs)
+}
+
 pub struct WorkOpts {
     pub jobs: usize,
     /// Seconds between queue polls when idle; `None` exits when idle.
@@ -778,7 +867,10 @@ fn write_pid_file(paths: &Paths, pid: i64) {
 /// draining predecessor's, is never touched); the guard removes this
 /// worker's own at exit.
 fn claim_egress_dir() -> crate::egress::OwnDirGuard {
-    let swept = crate::egress::sweep_dead(&std::env::temp_dir());
+    // Nothing of this process has made its directory yet, so one under its
+    // pid is a dead worker's whose pid was reused.
+    crate::egress::remove_own_dir();
+    let swept = crate::egress::sweep_dead_in_run_root();
     if swept > 0 {
         eprintln!("egress: swept {swept} proxy director(ies) of dead pids");
     }
@@ -803,6 +895,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         .poll
         .map(|_| crate::plugins::Supervisor::start(f.clone()));
     let jobs = opts.jobs.max(1);
+    let mut slots = jobs;
     let mut running: JoinSet<WorkResult> = JoinSet::new();
     let mut ids: Vec<i64> = Vec::new();
     let mut job_ids: Vec<i64> = Vec::new();
@@ -819,14 +912,14 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         // Config reloads between claims: what is claimed from here on runs
         // on the new config; what already runs keeps the `Forge` it holds.
         if !stopping && let Some(next) = reloader.check(&f, std::mem::take(&mut hup)) {
+            if let Some(p) = &plugins {
+                p.reload(next.clone());
+            }
             f = next;
         }
         let mut superseded = false;
         let pass: Result<()> = async {
             recover_orphans(&f, false)?;
-            let runs = tick_run_workflows(&f).await?;
-            schedule_tick(&f, &runs, &mut refusals).await?;
-            event_tick(&f, &runs).await?;
             superseded = succession.superseded(&f, &mut plugins).await?;
             if !stopping && succession.stop_requested() {
                 stopping = true;
@@ -835,12 +928,14 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     running.len()
                 );
             }
+            run_ticks(&f, &mut refusals, superseded, stopping).await?;
 
-            // Fill free slots.
+            // Fill free slots, re-reading what the other workers hold.
+            slots = slot_budget(jobs, f.store.running_elsewhere(pid, pid_alive).unwrap_or(0));
             while !stopping
                 && !superseded
                 && env_error.is_none()
-                && running.len() < jobs
+                && running.len() < slots
                 && opts.max_tasks.is_none_or(|m| claimed < m)
             {
                 crate::login_hold::probe_due(&f).await;
@@ -943,7 +1038,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
             // finishes. Before this branch the loop woke only on a join or
             // a signal: on 2026-09-19 two tasks sat queued beside one
             // running attempt and two free slots for an hour.
-            _ = tokio::time::sleep(Duration::from_secs(opts.poll.unwrap_or(10))), if running.len() < jobs || opts.poll.is_some() => {}
+            _ = tokio::time::sleep(Duration::from_secs(opts.poll.unwrap_or(10))), if running.len() < slots || opts.poll.is_some() => {}
             Some(joined) = running.join_next() => {
                 match joined {
                     Ok(WorkResult::Task(id, Ok(state))) => {
@@ -1008,6 +1103,16 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_worker_claims_only_the_slots_the_others_are_not_using() {
+        use super::slot_budget;
+        assert_eq!(slot_budget(4, 0), 4);
+        assert_eq!(slot_budget(4, 2), 2);
+        assert_eq!(slot_budget(4, 4), 0);
+        assert_eq!(slot_budget(4, 9), 0, "never below zero");
+        assert_eq!(slot_budget(1, 0), 1);
+    }
+
     #[test]
     fn this_process_is_alive() {
         assert!(super::pid_alive(std::process::id() as i64));
@@ -1097,6 +1202,17 @@ mod tests {
             workflow: workflow.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn the_hold_line_names_the_provider_once() {
+        let window = "rate window 5h at 100% (cap 90%), resets in 71m";
+        assert_eq!(
+            named("openai", window),
+            "openai: rate window 5h at 100% (cap 90%), resets in 71m"
+        );
+        let login = "openai: login refused since 01:00";
+        assert_eq!(named("openai", login), login);
     }
 
     #[test]
@@ -1498,6 +1614,56 @@ mod tests {
             .into_iter()
             .filter(|j| j.trigger_kind == "event")
             .collect()
+    }
+
+    #[tokio::test]
+    async fn a_superseded_or_stopping_pass_fires_no_tick() {
+        let (_dir, f) = message_fixture(&[("on-done", "on = \"event\"\ntype = \"task_done\"")]);
+        let mut log = RefusalLog::default();
+        for (superseded, stopping) in [(true, false), (false, true), (true, true)] {
+            let ran = run_ticks(&f, &mut log, superseded, stopping).await.unwrap();
+            assert!(!ran);
+            assert_eq!(f.store.event_cursor("demo", "on-done").unwrap(), None);
+        }
+        assert!(run_ticks(&f, &mut log, false, false).await.unwrap());
+        assert!(f.store.event_cursor("demo", "on-done").unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_failing_event_tick_does_not_end_the_pass() {
+        let (_dir, f) = message_fixture(&[("on-done", "on = \"event\"\ntype = \"task_done\"")]);
+        // A directory where the log should be: the event tick errors.
+        let log_path = f.paths.home.join("events.jsonl");
+        let _ = std::fs::remove_file(&log_path);
+        std::fs::create_dir_all(&log_path).unwrap();
+        let runs = tick_run_workflows(&f).await.unwrap();
+        assert!(event_tick(&f, &runs).await.is_err());
+        let mut refusals = RefusalLog::default();
+        assert!(run_ticks(&f, &mut refusals, false, false).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn two_start_events_on_one_event_yield_one_job_and_no_error() {
+        let (_dir, f) = message_fixture(&[("on-done", "on = \"event\"\ntype = \"task_done\"")]);
+        let runs = tick_run_workflows(&f).await.unwrap();
+        let run = &runs[0];
+        let start = || {
+            job::start_event(crate::job::StartEvent {
+                f: &f,
+                project: "demo",
+                workflow: "on-done",
+                landed_sha: &run.landed_sha,
+                wf: &run.wf,
+                source: run.source,
+                offset: "0:42",
+                at: unix_now(),
+                input: "{}",
+            })
+        };
+        let first = start().unwrap();
+        assert!(first.is_some());
+        assert_eq!(start().unwrap(), None);
+        assert_eq!(event_jobs(&f).len(), 1);
     }
 
     #[tokio::test]

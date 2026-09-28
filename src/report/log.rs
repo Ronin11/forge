@@ -50,9 +50,9 @@ fn header(path: &Path) -> io::Result<Cursor> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Cursor::default()),
         Err(e) => return Err(e),
     };
-    let mut line = String::new();
-    BufReader::new(file).read_line(&mut line)?;
-    let generation = serde_json::from_str::<serde_json::Value>(&line)
+    let mut line = Vec::new();
+    BufReader::new(file).read_until(b'\n', &mut line)?;
+    let generation = serde_json::from_slice::<serde_json::Value>(&line)
         .ok()
         .and_then(|v| v["generation"].as_u64());
     Ok(generation
@@ -148,30 +148,52 @@ fn read_file(path: &Path, batch: &mut Batch, budget: u64, archived: bool) -> io:
     let mut reader = BufReader::new(file);
     let mut used: u64 = batch.lines.iter().map(|(_, _, s)| s.len() as u64 + 1).sum();
     loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line)?;
+        let mut line = Vec::new();
+        let n = reader.read_until(b'\n', &mut line)?;
         if n == 0 {
             return Ok(true);
         }
         if used >= budget {
             return Ok(false);
         }
-        if !line.ends_with('\n') {
+        if !line.ends_with(b"\n") {
             batch.resync |= archived;
             return Ok(archived);
         }
         let start = batch.next;
         batch.next.offset += n as u64;
         used += n as u64;
-        batch
-            .lines
-            .push((start, batch.next, line.trim_end().to_string()));
+        // A line that is not UTF-8 is read past, as `forge events` reads
+        // past one that is not JSON; the cursor still moves over it.
+        if let Ok(line) = String::from_utf8(line) {
+            batch
+                .lines
+                .push((start, batch.next, line.trim_end().to_string()));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_that_is_not_utf8_is_read_past() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        append(&path, "{\"type\":\"a\"}\n", 1000).unwrap();
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"type\":\"\xff\xfe\"}\n")
+            .unwrap();
+        append(&path, "{\"type\":\"b\"}\n", 1000).unwrap();
+        let batch = read(&path, Cursor::default(), 1000).unwrap();
+        let lines: Vec<&str> = batch.lines.iter().map(|(_, _, l)| l.as_str()).collect();
+        assert_eq!(lines, ["{\"type\":\"a\"}", "{\"type\":\"b\"}"]);
+        assert_eq!(batch.next, snapshot(&path).unwrap());
+    }
 
     #[test]
     fn rotation_drains_old_tail_and_returns_restartable_cursors() {
