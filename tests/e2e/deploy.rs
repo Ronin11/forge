@@ -1103,6 +1103,8 @@ mod errors;
 mod landing;
 #[path = "deploy/required_args.rs"]
 mod required_args;
+#[path = "deploy/user_service.rs"]
+mod user_service;
 
 /// An on-landing deploy's row shows up where people look at the task: a
 /// `forge show` line starting with "deploy" (target, sha, ok or rolled
