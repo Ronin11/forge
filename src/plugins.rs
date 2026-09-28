@@ -3,6 +3,8 @@
 //! and for the same reason: one broken `plugin.toml` must not stop the
 //! others loading. See docs/PLUGINS.md.
 
+pub mod drift;
+
 use crate::ctx::Forge;
 use crate::workflows::Problem;
 use anyhow::{Context, Result, bail};
@@ -265,18 +267,24 @@ pub fn install(home: &Path, src: &Path) -> Result<Manifest> {
     copy_dir(src, &dest)
         .with_context(|| format!("copying {} to {}", src.display(), dest.display()))?;
 
+    drift::record_install(&dest, src)?;
+    run_build(&manifest, &dest)?;
+    Ok(manifest)
+}
+
+/// Runs the manifest's `build` argv, if it has one, in `dir`.
+fn run_build(manifest: &Manifest, dir: &Path) -> Result<()> {
     if let Some(build) = &manifest.build {
         let status = std::process::Command::new(&build[0])
             .args(&build[1..])
-            .current_dir(&dest)
+            .current_dir(dir)
             .status()
-            .with_context(|| format!("running build {build:?} in {}", dest.display()))?;
+            .with_context(|| format!("running build {build:?} in {}", dir.display()))?;
         if !status.success() {
-            bail!("build {build:?} failed in {}", dest.display());
+            bail!("build {build:?} failed in {}", dir.display());
         }
     }
-
-    Ok(manifest)
+    Ok(())
 }
 
 fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
@@ -500,7 +508,7 @@ async fn stop_child(child: &mut Child) {
 /// `FORGE_HOME` (and, for one release, `FORGE2_HOME` too — the name
 /// docs/PLUGINS.md promised before the rename, kept alongside the new one
 /// so a plugin written against the old name still works), `FORGE_PLUGIN_DIR`,
-/// `FORGE_PLUGIN_STATE`, plus the pass-through list every agent and check
+/// `FORGE_PLUGIN_NAME`, `FORGE_PLUGIN_STATE`, plus the pass-through list every agent and check
 /// gets (`agent::agent_env`).
 fn spawn_plugin(plugin: &Plugin, home: &Path, state_dir: &Path, log_path: &Path) -> Result<Child> {
     let stdout_file = std::fs::OpenOptions::new()
@@ -518,6 +526,7 @@ fn spawn_plugin(plugin: &Plugin, home: &Path, state_dir: &Path, log_path: &Path)
         .env("FORGE_BIN", bin)
         .env("FORGE_HOME", home)
         .env("FORGE2_HOME", home)
+        .env("FORGE_PLUGIN_NAME", &plugin.name)
         .env("FORGE_PLUGIN_DIR", &plugin.dir)
         .env("FORGE_PLUGIN_STATE", state_dir)
         .stdin(Stdio::null())
