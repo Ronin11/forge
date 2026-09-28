@@ -313,7 +313,7 @@ pub(super) async fn guarded_claude(l: Launch<'_>) -> Result<Outcome> {
     let after = WriteBack::of(&l, &crate::login::CLAUDE);
     let out = read_stderr(super::run_claude(l).await);
     if dir.is_some() {
-        after.run();
+        after.run().await;
     }
     out
 }
@@ -340,15 +340,16 @@ impl<'a> WriteBack<'a> {
         }
     }
 
-    pub(super) fn run(self) {
+    pub(super) async fn run(self) {
         let s = self.shape;
         let Some(dir) = s.config_dir() else {
             return;
         };
-        if self
-            .sandbox
-            .is_some_and(|sb| sb.write_back_login(s, self.worktree))
-        {
+        let written = match self.sandbox {
+            Some(sb) => sb.write_back_login(s, self.worktree).await,
+            None => false,
+        };
+        if written {
             let prev = dir.join(s.prev());
             let text = format!(
                 "login    a refreshed {} token was written back to the host file; the login it replaced is kept as {} (0600, one copy), to restore by hand if this was wrong",
@@ -378,20 +379,23 @@ async fn login_problem(l: &Launch<'_>, dir: &Path) -> Option<String> {
     })
 }
 
-/// Refresh the login on the host, one launch at a time: hold the login's
-/// lock, take any later pair a sandbox holds (its refresh token is the live
-/// one; probing with the host's dead one would empty the file), and only if
-/// the host file is still near expiry, run a one-token probe through the
-/// attempts' own lean argv so the CLI refreshes it. The file as it stands.
+/// Refresh the login on the host, one launch at a time: under the probe's
+/// lock, which a seed waits on, take the login's own lock just long enough
+/// to take any later pair a sandbox holds (its refresh token is the live
+/// one; probing with the host's dead one would empty the file) and read the
+/// host file; and only if it is still near expiry, run a one-token probe
+/// through the attempts' own lean argv so the CLI refreshes it. The login's
+/// lock is never held across the probe, whose wait is up to two minutes
+/// (docs/REVIEW-4.md #1.10). The file as it stands.
 async fn refresh_on_host(l: &Launch<'_>, dir: &Path, window: i64) -> crate::login::Host {
-    let owned = dir.to_path_buf();
-    let _lock = tokio::task::spawn_blocking(move || crate::login::lock(&owned))
-        .await
-        .ok();
-    if let Some(sb) = l.sandbox {
-        sb.write_back_siblings_locked(l.worktree);
-    }
-    let state = crate::login::CLAUDE.host_state(dir);
+    let _probing = crate::login::probe_lock(dir).await;
+    let state = {
+        let _lock = crate::login::lock(dir).await;
+        if let Some(sb) = l.sandbox {
+            sb.write_back_siblings_locked(l.worktree);
+        }
+        crate::login::CLAUDE.host_state(dir)
+    };
     match state {
         crate::login::Host::Usable(c) if c.near_expiry(crate::unix_now() * 1000, window) => {
             probe(l).await;

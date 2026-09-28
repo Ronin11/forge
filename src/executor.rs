@@ -300,6 +300,16 @@ impl Execution {
             }
         }
     }
+    /// What a launch in `path` with `env` does before its `command` is
+    /// built: a bwrap launch seeds its private logins (see
+    /// `Sandbox::prepare`); any other has nothing to prepare.
+    pub async fn prepare(&self, path: &Path, env: &[(String, String)]) {
+        if let Ok(sb) = &self.bwrap
+            && self.backend(path) == Backend::Bwrap
+        {
+            sb.prepare(path, env).await;
+        }
+    }
     /// Fails, naming the socket, when a bwrap launch in `path` would bind
     /// a proxy socket that is not there.
     pub fn check_socket(&self, path: &Path) -> anyhow::Result<()> {
@@ -311,9 +321,11 @@ impl Execution {
     /// After a launch in `path`: write the attempt's private login back over
     /// the host file if it refreshed it (see `login`). Only a bwrap launch
     /// has a private copy; whether a write-back happened.
-    pub fn write_back_login(&self, shape: &crate::login::Shape, path: &Path) -> bool {
+    pub async fn write_back_login(&self, shape: &crate::login::Shape, path: &Path) -> bool {
         match &self.bwrap {
-            Ok(sb) if self.backend(path) == Backend::Bwrap => sb.write_back_login(shape, path),
+            Ok(sb) if self.backend(path) == Backend::Bwrap => {
+                sb.write_back_login(shape, path).await
+            }
             _ => false,
         }
     }
