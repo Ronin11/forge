@@ -196,7 +196,15 @@ working `FORGE_HOME` (default `~/.local/share/forge`, the same resolution
    `tests/e2e/init.rs` additionally strips `XDG_RUNTIME_DIR` and
    `DBUS_SESSION_BUS_ADDRESS` from its own no-session test's environment,
    so the suite exercises the print path even when run inside a desktop
-   session where both are set.
+   session where both are set. With a session, each unit is asked
+   `systemctl --user is-enabled` and only what is not enabled is enabled,
+   so a home whose first run had no session is fixed by the next. A
+   changed unit is written and `daemon-reload`ed but not applied to the
+   running process: the step says `restart forge-worker to apply` and
+   names the worker's live PATH when it differs from the unit's. The PATH
+   written is this shell's followed by the entries the unit's existing
+   `Environment=PATH=` has and this shell lacks; `--reset-path` writes
+   this shell's alone.
 6. Ends by running the same checks `forge doctor` reports (against the
    home `forge init` just set up, even with `--home`), so a missing
    `bwrap`, `git` or a `claude` CLI that is not logged in is named on the
