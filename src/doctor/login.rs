@@ -77,6 +77,19 @@ fn file_row(held: Option<Check>) -> Vec<Check> {
     rows
 }
 
+/// The last refresh probe on the host login, and whether it refreshed.
+fn probe_note(p: &login::ProbeRecord, now: i64) -> String {
+    let ago = (now - p.at_ms / 1000).max(0) / 60;
+    if p.refreshed() {
+        format!("last refresh probe {ago}m ago: refreshed")
+    } else {
+        format!(
+            "last refresh probe {ago}m ago: not refreshed, the next not before {}",
+            crate::render::utc(p.next_probe_at(p.expires_after_ms) / 1000)
+        )
+    }
+}
+
 /// The login's expiry and whether the kernel has written a refreshed token
 /// back to the host file lately. FAIL when the file holds an empty token,
 /// which is what every attempt would die on. Only claude's login is needed
@@ -97,8 +110,12 @@ fn login_file(shape: &Shape) -> Vec<Check> {
             _ => "no write-back in the last 8h".to_string(),
         }
     };
-    let row = |status, detail: String, hint: String| check(shape.row, status, detail, hint);
     let claude = std::ptr::eq(shape, &login::CLAUDE);
+    let wrote = match login::last_probe(&dir) {
+        Some(p) if claude => format!("{wrote}; {}", probe_note(&p, now)),
+        _ => wrote,
+    };
+    let row = |status, detail: String, hint: String| check(shape.row, status, detail, hint);
     vec![match shape.host_state(&dir) {
         Host::Missing if claude => row(
             Status::Warn,
