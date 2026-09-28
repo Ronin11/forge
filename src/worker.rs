@@ -348,10 +348,14 @@ fn named(provider: &str, msg: &str) -> String {
 /// will run under, or an arm it would be re-drawn to), when *none* of
 /// them can be claimed right now; `None` as soon as one candidate can run
 /// under a provider that is not held, since the caller can claim it
-/// instead of waiting. The message names the provider.
+/// instead of waiting. The message names the provider and how many
+/// tasks wait on it: those outside `held_initiatives`, whose own hold is
+/// announced on its own (`new_holds`).
 fn tightest_provider_hold(f: &Forge, held_initiatives: &[i64]) -> Result<Option<(String, i64)>> {
     let mut tightest: Option<(String, i64)> = None;
-    for t in f.store.queued_unblocked(held_initiatives)? {
+    let queued = f.store.queued_unblocked(held_initiatives)?;
+    let n = queued.len();
+    for t in queued {
         match route_candidate(f, &t) {
             None | Some(crate::redraw::Routing::Free) => return Ok(None),
             Some(crate::redraw::Routing::Redrawn { .. }) => return Ok(None),
@@ -366,7 +370,7 @@ fn tightest_provider_hold(f: &Forge, held_initiatives: &[i64]) -> Result<Option<
             }
         }
     }
-    Ok(tightest)
+    Ok(tightest.map(|(msg, until)| (format!("{msg}; holding, {n} task(s) queued"), until)))
 }
 
 fn p_config(f: &Forge) -> String {
@@ -932,11 +936,8 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     // every queued candidate's own provider is at its cap.
                     // Only the latter is a hold worth waiting out.
                     if let Some((msg, until)) = tightest_provider_hold(&f, &held)? {
-                        // Only what the window holds: an initiative's own hold was
-                        // announced on its own (`new_holds`).
-                        let queued = f.store.queued_unblocked(&held)?.len();
-                        if queued > 0 && hold_until != Some(until) {
-                            eprintln!("{msg}; holding, {queued} task(s) queued");
+                        if hold_until != Some(until) {
+                            eprintln!("{msg}");
                         }
                         hold_until = Some(until);
                     } else {
