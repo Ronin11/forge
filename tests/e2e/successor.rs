@@ -142,10 +142,8 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
         std::fs::read_link(root.join("current")).unwrap(),
         std::path::Path::new("releases/new")
     );
-    assert!(
-        std::fs::symlink_metadata(root.join("staged")).is_err(),
-        "the successor took over and left staged behind"
-    );
+    let staged = std::fs::symlink_metadata(root.join("staged"));
+    assert!(staged.is_err(), "the successor left staged behind");
     let calls = std::fs::read_to_string(&calls).unwrap_or_default();
     assert!(
         calls.contains("systemctl --user restart --no-block forge-web")
