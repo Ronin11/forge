@@ -206,7 +206,6 @@ impl Forge {
                 paths.home.clone(),
                 extra_ro,
                 Vec::new(),
-                crate::egress::model_rules(&home.providers),
             )?
         } else {
             None
@@ -271,8 +270,19 @@ impl Forge {
     }
 
     /// Tell the sandbox what a repository's config lets attempts in
-    /// `worktree` reach besides the model endpoint. No-op unsandboxed.
-    pub fn allow_egress(&self, worktree: &Path, cfg: &config::Config, trust: crate::store::Trust) {
+    /// `worktree` reach besides the model endpoint, and the model endpoint
+    /// itself: `provider`'s alone, never every configured provider's.
+    /// `provider` is `None` where no single attempt's step runs in
+    /// `worktree` (an integration directory checks are run in, merging
+    /// several tasks), so it gets no model endpoint at all. No-op
+    /// unsandboxed.
+    pub fn allow_egress(
+        &self,
+        worktree: &Path,
+        cfg: &config::Config,
+        trust: crate::store::Trust,
+        provider: Option<&str>,
+    ) {
         if let Some(sandbox) = &self.sandbox {
             sandbox.configure(worktree, &cfg.execution);
             // A level whose egress is `model` reaches the model endpoints
@@ -281,6 +291,11 @@ impl Forge {
                 config::TrustEgress::Model => sandbox.set_egress(worktree, &[]),
                 config::TrustEgress::Declared => sandbox.set_egress(worktree, &cfg.egress),
             }
+            let hosts = provider
+                .and_then(|name| self.providers.get(name))
+                .map(crate::egress::provider_rules)
+                .unwrap_or_default();
+            sandbox.set_provider_hosts(worktree, &hosts);
         }
     }
 

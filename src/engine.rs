@@ -227,7 +227,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     // Checks and rules come from the trusted base, never from the branch under test.
     let mut cfg = config::load_at(&repo, &wt, &t.base_sha).await.task()?;
     cfg.protected = f.effective_protected(&t, &cfg.protected);
-    f.allow_egress(&wt, &cfg, t.trust);
+    f.allow_egress(&wt, &cfg, t.trust, Some(&t.provider));
 
     announce(&f, &t, &resolved, &wt);
 
@@ -1495,7 +1495,7 @@ async fn try_land(args: TryLand<'_>) -> Result<Option<End>, Fault> {
                 // The base moved: its checks and rules are the ones that apply now.
                 *cfg = config::load_at(repo, wt, &t.base_sha).await.task()?;
                 cfg.protected = f.effective_protected(t, &cfg.protected);
-                f.allow_egress(wt, cfg, t.trust);
+                f.allow_egress(wt, cfg, t.trust, Some(&t.provider));
                 run.rewind(c_idx, feedback);
                 return Ok(None);
             }

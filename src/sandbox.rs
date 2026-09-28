@@ -82,9 +82,6 @@ pub struct Sandbox {
     /// The operator-warmed dependency cache, read-only (`[sandbox]
     /// dependency_cache`).
     dependency_cache: Option<PathBuf>,
-    /// The model endpoints every attempt may reach, whatever its repository
-    /// declares (see `egress::model_rules`).
-    model_hosts: Vec<Rule>,
     /// The forge binary, bound in so the wrapper can run its egress relay.
     relay_exe: PathBuf,
     /// The proxies this process runs, one per distinct policy.
@@ -93,6 +90,11 @@ pub struct Sandbox {
     /// (see `set_egress`); a worktree not in here gets the model endpoints
     /// alone.
     declared: Mutex<BTreeMap<PathBuf, Vec<Rule>>>,
+    /// The model endpoints of the provider each worktree's step resolved
+    /// (see `set_provider_hosts`), by the worktree its attempts run in; a
+    /// worktree not in here gets no model endpoint at all (nothing has
+    /// resolved a provider for it yet).
+    provider_hosts: Mutex<BTreeMap<PathBuf, Vec<Rule>>>,
     /// A repository's own cache directory (`FORGE_CACHE_DIR`), by the
     /// worktree its attempts run in (see `set_cache_dir`); a worktree not
     /// in here gets no cache bind at all. Keyed per repository so one
@@ -302,7 +304,6 @@ impl Sandbox {
         forge_home: PathBuf,
         extra_ro: Vec<PathBuf>,
         extra_rw: Vec<PathBuf>,
-        model_hosts: Vec<Rule>,
     ) -> Result<Sandbox> {
         let Ok((bwrap, _)) = resolve_binary("bwrap") else {
             bail!(
@@ -375,10 +376,10 @@ impl Sandbox {
             extra_rw: paths.rw.iter().cloned().chain(extra_rw).collect(),
             overlay,
             dependency_cache: paths.dependency_cache.clone(),
-            model_hosts,
             relay_exe,
             proxies: Arc::new(Proxies::default()),
             declared: Mutex::new(BTreeMap::new()),
+            provider_hosts: Mutex::new(BTreeMap::new()),
             caches: Mutex::new(BTreeMap::new()),
             granted: Mutex::new(BTreeMap::new()),
         })
@@ -400,6 +401,17 @@ impl Sandbox {
     /// trusted base. Called again whenever that config is re-read.
     pub fn set_egress(&self, worktree: &Path, rules: &[Rule]) {
         self.declared
+            .lock()
+            .unwrap()
+            .insert(worktree.to_path_buf(), rules.to_vec());
+    }
+
+    /// Declare the model endpoints attempts running in `worktree` may
+    /// reach: the provider its step resolved (see `egress::provider_rules`),
+    /// never every configured provider's. Called beside `set_egress`
+    /// wherever `ctx::Forge::allow_egress` is.
+    pub fn set_provider_hosts(&self, worktree: &Path, rules: &[Rule]) {
+        self.provider_hosts
             .lock()
             .unwrap()
             .insert(worktree.to_path_buf(), rules.to_vec());
@@ -430,11 +442,17 @@ impl Sandbox {
     }
 
     /// Everything a command in `worktree` (or a directory below it) may
-    /// reach: the model endpoints, what its repository declared and what
-    /// the environment policy granted it.
+    /// reach: the model endpoints of the provider its step resolved, what
+    /// its repository declared and what the environment policy granted it.
     pub fn policy_for(&self, worktree: &Path) -> Policy {
+        let provider_hosts = self.provider_hosts.lock().unwrap();
         let declared = self.declared.lock().unwrap();
         let granted = self.granted.lock().unwrap();
+        let model = worktree
+            .ancestors()
+            .find_map(|d| provider_hosts.get(d))
+            .into_iter()
+            .flatten();
         let extra = worktree
             .ancestors()
             .find_map(|d| declared.get(d))
@@ -445,7 +463,7 @@ impl Sandbox {
             .find_map(|d| granted.get(d))
             .into_iter()
             .flat_map(|g| g.hosts.iter());
-        Policy::new(self.model_hosts.iter().chain(extra).chain(more).cloned())
+        Policy::new(model.chain(extra).chain(more).cloned())
     }
 
     /// Declare where a command in `worktree` (or a directory below it) may
@@ -517,10 +535,10 @@ impl Sandbox {
             extra_rw: vec![],
             overlay: true,
             dependency_cache: None,
-            model_hosts: vec![],
             relay_exe: PathBuf::from("/nonexistent/forge"),
             proxies: Arc::new(Proxies::default()),
             declared: Mutex::new(BTreeMap::new()),
+            provider_hosts: Mutex::new(BTreeMap::new()),
             caches: Mutex::new(BTreeMap::new()),
             granted: Mutex::new(BTreeMap::new()),
         }
@@ -862,13 +880,14 @@ mod tests {
             extra_rw: vec![npm_cache.clone()],
             overlay: true,
             dependency_cache: None,
-            model_hosts: vec![Rule::parse("api.example.com").unwrap()],
             relay_exe: PathBuf::from("/opt/forge/forge"),
             proxies: Arc::new(Proxies::default()),
             declared: Mutex::new(BTreeMap::new()),
+            provider_hosts: Mutex::new(BTreeMap::new()),
             caches: Mutex::new(BTreeMap::new()),
             granted: Mutex::new(BTreeMap::new()),
         };
+        sandbox.set_provider_hosts(&worktree, &[Rule::parse("api.example.com").unwrap()]);
         sandbox.set_cache_dir(&worktree, repo_cache.clone());
         prepared(&sandbox, &worktree, &[]);
         let cmd = sandbox.command_for_worktree(&worktree, &["true".to_string()], &[]);
@@ -1088,8 +1107,11 @@ mod tests {
         assert!(args.iter().any(|a| a == "--overlay-src"));
     }
 
+    /// `model` is the one host `/work/1` (the worktree most of these tests
+    /// use) resolves to via `set_provider_hosts`; a worktree this helper's
+    /// caller never names gets none.
     fn test_sandbox(model: &str) -> Sandbox {
-        Sandbox {
+        let sb = Sandbox {
             bwrap: PathBuf::from("/usr/bin/bwrap"),
             home: PathBuf::from("/home/attempt"),
             agent_dirs: vec![],
@@ -1102,13 +1124,15 @@ mod tests {
             extra_rw: vec![],
             overlay: true,
             dependency_cache: None,
-            model_hosts: vec![Rule::parse(model).unwrap()],
             relay_exe: PathBuf::from("/opt/forge/forge"),
             proxies: Arc::new(Proxies::default()),
             declared: Mutex::new(BTreeMap::new()),
+            provider_hosts: Mutex::new(BTreeMap::new()),
             caches: Mutex::new(BTreeMap::new()),
             granted: Mutex::new(BTreeMap::new()),
-        }
+        };
+        sb.set_provider_hosts(Path::new("/work/1"), &[Rule::parse(model).unwrap()]);
+        sb
     }
 
     #[tokio::test]
@@ -1238,12 +1262,64 @@ mod tests {
             names(&sb.policy_for(&wt)),
             ["api.example.com", "registry.npmjs.org"]
         );
-        // A directory below the worktree shares its policy; a sibling does not.
+        // A directory below the worktree shares its policy; a sibling does
+        // not, and gets no model endpoint at all unless its own provider
+        // resolved one for it.
         assert_eq!(names(&sb.policy_for(&wt.join("scratch"))).len(), 2);
-        assert_eq!(
-            names(&sb.policy_for(Path::new("/work/2"))),
-            ["api.example.com"]
+        assert!(names(&sb.policy_for(Path::new("/work/2"))).is_empty());
+    }
+
+    #[test]
+    fn a_claude_worktrees_policy_has_no_openai_host_when_a_codex_provider_exists() {
+        let mut providers = BTreeMap::new();
+        providers.insert("anthropic".to_string(), crate::agent::Provider::default());
+        providers.insert(
+            "codex".to_string(),
+            crate::agent::Provider {
+                runner: crate::agent::Runner::CodexCli,
+                ..crate::agent::Provider::default()
+            },
         );
+        let sb = test_sandbox("api.example.com");
+        let wt = PathBuf::from("/work/claude");
+        let claude = providers.get("anthropic").unwrap();
+        sb.set_provider_hosts(&wt, &egress::provider_rules(claude));
+        let names: Vec<String> = sb
+            .policy_for(&wt)
+            .rules()
+            .iter()
+            .map(|r| r.to_string())
+            .collect();
+        assert!(names.iter().any(|h| h.contains("anthropic")), "{names:?}");
+        assert!(!names.iter().any(|h| h.contains("openai")), "{names:?}");
+    }
+
+    #[test]
+    fn a_chat_providers_url_is_in_no_sandbox_policy() {
+        let mut providers = BTreeMap::new();
+        providers.insert("anthropic".to_string(), crate::agent::Provider::default());
+        providers.insert(
+            "chat".to_string(),
+            crate::agent::Provider {
+                runner: crate::agent::Runner::Chat,
+                base_url: Some("http://chat.lan:8080/v1".into()),
+                ..crate::agent::Provider::default()
+            },
+        );
+        let sb = test_sandbox("api.example.com");
+        for (name, wt) in [("anthropic", "/work/claude"), ("chat", "/work/chat")] {
+            let p = providers.get(name).unwrap();
+            sb.set_provider_hosts(Path::new(wt), &egress::provider_rules(p));
+        }
+        for wt in ["/work/claude", "/work/chat", "/work/1"] {
+            let names: Vec<String> = sb
+                .policy_for(Path::new(wt))
+                .rules()
+                .iter()
+                .map(|r| r.to_string())
+                .collect();
+            assert!(!names.iter().any(|h| h.contains("chat.lan")), "{names:?}");
+        }
     }
 
     #[tokio::test]

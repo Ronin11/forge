@@ -774,6 +774,12 @@ CREATE TABLE job_resolutions (
     "
 ALTER TABLE tasks ADD COLUMN run_json TEXT NOT NULL DEFAULT '';
 ",
+    // The slot count each daemon worker runs with (`forge work --jobs`), so
+    // doctor can say how many of the machine's slots a handoff uses. 0 is a
+    // row written before this column, or by a worker that has not said.
+    "
+ALTER TABLE workers ADD COLUMN slots INTEGER NOT NULL DEFAULT 0;
+",
     // Ask Forge (docs/CHAT.md): a conversation's sessions and turns. A
     // turn's `tool_calls` is the JSON array of the tool calls it made,
     // each with its arguments and result; `cost_usd` counts against the
@@ -800,12 +806,6 @@ CREATE TABLE chat_turns (
 );
 CREATE INDEX chat_turns_session ON chat_turns(session, id);
 CREATE INDEX chat_turns_at ON chat_turns(at);
-",
-    // The slot count each daemon worker runs with (`forge work --jobs`), so
-    // doctor can say how many of the machine's slots a handoff uses. 0 is a
-    // row written before this column, or by a worker that has not said.
-    "
-ALTER TABLE workers ADD COLUMN slots INTEGER NOT NULL DEFAULT 0;
 ",
 ];
 
