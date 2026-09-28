@@ -123,6 +123,9 @@ pub fn retry_request(
         // A retry or a refile keeps the priority of the task it
         // re-queues; it is never drawn or defaulted again.
         priority: Some(t.priority),
+        // A retry re-queues `t` itself, not a task replacing it; the
+        // supersedes link is only for `forge add --supersedes`.
+        supersedes: None,
     }
 }
 

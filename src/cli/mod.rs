@@ -125,6 +125,10 @@ pub struct TaskArgs {
     /// first.
     #[arg(long, value_parser = crate::store::parse_priority)]
     priority: Option<i64>,
+    /// This task replaces an earlier failed or blocked one, which counts
+    /// as handled and whose own dependents wait on this task instead
+    #[arg(long)]
+    supersedes: Option<i64>,
     /// Show the agents the journal of earlier attempts, overriding the
     /// operator's control-arm fraction for this task
     #[arg(long, conflicts_with = "no_journal")]
@@ -794,6 +798,7 @@ impl From<&TaskArgs> for crate::queue::TaskRequest {
             resume_on_failure: a.resume_on_failure,
             trust: a.trust.clone(),
             blocked: None,
+            supersedes: a.supersedes,
         }
     }
 }

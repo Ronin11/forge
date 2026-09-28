@@ -32,25 +32,6 @@ impl TaskEdit {
     }
 }
 
-/// Whether `dep` waits, directly or through other tasks, on `id`: the
-/// cycle `--after` must not close.
-fn waits_on(f: &Forge, dep: i64, id: i64) -> Result<bool> {
-    let mut seen = std::collections::BTreeSet::new();
-    let mut todo = vec![dep];
-    while let Some(next) = todo.pop() {
-        if next == id {
-            return Ok(true);
-        }
-        if !seen.insert(next) {
-            continue;
-        }
-        if let Some(t) = f.store.task(next)? {
-            todo.extend(t.after);
-        }
-    }
-    Ok(false)
-}
-
 /// The dependencies `--after` sets on task `id`, deduplicated in order:
 /// each must fit as at enqueue (`dependency_fits`) and must not be this
 /// task or wait on it.
@@ -108,8 +89,11 @@ fn apply_priority(old: i64, p: i64, changes: &mut Vec<String>, up: &mut crate::s
 /// something to verify the work. The change is a decision row on the
 /// task naming each field's old and new value (text by length and
 /// content hash), retry-linked to the task, so `forge decisions` shows
-/// it beside an operator's answer. State is untouched: a blocked task
-/// stays blocked. Returns the changes as recorded.
+/// it beside an operator's answer. State is otherwise untouched, except
+/// that a blocked task whose `--after` now names only tasks that are
+/// queued, running or landed moves back to `queued`
+/// (`Store::reopen_blocked_if_ready`) instead of staying blocked until
+/// retried by hand. Returns the changes as recorded.
 pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String>> {
     if edit.is_empty() {
         bail!(
@@ -215,6 +199,12 @@ pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String
     }
     if !f.store.set_task_fields(id, &up)? {
         bail!("task {id} changed state before its spec could be set");
+    }
+    if old.state == TaskState::Blocked
+        && let Some(after) = &up.after
+        && f.store.reopen_blocked_if_ready(id, after)?
+    {
+        changes.push("state blocked → queued".into());
     }
     let decision = f.store.insert_decision_by(crate::store::InsertDecisionBy {
         task_id: id,
