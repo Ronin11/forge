@@ -533,7 +533,9 @@ enum Cmd {
     },
     /// The event log as JSON lines: a client's subscription
     Events {
-        /// Generation:offset cursor to start from (a snapshot's events_offset)
+        /// Generation:offset cursor to start from (a snapshot's events_offset).
+        /// With --follow and no --since, resume the subscription named by
+        /// FORGE_PLUGIN_NAME (default "default") after its last delivered line
         #[arg(long)]
         since: Option<String>,
         /// Keep printing as events arrive

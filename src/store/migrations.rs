@@ -713,6 +713,16 @@ ALTER TABLE jobs ADD COLUMN worker_start TEXT;
 ALTER TABLE tasks ADD COLUMN session_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN handoff TEXT NOT NULL DEFAULT '';
 ",
+    // The kernel keeps each event subscriber's place in the log, so a
+    // restarted `forge events --follow` resumes after the last line it
+    // delivered instead of replaying from the start.
+    "
+CREATE TABLE subscriptions (
+  name TEXT PRIMARY KEY,
+  cursor TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs
