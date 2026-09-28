@@ -433,6 +433,8 @@ pub struct TaskEdit {
     pub workflow: Option<String>,
     pub after: Option<Vec<i64>>,
     pub checks: Option<Vec<String>>,
+    /// Route every role of the task to this provider by hand.
+    pub provider: Option<String>,
 }
 
 impl TaskEdit {
@@ -474,7 +476,7 @@ fn waits_on(f: &Forge, dep: i64, id: i64) -> Result<bool> {
 pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String>> {
     if edit.is_empty() {
         bail!(
-            "nothing to set: pass --budget, --max-turns, --timeout-secs, --retries, --text, --text-file, --workflow, --after/--no-after or --check/--no-checks"
+            "nothing to set: pass --budget, --max-turns, --timeout-secs, --retries, --text, --text-file, --workflow, --after/--no-after, --check/--no-checks or --provider"
         );
     }
     if let Some(b) = edit.budget
@@ -531,6 +533,20 @@ pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String
             .filter(|w| crate::render::is_path_like_word(w))
             .count() as i64;
         up.task = Some((text.clone(), text.chars().count() as i64, path_tokens));
+    }
+    if let Some(name) = &edit.provider {
+        f.providers.get(name).with_context(|| {
+            format!("unknown provider {name:?}; see `forge providers` for what is configured")
+        })?;
+        changes.push(format!(
+            "provider {} → {name}",
+            if old.provider.is_empty() {
+                "by role"
+            } else {
+                &old.provider
+            }
+        ));
+        up.provider = Some(name.clone());
     }
     let repo = PathBuf::from(&old.repo);
     let cfg = config::load_working(&repo).await?;
@@ -1112,6 +1128,7 @@ pub struct RetryOverrides {
     pub max_turns: Option<u32>,
     pub timeout_secs: Option<u32>,
     pub workflow: Option<String>,
+    pub provider: Option<String>,
 }
 
 impl RetryOverrides {
@@ -1123,6 +1140,7 @@ impl RetryOverrides {
             max_turns: None,
             timeout_secs: None,
             workflow: None,
+            provider: None,
         }
     }
 }
@@ -1145,7 +1163,11 @@ pub fn retry_request(
         // Empty means the original task named no `--provider` and
         // resolved per role; a retry should resolve the same way, not
         // pin whatever "code" happened to pick at the time.
-        provider: (!t.provider.is_empty()).then(|| t.provider.clone()),
+        provider: o
+            .provider
+            .clone()
+            .filter(|_| first)
+            .or_else(|| (!t.provider.is_empty()).then(|| t.provider.clone())),
         max_turns: if first {
             o.max_turns.unwrap_or(t.max_turns as u32)
         } else {

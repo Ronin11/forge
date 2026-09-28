@@ -263,6 +263,9 @@ enum Cmd {
         /// Run a different workflow
         #[arg(long)]
         workflow: Option<String>,
+        /// Route every role of the new task to this provider (default: as before)
+        #[arg(long)]
+        provider: Option<String>,
     },
     /// Answer a task blocked on a question and re-queue it as a retry
     Answer {
