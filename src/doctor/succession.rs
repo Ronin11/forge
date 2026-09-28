@@ -37,6 +37,43 @@ pub(super) fn check_succession(paths: &Paths, store: &Store) -> Option<Check> {
     ))
 }
 
+/// A stage request nobody is answering: `staged` names a release that is
+/// not `current`, and no worker runs it or is starting on it. Left there it
+/// starts a successor at the next worker start, flipping back whatever an
+/// upgrade or an operator made live since.
+pub(super) fn check_staged(paths: &Paths, store: &Store) -> Option<Check> {
+    let root = crate::release::root(&paths.home);
+    let staged = crate::release::pointed_at(&root, "staged")?;
+    let current = crate::release::pointed_at(&root, "current");
+    if current.as_deref() == Some(staged.as_str()) {
+        return None;
+    }
+    let running = store
+        .live_workers(worker::pid_alive)
+        .is_ok_and(|live| live.iter().any(|w| w.version == staged));
+    let starting = crate::successor::starting(&root).is_some_and(|(_, r)| r == staged);
+    if running || starting {
+        return None;
+    }
+    let overtaken = if crate::release::staged_overtaken(&root) {
+        " (overtaken by a later flip of current: no worker starts it)"
+    } else {
+        ""
+    };
+    Some(check(
+        "worker",
+        Status::Fail,
+        format!(
+            "release {staged} staged but current is {} and no successor is starting{overtaken}",
+            current.as_deref().unwrap_or("nothing")
+        ),
+        format!(
+            "if {staged} should not go live, rm {}; otherwise start the worker (systemctl --user start forge-worker) so a successor takes it over",
+            root.join("staged").display()
+        ),
+    ))
+}
+
 /// `; N of M slots: predecessor a, successor b` for a handoff in flight,
 /// WARN when the two hold more than the machine's M. Nothing is said when
 /// no worker recorded its slot count.

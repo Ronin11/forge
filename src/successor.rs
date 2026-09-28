@@ -92,6 +92,7 @@ impl Succession {
                 take_over(f, &root, &version);
             } else {
                 settle_started(&root, &version);
+                acknowledge_staged(&root, &version);
             }
             notify(&format!("MAINPID={pid}\nREADY=1"));
             write_capability(&root, pid);
@@ -142,6 +143,7 @@ impl Succession {
         // again on this tick and is settled on a later one.
         if self.child.is_none() {
             settle_started(&release::root(&f.paths.home), &self.version);
+            acknowledge_staged(&release::root(&f.paths.home), &self.version);
         }
         let newer: Vec<_> = live
             .iter()
@@ -176,7 +178,8 @@ impl Succession {
     }
 
     /// The staged release to start a worker on: not this one, not one that
-    /// already has a live worker or already failed to start.
+    /// already has a live worker or already failed to start, and not one a
+    /// later flip of `current` overtook (`release::staged_overtaken`).
     fn staged_successor(&self, paths: &Paths, live: &[crate::store::WorkerRow]) -> Option<String> {
         let root = release::root(&paths.home);
         let staged = release::pointed_at(&root, "staged")?;
@@ -185,7 +188,8 @@ impl Succession {
             && runnable
             && !self.failed.contains(&staged)
             && failed_release(&root).as_deref() != Some(staged.as_str())
-            && !live.iter().any(|w| w.version == staged))
+            && !live.iter().any(|w| w.version == staged)
+            && !release::staged_overtaken(&root))
         .then_some(staged)
     }
 
@@ -275,6 +279,23 @@ pub fn capable(home: &std::path::Path, store: &crate::store::Store) -> bool {
         || read_capability(&release::root(home)).is_some_and(pid_alive)
 }
 
+/// A worker running the release `staged` names has answered the request:
+/// remove it, so it never outlives the deploy that wrote it. Skipped for
+/// this tick while a release writer holds the lock.
+fn acknowledge_staged(root: &std::path::Path, version: &str) {
+    if release::pointed_at(root, "staged").as_deref() != Some(version) {
+        return;
+    }
+    let Some(lock) = release::try_lock(root) else {
+        return;
+    };
+    match release::acknowledge_staged(&lock, root, version) {
+        Ok(true) => eprintln!("release {version} runs: staged acknowledged and removed"),
+        Ok(false) => {}
+        Err(e) => eprintln!("could not remove staged for release {version}: {e:#}"),
+    }
+}
+
 /// The release recorded in `staged-failed`, if any.
 fn failed_release(root: &std::path::Path) -> Option<String> {
     let text = std::fs::read_to_string(root.join(FAILED)).ok()?;
@@ -300,6 +321,12 @@ fn read_started(root: &std::path::Path) -> Option<(i64, String)> {
     let text = std::fs::read_to_string(root.join(STARTED)).ok()?;
     let mut words = text.split_whitespace();
     Some((words.next()?.parse().ok()?, words.next()?.to_string()))
+}
+
+/// The successor this home's worker started and that is still alive:
+/// `(pid, release)`.
+pub fn starting(root: &std::path::Path) -> Option<(i64, String)> {
+    read_started(root).filter(|(pid, _)| pid_alive(*pid))
 }
 
 /// Record `release` as one whose successor died, and retire `staged` when
@@ -494,7 +521,8 @@ fn restart_all(units: &[String], tries: u32) -> Vec<(String, Unit)> {
         .collect()
 }
 
-/// The successor is live: `current` moves to its release and the units
+/// The successor is live: `staged` is acknowledged (removed while it names
+/// this release), `current` moves to its release and the units
 /// the self deploy target declares restart on it, each reported on its own.
 /// A unit that does not exist here is a note; one that does not come back
 /// active in the bounded wait puts `current` back and restarts the units
@@ -508,6 +536,9 @@ fn take_over(f: &Forge, root: &std::path::Path, version: &str) {
             return;
         }
     };
+    if let Err(e) = release::acknowledge_staged(&lock, root, version) {
+        eprintln!("could not remove staged for release {version}: {e:#}");
+    }
     if release::pointed_at(root, "current").as_deref() == Some(version) {
         return;
     }

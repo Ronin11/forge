@@ -266,16 +266,30 @@ fn local_bin_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/bin"))
 }
 
+/// The binaries of `release::BINS` a release adopted from `dir` needs but
+/// `dir` lacks: every one but `forge-test`, which `deploy-self` too treats
+/// as optional.
+fn missing_release_bins(dir: &Path) -> Vec<&'static str> {
+    release::BINS
+        .iter()
+        .copied()
+        .filter(|b| *b != "forge-test" && !dir.join(b).is_file())
+        .collect()
+}
+
 /// `--relink`: move the running install onto the release layout — copy the
-/// running binaries into `releases/<commit>/` and point `current` at it,
-/// unless `current` already exists. Never touches a live release.
+/// running binaries into `releases/<full commit>/` (the id `deploy-self`
+/// gives the same commit) and point `current` at it, unless `current`
+/// already exists. Refuses a directory missing any release binary, so a
+/// fresh `forge` beside stale siblings never becomes a release. Never
+/// touches a live release.
 fn adopt_running_binaries(home: &Path) -> Result<Vec<StepResult>> {
     let root = release::root(home);
     let exe = crate::binary::without_deleted_suffix(&std::env::current_exe()?);
     let src = exe
         .parent()
         .context("the running binary has no directory")?;
-    let sha = env!("FORGE_GIT_SHA");
+    let sha = env!("FORGE_GIT_SHA_FULL");
     let id = if sha.is_empty() {
         env!("CARGO_PKG_VERSION")
     } else {
@@ -286,7 +300,15 @@ fn adopt_running_binaries(home: &Path) -> Result<Vec<StepResult>> {
     match release::pointed_at(&root, "current") {
         Some(live) => steps.push(step("release", false, format!("current is already {live}"))),
         None => {
+            let missing = missing_release_bins(src);
+            anyhow::ensure!(
+                missing.is_empty(),
+                "--relink: {} lacks {}; build the whole workspace (cargo build --release --workspace) and run its forge",
+                src.display(),
+                missing.join(", ")
+            );
             let made = release::install(&lock, &root, src, id)?;
+            release::drop_staged(&lock, &root)?;
             release::flip(&lock, &root, id)?;
             let detail = format!(
                 "copied {} into {} and pointed {} at it{}",
@@ -444,5 +466,19 @@ mod tests {
             )
         );
         assert!(!home.exists());
+    }
+
+    #[test]
+    fn a_directory_with_only_forge_is_missing_every_other_release_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("forge"), "").unwrap();
+        assert_eq!(
+            missing_release_bins(dir.path()),
+            ["forge-web", "forge-portal", "forge-repomap", "forge-tui"]
+        );
+        for b in release::BINS.iter().filter(|b| **b != "forge-test") {
+            std::fs::write(dir.path().join(b), "").unwrap();
+        }
+        assert!(missing_release_bins(dir.path()).is_empty());
     }
 }

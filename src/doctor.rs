@@ -595,6 +595,9 @@ fn check_worker(paths: &Paths, store: &Store) -> Vec<Check> {
     if let Some(c) = check_succession(paths, store) {
         return vec![c];
     }
+    if let Some(c) = succession::check_staged(paths, store) {
+        return vec![c];
+    }
     let Some(w) = worker::worker_status(paths) else {
         return Vec::new();
     };

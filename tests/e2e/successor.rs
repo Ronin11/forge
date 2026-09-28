@@ -9,7 +9,7 @@ use std::time::Duration;
 
 /// Kills the successor, which runs in its own process group, whatever
 /// happens to the test.
-struct Reap(std::path::PathBuf);
+pub struct Reap(pub std::path::PathBuf);
 
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -142,6 +142,8 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
         std::fs::read_link(root.join("current")).unwrap(),
         std::path::Path::new("releases/new")
     );
+    let staged = std::fs::symlink_metadata(root.join("staged"));
+    assert!(staged.is_err(), "the successor left staged behind");
     let calls = std::fs::read_to_string(&calls).unwrap_or_default();
     assert!(
         calls.contains("systemctl --user restart --no-block forge-web")
