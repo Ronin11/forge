@@ -87,7 +87,14 @@ who holds the pointer: **the store and every running binary agree.**
   draining worker listed beside it in the unit's cgroup. Once it has
   sent that, a worker writes its pid to `FORGE_HOME/bin/successor-capable`;
   the old worker exits (0) only once that file names its successor, so
-  the unit is active on the new pid with no stop job. Restarting the
+  the unit is active on the new pid with no stop job. A worker that
+  starts a successor records `<pid> <release>` in `bin/successor-started`;
+  a successor that dies after claiming (the old worker has exited by
+  then) is found there by the worker `Restart=on-failure` brings back on
+  `current`: pid dead and `current` never moved to that release, so it
+  writes `bin/staged-failed` (`<release> <unix time>`), retires `staged`
+  and does not start that release again. Staging a release anew clears
+  the record. Restarting the
   unit instead would stop the old worker before the new one claimed, which
   is the wait this removes; worse, a restart queued alongside a successor
   (2026-09-26) sent SIGTERM to the old pid only and sat `deactivating`

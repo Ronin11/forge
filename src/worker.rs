@@ -522,7 +522,9 @@ fn event_project(f: &Forge, ev: &serde_json::Value) -> Option<String> {
 /// then the schedule and event triggers over what it resolved. A worker
 /// that is superseded or stopping fires none of them: its older code would
 /// resolve workflows, queue jobs beside the successor and move the shared
-/// event cursor. Whether the ticks ran.
+/// event cursor. Each tick is its own step: one that fails is logged and
+/// the others still run, so a tick that fails every pass (an event log it
+/// cannot read) never keeps the pass from claiming. Whether the ticks ran.
 async fn run_ticks(
     f: &Forge,
     refusals: &mut RefusalLog,
@@ -532,9 +534,16 @@ async fn run_ticks(
     if superseded || stopping {
         return Ok(false);
     }
-    let runs = tick_run_workflows(f).await?;
-    schedule_tick(f, &runs, refusals).await?;
-    event_tick(f, &runs).await?;
+    let runs = tick_run_workflows(f).await.unwrap_or_else(|e| {
+        eprintln!("worker tick failed (workflows); continuing: {e:#}");
+        Vec::new()
+    });
+    if let Err(e) = schedule_tick(f, &runs, refusals).await {
+        eprintln!("worker tick failed (schedule); continuing: {e:#}");
+    }
+    if let Err(e) = event_tick(f, &runs).await {
+        eprintln!("worker tick failed (event); continuing: {e:#}");
+    }
     Ok(true)
 }
 
@@ -1535,6 +1544,19 @@ mod tests {
         }
         assert!(run_ticks(&f, &mut log, false, false).await.unwrap());
         assert!(f.store.event_cursor("demo", "on-done").unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_failing_event_tick_does_not_end_the_pass() {
+        let (_dir, f) = message_fixture(&[("on-done", "on = \"event\"\ntype = \"task_done\"")]);
+        // A directory where the log should be: the event tick errors.
+        let log_path = f.paths.home.join("events.jsonl");
+        let _ = std::fs::remove_file(&log_path);
+        std::fs::create_dir_all(&log_path).unwrap();
+        let runs = tick_run_workflows(&f).await.unwrap();
+        assert!(event_tick(&f, &runs).await.is_err());
+        let mut refusals = RefusalLog::default();
+        assert!(run_ticks(&f, &mut refusals, false, false).await.unwrap());
     }
 
     #[tokio::test]
