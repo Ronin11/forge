@@ -94,7 +94,14 @@ who holds the pointer: **the store and every running binary agree.**
   `current`: pid dead and `current` never moved to that release, so it
   writes `bin/staged-failed` (`<release> <unix time>`), retires `staged`
   and does not start that release again. Staging a release anew clears
-  the record. Restarting the
+  the record. `staged` is a request that is acknowledged: the successor
+  removes it when it takes over, and a worker that finds it naming the
+  release it runs removes it too, so it never outlives the deploy that
+  wrote it. Every other flip of `current` (`forge upgrade`, `forge init`)
+  drops `staged` first, and a worker ignores a `staged` that names
+  `previous` or predates the last flip of `current` (a hand `ln -sfn` of
+  `current` back to `previous`): an upgrade or an emergency rollback is
+  never undone by a successor on the older release (2026-09-28). Restarting the
   unit instead would stop the old worker before the new one claimed, which
   is the wait this removes; worse, a restart queued alongside a successor
   (2026-09-26) sent SIGTERM to the old pid only and sat `deactivating`
@@ -133,8 +140,16 @@ who holds the pointer: **the store and every running binary agree.**
   worker restart (and its 40-minute drain) it took on 2026-09-25.
 - **Doctor tells the truth about it.** Built: the worker row reads
   "release <id> staged; successor pid N claiming; M attempts draining on
-  <old id>" while two versions are live, instead of "runs a binary rebuilt
-  since it started" (still shown for a worker that has no successor).
+  <old id>; N of M slots: predecessor a, successor b" while two versions
+  are live, instead of "runs a binary rebuilt since it started" (still
+  shown for a worker that has no successor). The row WARNs when a plus b
+  exceeds M. It FAILs when `staged` names a release that is not `current`
+  and no worker runs it or is starting on it: remove `staged`, or start
+  the worker so a successor takes it over.
+- **Slots are one budget per machine.** Each worker records its `--jobs`
+  in the `workers` table, and a successor claims `jobs` less the attempts
+  the other live workers still run, re-read every pass, so a draining
+  predecessor's attempts are not added to the successor's full count.
 
 Not a daemon, and not containers: the binary has nothing to isolate
 (SQLite and TLS are bundled) and everything a container would separate
@@ -375,6 +390,21 @@ post-update hook mirrors `main` and `v*` tags to GitHub, so the release
 builds from there without a hand push. `forge upgrade
 https://github.com/Ronin11/forge/releases/download/v<version>/forge-<version>-<target>.tar.gz`
 installs it on another machine.
+
+The hook is `deploy/post-update.mirror`, reviewed in this repository.
+`forge init --mirror <remote>` (a remote name or URL, e.g.
+`git@github.com:Ronin11/forge.git`) installs it as `hooks/post-update` in
+the bare origin of every registered repository whose push remote is a bare
+repository on this machine, keeps a different hook already there once as
+`post-update.before-forge`, and stores the target as the bare repository's
+`git config forge.mirror`; re-run it after editing the file. The hook
+mirrors by explicit refspec only (`+refs/heads/main` and
+`refs/tags/v*`, tags never forced, nothing deleted), and only when the push
+touched one of them. The mirror push runs in the background with its
+output in the bare repository's `mirror.log` (trimmed past 1 MiB) and is
+bounded by `timeout` (120 s), and the hook always exits 0: an unreachable
+or hung GitHub never fails or holds open a landing's push, and a missed
+mirror is caught up by the next push to `main` or a tag.
 
 
 ### When the worker dies

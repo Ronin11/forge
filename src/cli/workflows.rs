@@ -668,20 +668,24 @@ async fn refresh_workflows(
     let files: Vec<String> = shadows.iter().map(|s| s.file.clone()).collect();
     check_refresh_flags(&take_builtin, &keep, &files)?;
     let mut refused = Vec::new();
+    let mut unremoved = Vec::new();
     for s in shadows {
         let decided = match s.origin {
             Origin::StaleSeed => Some(true),
             Origin::OperatorEdit => decision(&take_builtin, &keep, &s.file),
         };
         match decided {
-            Some(true) => {
-                shadow::remove(&dir, &s.file).await?;
-                out!(
+            Some(true) => match shadow::remove(&dir, &s.file).await {
+                Ok(()) => out!(
                     "removed {} ({}); the built-in applies",
                     s.file,
                     s.origin.as_str()
-                );
-            }
+                ),
+                Err(e) => {
+                    out!("kept {} ({}): {e:#}", s.file, s.origin.as_str());
+                    unremoved.push(s.file);
+                }
+            },
             Some(false) => out!("kept {} (operator edit)", s.file),
             None => {
                 match &s.diff {
@@ -701,6 +705,12 @@ async fn refresh_workflows(
                 refused.push(s.file);
             }
         }
+    }
+    if !unremoved.is_empty() {
+        bail!(
+            "{} could not be removed (untracked or changed since its last commit)",
+            unremoved.join(", ")
+        );
     }
     if !refused.is_empty() {
         bail!(

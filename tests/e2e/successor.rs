@@ -9,7 +9,7 @@ use std::time::Duration;
 
 /// Kills the successor, which runs in its own process group, whatever
 /// happens to the test.
-struct Reap(std::path::PathBuf);
+pub struct Reap(pub std::path::PathBuf);
 
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -88,7 +88,7 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
     )
     .env("PATH", &path)
     .env("SUCC_CALLS_LOG", &calls)
-    .args(["work", "--poll", "1"]);
+    .args(["work", "--jobs", "2", "--poll", "1"]);
     let mut old = Worker::spawn(&mut cmd);
     let _reap = Reap(e.home.clone());
     assert!(
@@ -127,7 +127,8 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
     assert!(
         row.contains("release new staged; successor pid")
             && row.contains(&format!("{new_pid} claiming"))
-            && row.contains("1 attempts draining on old"),
+            && row.contains("1 attempts draining on old")
+            && row.contains("2 of 2 slots: predecessor 1, successor 1"),
         "{out}"
     );
 
@@ -141,6 +142,8 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
         std::fs::read_link(root.join("current")).unwrap(),
         std::path::Path::new("releases/new")
     );
+    let staged = std::fs::symlink_metadata(root.join("staged"));
+    assert!(staged.is_err(), "the successor left staged behind");
     let calls = std::fs::read_to_string(&calls).unwrap_or_default();
     assert!(
         calls.contains("systemctl --user restart --no-block forge-web")
@@ -160,6 +163,111 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
         )
         .unwrap();
     assert_eq!(claimed, 2);
+}
+
+/// Running tasks by holder: (worker pid, how many it runs), in one read so
+/// the two sides of a sum come from the same moment.
+fn running_by_worker(e: &Env) -> Vec<(i64, i64)> {
+    let db = e.db();
+    let mut stmt = db
+        .prepare("SELECT worker_pid, COUNT(*) FROM tasks WHERE state='running' GROUP BY worker_pid")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect()
+}
+
+#[test]
+fn a_successor_beside_a_predecessor_holding_two_attempts_claims_at_most_jobs_minus_two() {
+    let e = Env::new();
+    let root = e.home.join("bin");
+    let fakes = e.home.join("fakebin");
+    std::fs::create_dir_all(&fakes).unwrap();
+    let systemctl = fakes.join("systemctl");
+    std::fs::write(
+        &systemctl,
+        "#!/bin/bash\nif [ \"$2\" = is-active ]; then echo active; fi\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &systemctl,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    for id in ["old", "new"] {
+        let dir = root.join("releases").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let built = std::path::Path::new(env!("CARGO_BIN_EXE_forge"))
+            .parent()
+            .unwrap();
+        for bin in ["forge", "forge-repomap"] {
+            std::fs::copy(built.join(bin), dir.join(bin)).unwrap();
+        }
+    }
+    std::os::unix::fs::symlink("releases/old", root.join("current")).unwrap();
+    let path = format!(
+        "{}:{}",
+        fakes.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let mut cmd = std::process::Command::new(root.join("releases/old/forge"));
+    cmd.envs(
+        e.cmd("slow-ok.sh")
+            .get_envs()
+            .filter_map(|(k, v)| Some((k, v?))),
+    )
+    .env("PATH", &path)
+    .args(["work", "--jobs", "3", "--poll", "1"]);
+    e.add(&["--retries", "0"]);
+    e.add(&["--retries", "0"]);
+    let mut old = Worker::spawn(&mut cmd);
+    let _reap = Reap(e.home.clone());
+    let old_pid = i64::from(old.id());
+    let held = |pid: i64| {
+        running_by_worker(&e)
+            .into_iter()
+            .find(|(p, _)| *p == pid)
+            .map_or(0, |(_, n)| n)
+    };
+    assert!(
+        wait_until(|| held(old_pid) == 2, Duration::from_secs(30)),
+        "the old worker never held two attempts: {:?}",
+        running_by_worker(&e)
+    );
+
+    std::os::unix::fs::symlink("releases/new", root.join("staged")).unwrap();
+    for _ in 0..3 {
+        e.add(&["--retries", "0"]);
+    }
+    // While the predecessor holds its two, no read of the store shows the
+    // box past three attempts, or the successor past one.
+    let mut successor_claimed = false;
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < Duration::from_secs(6) {
+        let by = running_by_worker(&e);
+        let old_held = by.iter().find(|(p, _)| *p == old_pid).map_or(0, |b| b.1);
+        let new_held: i64 = by.iter().filter(|(p, _)| *p != old_pid).map(|b| b.1).sum();
+        if old_held < 2 {
+            break;
+        }
+        assert!(
+            new_held <= 1,
+            "the successor took the box past its jobs: {by:?}"
+        );
+        successor_claimed |= new_held == 1;
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        successor_claimed,
+        "the successor claimed nothing: {:?}",
+        running_by_worker(&e)
+    );
+    let out = String::from_utf8_lossy(&e.forge("ok.sh", &["doctor"]).stdout).to_string();
+    let row = out.lines().find(|l| l.contains("worker")).unwrap_or("");
+    assert!(row.contains("of 3 slots: predecessor"), "{out}");
+    assert!(old.wait().success());
 }
 
 #[test]
@@ -463,7 +571,7 @@ fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_o
             .filter_map(|(k, v)| Some((k, v?))),
     )
     .env("PATH", &path)
-    .args(["work", "--poll", "1"]);
+    .args(["work", "--jobs", "2", "--poll", "1"]);
     let mut old = Worker::spawn(&mut cmd);
     let _reap = Reap(e.home.clone());
     assert!(

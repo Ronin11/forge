@@ -970,6 +970,29 @@ mod tests {
     }
 
     #[test]
+    fn apply_contracts_waits_for_an_older_worker_to_exit_then_runs_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        // Undo the contract step the fresh open already applied, to have
+        // one pending again.
+        s.lock()
+            .execute_batch("DELETE FROM contract_steps")
+            .unwrap();
+        let old = s.register_worker(10, "old").unwrap();
+        s.register_worker(11, "new").unwrap();
+        // Both versions are live: an older worker still shares the store,
+        // so the step stays pending.
+        assert_eq!(s.apply_contracts("new", |_| true).unwrap(), 0);
+        // The older worker exits: only "new" is left live, so the pending
+        // steps run.
+        s.stop_worker(old).unwrap();
+        let applied = s.apply_contracts("new", |_| true).unwrap();
+        assert!(applied > 0, "expected pending contract steps to run");
+        // Nothing pending now: one SELECT per step, no write.
+        assert_eq!(s.apply_contracts("new", |_| true).unwrap(), 0);
+    }
+
+    #[test]
     fn migration_assigns_one_project_per_distinct_repo_naming_forge_specially() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.db");

@@ -45,6 +45,7 @@ mod pricing;
 mod profile;
 mod prompts;
 mod queue;
+mod redraw;
 mod release;
 mod reload;
 mod render;

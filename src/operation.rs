@@ -482,7 +482,19 @@ async fn run_action(
 /// The action a deploy target's `method` names, resolved once up front so
 /// `forge deploy` fails on an unknown method before it ever starts a
 /// deploy row.
+///
+/// `deploy-self` is never read from the catalog: its script and this binary
+/// share a contract (`FORGE_WORKER_SUCCESSORS`), so it is always the text
+/// this binary was built with.
 pub(crate) fn resolve_deploy_method(f: &Forge, method: &str) -> anyhow::Result<RunAction> {
+    if method == crate::deploy::SELF_METHOD {
+        let def = workflows::builtin_action(method)?;
+        let argv = def
+            .run
+            .clone()
+            .with_context(|| format!("deploy method {method:?} declares no run command"))?;
+        return Ok(RunAction { def, argv });
+    }
     resolve_action(f, method, &format!("deploy method {method:?}"))
 }
 

@@ -347,6 +347,14 @@ repository's own catalog, rebalances the weights weekly from `forge
 stats --factors`; see docs/ECONOMIST.md for the arithmetic and
 `docs/CHECKS.md` for the job itself.
 
+A drawn arm is a draw, not a promise: at claim time the worker re-draws a
+task whose arm for its next role is held (its provider's window at its
+cap, or its login refused) among that role's other arms, by the same
+weights renormalised over the arms that are free, and records the
+re-draw on the task's `explore` with a note. The task waits only when
+every arm is held (docs/ECONOMIST.md, "A held arm is re-drawn at claim
+time").
+
 ## Authoring
 
 The first agent that needs to author a workflow is a run workflow itself:
@@ -480,23 +488,26 @@ Built-in actions and operations live in the binary, never in the catalog:
 authored, plus any copy of a built-in the operator chose to change.
 
 A catalog file named like a built-in shadows it, and the loader decides by
-the catalog's git history whether the copy is the operator's:
+the copy's content, never by who committed it or whether it is committed:
 
-- a copy that differs from the built-in and has a commit on that file
-  other than seeding ones (author `forge`, or a message starting
-  `catalog: built-in`) is an **operator edit** and wins, unless it does
-  not really differ (below);
-- any other differing copy is a **stale seed** (an old `ensure` wrote it):
-  the built-in is used, and one line on stderr says the copy was ignored.
+- a copy whose text is, byte for byte, a text the built-in shipped in this
+  or an earlier release (`src/builtins/history.tsv`), or that differs from
+  the built-in only in whitespace or comments, is a **stale seed** (an old
+  `ensure` wrote it): the built-in is used, and one line on stderr says the
+  copy was ignored;
+- any other copy is an **operator edit** and wins, committed or not.
 
-A copy equal to the built-in byte for byte, or differing only in
-whitespace or comments, is a stale seed whoever committed it.
+`forge init` commits only the files it wrote (the built-in workflows and the
+untrusted-data fragment), never the rest of the catalog.
 
 `forge doctor` has a `shadowing` row listing each shadowing file that has
 real diff lines, with its age, stale seed or operator edit, and the
 diff's line count; stale seeds point at `forge workflows refresh`, which
-deletes them (copies with no real difference too, silently). For an
-operator edit it prints the diff and refuses unless given
+deletes them (copies with no real difference too, silently). It removes
+only a file the catalog's repository tracks and has not changed since its
+last commit, and commits the removal; an untracked or dirty copy is refused
+whatever its origin. For an operator edit it prints the diff and refuses
+unless given
 `--take-builtin` (drop the copy) or `--keep` (leave it). Either flag
 takes action names to decide one copy at a time (`forge workflows
 refresh --take-builtin deploy-self`); bare, it applies to every copy.

@@ -8,6 +8,10 @@ use std::path::PathBuf;
 
 const FMT: &str = include_str!("../../src/builtins/operations/fmt.toml");
 
+/// `deploy-command.toml` as an earlier release shipped it (its first
+/// version; its blob is listed in src/builtins/history.tsv).
+const OLD_DEPLOY_COMMAND: &str = include_str!("../fixtures/old-deploy-command.toml");
+
 /// Write an edited `actions/fmt.toml` into the catalog and commit it as `who`.
 fn shadow_fmt(e: &Env, who: &str, message: &str) -> PathBuf {
     assert!(e.forge("ok.sh", &["workflows"]).status.success());
@@ -42,11 +46,13 @@ fn init_never_seeds_a_built_in_action_into_the_catalog() {
 #[test]
 fn a_stale_seed_is_ignored_reported_and_removed_by_refresh() {
     let e = Env::new();
-    let cat = shadow_fmt(&e, "Forge", "catalog: built-in fmt");
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let cat = e.home.join("workflows");
+    commit_copy(&cat, "deploy-command", OLD_DEPLOY_COMMAND, "Forge");
     let o = e.forge("ok.sh", &["workflows"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
-        err.contains("ignoring stale seed actions/fmt.toml"),
+        err.contains("ignoring stale seed actions/deploy-command.toml"),
         "{err}"
     );
     let o = e.forge("ok.sh", &["doctor"]);
@@ -56,10 +62,74 @@ fn a_stale_seed_is_ignored_reported_and_removed_by_refresh() {
     assert!(out.contains("forge workflows refresh"), "{out}");
     let o = e.forge("ok.sh", &["workflows", "refresh"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    assert!(!cat.join("actions/fmt.toml").exists());
+    assert!(!cat.join("actions/deploy-command.toml").exists());
     let o = e.forge("ok.sh", &["doctor"]);
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(!out.contains("stale seed"), "{out}");
+}
+
+#[test]
+fn a_copy_equal_to_an_old_built_in_is_a_seed_whoever_committed_it() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let cat = e.home.join("workflows");
+    commit_copy(&cat, "deploy-command", OLD_DEPLOY_COMMAND, "operator");
+    let o = e.forge("ok.sh", &["workflows"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("ignoring stale seed"), "{err}");
+    let o = e.forge("ok.sh", &["workflows", "refresh"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!cat.join("actions/deploy-command.toml").exists());
+}
+
+#[test]
+fn an_uncommitted_edit_survives_refresh_and_is_reported_as_an_edit() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let cat = e.home.join("workflows");
+    let edited = FMT.replacen("description = \"", "description = \"EDITED: ", 1);
+    std::fs::write(cat.join("actions/fmt.toml"), &edited).unwrap();
+    let o = e.forge("ok.sh", &["workflows"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!err.contains("stale seed"), "{err}");
+    let o = e.forge("ok.sh", &["workflows", "refresh"]);
+    assert!(!o.status.success());
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("fmt.toml is an operator edit"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(cat.join("actions/fmt.toml")).unwrap(),
+        edited
+    );
+    // Not even an explicit --take-builtin deletes what git has never seen.
+    let o = e.forge("ok.sh", &["workflows", "refresh", "--take-builtin"]);
+    assert!(!o.status.success());
+    assert_eq!(
+        std::fs::read_to_string(cat.join("actions/fmt.toml")).unwrap(),
+        edited
+    );
+}
+
+#[test]
+fn forge_init_leaves_an_uncommitted_catalog_edit_uncommitted() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let cat = e.home.join("workflows");
+    let edited = FMT.replacen("description = \"", "description = \"EDITED: ", 1);
+    std::fs::write(cat.join("actions/fmt.toml"), &edited).unwrap();
+    let o = e
+        .cmd("ok.sh")
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        .arg("init")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let status = git(&cat, &["status", "--porcelain", "-uall"]);
+    assert!(status.contains("?? actions/fmt.toml"), "{status}");
+    assert_eq!(
+        std::fs::read_to_string(cat.join("actions/fmt.toml")).unwrap(),
+        edited
+    );
 }
 
 #[test]
@@ -272,4 +342,51 @@ fn a_hash_line_added_inside_a_string_is_an_operator_edit_refresh_keeps() {
     let o = e.forge("ok.sh", &["workflows", "refresh"]);
     assert!(!o.status.success());
     assert!(cat.join("actions/provision-hetzner.toml").exists());
+}
+
+fn shadowing_row(e: &Env) -> serde_json::Value {
+    let o = e.forge("ok.sh", &["doctor", "--json", "--only", "shadowing"]);
+    let rows: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    rows.as_array()
+        .and_then(|a| a.iter().find(|r| r["name"] == "shadowing"))
+        .cloned()
+        .unwrap_or_else(|| panic!("no shadowing row in {rows}"))
+}
+
+/// The table behind the Warn is compiled from the checked-in
+/// `src/builtins/history.tsv`, not read from `git log` at build time, so a
+/// release built from a `git archive` tree (no `.git`) warns too.
+#[test]
+fn an_operator_edit_of_a_built_in_that_changed_since_is_a_warning_not_ok() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let cat = e.home.join("workflows");
+    let edited = FMT.replacen("description = \"", "description = \"EDITED: ", 1);
+    std::fs::write(cat.join("actions/fmt.toml"), edited).unwrap();
+    git(&cat, &["add", "actions/fmt.toml"]);
+    let committed = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&cat)
+        .args([
+            "-c",
+            "user.name=operator",
+            "-c",
+            "user.email=x@localhost",
+            "commit",
+            "-qm",
+            "tune",
+        ])
+        .env("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
+        .env("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z")
+        .status()
+        .unwrap();
+    assert!(committed.success());
+    let row = shadowing_row(&e);
+    assert_eq!(row["status"], "warn", "{row}");
+    assert!(
+        row["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("the built-in changed after this copy's last commit")),
+        "{row}"
+    );
 }

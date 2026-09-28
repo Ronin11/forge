@@ -801,6 +801,12 @@ CREATE TABLE chat_turns (
 CREATE INDEX chat_turns_session ON chat_turns(session, id);
 CREATE INDEX chat_turns_at ON chat_turns(at);
 ",
+    // The slot count each daemon worker runs with (`forge work --jobs`), so
+    // doctor can say how many of the machine's slots a handoff uses. 0 is a
+    // row written before this column, or by a worker that has not said.
+    "
+ALTER TABLE workers ADD COLUMN slots INTEGER NOT NULL DEFAULT 0;
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

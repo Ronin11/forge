@@ -1572,6 +1572,19 @@ pub fn load_actions(home: &Path) -> Result<BTreeMap<String, ActionDef>> {
     Ok(cat.actions)
 }
 
+/// The built-in operation or action `name` as this binary carries it,
+/// whatever the catalog holds.
+pub(crate) fn builtin_action(name: &str) -> Result<ActionDef> {
+    let file = format!("{name}.toml");
+    let (_, text) = BUILTIN_ACTIONS
+        .iter()
+        .chain(BUILTIN_OPERATIONS)
+        .find(|(f, _)| *f == file)
+        .with_context(|| format!("no built-in {name}"))?;
+    parse_action(Path::new(&file), text, shadow::text_blob_hash(text)?)
+        .with_context(|| format!("built-in {file}"))
+}
+
 /// Every workflow, sorted by name.
 pub fn load_all(home: &Path) -> Result<Vec<Workflow>> {
     let cat = load_catalog(home)?;

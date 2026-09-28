@@ -208,6 +208,44 @@ fn the_worker_supervises_a_failing_plugin_and_stops_it_when_disabled() {
     assert_eq!(status["state"], "stopped");
 }
 
+#[test]
+fn uninstall_waits_for_a_running_plugin_before_removing_its_directory() {
+    let e = Env::new();
+    let dir = e.home.join("plugins/uninstall-me");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("plugin.toml"),
+        "name = \"uninstall-me\"\nrun = [\"sleep\", \"3600\"]\ncapabilities = [\"events\"]\nrestart = \"always\"\n",
+    )
+    .unwrap();
+    assert!(
+        e.forge("ok.sh", &["plugin", "enable", "uninstall-me"])
+            .status
+            .success()
+    );
+    let mut worker = Worker::spawn(e.cmd("ok.sh").args(["work", "--poll", "1"]));
+    assert!(wait_until(
+        || plugin_status_json(&e, "uninstall-me")["state"] == "running",
+        Duration::from_secs(30)
+    ));
+    let pid = plugin_status_json(&e, "uninstall-me")["pid"]
+        .as_i64()
+        .unwrap();
+    let o = e.forge("ok.sh", &["plugin", "uninstall", "uninstall-me"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!dir.exists());
+    assert_eq!(
+        unsafe { libc::kill(pid as i32, 0) },
+        -1,
+        "plugin still alive"
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
+    worker.stop();
+}
+
 /// Disabling then re-enabling a plugin already replaces its process (the
 /// reconcile loop in `Supervisor::start` removes and re-adds it), but a
 /// plugin that stays enabled the whole time never gets a fresh process on

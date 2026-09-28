@@ -60,8 +60,14 @@ fn systemd_available() -> bool {
         && std::env::var_os("XDG_RUNTIME_DIR").is_some()
 }
 
-fn worker_unit(home: &Path, forge_bin: &Path, path: &str) -> String {
-    format!(
+use crate::unit_path::{environment_line as env_line, exec_start_line as exec_line};
+
+fn display(p: &Path) -> String {
+    p.display().to_string()
+}
+
+fn worker_unit(home: &Path, forge_bin: &Path, path: &str) -> Result<String> {
+    Ok(format!(
         "# Written by `forge init`; re-run it after moving the binary.\n\
 [Unit]\n\
 Description=Forge worker\n\
@@ -72,9 +78,9 @@ StartLimitBurst=5\n\
 [Service]\n\
 Type=notify\n\
 NotifyAccess=all\n\
-Environment=FORGE_HOME={home}\n\
-Environment=PATH={path}\n\
-ExecStart={forge_bin} work --jobs 4\n\
+{home}\n\
+{path}\n\
+{exec}\n\
 KillSignal=SIGTERM\n\
 KillMode=mixed\n\
 TimeoutStopSec=2400\n\
@@ -85,34 +91,34 @@ RestartMaxDelaySec=900\n\
 \n\
 [Install]\n\
 WantedBy=default.target\n",
-        home = home.display(),
-        path = path,
-        forge_bin = forge_bin.display(),
-    )
+        home = env_line("FORGE_HOME", &display(home))?,
+        path = env_line("PATH", path)?,
+        exec = exec_line(&[&display(forge_bin), "work", "--jobs", "4"])?,
+    ))
 }
 
-fn web_unit(home: &Path, forge_bin: &Path, web_bin: &Path, path: &str) -> String {
-    format!(
+fn web_unit(home: &Path, forge_bin: &Path, web_bin: &Path, path: &str) -> Result<String> {
+    Ok(format!(
         "# Written by `forge init`; re-run it after moving the binary.\n\
 [Unit]\n\
 Description=Forge web client\n\
 After=network.target\n\
 \n\
 [Service]\n\
-Environment=FORGE_HOME={home}\n\
-Environment=FORGE_BIN={forge_bin}\n\
-Environment=PATH={path}\n\
-ExecStart={web_bin} --bind 127.0.0.1:7788\n\
+{home}\n\
+{forge_bin}\n\
+{path}\n\
+{exec}\n\
 Restart=on-failure\n\
 RestartSec=3\n\
 \n\
 [Install]\n\
 WantedBy=default.target\n",
-        home = home.display(),
-        path = path,
-        forge_bin = forge_bin.display(),
-        web_bin = web_bin.display(),
-    )
+        home = env_line("FORGE_HOME", &display(home))?,
+        forge_bin = env_line("FORGE_BIN", &display(forge_bin))?,
+        path = env_line("PATH", path)?,
+        exec = exec_line(&[&display(web_bin), "--bind", "127.0.0.1:7788"])?,
+    ))
 }
 
 /// Write `path` only when its content would change, so a second run
@@ -189,8 +195,8 @@ fn install_units(home: &Path) -> Result<StepResult> {
     let worker_path = dir.join("forge-worker.service");
     let web_path = dir.join("forge-web.service");
     let path = unit_path(&bin_dir);
-    let worker_changed = write_if_changed(&worker_path, &worker_unit(home, &forge_bin, &path))?;
-    let web_changed = write_if_changed(&web_path, &web_unit(home, &forge_bin, &web_bin, &path))?;
+    let worker_changed = write_if_changed(&worker_path, &worker_unit(home, &forge_bin, &path)?)?;
+    let web_changed = write_if_changed(&web_path, &web_unit(home, &forge_bin, &web_bin, &path)?)?;
     let files_changed = worker_changed || web_changed;
 
     if !systemd_available() {
@@ -266,16 +272,30 @@ fn local_bin_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/bin"))
 }
 
+/// The binaries of `release::BINS` a release adopted from `dir` needs but
+/// `dir` lacks: every one but `forge-test`, which `deploy-self` too treats
+/// as optional.
+fn missing_release_bins(dir: &Path) -> Vec<&'static str> {
+    release::BINS
+        .iter()
+        .copied()
+        .filter(|b| *b != "forge-test" && !dir.join(b).is_file())
+        .collect()
+}
+
 /// `--relink`: move the running install onto the release layout — copy the
-/// running binaries into `releases/<commit>/` and point `current` at it,
-/// unless `current` already exists. Never touches a live release.
+/// running binaries into `releases/<full commit>/` (the id `deploy-self`
+/// gives the same commit) and point `current` at it, unless `current`
+/// already exists. Refuses a directory missing any release binary, so a
+/// fresh `forge` beside stale siblings never becomes a release. Never
+/// touches a live release.
 fn adopt_running_binaries(home: &Path) -> Result<Vec<StepResult>> {
     let root = release::root(home);
     let exe = crate::binary::without_deleted_suffix(&std::env::current_exe()?);
     let src = exe
         .parent()
         .context("the running binary has no directory")?;
-    let sha = env!("FORGE_GIT_SHA");
+    let sha = env!("FORGE_GIT_SHA_FULL");
     let id = if sha.is_empty() {
         env!("CARGO_PKG_VERSION")
     } else {
@@ -286,7 +306,15 @@ fn adopt_running_binaries(home: &Path) -> Result<Vec<StepResult>> {
     match release::pointed_at(&root, "current") {
         Some(live) => steps.push(step("release", false, format!("current is already {live}"))),
         None => {
+            let missing = missing_release_bins(src);
+            anyhow::ensure!(
+                missing.is_empty(),
+                "--relink: {} lacks {}; build the whole workspace (cargo build --release --workspace) and run its forge",
+                src.display(),
+                missing.join(", ")
+            );
             let made = release::install(&lock, &root, src, id)?;
+            release::drop_staged(&lock, &root)?;
             release::flip(&lock, &root, id)?;
             let detail = format!(
                 "copied {} into {} and pointed {} at it{}",
@@ -330,9 +358,139 @@ fn link_local_bin(home: &Path) -> Result<Option<StepResult>> {
     Ok(Some(step("links", !changed.is_empty(), detail)))
 }
 
+/// The bare origin's post-update hook, as reviewed: mirrors `main` and
+/// `v*` tags to `git config forge.mirror` in the background, bounded, and
+/// never fails the push (see the file's own header).
+pub const MIRROR_HOOK: &str = include_str!("../deploy/post-update.mirror");
+
+/// The remote a registered repository pushes to (`[defaults] remote`,
+/// `origin` when its config cannot be read), or `None` for `push = false`.
+async fn origin_remote(repo: &Path) -> Option<String> {
+    match config::load_working(repo).await {
+        Ok(cfg) => cfg.push_remote,
+        Err(_) => Some("origin".to_string()),
+    }
+}
+
+/// The bare repository a remote URL names on this machine, if it is one:
+/// a network URL (or a missing path) is somebody else's to hook.
+async fn local_bare(url: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(url.strip_prefix("file://").unwrap_or(url));
+    if !path.is_absolute() || !path.is_dir() {
+        return None;
+    }
+    if !git::is_bare(&path).await {
+        return None;
+    }
+    Some(path.canonicalize().unwrap_or(path))
+}
+
+/// Install `MIRROR_HOOK` as `bare`'s post-update hook (honoring its
+/// `core.hooksPath`) and point it at `mirror`. A different hook already
+/// there is kept once as `post-update.before-forge`. Returns whether
+/// anything changed.
+async fn install_mirror_hook(bare: &Path, mirror: &str) -> Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+    let hooks = git::hooks_dir(bare).await?;
+    let hook = hooks.join("post-update");
+    let mut changed = false;
+    let old = std::fs::read_to_string(&hook).ok();
+    if old.as_deref() != Some(MIRROR_HOOK) {
+        let backup = hooks.join("post-update.before-forge");
+        if old.is_some() && !backup.exists() {
+            std::fs::rename(&hook, &backup)?;
+        }
+        write_if_changed(&hook, MIRROR_HOOK)?;
+        changed = true;
+    }
+    let mode = std::fs::metadata(&hook)?.permissions().mode();
+    if mode & 0o111 != 0o111 {
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(mode | 0o755))?;
+        changed = true;
+    }
+    if git::config_get(bare, "forge.mirror").await.as_deref() != Some(mirror) {
+        git::config_set(bare, "forge.mirror", mirror).await?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
+/// `--mirror <remote>`: the mirror hook in the bare origin of every
+/// registered repository whose push remote is a bare repository on this
+/// machine. None found is an error: the operator asked for a mirror.
+async fn install_mirrors(home: &Path, mirror: &str) -> Result<Vec<StepResult>> {
+    let store = crate::store::Store::open(&home.join("forge.db"))?;
+    let mut bares = std::collections::BTreeSet::new();
+    for p in store.list_projects()? {
+        for r in store.project_repos(&p.name)? {
+            let repo = Path::new(&r.repo);
+            let Some(remote) = origin_remote(repo).await else {
+                continue;
+            };
+            let Some(url) = git::remote_url(repo, &remote).await else {
+                continue;
+            };
+            if let Some(bare) = local_bare(&url).await {
+                bares.insert(bare);
+            }
+        }
+    }
+    anyhow::ensure!(
+        !bares.is_empty(),
+        "--mirror {mirror}: no registered repository has a bare origin on this machine"
+    );
+    let mut steps = Vec::new();
+    for bare in bares {
+        let changed = install_mirror_hook(&bare, mirror)
+            .await
+            .with_context(|| format!("installing the mirror hook in {}", bare.display()))?;
+        let detail = format!(
+            "{} post-update mirrors main and v* tags to {mirror}",
+            bare.display()
+        );
+        steps.push(step("mirror", changed, detail));
+    }
+    Ok(steps)
+}
+
+/// Commit the catalog files `workflows::catalog_dir` wrote (the built-in
+/// workflows and the untrusted-data fragment): those the repository does not
+/// track yet and whose text is exactly what this binary writes. Whatever else
+/// sits in the catalog, an operator's uncommitted edit above all, is left as
+/// it is.
+async fn commit_written_catalog_files(catalog: &Path) -> Result<Option<String>> {
+    let written = workflows::BUILTIN_WORKFLOWS
+        .iter()
+        .map(|(file, text)| (file.to_string(), *text))
+        .chain([(
+            format!("{}/untrusted-data.md", workflows::FRAGMENTS_DIR),
+            workflows::UNTRUSTED_DATA,
+        )]);
+    let mut paths = Vec::new();
+    for (rel, text) in written {
+        let tracked = std::process::Command::new("git")
+            .arg("-C")
+            .arg(catalog)
+            .args(["ls-files", "--error-unmatch", "--", &rel])
+            .output()?
+            .status
+            .success();
+        if !tracked && std::fs::read_to_string(catalog.join(&rel)).is_ok_and(|t| t == text) {
+            paths.push(rel);
+        }
+    }
+    let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+    git::commit_paths(catalog, &paths, "forge init: built-in workflow catalog").await
+}
+
 /// Everything `forge init` does, in order. `home_override` is `--home`;
-/// `None` uses the usual resolution (`Paths::compute_home`).
-pub async fn run(home_override: Option<PathBuf>, relink: bool) -> Result<Report> {
+/// `None` uses the usual resolution (`Paths::compute_home`). `mirror` is
+/// `--mirror`: install the mirror hook into the registered bare origins.
+pub async fn run(
+    home_override: Option<PathBuf>,
+    relink: bool,
+    mirror: Option<&str>,
+) -> Result<Report> {
     let home = match home_override {
         Some(h) => h,
         None => Paths::compute_home()?,
@@ -353,7 +511,7 @@ pub async fn run(home_override: Option<PathBuf>, relink: bool) -> Result<Report>
     ));
 
     let catalog = workflows::catalog_dir(&home)?;
-    let commit = git::commit_all(&catalog, "forge init: built-in workflow catalog").await?;
+    let commit = commit_written_catalog_files(&catalog).await?;
     steps.push(match commit {
         Some(sha) => step(
             "workflows",
@@ -380,6 +538,9 @@ pub async fn run(home_override: Option<PathBuf>, relink: bool) -> Result<Report>
         steps.extend(adopt_running_binaries(&home)?);
     }
     steps.extend(link_local_bin(&home)?);
+    if let Some(m) = mirror {
+        steps.extend(install_mirrors(&home, m).await?);
+    }
     steps.push(install_units(&home)?);
     let (_, bin_dir) = forge_binary(&home)?;
     steps.push(step("unit PATH", false, unit_path(&bin_dir)));
@@ -414,5 +575,19 @@ mod tests {
             )
         );
         assert!(!home.exists());
+    }
+
+    #[test]
+    fn a_directory_with_only_forge_is_missing_every_other_release_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("forge"), "").unwrap();
+        assert_eq!(
+            missing_release_bins(dir.path()),
+            ["forge-web", "forge-portal", "forge-repomap", "forge-tui"]
+        );
+        for b in release::BINS.iter().filter(|b| **b != "forge-test") {
+            std::fs::write(dir.path().join(b), "").unwrap();
+        }
+        assert!(missing_release_bins(dir.path()).is_empty());
     }
 }

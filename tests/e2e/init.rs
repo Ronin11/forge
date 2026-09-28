@@ -79,7 +79,7 @@ fn forge_init_sets_up_a_fresh_home_and_prints_the_systemd_commands() {
     assert!(unit_dir.join("forge-web.service").exists());
     let worker_unit = std::fs::read_to_string(unit_dir.join("forge-worker.service")).unwrap();
     assert!(worker_unit.contains("ExecStart="));
-    assert!(worker_unit.contains(&format!("FORGE_HOME={}", e.home.display())));
+    assert!(worker_unit.contains(&format!("Environment=\"FORGE_HOME={}\"", e.home.display())));
 
     assert!(out.contains("no systemd user session detected"), "{out}");
     assert!(out.contains("systemctl --user daemon-reload"), "{out}");
@@ -216,7 +216,9 @@ fn forge_init_relink_moves_an_existing_install_onto_the_release_layout() {
     let build = e._dir.path().join("target-release");
     std::fs::create_dir_all(&build).unwrap();
     std::fs::copy(env!("CARGO_BIN_EXE_forge"), build.join("forge")).unwrap();
-    write_fake(&build.join("forge-web"), "#!/bin/sh\nexit 0\n");
+    for b in ["forge-web", "forge-portal", "forge-repomap", "forge-tui"] {
+        write_fake(&build.join(b), "#!/bin/sh\nexit 0\n");
+    }
     let local_bin = home_dir.join(".local/bin");
     std::fs::create_dir_all(&local_bin).unwrap();
     std::os::unix::fs::symlink(build.join("forge"), local_bin.join("forge")).unwrap();
@@ -255,10 +257,18 @@ fn forge_init_relink_moves_an_existing_install_onto_the_release_layout() {
     let unit =
         std::fs::read_to_string(e.xdg_config.join("systemd/user/forge-worker.service")).unwrap();
     assert!(
-        unit.contains(&format!("ExecStart={}/current/forge work", bin.display())),
+        unit.contains(&format!(
+            "ExecStart=\"{}/current/forge\" \"work\"",
+            bin.display()
+        )),
         "{unit}"
     );
     assert!(out.contains("done release"), "{out}");
+    // The id is the full commit hash, the name `deploy-self` gives it.
+    // (A build with no git at all falls back to the crate version.)
+    if id.chars().all(|c| c.is_ascii_hexdigit()) {
+        assert_eq!(id.len(), 40, "{id}");
+    }
 
     let out = relink();
     assert!(
@@ -266,6 +276,39 @@ fn forge_init_relink_moves_an_existing_install_onto_the_release_layout() {
         "{out}"
     );
     assert_eq!(std::fs::read_link(bin.join("current")).unwrap(), target);
+}
+
+#[test]
+fn forge_init_relink_refuses_a_directory_with_only_forge() {
+    let e = Env::new();
+    let home_dir = e._dir.path().join("userhome");
+    let build = e._dir.path().join("target-debug");
+    std::fs::create_dir_all(&build).unwrap();
+    std::fs::create_dir_all(&home_dir).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_forge"), build.join("forge")).unwrap();
+
+    let o = std::process::Command::new(build.join("forge"))
+        .env("FORGE_HOME", &e.home)
+        .env("XDG_CONFIG_HOME", &e.xdg_config)
+        .env("HOME", &home_dir)
+        .env("FORGE_SUPERVISOR", "0")
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        .args(["init", "--relink"])
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "{out}");
+    for b in ["forge-web", "forge-portal", "forge-repomap", "forge-tui"] {
+        assert!(out.contains(b), "{b} not named: {out}");
+    }
+    assert!(!out.contains("forge-test"), "{out}");
+    let bin = e.home.join("bin");
+    assert!(std::fs::symlink_metadata(bin.join("current")).is_err());
+    let releases: Vec<_> = std::fs::read_dir(bin.join("releases"))
+        .map(|d| d.flatten().collect())
+        .unwrap_or_default();
+    assert!(releases.is_empty(), "{releases:?}");
 }
 
 #[test]
@@ -327,9 +370,12 @@ fn forge_init_bakes_the_shell_path_into_the_units_and_prints_it() {
         let unit = std::fs::read_to_string(unit_dir.join(name)).unwrap();
         let line = unit
             .lines()
-            .find(|l| l.starts_with("Environment=PATH="))
+            .find(|l| l.starts_with("Environment=\"PATH="))
             .unwrap();
-        let dirs: Vec<&str> = line["Environment=PATH=".len()..].split(':').collect();
+        let value = line["Environment=\"PATH=".len()..]
+            .strip_suffix('"')
+            .unwrap();
+        let dirs: Vec<&str> = value.split(':').collect();
         assert_eq!(
             &dirs[1..],
             [agents.to_str().unwrap(), "/usr/bin", "/bin"],
@@ -380,4 +426,56 @@ fn doctor_fails_when_the_worker_units_path_cannot_find_claude() {
         out.contains("forge init --relink"),
         "the fix is named: {out}"
     );
+}
+
+#[test]
+fn forge_init_units_survive_a_home_and_path_with_spaces_under_systemd_analyze_verify() {
+    let probe = std::process::Command::new("systemd-analyze")
+        .arg("--version")
+        .output();
+    if !probe.map(|o| o.status.success()).unwrap_or(false) {
+        eprintln!("systemd-analyze not available; skipping");
+        return;
+    }
+    let e = Env::new();
+    let home = e.home.parent().unwrap().join("my home");
+    let agents = e.home.parent().unwrap().join("agent dir$x");
+    std::fs::create_dir_all(&agents).unwrap();
+    let shell_path = format!("{}:/usr/bin:/bin", agents.display());
+    let mut cmd = e.cmd("ok.sh");
+    cmd.env_remove("XDG_RUNTIME_DIR")
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        .env("PATH", &shell_path)
+        .arg("init")
+        .arg("--home")
+        .arg(&home);
+    let o = cmd.output().expect("forge init");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    let unit_dir = e.xdg_config.join("systemd/user");
+    for name in ["forge-worker.service", "forge-web.service"] {
+        let file = unit_dir.join(name);
+        let unit = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            unit.contains(&format!("Environment=\"FORGE_HOME={}\"", home.display())),
+            "{unit}"
+        );
+        assert!(unit.contains("dir$x") && !unit.contains("dir$$x"), "{unit}");
+        let v = std::process::Command::new("systemd-analyze")
+            .args(["--user", "verify"])
+            .arg(&file)
+            .output()
+            .expect("systemd-analyze verify");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&v.stdout),
+            String::from_utf8_lossy(&v.stderr)
+        );
+        // A missing forge-web next to the test binary is not what is under test.
+        let bad: Vec<&str> = text
+            .lines()
+            .filter(|l| !l.contains("is not executable") && !l.contains("No such file"))
+            .filter(|l| l.contains(name))
+            .collect();
+        assert!(bad.is_empty(), "{name}: {text}");
+    }
 }
