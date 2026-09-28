@@ -180,8 +180,12 @@ budget, and its failure never fails a task.
 
 Supervision is single per home. A supervisor holds an `flock` on
 `<FORGE_HOME>/plugins-run/<name>.lock` for as long as the plugin's process
-lives; one that finds it held skips that plugin and tries again on its
-next reconcile tick. `forge work --once` supervises nothing. A draining
+group lives: the plugin inherits the locked file description, so the lock
+follows the plugin, not the worker. A worker that dies without stopping its
+plugins (SIGKILL, a crash) leaves the lock held by the orphaned group, and
+the next supervisor does not start a second copy until every member of the
+group has exited. One that finds the lock held skips that plugin and tries
+again on its next reconcile tick. `forge work --once` supervises nothing. A draining
 worker keeps its plugins until its successor has claimed (its pid is in
 `bin/successor-capable`), then stops them together so the lock passes to
 the successor instead of two copies running at once; `forge plugin status`

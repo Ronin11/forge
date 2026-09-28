@@ -119,6 +119,8 @@ async fn run(args: TaskArgs) -> Result<()> {
     }
     eprintln!("task     {}", t.id);
     if worker::drive(f, t.id).await? != TaskState::Succeeded {
+        // `exit` skips destructors: remove the proxy directory here.
+        drop(crate::egress::MadeDirGuard);
         std::process::exit(1);
     }
     Ok(())

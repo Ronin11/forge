@@ -113,6 +113,7 @@ impl Paths {
         };
         std::fs::create_dir_all(&p.worktrees)?;
         std::fs::create_dir_all(&p.logs)?;
+        crate::egress::set_run_root(&p.home);
         Ok(p)
     }
 
