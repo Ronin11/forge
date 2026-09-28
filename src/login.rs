@@ -9,9 +9,16 @@
 //! not be refreshed'). So the kernel copies a later private pair back over
 //! the host file, atomically and under a lock; refreshes a token near expiry
 //! on the host before a launch; and never seeds an empty file.
+//!
+//! The private copy is a file the sandbox can write, so a later pair in it is
+//! not taken on its say-so: only one the CLI could have produced from the
+//! seed is (see `Seed::could_have_produced`), judged against a record of the
+//! seed kept in FORGE_HOME, where no sandbox can write. The file a write-back
+//! replaces is kept once as `.credentials.json.forge-prev`.
 
 use serde_json::Value;
-use std::io::Write;
+use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -25,6 +32,20 @@ const LOCK: &str = ".forge-credentials.lock";
 
 /// Unix seconds of the last write-back, for `forge doctor`.
 const MARK: &str = ".forge-writeback";
+
+/// The login a write-back replaced, kept for undoing an acceptance made in
+/// error by hand: one copy, the latest.
+pub const PREV: &str = ".credentials.json.forge-prev";
+
+/// Where a seed's record is kept, under FORGE_HOME.
+const SEEDS: &str = "login-seeds";
+
+/// The most a private pair may hold; the CLI's file is well under 4 KiB.
+const MAX_PRIVATE_BYTES: u64 = 64 * 1024;
+
+/// The furthest ahead a freshly rotated pair may expire. The CLI's tokens
+/// live hours; a day leaves room and no more.
+const MAX_LIFETIME_MS: i64 = 24 * 3600 * 1000;
 
 /// A token this close to expiring is refreshed on the host before a launch,
 /// at the least (see `refresh_window_ms`).
@@ -197,33 +218,167 @@ fn unix_ms() -> i64 {
     crate::unix_now() * 1000
 }
 
-/// `write_back` for a caller that holds the lock.
-pub fn write_back_locked(dir: &Path, private: &Path) -> std::io::Result<bool> {
+/// What was seeded into one private copy, as the kernel recorded it at seed
+/// time: the sandbox never sees this file.
+struct Seed {
+    /// SHA-256 of the seeded refresh token, hex.
+    refresh_sha256: String,
+    /// Everything in the seeded file but the three fields a refresh changes
+    /// (`subscriptionType`, `scopes` and the rest).
+    rest: Value,
+}
+
+fn sha256_hex(text: &str) -> String {
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// `text`'s login without the fields a token refresh rewrites.
+fn unrotating_fields(text: &str) -> Option<Value> {
+    let mut v = serde_json::from_str::<Value>(text).ok()?;
+    let o = v.get_mut("claudeAiOauth")?.as_object_mut()?;
+    for k in ["accessToken", "refreshToken", "expiresAt"] {
+        o.remove(k);
+    }
+    Some(v)
+}
+
+/// A token as the CLI writes one: a single run of URL-safe characters.
+fn token_shaped(v: &Value) -> bool {
+    v.as_str().is_some_and(|s| {
+        (1..=4096).contains(&s.len())
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-._~+/=".contains(&b))
+    })
+}
+
+impl Seed {
+    fn of(text: &str) -> Option<Seed> {
+        let v = serde_json::from_str::<Value>(text).ok()?;
+        Some(Seed {
+            refresh_sha256: sha256_hex(v["claudeAiOauth"]["refreshToken"].as_str()?),
+            rest: unrotating_fields(text)?,
+        })
+    }
+
+    /// Where `private`'s record lives in `state` (FORGE_HOME).
+    fn path(state: &Path, private: &Path) -> PathBuf {
+        let key = sha256_hex(&private.to_string_lossy());
+        state.join(SEEDS).join(format!("{}.json", &key[..32]))
+    }
+
+    fn load(state: &Path, private: &Path) -> Option<Seed> {
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(Seed::path(state, private)).ok()?)
+                .ok()?;
+        Some(Seed {
+            refresh_sha256: v["refresh_sha256"].as_str()?.to_string(),
+            rest: v["rest"].clone(),
+        })
+    }
+
+    /// Record the seed of `private` (the text of the host file it is a copy
+    /// of), and forget the records of copies that are gone.
+    fn record(state: &Path, private: &Path, text: &str) -> std::io::Result<()> {
+        let seed = Seed::of(text).ok_or_else(|| std::io::Error::other("no login to record"))?;
+        let dir = state.join(SEEDS);
+        std::fs::create_dir_all(&dir)?;
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for e in entries.flatten() {
+                let gone = std::fs::read_to_string(e.path())
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                    .and_then(|v| v["private"].as_str().map(|p| !Path::new(p).exists()))
+                    .unwrap_or(false);
+                if gone {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+        let body = serde_json::json!({
+            "private": private.to_string_lossy(),
+            "refresh_sha256": seed.refresh_sha256,
+            "rest": seed.rest,
+        });
+        replace_atomic(&Seed::path(state, private), body.to_string().as_bytes())
+    }
+
+    fn forget(state: &Path, private: &Path) {
+        let _ = std::fs::remove_file(Seed::path(state, private));
+    }
+
+    /// Whether `text` is a pair the CLI could have written into a copy seeded
+    /// with this: the refresh token rotated, the expiry at most a day ahead,
+    /// both tokens shaped as the CLI writes them, every other field as seeded.
+    fn could_have_produced(&self, text: &str, now_ms: i64) -> bool {
+        let Ok(v) = serde_json::from_str::<Value>(text) else {
+            return false;
+        };
+        let o = &v["claudeAiOauth"];
+        token_shaped(&o["accessToken"])
+            && token_shaped(&o["refreshToken"])
+            && sha256_hex(o["refreshToken"].as_str().unwrap_or_default()) != self.refresh_sha256
+            && Creds::parse(text).expires_at_ms <= now_ms + MAX_LIFETIME_MS
+            && unrotating_fields(text).is_some_and(|rest| rest == self.rest)
+    }
+}
+
+/// The text of the private copy at `path`, if it is a regular file (never a
+/// symlink, which a sandbox can plant, and never a pipe) of at most 64 KiB.
+/// The bound holds on the bytes read, not on a size looked at earlier.
+fn read_private(path: &Path) -> Option<String> {
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    if !f.metadata().ok()?.file_type().is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut f)
+        .take(MAX_PRIVATE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_PRIVATE_BYTES {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// `write_back` for a caller that holds the lock. `state` is FORGE_HOME,
+/// where the seed of `private` was recorded.
+pub fn write_back_locked(dir: &Path, state: &Path, private: &Path) -> std::io::Result<bool> {
     let host = dir.join(FILE);
     let Ok(host_text) = std::fs::read_to_string(&host) else {
         // Logged out (or never in): a stale copy does not undo that.
         return Ok(false);
     };
-    if !is_regular_file(private) {
-        return Ok(false);
-    }
-    let Ok(bytes) = std::fs::read(private) else {
+    let Some(text) = read_private(private) else {
         return Ok(false);
     };
-    let theirs = Creds::parse(&String::from_utf8_lossy(&bytes));
-    if !should_write_back(Creds::parse(&host_text), theirs, unix_ms()) {
+    let now = unix_ms();
+    let Some(seed) = Seed::load(state, private) else {
+        return Ok(false);
+    };
+    if !should_write_back(Creds::parse(&host_text), Creds::parse(&text), now)
+        || !seed.could_have_produced(&text, now)
+    {
         return Ok(false);
     }
-    replace_atomic(&host, &bytes)?;
+    replace_atomic(&dir.join(PREV), host_text.as_bytes())?;
+    replace_atomic(&host, text.as_bytes())?;
     let _ = replace_atomic(&dir.join(MARK), crate::unix_now().to_string().as_bytes());
     Ok(true)
 }
 
 /// Copy `private`'s login back over the host file in `dir` when it is a
-/// later one. Whether it did.
-pub fn write_back(dir: &Path, private: &Path) -> std::io::Result<bool> {
+/// later one the CLI could have made from its seed. Whether it did.
+pub fn write_back(dir: &Path, state: &Path, private: &Path) -> std::io::Result<bool> {
     let _lock = lock(dir);
-    write_back_locked(dir, private)
+    write_back_locked(dir, state, private)
 }
 
 /// When the kernel last wrote a login back to the host file (unix seconds).
@@ -255,18 +410,28 @@ pub fn private_copies(worktree: &Path) -> Vec<PathBuf> {
 /// Everything a launch does to the login before a sandbox starts, under one
 /// lock: write back any later private pair (this task's own, from the attempt
 /// before, or another task's still running), then seed `private` from the host
-/// file. An unusable host file seeds nothing, and a copy left from an earlier
+/// file, recording in `state` (FORGE_HOME) what was seeded. An unusable host
+/// file seeds nothing, and a copy left from an earlier
 /// launch is removed with it, so an attempt never starts on a dead pair.
-pub fn seed(dir: &Path, worktree: &Path, private: &Path) {
+pub fn seed(dir: &Path, state: &Path, worktree: &Path, private: &Path) {
     let _lock = lock(dir);
     for copy in private_copies(worktree) {
-        let _ = write_back_locked(dir, &copy);
+        let _ = write_back_locked(dir, state, &copy);
     }
-    let host = dir.join(FILE);
-    if matches!(host_state(dir), Host::Usable(_)) {
-        let _ = seed_copy(&host, private);
-    } else {
-        let _ = std::fs::remove_file(private);
+    let seeded = match host_state(dir) {
+        Host::Usable(_) => std::fs::read_to_string(dir.join(FILE)).ok(),
+        _ => None,
+    };
+    // The record is made before the copy, so a copy never exists without the
+    // record that judges it.
+    match seeded {
+        Some(text)
+            if Seed::record(state, private, &text).is_ok()
+                && replace_atomic(private, text.as_bytes()).is_ok() => {}
+        _ => {
+            Seed::forget(state, private);
+            let _ = std::fs::remove_file(private);
+        }
     }
 }
 
@@ -376,82 +541,220 @@ mod tests {
         assert!(replace_atomic(&dir.path().join("gone/x"), b"new").is_err());
     }
 
+    fn state_of(root: &tempfile::TempDir) -> PathBuf {
+        root.path().join("forge-home")
+    }
+
+    /// A host login `text`, seeded into a private copy the way a launch does.
+    fn seeded(text: &str) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("claude");
+        let worktree = root.path().join("work/task");
+        let private = root.path().join("work/task-provider/claude").join(FILE);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(private.parent().unwrap()).unwrap();
+        std::fs::write(dir.join(FILE), text).unwrap();
+        let state = state_of(&root);
+        seed(&dir, &state, &worktree, &private);
+        (root, dir, state, worktree, private)
+    }
+
+    fn far() -> i64 {
+        crate::unix_now() * 1000 + 8 * 3600 * 1000
+    }
+
     #[test]
     fn write_back_replaces_only_with_a_later_login() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = dir.path().join(FILE);
-        let private = dir.path().join("private.json");
-        let far = crate::unix_now() * 1000 + 8 * 3600 * 1000;
-        std::fs::write(&host, login("old-a", "old-r", far)).unwrap();
-        std::fs::write(&private, login("new-a", "new-r", far + 1000)).unwrap();
-        assert!(write_back(dir.path(), &private).unwrap());
+        let (_root, dir, state, _wt, private) = seeded(&login("old-a", "old-r", far()));
+        assert_eq!(
+            std::fs::read_to_string(&private).unwrap(),
+            login("old-a", "old-r", far())
+        );
+        let host = dir.join(FILE);
+        std::fs::write(&private, login("new-a", "new-r", far() + 1000)).unwrap();
+        assert!(write_back(&dir, &state, &private).unwrap());
         assert!(std::fs::read_to_string(&host).unwrap().contains("new-r"));
-        assert!(last_write_back(dir.path()).is_some());
+        assert!(last_write_back(&dir).is_some());
         // The same pair again is not later: nothing to do.
-        assert!(!write_back(dir.path(), &private).unwrap());
+        assert!(!write_back(&dir, &state, &private).unwrap());
         // An older one never goes back over a newer.
-        std::fs::write(&private, login("older-a", "older-r", far - 1000)).unwrap();
-        assert!(!write_back(dir.path(), &private).unwrap());
+        std::fs::write(&private, login("older-a", "older-r", far() - 1000)).unwrap();
+        assert!(!write_back(&dir, &state, &private).unwrap());
         assert!(std::fs::read_to_string(&host).unwrap().contains("new-r"));
+    }
+
+    #[test]
+    fn an_accepted_rotation_keeps_the_login_it_replaced_once_and_privately() {
+        use std::os::unix::fs::PermissionsExt;
+        let seed_text = login("a0", "r0", far());
+        let (_root, dir, state, _wt, private) = seeded(&seed_text);
+        std::fs::write(&private, login("a1", "r1", far() + 1000)).unwrap();
+        assert!(write_back(&dir, &state, &private).unwrap());
+        let prev = dir.join(PREV);
+        assert_eq!(std::fs::read_to_string(&prev).unwrap(), seed_text);
+        assert_eq!(
+            std::fs::metadata(&prev).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::write(&private, login("a2", "r2", far() + 2000)).unwrap();
+        assert!(write_back(&dir, &state, &private).unwrap());
+        assert!(
+            std::fs::read_to_string(&prev).unwrap().contains("r1"),
+            "one copy: the latest replaced"
+        );
+    }
+
+    /// The host file and its bytes, after `private` is offered as a
+    /// write-back; a rejection leaves both as seeded.
+    fn offered(seed_text: &str, forged: impl FnOnce(&Path)) -> (bool, String) {
+        let (_root, dir, state, _wt, private) = seeded(seed_text);
+        std::fs::remove_file(&private).unwrap();
+        forged(&private);
+        let took = write_back(&dir, &state, &private).unwrap();
+        assert_eq!(
+            dir.join(PREV).exists(),
+            took,
+            "a backup is made exactly when a pair is accepted"
+        );
+        (took, std::fs::read_to_string(dir.join(FILE)).unwrap())
+    }
+
+    #[test]
+    fn a_private_pair_that_did_not_rotate_the_refresh_token_is_rejected() {
+        let seed_text = login("a0", "r0", far());
+        let (took, host) = offered(&seed_text, |p| {
+            std::fs::write(p, login("other-access", "r0", far() + 1000)).unwrap();
+        });
+        assert!(!took);
+        assert_eq!(host, seed_text);
+    }
+
+    #[test]
+    fn a_private_pair_expiring_more_than_a_day_out_is_rejected() {
+        let seed_text = login("a0", "r0", far());
+        let day = 24 * 3600 * 1000;
+        let (took, host) = offered(&seed_text, |p| {
+            let at = crate::unix_now() * 1000 + day + 60_000;
+            std::fs::write(p, login("a1", "r1", at)).unwrap();
+        });
+        assert!(!took);
+        assert_eq!(host, seed_text);
+        let (took, _) = offered(&seed_text, |p| {
+            std::fs::write(p, login("a1", "r1", far() + 1000)).unwrap();
+        });
+        assert!(took, "a pair within the day is taken");
+    }
+
+    #[test]
+    fn an_oversize_private_file_is_rejected() {
+        let seed_text = login("a0", "r0", far());
+        let (took, host) = offered(&seed_text, |p| {
+            let pad = " ".repeat(MAX_PRIVATE_BYTES as usize);
+            std::fs::write(p, format!("{}{pad}", login("a1", "r1", far() + 1000))).unwrap();
+        });
+        assert!(!took);
+        assert_eq!(host, seed_text);
+    }
+
+    #[test]
+    fn a_symlinked_private_file_is_rejected_even_when_it_holds_a_good_rotation() {
+        let seed_text = login("a0", "r0", far());
+        let (took, host) = offered(&seed_text, |p| {
+            let good = p.with_file_name("elsewhere.json");
+            std::fs::write(&good, login("a1", "r1", far() + 1000)).unwrap();
+            std::os::unix::fs::symlink(&good, p).unwrap();
+        });
+        assert!(!took);
+        assert_eq!(host, seed_text);
+    }
+
+    #[test]
+    fn a_private_pair_with_changed_scopes_or_subscription_is_rejected() {
+        let with = |scopes: &str, sub: &str, refresh: &str, at: i64| {
+            format!(
+                r#"{{"claudeAiOauth":{{"accessToken":"a","refreshToken":"{refresh}","expiresAt":{at},"scopes":[{scopes}],"subscriptionType":"{sub}"}}}}"#
+            )
+        };
+        let seed_text = with(r#""user:inference""#, "pro", "r0", far());
+        let (took, host) = offered(&seed_text, |p| {
+            let widened = with(r#""user:inference","user:admin""#, "pro", "r1", far() + 1000);
+            std::fs::write(p, widened).unwrap();
+        });
+        assert!(!took, "changed scopes");
+        assert_eq!(host, seed_text);
+        let (took, _) = offered(&seed_text, |p| {
+            std::fs::write(p, with(r#""user:inference""#, "max", "r1", far() + 1000)).unwrap();
+        });
+        assert!(!took, "changed subscriptionType");
+        let (took, host) = offered(&seed_text, |p| {
+            std::fs::write(p, with(r#""user:inference""#, "pro", "r1", far() + 1000)).unwrap();
+        });
+        assert!(took, "the same fields with a rotated token are taken");
+        assert!(host.contains("r1"));
+    }
+
+    #[test]
+    fn a_private_pair_with_tokens_the_cli_would_not_write_is_rejected() {
+        let seed_text = login("a0", "r0", far());
+        for (access, refresh) in [("a 1", "r1"), ("a1", "r\\n1"), ("a1", ""), ("", "r1")] {
+            let (took, host) = offered(&seed_text, |p| {
+                std::fs::write(p, login(access, refresh, far() + 1000)).unwrap();
+            });
+            assert!(!took, "{access:?} {refresh:?}");
+            assert_eq!(host, seed_text);
+        }
+    }
+
+    #[test]
+    fn a_private_pair_with_no_recorded_seed_is_rejected() {
+        let (_root, dir, state, _wt, private) = seeded(&login("a0", "r0", far()));
+        std::fs::remove_dir_all(&state).unwrap();
+        std::fs::write(&private, login("a1", "r1", far() + 1000)).unwrap();
+        assert!(!write_back(&dir, &state, &private).unwrap());
+    }
+
+    #[test]
+    fn the_seed_record_holds_a_hash_of_the_refresh_token_never_the_token() {
+        let (_root, _dir, state, _wt, _private) = seeded(&login("a0", "r0-secret", far()));
+        for e in std::fs::read_dir(state.join(SEEDS)).unwrap().flatten() {
+            let text = std::fs::read_to_string(e.path()).unwrap();
+            assert!(!text.contains("r0-secret") && !text.contains("a0\""), "{text}");
+        }
     }
 
     #[test]
     fn write_back_does_not_resurrect_a_logged_out_host() {
-        let dir = tempfile::tempdir().unwrap();
-        let private = dir.path().join("private.json");
-        std::fs::write(
-            &private,
-            login("a", "r", crate::unix_now() * 1000 + 3_600_000),
-        )
-        .unwrap();
-        assert!(!write_back(dir.path(), &private).unwrap());
-        assert!(!dir.path().join(FILE).exists());
+        let (_root, dir, state, _wt, private) = seeded(&login("a0", "r0", far()));
+        std::fs::remove_file(dir.join(FILE)).unwrap();
+        std::fs::write(&private, login("a1", "r1", far())).unwrap();
+        assert!(!write_back(&dir, &state, &private).unwrap());
+        assert!(!dir.join(FILE).exists());
     }
 
     #[test]
     fn seed_copies_a_usable_host_login_and_removes_a_stale_copy_of_an_empty_one() {
-        let root = tempfile::tempdir().unwrap();
-        let dir = root.path().join("claude");
-        let worktree = root.path().join("work/task");
-        let private = root.path().join("work/task-provider/claude").join(FILE);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::create_dir_all(&worktree).unwrap();
-        std::fs::create_dir_all(private.parent().unwrap()).unwrap();
-        let far = crate::unix_now() * 1000 + 8 * 3600 * 1000;
-        std::fs::write(dir.join(FILE), login("a", "r", far)).unwrap();
-        seed(&dir, &worktree, &private);
-        assert_eq!(
-            std::fs::read_to_string(&private).unwrap(),
-            login("a", "r", far)
-        );
+        let text = login("a", "r", far());
+        let (root, dir, state, worktree, private) = seeded(&text);
+        assert_eq!(std::fs::read_to_string(&private).unwrap(), text);
+        assert!(state.join(SEEDS).is_dir());
         // The host file is emptied and the private copy is expired: it must
         // neither be restored over the empty file nor left to seed anything.
         std::fs::write(dir.join(FILE), login("", "", 0)).unwrap();
         std::fs::write(&private, login("a", "r", 1_000)).unwrap();
-        seed(&dir, &worktree, &private);
+        seed(&dir, &state_of(&root), &worktree, &private);
         assert!(!private.exists());
         assert_eq!(host_state(&dir), Host::Empty);
-    }
-
-    fn seed_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, String) {
-        let root = tempfile::tempdir().unwrap();
-        let dir = root.path().join("claude");
-        let worktree = root.path().join("work/task");
-        let private = root.path().join("work/task-provider/claude").join(FILE);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::create_dir_all(&worktree).unwrap();
-        std::fs::create_dir_all(private.parent().unwrap()).unwrap();
-        let far = crate::unix_now() * 1000 + 8 * 3600 * 1000;
-        let text = login("a", "r", far);
-        std::fs::write(dir.join(FILE), &text).unwrap();
-        (root, dir, worktree, private, text)
+        assert!(!Seed::path(&state, &private).exists(), "no record either");
     }
 
     #[test]
     fn seed_never_writes_through_a_private_symlink_to_the_host_login() {
-        let (_root, dir, worktree, private, text) = seed_fixture();
+        let text = login("a", "r", far());
+        let (_root, dir, state, worktree, private) = seeded(&text);
+        std::fs::remove_file(&private).unwrap();
         std::os::unix::fs::symlink(dir.join(FILE), &private).unwrap();
-        seed(&dir, &worktree, &private);
+        seed(&dir, &state, &worktree, &private);
         assert_eq!(std::fs::read_to_string(dir.join(FILE)).unwrap(), text);
         assert!(is_regular_file(&private));
         assert_eq!(std::fs::read_to_string(&private).unwrap(), text);
@@ -459,45 +762,41 @@ mod tests {
 
     #[test]
     fn seed_never_writes_through_a_private_symlink_to_an_unrelated_file() {
-        let (root, dir, worktree, private, text) = seed_fixture();
+        let text = login("a", "r", far());
+        let (root, dir, state, worktree, private) = seeded(&text);
         let victim = root.path().join("victim");
         std::fs::write(&victim, "precious").unwrap();
+        std::fs::remove_file(&private).unwrap();
         std::os::unix::fs::symlink(&victim, &private).unwrap();
-        seed(&dir, &worktree, &private);
+        seed(&dir, &state, &worktree, &private);
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
         assert!(is_regular_file(&private));
         assert_eq!(std::fs::read_to_string(&private).unwrap(), text);
     }
 
     #[test]
-    fn a_symlinked_private_copy_is_not_read_for_write_back() {
-        let (root, dir, _worktree, private, _text) = seed_fixture();
-        let later = root.path().join("later");
-        let far = crate::unix_now() * 1000 + 16 * 3600 * 1000;
-        std::fs::write(&later, login("x", "y", far)).unwrap();
-        std::os::unix::fs::symlink(&later, &private).unwrap();
-        assert!(!write_back(&dir, &private).unwrap());
+    fn seed_forgets_the_records_of_copies_that_are_gone() {
+        let (_root, dir, state, worktree, private) = seeded(&login("a", "r", far()));
+        let old = Seed::path(&state, &private);
+        assert!(old.exists());
+        std::fs::remove_dir_all(private.parent().unwrap().parent().unwrap()).unwrap();
+        let next = _root.path().join("work/next-provider/claude").join(FILE);
+        std::fs::create_dir_all(next.parent().unwrap()).unwrap();
+        seed(&dir, &state, &worktree, &next);
+        assert!(!old.exists());
+        assert!(Seed::path(&state, &next).exists());
     }
 
     #[test]
     fn seed_first_writes_back_a_later_private_login_from_a_sibling_task() {
-        let root = tempfile::tempdir().unwrap();
-        let dir = root.path().join("claude");
+        let (root, dir, state, worktree, private) = seeded(&login("a", "dead", far()));
+        // A sibling task seeded from the same host file, then rotated.
         let other = root.path().join("work/other-provider/claude").join(FILE);
-        let worktree = root.path().join("work/task");
-        let private = root.path().join("work/task-provider/claude").join(FILE);
-        for d in [
-            &dir,
-            &worktree,
-            other.parent().unwrap(),
-            private.parent().unwrap(),
-        ] {
-            std::fs::create_dir_all(d).unwrap();
-        }
-        let far = crate::unix_now() * 1000 + 8 * 3600 * 1000;
-        std::fs::write(dir.join(FILE), login("a", "dead", far)).unwrap();
-        std::fs::write(&other, login("b", "live", far + 5000)).unwrap();
-        seed(&dir, &worktree, &private);
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        seed(&dir, &state, &worktree, &other);
+        std::fs::write(&other, login("b", "live", far() + 5000)).unwrap();
+        std::fs::remove_file(&private).unwrap();
+        seed(&dir, &state, &worktree, &private);
         assert!(
             std::fs::read_to_string(dir.join(FILE))
                 .unwrap()
