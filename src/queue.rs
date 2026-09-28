@@ -535,17 +535,11 @@ pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String
         up.task = Some((text.clone(), text.chars().count() as i64, path_tokens));
     }
     if let Some(name) = &edit.provider {
-        f.providers.get(name).with_context(|| {
-            format!("unknown provider {name:?}; see `forge providers` for what is configured")
-        })?;
-        changes.push(format!(
-            "provider {} → {name}",
-            if old.provider.is_empty() {
-                "by role"
-            } else {
-                &old.provider
-            }
-        ));
+        if !f.providers.contains_key(name) {
+            bail!("unknown provider {name:?}; see `forge providers` for what is configured");
+        }
+        let was = Some(old.provider.as_str()).filter(|p| !p.is_empty());
+        changes.push(format!("provider {} → {name}", was.unwrap_or("by role")));
         up.provider = Some(name.clone());
     }
     let repo = PathBuf::from(&old.repo);

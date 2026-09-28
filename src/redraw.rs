@@ -65,6 +65,22 @@ pub fn open_arms(
     open.into_iter().map(|(l, w)| (l, w / total)).collect()
 }
 
+/// `experiment.toml`'s arms for `role` (level and weight), keeping the
+/// providers `configured` names; `None` when the operator declares no
+/// experiment, or none for `role`, or the file does not load (the real
+/// error surfaces when a task is filed).
+pub fn arms(
+    home: &std::path::Path,
+    role: &str,
+    configured: impl Fn(&str) -> bool,
+) -> Option<BTreeMap<String, f64>> {
+    let dir = crate::workflows::catalog_dir(home).ok()?;
+    let exp = experiment::load(&dir).ok().flatten()?;
+    let mut weights = exp.factors.get(role)?.clone();
+    weights.retain(|level, _| configured(level));
+    Some(weights)
+}
+
 /// `HH:MM` (UTC) of a unix second, for the note.
 fn clock(at: i64) -> String {
     let s = at.rem_euclid(86_400);

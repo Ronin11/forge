@@ -296,14 +296,8 @@ fn route_candidate(f: &Forge, t: &Task) -> Option<crate::redraw::Routing> {
     let hold = |p: &str| window_hold(f, p).ok().flatten();
     // The experiment is read only once the drawn provider is known to be
     // held, so a free queue never touches `experiment.toml`.
-    let weights = hold(&provider).and_then(|_| {
-        let exp = workflows::catalog_dir(&f.paths.home)
-            .ok()
-            .and_then(|dir| crate::experiment::load(&dir).ok().flatten())?;
-        let mut w = exp.factors.get(&role)?.clone();
-        w.retain(|level, _| f.providers.contains_key(level));
-        Some(w)
-    });
+    let weights = hold(&provider)
+        .and_then(|_| crate::redraw::arms(&f.paths.home, &role, |p| f.providers.contains_key(p)));
     Some(crate::redraw::decide(
         t,
         &role,
@@ -1189,6 +1183,17 @@ mod tests {
             workflow: workflow.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn the_hold_line_names_the_provider_once() {
+        let window = "rate window 5h at 100% (cap 90%), resets in 71m";
+        assert_eq!(
+            named("openai", window),
+            "openai: rate window 5h at 100% (cap 90%), resets in 71m"
+        );
+        let login = "openai: login refused since 01:00";
+        assert_eq!(named("openai", login), login);
     }
 
     #[test]
