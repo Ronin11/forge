@@ -369,6 +369,18 @@ fn print_priority(t: &crate::store::Task) {
     }
 }
 
+/// "supersedes M" on a task that replaces one (`forge add --supersedes`),
+/// "superseded by N" on the one it replaced.
+fn print_supersede(f: &Forge, t: &crate::store::Task) -> Result<()> {
+    if let Some(s) = t.supersedes {
+        out!("supersedes {s}");
+    }
+    if let Some(n) = f.store.superseded_by(t.id)? {
+        out!("superseded by {n}");
+    }
+    Ok(())
+}
+
 pub(super) fn show(id: i64, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let Some(t) = f.store.task(id)? else {
@@ -529,6 +541,7 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
     if let Some(r) = task.retry_of {
         out!("retry of   {r}");
     }
+    print_supersede(&f, &t)?;
     if !task.live_descendants.is_empty() {
         out!(
             "live       {}",
