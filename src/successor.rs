@@ -410,10 +410,17 @@ fn restart_all(units: &[String], tries: u32) -> Vec<(String, Unit)> {
 /// on the release it named, as `deploy-self` does. Nothing to do when a
 /// deploy already flipped `current`.
 fn take_over(f: &Forge, root: &std::path::Path, version: &str) {
+    let lock = match release::lock(root) {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("could not take the release lock to flip current to {version}: {e:#}");
+            return;
+        }
+    };
     if release::pointed_at(root, "current").as_deref() == Some(version) {
         return;
     }
-    let was = match release::flip(root, version) {
+    let was = match release::flip(&lock, root, version) {
         Ok(was) => was,
         Err(e) => {
             eprintln!("could not flip current to {version}: {e:#}");
@@ -435,7 +442,7 @@ fn take_over(f: &Forge, root: &std::path::Path, version: &str) {
     if !results.iter().any(|(_, o)| o.failed()) {
         return;
     }
-    match release::restore(root, &was) {
+    match release::restore(&lock, root, &was) {
         Ok(()) => {
             eprintln!(
                 "putting current back to {}",

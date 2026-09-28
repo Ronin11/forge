@@ -80,7 +80,7 @@ intake_loop() {
 
 intake_loop &
 intake_pid=$!
-trap 'kill "$intake_pid" 2>/dev/null' EXIT INT TERM
+trap 'kill "$intake_pid" 2>/dev/null; rm -f "$FORGE_PLUGIN_STATE/events.fifo"' EXIT INT TERM
 
 cursor="$FORGE_PLUGIN_STATE/cursor"
 if [ -f "$cursor" ]; then
@@ -90,8 +90,26 @@ else
     # first run never replays history.
     offset=$("$FORGE_BIN" snapshot | sed -n 's/.*"events_offset": *"\([0-9]*:[0-9]*\)".*/\1/p')
 fi
+# An empty offset (a failed snapshot, or a cursor file left empty by a
+# kill between the truncate and the write) would only make `events` fail.
+# Exit non-zero so restart = "on-failure" brings the plugin back, dropping
+# the empty cursor first so that restart starts from a fresh snapshot.
+if [ -z "$offset" ]; then
+    echo "github-issues: no events offset (empty cursor or failed snapshot)" >&2
+    rm -f "$cursor"
+    exit 1
+fi
 
-"$FORGE_BIN" events --since "$offset" --follow | while IFS= read -r line; do
+# A FIFO, not a pipeline: a pipeline's status is its last stage's (the
+# while loop's 0), and /bin/sh need not have pipefail, so a failed
+# `events` would read as a clean exit that on-failure never restarts.
+fifo="$FORGE_PLUGIN_STATE/events.fifo"
+rm -f "$fifo"
+mkfifo "$fifo"
+"$FORGE_BIN" events --since "$offset" --follow >"$fifo" &
+events_pid=$!
+
+while IFS= read -r line; do
     offset=$(printf '%s\n' "$line" | sed -n 's/.*"cursor":"\([0-9]*:[0-9]*\)".*/\1/p')
     type=$(printf '%s\n' "$line" | sed -n 's/.*"type":"\([^"]*\)".*/\1/p')
     if [ "$type" = task_done ]; then
@@ -117,5 +135,14 @@ fi
             fi
         fi
     fi
-    printf '%s\n' "$offset" >"$cursor"
-done
+    # Through a temporary file and a rename, so a kill mid-write never
+    # leaves the cursor empty.
+    if [ -n "$offset" ]; then
+        printf '%s\n' "$offset" >"$cursor.tmp" && mv -f "$cursor.tmp" "$cursor"
+    fi
+done <"$fifo"
+
+wait "$events_pid"
+events_status=$?
+rm -f "$fifo"
+exit "$events_status"

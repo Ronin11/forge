@@ -108,6 +108,8 @@ fn setup(e: &Env) {
                 "deploy-command",
                 "--arg",
                 "host=shop-laptop",
+                "--arg",
+                "dest=/srv/shop",
                 "--check",
                 "true",
             ],
