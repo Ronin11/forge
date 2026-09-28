@@ -147,7 +147,7 @@ fn mask_word(word: &str, after_scheme: bool) -> String {
     {
         return masked;
     }
-    let token = word.trim_start_matches(|c| matches!(c, '=' | ':' | '/'));
+    let token = word.trim_start_matches(['=', ':', '/']);
     let token = token.rsplit(['=', ':']).next().unwrap_or(token);
     let credential = (token.len() >= 12 && TOKEN_PREFIXES.iter().any(|p| token.starts_with(p)))
         || (token.starts_with("eyJ") && token.len() >= 30 && token.contains('.'));

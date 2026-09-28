@@ -99,7 +99,7 @@ fn respond(req: Request, resp: Reply) {
 }
 
 /// Route one `/api/chat...` request and respond to it.
-pub(crate) fn route(mut req: Request, forge: &Forge, path: &str) {
+pub(crate) fn route(req: Request, forge: &Forge, path: &str) {
     let rest = path
         .strip_prefix("/api/chat")
         .unwrap_or("")

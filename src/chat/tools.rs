@@ -347,7 +347,7 @@ mod tests {
         std::fs::write(&inside, "one\ntwo password=hunter22\nthree\n").unwrap();
         let outside = d.path().join("outside.txt");
         std::fs::write(&outside, "not a log\n").unwrap();
-        let mut attempt = |no: i64, path: &std::path::Path| {
+        let attempt = |no: i64, path: &std::path::Path| {
             f.store
                 .insert_attempt(&Attempt {
                     task_id: id,
