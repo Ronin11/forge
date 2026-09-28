@@ -67,6 +67,12 @@ const CALL_SITES: &[&str] = &[
     "hand_commit_count:repo",
     "remote_branch_exists:\".\"",
     "remote_branch_sha:\".\"",
+    // Caller-named: a registered repository's bare origin, which
+    // `forge init --mirror` hooks.
+    "is_bare:dir",
+    "hooks_dir:dir",
+    "config_get:dir",
+    "config_set:dir",
 ];
 
 fn call_sites() -> Vec<String> {
