@@ -422,8 +422,8 @@ async fn refresh_on_host(l: &Launch<'_>, dir: &Path, window: i64) -> crate::logi
             let _ = crate::login::record_probe(dir, &record);
             if !record.refreshed() {
                 let text = format!(
-                    "login    the refresh probe left the host login's expiry unchanged; no further probe before {}",
-                    crate::render::utc(record.next_probe_at(c.expires_at_ms) / 1000)
+                    "login    the refresh probe left the host login's expiry unchanged; no further probe for {}m",
+                    (record.next_probe_at(c.expires_at_ms) - now).max(0) / 60_000
                 );
                 l.report.emit(l.task_id, Event::Note { text: &text });
             }
