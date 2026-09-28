@@ -38,7 +38,6 @@ pub use attempts::{Attempt, AttemptState, FinishAttempt, Op, RateLimitSample, se
 pub use daily::DailyStat;
 pub use deploys::{Assessment, Deploy, DeployTarget, FinishDeploy};
 pub use factors::{FactorLevelStat, ROLES};
-pub use holds::LoginHold;
 pub use jobs::{Job, JobEffect, JobStat, JobState, JobStep, PerDayRefused};
 pub use messages::{Direction, InsertMessage, Message, MessageFilter};
 pub use owners::{Caller, Owner, start_of};
