@@ -3,6 +3,7 @@
 //! the trusted base commit so the branch under test cannot change what it
 //! is verified against. `<FORGE_HOME>/config.toml` is the operator's.
 
+mod jev;
 use crate::agent::{Provider, Runner};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -430,10 +431,8 @@ struct ProviderRaw {
     /// The environment variable holding the Cloudflare account id, for the
     /// jev runner; see `agent::Provider::account_id_env`.
     account_id_env: Option<String>,
-    /// The jev runner's host: `auto`, `cloudflare` or `typesafe`; see
-    /// `agent::JevBackend`.
+    /// The jev runner's host and Cloudflare keys; see `config::jev`.
     backend: Option<String>,
-    /// The jev runner's Cloudflare endpoint, token variable and model.
     cloudflare_url: Option<String>,
     cloudflare_api_key_env: Option<String>,
     cloudflare_model: Option<String>,
@@ -967,17 +966,9 @@ journal_control = 0.0
 # base_url = \"http://dev.home:11434/v1\"
 # model = \"qwen3-coder:30b\"
 #
-# runner = \"jev\" is typed judgment, not text: TypeSafe's Jev, one HTTP
-# call answering a directive step's outcomes (and its [[questions]]) with a
-# choice, probabilities and a confidence. Also refused for anything but such
-# a step. Every key below is its default; the `*_env` keys name environment
-# variables, never hold the values. Output tokens are free.
-#
-# Until Cloudflare's AI Gateway credits run out, `backend = \"auto\"` posts
-# through Cloudflare Workers AI first (when its token is set); its 402
-# (insufficient balance) switches the process to TypeSafe for good and
-# leaves `jev-cloudflare-exhausted` beside the worker's credentials drop-in
-# so later processes go straight there. `cloudflare` or `typesafe` forces one.
+# runner = \"jev\" is TypeSafe's typed judgment of a directive step's outcomes
+# (docs/EXECUTION.md, \"The judgment tier\"). Every key below is its default;
+# `*_env` keys name variables. `auto` asks Cloudflare first until its 402.
 #
 # [providers.jev]
 # runner = \"jev\"
@@ -986,7 +977,6 @@ journal_control = 0.0
 # api_key_env = \"TYPESAFE_API_KEY\"
 # model = \"jev-latest\"
 # price_usd_per_million_input = 0.042
-# price_usd_per_million_output = 0
 # cloudflare_url = \"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run\"
 # account_id_env = \"CLOUDFLARE_ACCOUNT_ID\"
 # cloudflare_api_key_env = \"CLOUDFLARE_API_TOKEN\"
@@ -1194,7 +1184,7 @@ fn build_providers(
             ..Provider::default()
         },
     );
-    for (name, p) in raw {
+    for (name, mut p) in raw {
         let runner = match &p.runner {
             Some(r) => r
                 .parse::<Runner>()
@@ -1202,63 +1192,24 @@ fn build_providers(
             None if name == "anthropic" => Runner::ClaudeCli,
             None => bail!("providers.{name}: needs a `runner`"),
         };
-        let jev = runner == Runner::Jev;
-        let mut p = p;
-        // A jev table written for Cloudflare alone (its `base_url` naming
-        // `{account_id}`) keeps its keys as Cloudflare's; TypeSafe gets the
-        // defaults.
-        if jev
-            && p.cloudflare_url.is_none()
-            && p.base_url
-                .as_deref()
-                .is_some_and(|u| u.contains("{account_id}"))
-        {
-            p.cloudflare_url = p.base_url.take();
-            if p.cloudflare_api_key_env.is_none() {
-                p.cloudflare_api_key_env = p.api_key_env.take();
-            }
-            if p.cloudflare_model.is_none() {
-                p.cloudflare_model = p.model.take();
-            }
-        }
-        let jev_backend = match &p.backend {
-            Some(b) if jev => b
-                .parse::<crate::agent::JevBackend>()
-                .map_err(|e| anyhow::anyhow!("providers.{name}.backend: {e}"))?,
-            Some(_) => bail!("providers.{name}.backend: only a jev provider has a backend"),
-            None => crate::agent::JevBackend::Auto,
-        };
-        let jev_default = |v: Option<String>, d: &str| v.or_else(|| jev.then(|| d.into()));
+        let jev_backend = jev::settle(&name, runner == Runner::Jev, &mut p)?;
         providers.insert(
             name.clone(),
             Provider {
                 name,
                 runner,
-                model: jev_default(p.model, crate::agent::JEV_DEFAULT_MODEL),
-                base_url: jev_default(p.base_url, crate::agent::JEV_DEFAULT_URL),
-                api_key_env: jev_default(p.api_key_env, crate::agent::JEV_DEFAULT_KEY_ENV),
-                account_id_env: jev_default(
-                    p.account_id_env,
-                    crate::agent::JEV_DEFAULT_ACCOUNT_ENV,
-                ),
+                model: p.model,
+                base_url: p.base_url,
+                api_key_env: p.api_key_env,
+                account_id_env: p.account_id_env,
                 jev_backend,
-                cloudflare_url: jev_default(p.cloudflare_url, crate::agent::JEV_CLOUDFLARE_URL),
-                cloudflare_key_env: jev_default(
-                    p.cloudflare_api_key_env,
-                    crate::agent::JEV_CLOUDFLARE_KEY_ENV,
-                ),
-                cloudflare_model: jev_default(
-                    p.cloudflare_model,
-                    crate::agent::JEV_CLOUDFLARE_MODEL,
-                ),
+                cloudflare_url: p.cloudflare_url,
+                cloudflare_key_env: p.cloudflare_api_key_env,
+                cloudflare_model: p.cloudflare_model,
                 env: p.env.into_iter().collect(),
                 extra_args: p.extra_args,
                 notes: p.notes,
-                price_input_per_million: p.price_usd_per_million_input.unwrap_or(if jev {
-                    crate::agent::JEV_PRICE_INPUT_PER_MILLION
-                } else {
-                    0.0
-                }),
+                price_input_per_million: p.price_usd_per_million_input.unwrap_or(0.0),
                 price_output_per_million: p.price_usd_per_million_output.unwrap_or(0.0),
                 price_cache_read_per_million: p.price_usd_per_million_cache_read,
                 price_per_request: p.price_usd_per_premium_request.unwrap_or(0.0),

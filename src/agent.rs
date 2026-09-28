@@ -154,13 +154,10 @@ pub struct Provider {
     pub api_key_env: Option<String>,
     /// Names the variable holding a jev provider's Cloudflare account id.
     pub account_id_env: Option<String>,
-    /// Which host a jev provider posts to; see `jev::JevBackend`.
+    /// A jev provider's host (`jev::JevBackend`) and its Cloudflare keys.
     pub jev_backend: JevBackend,
-    /// A jev provider's Cloudflare Workers AI endpoint, while it is used.
     pub cloudflare_url: Option<String>,
-    /// Names the variable holding a jev provider's Cloudflare API token.
     pub cloudflare_key_env: Option<String>,
-    /// The model Cloudflare names Jev by.
     pub cloudflare_model: Option<String>,
     pub env: Vec<(String, String)>,
     /// Extra argv this provider always adds, after the launcher's own
