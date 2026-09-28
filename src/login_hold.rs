@@ -13,16 +13,22 @@
 //! operator's whole remedy. The hold is announced once, as a
 //! `provider_held` event the notify and signal plugins carry.
 
-use crate::agent::{Outcome, Runner};
 use crate::agent::refusal::{Probe, probe_login};
+use crate::agent::{Outcome, Runner};
 use crate::ctx::Forge;
 use crate::report::Event;
 use crate::unix_now;
 use anyhow::Result;
-use std::sync::OnceLock;
+use std::collections::BTreeSet;
+use std::sync::Mutex;
 
 /// How often the worker re-probes a held provider.
 pub const PROBE_EVERY_SECS: i64 = 600;
+
+/// The providers this process has probed, or held itself: a worker probes
+/// a hold it did not see begin as soon as it starts (the operator may have
+/// logged in meanwhile), and one it began or probed ten minutes on.
+static PROBED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 /// What the operator runs to log `provider` in again.
 fn login_command(f: &Forge, provider: &str) -> &'static str {
@@ -68,6 +74,10 @@ pub fn hold(f: &Forge, provider: &str, out: &Outcome, task_id: i64) -> Result<()
         .find(|l| !l.is_empty())
         .unwrap_or("the provider refused the agent login");
     if f.store.hold_login(provider, said, now)? {
+        PROBED
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(provider.to_string());
         let reason = format!("{provider}: {}", words(f, provider, now));
         f.report.emit(
             task_id,
@@ -97,8 +107,13 @@ pub fn held(f: &Forge, provider: &str) -> Result<Option<(String, i64)>> {
 /// Records one probe of `provider` and, when it answered, ends the hold
 /// and announces that. True when the hold ended.
 fn settle(f: &Forge, provider: &str, probe: &Probe) -> Result<bool> {
-    f.store
-        .record_probe(provider, probe.ok, probe.cost_usd, &probe.detail, unix_now())?;
+    f.store.record_probe(
+        provider,
+        probe.ok,
+        probe.cost_usd,
+        &probe.detail,
+        unix_now(),
+    )?;
     let released = probe.ok && f.store.release_login(provider)?;
     if released {
         f.report.emit(0, Event::ProviderReleased { provider });
@@ -117,11 +132,13 @@ fn probe_dir(f: &Forge) -> std::path::PathBuf {
 /// The worker's probe, once per pass: each held provider not yet probed by
 /// this process, or last probed ten minutes ago, is asked for one token.
 pub async fn probe_due(f: &Forge) {
-    static STARTED: OnceLock<i64> = OnceLock::new();
-    let started = *STARTED.get_or_init(unix_now);
     for h in f.store.login_holds().unwrap_or_default() {
         let last = h.probed_at.unwrap_or(h.since).max(h.since);
-        if last >= started && unix_now() - last < PROBE_EVERY_SECS {
+        let first = PROBED
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(h.provider.clone());
+        if !first && unix_now() - last < PROBE_EVERY_SECS {
             continue;
         }
         let Some(provider) = f.providers.get(&h.provider).cloned() else {

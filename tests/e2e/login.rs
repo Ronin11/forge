@@ -5,6 +5,7 @@
 use crate::support::*;
 use std::path::{Path, PathBuf};
 use std::process::Output;
+use std::time::Duration;
 
 fn login(access: &str, refresh: &str, expires_at: i64) -> String {
     format!(
@@ -147,4 +148,107 @@ fn doctor_shows_the_logins_expiry_and_a_recent_write_back() {
     )
     .unwrap();
     assert!(out(&e).contains("write-back yes (2m ago)"));
+}
+
+/// 2026-09-26 23:48 to 02:24: an expired login answered every launch with
+/// 'Failed to authenticate', and 40 attempts on 15 tasks were spent on it.
+/// A refused login is a refusal: refunded, the provider held (announced
+/// once), doctor red; the hold names no time and ends when a probe answers,
+/// and the task then lands on the base it was queued with.
+#[test]
+fn an_expired_login_is_a_hold_and_a_doctor_fail_never_a_burned_attempt() {
+    let e = Env::new();
+    let id = e.add(&[]);
+    let base = |e: &Env| -> (String, String) {
+        e.db()
+            .query_row(
+                "SELECT base_sha, verify_base FROM tasks WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    };
+    let stderr_path = e.home.join("worker-stderr.log");
+    let stderr_file = std::fs::File::create(&stderr_path).unwrap();
+    let mut worker = Worker::spawn(
+        e.cmd("login-expired.sh")
+            .args(["work", "--once"])
+            .stderr(stderr_file),
+    );
+    let log = || std::fs::read_to_string(&stderr_path).unwrap_or_default();
+    assert!(
+        wait_until(
+            || log().contains("login expired since") && log().contains("holding"),
+            Duration::from_secs(30)
+        ),
+        "the worker never held the provider: {}",
+        log()
+    );
+    worker.stop();
+    let a = e.attempts(id);
+    assert_eq!(a.len(), 1, "one launch, then the hold: {a:?}");
+    assert_eq!(a[0].2, "the provider refused the agent login");
+    let refunded: i64 = e
+        .db()
+        .query_row(
+            "SELECT refunded FROM attempts WHERE task_id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(refunded, 1, "the refusal does not count as an attempt");
+    let (state, reason, _) = e.task(id);
+    assert_eq!(state, "queued", "{reason}");
+    let queued_on = base(&e);
+    let held: i64 = e
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM provider_holds WHERE provider='anthropic'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(held, 1);
+    let events = std::fs::read_to_string(e.home.join("events.jsonl")).unwrap();
+    assert_eq!(
+        events.matches("\"type\":\"provider_held\"").count(),
+        1,
+        "the hold is announced once: {events}"
+    );
+
+    let o = e.forge("login-expired.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(!o.status.success(), "{out}");
+    assert!(
+        out.lines().any(|l| l.contains("FAIL")
+            && l.contains("anthropic")
+            && l.contains("login expired since")
+            && l.contains("run claude login as the operator, then forge doctor")),
+        "{out}"
+    );
+
+    // The login answers again: the next worker's first probe releases the
+    // hold, and the task runs on the base and suite it was queued with.
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, _) = e.task(id);
+    assert_eq!(state, "succeeded", "{reason}");
+    assert_eq!(base(&e), queued_on);
+    let a = e.attempts(id);
+    assert_eq!((a.len(), a[1].1.as_str()), (2, "succeeded"), "{a:?}");
+    let probes: i64 = e
+        .db()
+        .query_row("SELECT COUNT(*) FROM provider_probes WHERE ok=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(probes, 1);
+    let events = std::fs::read_to_string(e.home.join("events.jsonl")).unwrap();
+    assert!(
+        events.contains("\"type\":\"provider_released\""),
+        "{events}"
+    );
+    let o = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(!out.contains("login expired since"), "{out}");
 }

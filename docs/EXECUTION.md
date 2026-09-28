@@ -310,3 +310,13 @@ the host file's refresh token dead, and the next host-side refresh empties the f
 - a host file with an empty or missing token is never seeded: the launch is a provider refusal
   (held, not counted as an attempt), and `forge doctor` fails the `anthropic` row with
   "run `claude login`". That row also shows the token's `expiresAt` and any write-back in the last 8 hours.
+- a login the provider itself refuses (claude's "Failed to authenticate", an HTTP 401 or 403 API
+  error, codex's and copilot's equivalents, or one on stderr alone) is a provider refusal like a
+  spent window: the attempt is refunded and the task requeued on the base and hidden suite it had,
+  its attempt count untouched. The provider is held (`src/login_hold.rs`), and the hold names no
+  time: it ends when a one-token probe answers. The worker probes a held provider when it starts
+  and every 10 minutes after, each probe recorded in `provider_probes` with its cost, and
+  `forge doctor` probes it too, so logging in and running `forge doctor` releases it. Until then
+  `forge doctor` fails the provider's row ("anthropic: login expired since 23:48; run claude login
+  as the operator, then forge doctor"), and the notify and signal plugins carry the hold once, as
+  a `provider_held` event, not once per attempt.

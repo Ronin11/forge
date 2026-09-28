@@ -104,12 +104,21 @@ mod tests {
         assert!(s.hold_login("anthropic", "expired", 100).unwrap());
         assert!(!s.hold_login("anthropic", "again", 200).unwrap());
         let h = s.login_hold("anthropic").unwrap().unwrap();
-        assert_eq!((h.since, h.reason.as_str(), h.probed_at), (100, "expired", None));
+        assert_eq!(
+            (h.since, h.reason.as_str(), h.probed_at),
+            (100, "expired", None)
+        );
         s.record_probe("anthropic", false, 0.002, "still expired", 700)
             .unwrap();
-        assert_eq!(s.login_hold("anthropic").unwrap().unwrap().probed_at, Some(700));
+        assert_eq!(
+            s.login_hold("anthropic").unwrap().unwrap().probed_at,
+            Some(700)
+        );
         assert_eq!(s.probes_since("anthropic", 0).unwrap(), 1);
-        assert!((s.spent_since(0).unwrap() - 0.002).abs() < 1e-9, "a probe is spend");
+        assert!(
+            (s.spent_since(0).unwrap() - 0.002).abs() < 1e-9,
+            "a probe is spend"
+        );
         assert_eq!(s.login_holds().unwrap().len(), 1);
         assert!(s.release_login("anthropic").unwrap());
         assert!(!s.release_login("anthropic").unwrap());

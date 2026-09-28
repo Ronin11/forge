@@ -169,9 +169,7 @@ impl Failure {
             }
         };
         match self {
-            Failure::RateLimited | Failure::LoginRefused | Failure::EndedEarly(_) => {
-                self.reason()
-            }
+            Failure::RateLimited | Failure::LoginRefused | Failure::EndedEarly(_) => self.reason(),
             Failure::Error { subtype, .. } => quote(format!(
                 "agent result {:?}",
                 subtype.as_deref().unwrap_or("error")

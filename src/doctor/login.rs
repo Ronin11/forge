@@ -23,7 +23,12 @@ pub(super) fn anthropic(paths: &Paths) -> Vec<Check> {
     let mut anthropic = None;
     for (provider, probe) in &probed {
         let row = if probe.ok {
-            check(provider, Status::Ok, "the login answered a probe; hold released", "")
+            check(
+                provider,
+                Status::Ok,
+                "the login answered a probe; hold released",
+                "",
+            )
         } else {
             let since = f.store.login_hold(provider).ok().flatten();
             let since = since.map_or(unix_now(), |h| h.since);

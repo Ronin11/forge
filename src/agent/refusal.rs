@@ -73,8 +73,7 @@ pub(super) fn read_claude_error(out: &mut Outcome, v: &Value) {
 pub(super) fn read_stderr(out: Result<Outcome>) -> Result<Outcome> {
     out.map(|mut o| {
         let answered = o.got_result && !o.is_error;
-        if !answered && !o.rate_limited && o.exit_code != Some(0) && login_failure(&o.stderr_text)
-        {
+        if !answered && !o.rate_limited && o.exit_code != Some(0) && login_failure(&o.stderr_text) {
             login_refused(&mut o);
         }
         o
@@ -99,28 +98,61 @@ fn login_probe_argv(provider: &Provider, dir: &Path) -> Option<Vec<String>> {
     let s = |v: &[&str]| v.iter().map(|a| a.to_string()).collect::<Vec<_>>();
     let mut argv = match provider.runner {
         Runner::ClaudeCli => {
-            let mut a = s(&[&super::real_bin(&super::agent_bin()), "--print", "--verbose"]);
-            a.extend(s(&["--output-format", "stream-json", "--strict-mcp-config"]));
-            a.extend(s(&["--disable-slash-commands", "--setting-sources", "project,local"]));
-            a.extend(s(&["--max-turns", "1", "--tools", "", "--no-session-persistence"]));
+            let mut a = s(&[
+                &super::real_bin(&super::agent_bin()),
+                "--print",
+                "--verbose",
+            ]);
+            a.extend(s(&[
+                "--output-format",
+                "stream-json",
+                "--strict-mcp-config",
+            ]));
+            a.extend(s(&[
+                "--disable-slash-commands",
+                "--setting-sources",
+                "project,local",
+            ]));
+            a.extend(s(&[
+                "--max-turns",
+                "1",
+                "--tools",
+                "",
+                "--no-session-persistence",
+            ]));
             a
         }
         Runner::CodexCli => {
             let mut a = s(&[&super::real_bin(&super::codex_bin()), "exec"]);
-            a.extend(s(&["--skip-git-repo-check", "--json", "-s", "read-only", "-C"]));
+            a.extend(s(&[
+                "--skip-git-repo-check",
+                "--json",
+                "-s",
+                "read-only",
+                "-C",
+            ]));
             a.push(dir.display().to_string());
             a
         }
         Runner::CopilotCli => {
             let mut a = s(&[&super::real_bin(&super::copilot_bin()), "--output-format"]);
-            a.extend(s(&["json", "--disable-builtin-mcps", "--no-auto-update", "-C"]));
+            a.extend(s(&[
+                "json",
+                "--disable-builtin-mcps",
+                "--no-auto-update",
+                "-C",
+            ]));
             a.push(dir.display().to_string());
             a
         }
         Runner::Chat | Runner::Jev => return None,
     };
     if let Some(m) = provider.model.as_deref().filter(|m| !m.is_empty()) {
-        let flag = if provider.runner == Runner::CodexCli { "-m" } else { "--model" };
+        let flag = if provider.runner == Runner::CodexCli {
+            "-m"
+        } else {
+            "--model"
+        };
         argv.extend(s(&[flag, m]));
     }
     argv.extend(provider.extra_args.iter().cloned());
@@ -146,7 +178,9 @@ pub fn probe_login(provider: &Provider, dir: &Path) -> Probe {
     let mut spawned = Err(std::io::Error::other("never spawned"));
     for _ in 0..20 {
         let mut cmd = super::command_in(None, dir, &argv, &extra);
-        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         spawned = cmd.spawn();
         match &spawned {
             Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
@@ -199,7 +233,10 @@ fn read_probe(provider: &Provider, exited_ok: bool, stdout: &str, stderr: &str) 
     });
     let mut tally = super::CopilotTally::default();
     let mut cost = None;
-    for v in stdout.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
+    for v in stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+    {
         match provider.runner {
             Runner::ClaudeCli if v["type"] == "result" => {
                 out.got_result = true;
@@ -451,14 +488,16 @@ mod tests {
         let p = read_probe(&claude(), false, refused, "");
         assert!(!p.ok);
         assert!(p.detail.contains("OAuth session expired"), "{}", p.detail);
-        let answered = r#"{"type":"result","is_error":false,"total_cost_usd":0.0004,"result":"ok"}"#;
+        let answered =
+            r#"{"type":"result","is_error":false,"total_cost_usd":0.0004,"result":"ok"}"#;
         let p = read_probe(&claude(), true, answered, "");
         assert!(p.ok && (p.cost_usd - 0.0004).abs() < 1e-12, "{p:?}");
         let codex = Provider {
             runner: Runner::CodexCli,
             ..Provider::default()
         };
-        let failed = r#"{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized"}}"#;
+        let failed =
+            r#"{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized"}}"#;
         assert!(!read_probe(&codex, false, failed, "").ok);
         let said = r#"{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}"#;
         assert!(read_probe(&codex, true, said, "").ok);
