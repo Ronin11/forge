@@ -493,9 +493,9 @@ which is why no crashed worker's plugins were found on the machine).
     a store test with a held writer that asserts a current-version
     `Store::open` returns without waiting on it.
 
-16. **A plugin that fails its first `forge snapshot`, or finds an empty
-    cursor file, exits 0 and is never restarted.** `notify.sh:27-42`,
-    `github-issues.sh:85-94`, `signal.sh:322-331` take their start offset
+16. **`notify.sh` and `github-issues.sh`, on a failed first `forge
+    snapshot` or an empty cursor file, exit 0 and are never restarted.**
+    `notify.sh:27-42` and `github-issues.sh:85-94` take their start offset
     from `forge snapshot | sed` when no cursor file exists, or from
     `cat cursor`; a `snapshot` that fails (store locked past its timeout,
     finding 15; a release skew) or a cursor file truncated by a kill
@@ -505,11 +505,24 @@ which is why no crashed worker's plugins were found on the machine).
     `while` at the end of the pipeline, which is 0 (no `pipefail`, `set
     -u` only). `restart = "on-failure"` (the default, plugins.rs:621) does
     not restart a zero exit, so the plugin is `stopped: exit 0` until the
-    worker restarts. *Task:* in the four plugins, exit non-zero when the
-    offset is empty or the `events` process fails (`set -o pipefail` where
-    the shell allows it, else check `$?` through a fifo as `statusline.sh`
-    does), write the cursor through a temporary file and `mv`, and add
-    the case to `tests/e2e/event_cursors.rs`.
+    worker restarts. Confirmed by running both scripts against a stub
+    `forge` whose `snapshot` and `events` fail. The other two scripts that
+    read a cursor are not this defect. `signal.sh:322-331` takes its offset
+    the same way, but it runs `outbound` and `inbound` as background loops
+    and ends with `while kill -0 ...; done; log "a loop exited; stopping so
+    the supervisor restarts both"; exit 1` (545-551), so a dead loop is a
+    non-zero exit and the supervisor restarts it on the backoff schedule;
+    with a persistently failing `snapshot` that is a restart loop, not a
+    silent stop. `statusline.sh:80-105` uses a fifo and a background
+    `events`, so a failed `events` does not end it either: its heartbeat
+    loop (118) keeps running and the plugin stays running without following
+    events, which is a different defect from an exit 0 and is not
+    recorded here. *Task:* in `notify.sh` and `github-issues.sh`, exit
+    non-zero when the offset is empty or the `events` process fails (`set
+    -o pipefail` where the shell allows it, else check `$?` through a
+    fifo as `statusline.sh` does), write the cursor through a temporary
+    file and `mv`, and add the case to `tests/e2e/event_cursors.rs`.
+    Leave `signal.sh` out of the exit-status change.
 
 17. **The subscription replays, or drops, depending on the plugin, and
     the one signal the CLI gives to say so is ignored (the 249-message
