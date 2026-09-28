@@ -10,6 +10,17 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// A private staging path for one operation, including concurrent calls in one process.
+pub(crate) fn temporary_path(parent: &Path, name: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    parent.join(format!(
+        ".{name}.tmp.{}.{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
 /// The workspace's own release binaries, in the order `scripts/release.sh`
 /// packs them (see `tests/release.rs`).
 pub const BINS: &[&str] = &[
@@ -114,11 +125,8 @@ pub fn install(_lock: &Lock, root: &Path, src: &Path, id: &str) -> Result<bool> 
         "{} has no forge",
         src.display()
     );
-    let tmp = root
-        .join("releases")
-        .join(format!(".{id}.tmp.{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp)?;
+    let tmp = temporary_path(&root.join("releases"), id);
+    std::fs::create_dir(&tmp)?;
     for b in BINS {
         let from = src.join(b);
         if from.is_file() {
@@ -132,10 +140,9 @@ pub fn install(_lock: &Lock, root: &Path, src: &Path, id: &str) -> Result<bool> 
 }
 
 /// Make `<root>/<name>` a symlink to `releases/<id>`, atomically. The
-/// temporary name carries the pid, as the script's does.
+/// temporary name carries the pid and a per-process counter.
 fn point(_lock: &Lock, root: &Path, name: &str, id: &str) -> Result<()> {
-    let tmp = root.join(format!(".{name}.new.{}", std::process::id()));
-    let _ = std::fs::remove_file(&tmp);
+    let tmp = temporary_path(root, name);
     std::os::unix::fs::symlink(Path::new("releases").join(id), &tmp)?;
     std::fs::rename(&tmp, root.join(name))?;
     Ok(())
@@ -175,6 +182,71 @@ pub fn restore(lock: &Lock, root: &Path, was: &(Option<String>, Option<String>))
         }
     }
     Ok(())
+}
+
+/// Put `staged` back to what `current` names (gone when `current` names
+/// nothing), but only while it still names `id`, the release a deploy
+/// staged: a later deploy's stage is left alone. Returns whether it moved.
+pub fn unstage(lock: &Lock, root: &Path, id: &str) -> Result<bool> {
+    if pointed_at(root, "staged").as_deref() != Some(id) {
+        return Ok(false);
+    }
+    match pointed_at(root, "current") {
+        Some(live) => point(lock, root, "staged", &live)?,
+        None => std::fs::remove_file(root.join("staged"))?,
+    }
+    Ok(true)
+}
+
+/// Withdraw the stage request whatever it names, as every flip of `current`
+/// other than `deploy-self`'s does first: a flip decides what runs, and a
+/// `staged` left behind would start a successor that flips it back.
+/// Returns what `staged` named.
+pub fn drop_staged(_lock: &Lock, root: &Path) -> Result<Option<String>> {
+    let named = pointed_at(root, "staged");
+    match std::fs::remove_file(root.join("staged")) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(named),
+    }
+}
+
+/// Acknowledge the stage request for `id`, the release that now runs:
+/// remove `staged` only while it still names `id`, so a later deploy's
+/// stage is left alone. Returns whether it was removed.
+pub fn acknowledge_staged(_lock: &Lock, root: &Path, id: &str) -> Result<bool> {
+    if pointed_at(root, "staged").as_deref() != Some(id) {
+        return Ok(false);
+    }
+    std::fs::remove_file(root.join("staged"))?;
+    Ok(true)
+}
+
+/// Whether `staged` is older than `current` in `previous`'s lineage: it
+/// names `previous`, or `current` was pointed somewhere after it was
+/// staged (an upgrade, a hand flip back to `previous`). Such a stage was
+/// overtaken and must not start a successor that flips `current` back.
+pub fn staged_overtaken(root: &Path) -> bool {
+    let Some(staged) = pointed_at(root, "staged") else {
+        return false;
+    };
+    if pointed_at(root, "current").as_deref() == Some(staged.as_str()) {
+        return false;
+    }
+    if pointed_at(root, "previous").as_deref() == Some(staged.as_str()) {
+        return true;
+    }
+    let pointed = |name: &str| {
+        std::fs::symlink_metadata(root.join(name))
+            .and_then(|m| m.modified())
+            .ok()
+    };
+    matches!((pointed("staged"), pointed("current")), (Some(s), Some(c)) if s < c)
+}
+
+/// Take the pointers' lock only if nobody holds it: for a worker's tick,
+/// which must not wait out a `deploy-self` build.
+pub fn try_lock(root: &Path) -> Option<Lock> {
+    lock_within(root, Duration::ZERO).ok()
 }
 
 /// Make the symlink `link` point at `target`, replacing whatever is there;
@@ -275,6 +347,35 @@ mod tests {
     }
 
     #[test]
+    fn a_staged_release_is_overtaken_by_a_later_flip_or_by_naming_previous() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("bin");
+        let lock = lock(&root).unwrap();
+        for id in ["a", "b", "c"] {
+            install(&lock, &root, &fake_src(dir.path(), id), id).unwrap();
+        }
+        flip(&lock, &root, "a").unwrap();
+        assert!(!staged_overtaken(&root), "nothing staged");
+        std::thread::sleep(Duration::from_millis(20));
+        point(&lock, &root, "staged", "b").unwrap();
+        assert!(!staged_overtaken(&root), "a fresh stage is a request");
+        std::thread::sleep(Duration::from_millis(20));
+        // An upgrade (or a hand flip) after the stage overtakes it.
+        flip(&lock, &root, "c").unwrap();
+        assert!(staged_overtaken(&root));
+        // Staged naming previous is older than current.
+        point(&lock, &root, "staged", "a").unwrap();
+        assert!(staged_overtaken(&root));
+        // Acknowledged only while it names the release that runs.
+        assert!(!acknowledge_staged(&lock, &root, "c").unwrap());
+        assert!(acknowledge_staged(&lock, &root, "a").unwrap());
+        assert!(pointed_at(&root, "staged").is_none());
+        point(&lock, &root, "staged", "b").unwrap();
+        assert_eq!(drop_staged(&lock, &root).unwrap().as_deref(), Some("b"));
+        assert_eq!(drop_staged(&lock, &root).unwrap(), None);
+    }
+
+    #[test]
     fn the_lock_waits_for_its_holder_and_gives_up() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("bin");
@@ -282,5 +383,35 @@ mod tests {
         assert!(lock_within(&root, Duration::from_millis(100)).is_err());
         drop(held);
         assert!(lock_within(&root, Duration::from_millis(100)).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod temporary_tests {
+    #[test]
+    fn temporary_names_are_unique_across_threads() {
+        let threads: Vec<_> = (0..16)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    (0..100)
+                        .map(|_| super::temporary_path(std::path::Path::new("/tmp"), "current"))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let paths: std::collections::HashSet<_> = threads
+            .into_iter()
+            .flat_map(|t| t.join().unwrap())
+            .collect();
+        assert_eq!(paths.len(), 1600);
+        for path in paths {
+            assert!(
+                path.file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .contains(&format!(".tmp.{}.", std::process::id()))
+            );
+        }
     }
 }

@@ -46,6 +46,9 @@ enum Host {
 pub struct Rule {
     host: Host,
     port: Option<u16>,
+    /// Built by `apply_grant` on the supervisor's or the policy's say-so,
+    /// not written by the operator or a repository's forge.toml.
+    granted: bool,
 }
 
 /// How a rule matched, which decides what the address it resolves to may be.
@@ -57,9 +60,21 @@ pub enum Matched {
     /// Any name below a suffix: a name the operator never saw, so it must
     /// not resolve to loopback or a private range (DNS rebinding).
     Suffix,
+    /// A host a grant opened (`Rule::granted`): the operator never wrote it
+    /// down, so it is checked like a suffix match, never trusted to resolve
+    /// to a loopback, private or link-local address.
+    Granted,
 }
 
 impl Rule {
+    /// A rule for a host opened by a grant (see `Matched::Granted`).
+    pub fn granted(s: &str) -> Result<Rule> {
+        Ok(Rule {
+            granted: true,
+            ..Rule::parse(s)?
+        })
+    }
+
     pub fn parse(s: &str) -> Result<Rule> {
         let s = s.trim().to_ascii_lowercase();
         if s.is_empty() {
@@ -107,7 +122,11 @@ impl Rule {
                 Host::Exact(host.to_string())
             }
         };
-        Ok(Rule { host, port })
+        Ok(Rule {
+            host,
+            port,
+            granted: false,
+        })
     }
 
     /// Whether this rule lets a connection to `host:port` through.
@@ -121,6 +140,7 @@ impl Rule {
             return None;
         }
         match &self.host {
+            Host::Exact(h) if *h == host && self.granted => Some(Matched::Granted),
             Host::Exact(h) if *h == host => Some(Matched::Exact),
             Host::Suffix(s) => host
                 .strip_suffix(s.as_str())
@@ -498,8 +518,9 @@ fn split_authority(a: &str, default: u16) -> Option<(String, u16)> {
     }
 }
 
-/// Resolve `host` and connect. A name a suffix rule matched must not lead to
-/// a loopback or private address: the name is not one the operator wrote.
+/// Resolve `host` and connect to the address that was checked. A name a
+/// suffix rule matched, or a grant opened, must not lead to a loopback or
+/// private address: the name is not one the operator wrote.
 async fn dial(host: &str, port: u16, matched: Matched) -> Result<TcpStream> {
     let addrs: Vec<SocketAddr> = match host.parse::<IpAddr>() {
         Ok(ip) => vec![SocketAddr::new(ip, port)],
@@ -509,12 +530,10 @@ async fn dial(host: &str, port: u16, matched: Matched) -> Result<TcpStream> {
             .collect(),
     };
     let mut last = None;
+    let mut refused = Vec::new();
     for a in addrs {
-        if matched == Matched::Suffix && !is_public(a.ip()) {
-            last = Some(anyhow::anyhow!(
-                "{host} resolves to {}, which is not a public address",
-                a.ip()
-            ));
+        if matched != Matched::Exact && !is_public(a.ip()) {
+            refused.push(a.ip().to_string());
             continue;
         }
         match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(a)).await {
@@ -522,6 +541,12 @@ async fn dial(host: &str, port: u16, matched: Matched) -> Result<TcpStream> {
             Ok(Err(e)) => last = Some(e.into()),
             Err(_) => last = Some(anyhow::anyhow!("connecting to {a} timed out")),
         }
+    }
+    if last.is_none() && !refused.is_empty() {
+        last = Some(anyhow::anyhow!(
+            "{host} resolves to {}, which is not a public address",
+            refused.join(", ")
+        ));
     }
     Err(last.unwrap_or_else(|| anyhow::anyhow!("{host} did not resolve")))
 }

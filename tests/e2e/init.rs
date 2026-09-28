@@ -216,7 +216,9 @@ fn forge_init_relink_moves_an_existing_install_onto_the_release_layout() {
     let build = e._dir.path().join("target-release");
     std::fs::create_dir_all(&build).unwrap();
     std::fs::copy(env!("CARGO_BIN_EXE_forge"), build.join("forge")).unwrap();
-    write_fake(&build.join("forge-web"), "#!/bin/sh\nexit 0\n");
+    for b in ["forge-web", "forge-portal", "forge-repomap", "forge-tui"] {
+        write_fake(&build.join(b), "#!/bin/sh\nexit 0\n");
+    }
     let local_bin = home_dir.join(".local/bin");
     std::fs::create_dir_all(&local_bin).unwrap();
     std::os::unix::fs::symlink(build.join("forge"), local_bin.join("forge")).unwrap();
@@ -262,6 +264,11 @@ fn forge_init_relink_moves_an_existing_install_onto_the_release_layout() {
         "{unit}"
     );
     assert!(out.contains("done release"), "{out}");
+    // The id is the full commit hash, the name `deploy-self` gives it.
+    // (A build with no git at all falls back to the crate version.)
+    if id.chars().all(|c| c.is_ascii_hexdigit()) {
+        assert_eq!(id.len(), 40, "{id}");
+    }
 
     let out = relink();
     assert!(
@@ -269,6 +276,39 @@ fn forge_init_relink_moves_an_existing_install_onto_the_release_layout() {
         "{out}"
     );
     assert_eq!(std::fs::read_link(bin.join("current")).unwrap(), target);
+}
+
+#[test]
+fn forge_init_relink_refuses_a_directory_with_only_forge() {
+    let e = Env::new();
+    let home_dir = e._dir.path().join("userhome");
+    let build = e._dir.path().join("target-debug");
+    std::fs::create_dir_all(&build).unwrap();
+    std::fs::create_dir_all(&home_dir).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_forge"), build.join("forge")).unwrap();
+
+    let o = std::process::Command::new(build.join("forge"))
+        .env("FORGE_HOME", &e.home)
+        .env("XDG_CONFIG_HOME", &e.xdg_config)
+        .env("HOME", &home_dir)
+        .env("FORGE_SUPERVISOR", "0")
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        .args(["init", "--relink"])
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "{out}");
+    for b in ["forge-web", "forge-portal", "forge-repomap", "forge-tui"] {
+        assert!(out.contains(b), "{b} not named: {out}");
+    }
+    assert!(!out.contains("forge-test"), "{out}");
+    let bin = e.home.join("bin");
+    assert!(std::fs::symlink_metadata(bin.join("current")).is_err());
+    let releases: Vec<_> = std::fs::read_dir(bin.join("releases"))
+        .map(|d| d.flatten().collect())
+        .unwrap_or_default();
+    assert!(releases.is_empty(), "{releases:?}");
 }
 
 #[test]

@@ -1,5 +1,6 @@
 name = "deploy-self"
 kind = "operation"
+timeout_secs = 3600
 description = "deploy Forge itself on this machine through the release layout (docs/OPS.md, 'The running binary'): under a lock, builds the landed tree (archived by `forge deploy` from origin, never the registered checkout) with `cargo build --release --workspace` into the build cache FORGE_HOME/bin/target, copies its binaries into FORGE_HOME/bin/releases/<sha>/ (skipped when that release already exists), copies the live forge.db with `sqlite3 .backup` into a scratch FORGE_HOME and requires that release's own `forge doctor --json --only schema` to exit zero there (its migrations run on the real rows), then writes FORGE_HOME/bin/staged -> releases/<sha>. When the running worker starts successors (FORGE_WORKER_SUCCESSORS=1, set by `forge deploy` from a live worker in the workers table, or a live pid in FORGE_HOME/bin/successor-capable) that is all: the successor flips current, restarts web and portal and takes the worker unit over, and the worker unit is never restarted. Only for a worker too old to start a successor does it then flip FORGE_HOME/bin/current to the release (previous keeps the old one), restarts the web and portal units (arg units, default 'forge-web forge-portal') and waits for them to be active, runs the target's check with bounded retries (default: curl the web client's /tasks, arg url, with the token from FORGE_HOME/web.token, expecting 200), and only then asks the worker unit (arg worker, default forge-worker) to restart with `systemctl --user restart --no-block`, last. A failed build, doctor or check puts back only the pointers this run wrote, and only while each is still what this run wrote (a successor's flip meanwhile is left alone), removes a release this run created and nothing points at, restarts the units on the old release only if this run flipped current, leaves the worker alone and exits non-zero. Optional arg tries (default 40) bounds each wait, half a second apart. Reads its args and the check command from the environment, injected there by `forge deploy` from the target's own record, and the commit as FORGE_DEPLOY_SHA (see docs/DEPLOY.md, 'Deploying Forge itself')."
 run = ["bash", "-c", '''
 set -euo pipefail
@@ -148,6 +149,7 @@ echo "doctor of ${sha:0:8}: schema ok against a copy of the live store"
 
 old_staged="$(link_of staged)"
 set_staged="releases/$sha"
+rm -f "$root/staged-failed"
 point staged "$set_staged"
 echo "staged ${sha:0:8}: $root/staged -> releases/$sha"
 

@@ -225,6 +225,45 @@ pub fn resolve_binary(name: &str) -> Result<(PathBuf, PathBuf)> {
     Ok((named, canonical))
 }
 
+/// The claude, codex and copilot CLIs' state directories, each named by its
+/// own environment variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+/// `COPILOT_HOME`, all passed into the sandbox by `agent_env`) or else
+/// under `home`. An empty value counts as unset.
+fn provider_dirs(
+    home: &Path,
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> (PathBuf, PathBuf, PathBuf) {
+    let dir = |name: &str, default: &str| {
+        var(name)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(default))
+    };
+    (
+        dir("CLAUDE_CONFIG_DIR", ".claude"),
+        dir("CODEX_HOME", ".codex"),
+        dir("COPILOT_HOME", ".copilot"),
+    )
+}
+
+/// A read-only entry that is itself a private provider directory would be
+/// bound and then bound over, and the operator's meaning lost: refuse it,
+/// naming the path.
+fn refuse_provider_dir_binds<'a>(
+    entries: impl Iterator<Item = &'a PathBuf>,
+    provider: [&PathBuf; 3],
+) -> Result<()> {
+    for d in entries {
+        if provider.contains(&d) {
+            bail!(
+                "{} is bound read-only into the sandbox but is also a CLI's private state directory; bind something inside it instead, or move it",
+                d.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 impl Sandbox {
     /// `extra_ro` and `extra_rw` are bound alongside `paths.ro`/`paths.rw`;
     /// the caller resolves them (the executable's own directory) so
@@ -279,30 +318,32 @@ impl Sandbox {
                 }
             }
         }
-        let config_dir = std::env::var("CLAUDE_CONFIG_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| home.join(".claude"));
-        let codex_dir = home.join(".codex");
-        let copilot_dir = home.join(".copilot");
+        let (config_dir, codex_dir, copilot_dir) = provider_dirs(&home, |k| std::env::var_os(k));
         let claude_json_seed = home.join(".claude.json");
         // The relay is this binary, so its directory has to be visible.
         let relay_exe = std::env::current_exe().context("finding the forge binary")?;
         let relay_dir = relay_exe.parent().map(Path::to_path_buf);
+        let extra_ro: Vec<PathBuf> = paths
+            .ro
+            .iter()
+            .cloned()
+            .chain(extra_ro)
+            .chain(relay_dir)
+            .collect();
+        let agent_dirs: Vec<PathBuf> = agent_dirs.into_iter().collect();
+        refuse_provider_dir_binds(
+            agent_dirs.iter().chain(&extra_ro),
+            [&config_dir, &codex_dir, &copilot_dir],
+        )?;
         Ok(Sandbox {
             bwrap,
             home,
-            agent_dirs: agent_dirs.into_iter().collect(),
+            agent_dirs,
             config_dir,
             codex_dir,
             copilot_dir,
             claude_json_seed,
-            extra_ro: paths
-                .ro
-                .iter()
-                .cloned()
-                .chain(extra_ro)
-                .chain(relay_dir)
-                .collect(),
+            extra_ro,
             extra_rw: paths.rw.iter().cloned().chain(extra_rw).collect(),
             overlay,
             dependency_cache: paths.dependency_cache.clone(),
@@ -313,6 +354,17 @@ impl Sandbox {
             caches: Mutex::new(BTreeMap::new()),
             granted: Mutex::new(BTreeMap::new()),
         })
+    }
+
+    /// The read-only entries, split into those outside every private
+    /// provider directory and those inside one. The second kind must be bound
+    /// after the private binds, or the private directory shadows them.
+    fn split_under_provider_dirs(&self) -> (Vec<&PathBuf>, Vec<&PathBuf>) {
+        let dirs = [&self.config_dir, &self.codex_dir, &self.copilot_dir];
+        self.agent_dirs
+            .iter()
+            .chain(&self.extra_ro)
+            .partition(|d| dirs.iter().any(|p| d.starts_with(p) && d != p))
     }
 
     /// Declare what attempts running in `worktree` may reach besides the
@@ -391,6 +443,31 @@ impl Sandbox {
     fn cache_dir_for(&self, worktree: &Path) -> Option<PathBuf> {
         let caches = self.caches.lock().unwrap();
         worktree.ancestors().find_map(|d| caches.get(d)).cloned()
+    }
+
+    /// A sandbox whose bwrap is `bwrap` (a fake, in a test) and whose every
+    /// host path lives under `home`.
+    #[cfg(test)]
+    pub(crate) fn with_bwrap(bwrap: PathBuf, home: PathBuf) -> Sandbox {
+        Sandbox {
+            bwrap,
+            config_dir: home.join(".claude"),
+            codex_dir: home.join(".codex"),
+            copilot_dir: home.join(".copilot"),
+            claude_json_seed: home.join(".claude.json"),
+            home,
+            agent_dirs: vec![],
+            extra_ro: vec![],
+            extra_rw: vec![],
+            overlay: true,
+            dependency_cache: None,
+            model_hosts: vec![],
+            relay_exe: PathBuf::from("/nonexistent/forge"),
+            proxies: Arc::new(Proxies::default()),
+            declared: Mutex::new(BTreeMap::new()),
+            caches: Mutex::new(BTreeMap::new()),
+            granted: Mutex::new(BTreeMap::new()),
+        }
     }
 
     /// Build the bwrap command that runs `argv` inside the worktree with
@@ -507,7 +584,8 @@ impl Sandbox {
         // Order matters: everything under $HOME is bound after its tmpfs, and
         // the writable worktree after the read-only agent directory in case
         // one contains the other.
-        for d in self.agent_dirs.iter().chain(&self.extra_ro) {
+        let (under, ro) = self.split_under_provider_dirs();
+        for d in ro {
             cmd.arg("--ro-bind-try").arg(d).arg(d);
         }
         cmd.args(["--ro-bind-try"])
@@ -568,6 +646,11 @@ impl Sandbox {
             &copilot_priv.join("config.json"),
         );
         cmd.arg("--bind").arg(&copilot_priv).arg(&self.copilot_dir);
+        // What lives inside a directory just bound over (an agent under
+        // `~/.claude/local`) is bound again on top of the private copy.
+        for d in under {
+            cmd.arg("--ro-bind-try").arg(d).arg(d);
+        }
         // The operator's package caches: read through, an attempt's own
         // writes going to an invisible tmpfs overlay that bwrap discards
         // with the sandbox, so one attempt can never poison what another
@@ -932,6 +1015,101 @@ mod tests {
         cmd.get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn provider_dirs_read_their_environment_the_way_claude_config_dir_is_read() {
+        let home = Path::new("/home/u");
+        let env = |set: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                set.iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| std::ffi::OsString::from(v))
+            }
+        };
+        let (c, x, p) = provider_dirs(home, env(&[]));
+        assert_eq!(
+            (c, x, p),
+            (
+                PathBuf::from("/home/u/.claude"),
+                PathBuf::from("/home/u/.codex"),
+                PathBuf::from("/home/u/.copilot")
+            )
+        );
+        let (c, x, p) = provider_dirs(
+            home,
+            env(&[
+                ("CLAUDE_CONFIG_DIR", "/srv/claude"),
+                ("CODEX_HOME", "/srv/codex"),
+                ("COPILOT_HOME", ""),
+            ]),
+        );
+        assert_eq!(c, Path::new("/srv/claude"));
+        assert_eq!(x, Path::new("/srv/codex"));
+        assert_eq!(p, Path::new("/home/u/.copilot"));
+    }
+
+    #[test]
+    fn codex_home_is_where_the_private_codex_copy_is_bound() {
+        let mut sb = test_sandbox("api.example.com");
+        sb.codex_dir = PathBuf::from("/srv/codex-home");
+        let root = tempfile::tempdir().unwrap();
+        let args = args_of(&sb.command_for_worktree(root.path(), &["true".to_string()], &[]));
+        assert!(
+            args.windows(3)
+                .any(|w| w[0] == "--bind" && w[1].ends_with("/codex") && w[2] == "/srv/codex-home"),
+            "{args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a == "/home/attempt/.codex"),
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    fn an_agent_under_the_claude_dir_is_bound_after_the_private_binds() {
+        let mut sb = test_sandbox("api.example.com");
+        let local = PathBuf::from("/home/attempt/.claude/local");
+        sb.agent_dirs = vec![local.clone(), PathBuf::from("/opt/agent")];
+        sb.extra_ro = vec![PathBuf::from("/home/attempt/.codex/tools")];
+        let root = tempfile::tempdir().unwrap();
+        let args = args_of(&sb.command_for_worktree(root.path(), &["true".to_string()], &[]));
+        let at = |flag: &str, value: &str| {
+            args.iter()
+                .enumerate()
+                .filter(|(i, a)| *a == flag && args[i + 1] == value)
+                .map(|(i, _)| i)
+                .collect::<Vec<_>>()
+        };
+        let dest = |d: &str| {
+            args.windows(3)
+                .position(|w| w[0] == "--bind" && w[2] == d)
+                .unwrap_or_else(|| panic!("no private bind at {d}: {args:?}"))
+        };
+        let claude_bind = dest("/home/attempt/.claude");
+        let codex_bind = dest("/home/attempt/.codex");
+        let local_binds = at("--ro-bind-try", local.to_str().unwrap());
+        assert_eq!(local_binds.len(), 1, "{args:?}");
+        assert!(claude_bind < local_binds[0], "{args:?}");
+        let tools = at("--ro-bind-try", "/home/attempt/.codex/tools");
+        assert_eq!(tools.len(), 1, "{args:?}");
+        assert!(codex_bind < tools[0], "{args:?}");
+        // An entry outside every provider directory keeps its early place.
+        let agent = at("--ro-bind-try", "/opt/agent");
+        assert_eq!(agent.len(), 1);
+        assert!(agent[0] < claude_bind, "{args:?}");
+    }
+
+    #[test]
+    fn an_entry_that_is_a_provider_dir_is_refused_by_name() {
+        let claude = PathBuf::from("/home/u/.claude");
+        let codex = PathBuf::from("/home/u/.codex");
+        let copilot = PathBuf::from("/home/u/.copilot");
+        let ok = [PathBuf::from("/home/u/.claude/local")];
+        refuse_provider_dir_binds(ok.iter(), [&claude, &codex, &copilot]).unwrap();
+        let bad = [PathBuf::from("/opt"), codex.clone()];
+        let e = refuse_provider_dir_binds(bad.iter(), [&claude, &codex, &copilot]).unwrap_err();
+        assert!(e.to_string().contains("/home/u/.codex"), "{e}");
     }
 
     #[test]

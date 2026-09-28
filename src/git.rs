@@ -710,25 +710,37 @@ pub async fn commit_all(dir: &Path, message: &str) -> Result<Option<String>> {
 /// next to it). Returns the new commit, or `None` when `path` was
 /// already exactly this content at `HEAD`.
 pub async fn commit_path(dir: &Path, path: &str, message: &str) -> Result<Option<String>> {
+    commit_paths(dir, &[path], message).await
+}
+
+/// `commit_path` for several paths as one commit; nothing outside `paths`
+/// is staged or committed.
+pub async fn commit_paths(dir: &Path, paths: &[&str], message: &str) -> Result<Option<String>> {
+    if paths.is_empty() {
+        return Ok(None);
+    }
     let g = Git::new(dir);
-    g.line(&["add", "--", path]).await?;
+    let with_paths = |head: &[&str]| -> Vec<String> {
+        head.iter()
+            .chain(&["--"])
+            .chain(paths)
+            .map(|s| s.to_string())
+            .collect()
+    };
+    let add = with_paths(&["add"]);
+    g.line(&add.iter().map(String::as_str).collect::<Vec<_>>())
+        .await?;
+    let diff = with_paths(&["diff", "--cached", "--quiet"]);
     let staged = g
-        .output(&["diff", "--cached", "--quiet", "--", path])
+        .output(&diff.iter().map(String::as_str).collect::<Vec<_>>())
         .await?;
     if staged.status.success() {
         return Ok(None);
     }
+    let commit = with_paths(&["commit", "--quiet", "--no-verify", "-m", message]);
     Git::new(dir)
         .with_identity()
-        .line(&[
-            "commit",
-            "--quiet",
-            "--no-verify",
-            "-m",
-            message,
-            "--",
-            path,
-        ])
+        .line(&commit.iter().map(String::as_str).collect::<Vec<_>>())
         .await?;
     Ok(Some(g.line(&["rev-parse", "HEAD"]).await?))
 }
@@ -973,6 +985,33 @@ pub async fn remote_url(repo: &Path, remote: &str) -> Option<String> {
         .line(&["remote", "get-url", remote])
         .await
         .ok()
+}
+
+/// Whether `dir` is a bare repository.
+pub async fn is_bare(dir: &Path) -> bool {
+    Git::new(dir)
+        .line(&["rev-parse", "--is-bare-repository"])
+        .await
+        .is_ok_and(|l| l == "true")
+}
+
+/// The hooks directory git runs `dir`'s hooks from (`core.hooksPath`
+/// honored), absolute.
+pub async fn hooks_dir(dir: &Path) -> Result<PathBuf> {
+    let p = Git::new(dir)
+        .line(&["rev-parse", "--git-path", "hooks"])
+        .await?;
+    Ok(dir.join(p))
+}
+
+/// `git config --get key` in `dir`'s own config, `None` when unset.
+pub async fn config_get(dir: &Path, key: &str) -> Option<String> {
+    Git::new(dir).line(&["config", "--get", key]).await.ok()
+}
+
+/// `git config key value` in `dir`'s own config.
+pub async fn config_set(dir: &Path, key: &str, value: &str) -> Result<()> {
+    Git::new(dir).line(&["config", key, value]).await.map(drop)
 }
 
 /// Whether the clone's HEAD is exactly what the remote holds for `branch`,
