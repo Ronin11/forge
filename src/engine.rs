@@ -223,6 +223,12 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
 
     // The repository's remote, from its forge.toml at the base branch.
     let base_cfg = config::load_at(&repo, &repo, &t.base_branch).await.task()?;
+    // The trust gate is a claim-time fact about the backend, checked before
+    // anything else a bad environment (a missing agent binary, say) could
+    // otherwise preempt with an unrelated error.
+    if let Err(reason) = f.egress_gate(&base_cfg, t.trust) {
+        return block_on_egress(&f, t, reason);
+    }
     if base_cfg.execution.backend() != crate::executor::Backend::Ssh || f.sandbox.is_none() {
         crate::unit_path::require_on_path(&crate::agent::agent_bin()).env()?;
     }
