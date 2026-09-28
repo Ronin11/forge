@@ -89,7 +89,7 @@ pub fn held(f: &Forge, provider: &str) -> Result<Option<(String, i64)>> {
         let last = h.probed_at.unwrap_or(h.since).max(h.since);
         (
             format!("{provider}: {}", words(f, provider, h.since)),
-            last + PROBE_EVERY_SECS,
+            (last + PROBE_EVERY_SECS).max(unix_now() + 60),
         )
     }))
 }

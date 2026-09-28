@@ -277,8 +277,10 @@ docs/DEPLOY.md, "When a deploy runs"). It keeps its cursor in
 configuration is `plugins/notify/command`, a script `notify.sh` runs
 with the task, its state and its reason as arguments for a `task_done`
 event, or `deploy`, the project, target, sha and status for a
-`deploy_finished` one; `command.example` ships a working example that
-shells out to `notify-send` for a desktop notification, for both
+`deploy_finished` one, or `provider`, the provider, `held` and the
+hold's words for a `provider_held` one (a refused agent login, once per
+hold: see src/login_hold.rs); `command.example` ships a working example that
+shells out to `notify-send` for a desktop notification, for each
 shapes. A deploy that passes its check is quiet by default; a failed or
 rolled-back one always runs the command. `NOTIFY_DEPLOY_OK=1` in
 `plugins/notify/config` (see `config.example`) turns a passing deploy's
@@ -307,7 +309,8 @@ Signal number or group when a task reaches a state on its watch list
 (blocked, by default, or failed), including the blocked question if
 there is one, when a deploy finishes (a failed or rolled-back deploy
 always messages, a passing one only when `NOTIFY_DEPLOY_OK=1` is set),
-and when `forge intake accept` creates a project for the first time for
+when a refused agent login holds a provider (once per hold, with what to
+run), and when `forge intake accept` creates a project for the first time for
 a name in `CONTACTS` (docs/PORTAL.md, "Reachable"), sending that contact
 their customer portal link unprompted. Inbound polls `signal-cli
 receive`. An allowed sender or a `CONTACTS` name can answer a task

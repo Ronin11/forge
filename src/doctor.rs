@@ -1244,7 +1244,7 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     out.extend(check_executors(&store, &paths));
     out.extend(check_project_purposes(&store));
     out.extend(check_egress(&paths, &store));
-    out.extend(login::anthropic());
+    out.extend(login::anthropic(&paths));
     out.extend(check_environment_grants(&store));
     out.extend(check_workflows(&paths));
     out.push(workflows::shadow::doctor_check(&paths.home));

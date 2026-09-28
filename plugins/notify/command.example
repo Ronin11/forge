@@ -15,6 +15,9 @@ deploy)
     esac
     notify-send --urgency="$urgency" "forge deploy $project/$target" "$sha: $status"
     ;;
+provider)
+    notify-send --urgency=critical "forge: $2 $3" "$4"
+    ;;
 *)
     task="$1"
     state="$2"
