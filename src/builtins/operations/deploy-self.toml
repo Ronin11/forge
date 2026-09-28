@@ -1,6 +1,6 @@
 name = "deploy-self"
 kind = "operation"
-description = "deploy Forge itself on this machine through the release layout (docs/OPS.md, 'The running binary'): under a lock, builds the landed tree (archived by `forge deploy` from origin, never the registered checkout) with `cargo build --release --workspace` into the build cache FORGE_HOME/bin/target, copies its binaries into FORGE_HOME/bin/releases/<sha>/ (skipped when that release already exists), copies the live forge.db with `sqlite3 .backup` into a scratch FORGE_HOME and requires that release's own `forge doctor --json --only schema` to exit zero there (its migrations run on the real rows), then writes FORGE_HOME/bin/staged -> releases/<sha>. When the running worker starts successors (FORGE_WORKER_SUCCESSORS=1, set by `forge deploy` from a live worker in the workers table, or a live pid in FORGE_HOME/bin/successor-capable) that is all: the successor flips current, restarts web and portal and takes the worker unit over, and the worker unit is never restarted. Only for a worker too old to start a successor does it then flip FORGE_HOME/bin/current to the release (previous keeps the old one), restarts the web and portal units (arg units, default 'forge-web forge-portal') and waits for them to be active, runs the target's check with bounded retries (default: curl the web client's /tasks, arg url, with the token from FORGE_HOME/web.token, expecting 200), and only then asks the worker unit (arg worker, default forge-worker) to restart with `systemctl --user restart --no-block`, last. A failed build, doctor or check puts current, previous and staged back, removes a release this run created, restarts the units on the old release, leaves the worker alone and exits non-zero. Optional arg tries (default 40) bounds each wait, half a second apart. Reads its args and the check command from the environment, injected there by `forge deploy` from the target's own record, and the commit as FORGE_DEPLOY_SHA (see docs/DEPLOY.md, 'Deploying Forge itself')."
+description = "deploy Forge itself on this machine through the release layout (docs/OPS.md, 'The running binary'): under a lock, builds the landed tree (archived by `forge deploy` from origin, never the registered checkout) with `cargo build --release --workspace` into the build cache FORGE_HOME/bin/target, copies its binaries into FORGE_HOME/bin/releases/<sha>/ (skipped when that release already exists), copies the live forge.db with `sqlite3 .backup` into a scratch FORGE_HOME and requires that release's own `forge doctor --json --only schema` to exit zero there (its migrations run on the real rows), then writes FORGE_HOME/bin/staged -> releases/<sha>. When the running worker starts successors (FORGE_WORKER_SUCCESSORS=1, set by `forge deploy` from a live worker in the workers table, or a live pid in FORGE_HOME/bin/successor-capable) that is all: the successor flips current, restarts web and portal and takes the worker unit over, and the worker unit is never restarted. Only for a worker too old to start a successor does it then flip FORGE_HOME/bin/current to the release (previous keeps the old one), restarts the web and portal units (arg units, default 'forge-web forge-portal') and waits for them to be active, runs the target's check with bounded retries (default: curl the web client's /tasks, arg url, with the token from FORGE_HOME/web.token, expecting 200), and only then asks the worker unit (arg worker, default forge-worker) to restart with `systemctl --user restart --no-block`, last. A failed build, doctor or check puts back only the pointers this run wrote, and only while each is still what this run wrote (a successor's flip meanwhile is left alone), removes a release this run created and nothing points at, restarts the units on the old release only if this run flipped current, leaves the worker alone and exits non-zero. Optional arg tries (default 40) bounds each wait, half a second apart. Reads its args and the check command from the environment, injected there by `forge deploy` from the target's own record, and the commit as FORGE_DEPLOY_SHA (see docs/DEPLOY.md, 'Deploying Forge itself')."
 run = ["bash", "-c", '''
 set -euo pipefail
 sha="${FORGE_DEPLOY_SHA:-}"
@@ -43,10 +43,10 @@ if ! flock -w 600 9; then
   exit 1
 fi
 
-# The pointers as they are, to put back on failure.
-was_current="$(readlink "$root/current" 2>/dev/null || true)"
-was_previous="$(readlink "$root/previous" 2>/dev/null || true)"
-was_staged="$(readlink "$root/staged" 2>/dev/null || true)"
+# What this run writes, to put back on failure, and only if it is still what
+# this run wrote: a successor may flip the pointers while a build runs for
+# minutes, and a stale copy written over its flip would undo it. Each
+# pointer's old value is read at the moment this run changes it.
 point() { # <name> <link target or empty>
   if [ -z "$2" ]; then
     rm -f "$root/$1"
@@ -55,17 +55,36 @@ point() { # <name> <link target or empty>
   ln -sfn "$2" "$root/.$1.new"
   mv -T "$root/.$1.new" "$root/$1"
 }
+link_of() { readlink "$root/$1" 2>/dev/null || true; }
+set_staged="" old_staged=""
+set_current="" old_current=""
+set_previous="" old_previous=""
+flipped=0
 created=0
 doctor_home=""
-restore() {
-  echo "deploy-self: putting current back to ${was_current:-nothing}" >&2
-  point current "$was_current"
-  point previous "$was_previous"
-  point staged "$was_staged"
-  if [ "$created" = 1 ] && [ "releases/$sha" != "$was_current" ]; then
-    rm -rf "$release"
+put_back() { # <name> <value this run set> <value to restore>
+  if [ -z "$2" ]; then return 1; fi
+  if [ "$(link_of "$1")" != "$2" ]; then
+    echo "deploy-self: $1 is no longer $2, leaving it" >&2
+    return 1
   fi
-  if [ -n "$was_current" ]; then
+  point "$1" "$3"
+}
+restore() {
+  if put_back current "$set_current" "$old_current"; then
+    echo "deploy-self: put current back to ${old_current:-nothing}" >&2
+  else
+    flipped=0
+  fi
+  put_back previous "$set_previous" "$old_previous" || true
+  put_back staged "$set_staged" "$old_staged" || true
+  if [ "$created" = 1 ]; then
+    rel="releases/$sha"
+    if [ "$(link_of current)" != "$rel" ] && [ "$(link_of previous)" != "$rel" ] && [ "$(link_of staged)" != "$rel" ]; then
+      rm -rf "$release"
+    fi
+  fi
+  if [ "$flipped" = 1 ]; then
     systemctl --user restart $units || true
   fi
 }
@@ -127,7 +146,9 @@ if ! doctor_out="$(FORGE_HOME="$doctor_home" "$release/forge" doctor --json --on
 fi
 echo "doctor of ${sha:0:8}: schema ok against a copy of the live store"
 
-point staged "releases/$sha"
+old_staged="$(link_of staged)"
+set_staged="releases/$sha"
+point staged "$set_staged"
 echo "staged ${sha:0:8}: $root/staged -> releases/$sha"
 
 # A worker that starts successors (forge deploy says so as
@@ -150,9 +171,17 @@ fi
 
 # A worker too old to start a successor: go live the way every deploy
 # has: flip current, restart web and portal, check, then the worker last.
+was_current="$(link_of current)"
 if [ "$was_current" != "releases/$sha" ]; then
-  if [ -n "$was_current" ]; then point previous "$was_current"; fi
-  point current "releases/$sha"
+  old_current="$was_current"
+  old_previous="$(link_of previous)"
+  if [ -n "$was_current" ]; then
+    set_previous="$was_current"
+    point previous "$set_previous"
+  fi
+  set_current="releases/$sha"
+  point current "$set_current"
+  flipped=1
 fi
 echo "current -> releases/$sha (previous: $(readlink "$root/previous" 2>/dev/null || echo none))"
 live="$(readlink -f "$HOME/.local/bin/forge" 2>/dev/null || true)"

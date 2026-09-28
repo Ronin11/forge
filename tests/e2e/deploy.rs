@@ -1850,6 +1850,40 @@ fn deploy_self_puts_the_pointers_back_and_leaves_the_worker_alone_when_the_check
 }
 
 #[test]
+fn deploy_self_whose_build_fails_leaves_a_pointer_a_successor_flipped_mid_build() {
+    let s = SelfDeploy::new();
+    let bad = s.commit("bad");
+    // A fake successor flips the pointers while the build runs, then the
+    // build fails.
+    let succ = s.bins.join("releases/succ");
+    std::fs::create_dir_all(&succ).unwrap();
+    let fakebin = s.e._dir.path().join("fakebin");
+    write_fake(
+        &fakebin.join("cargo"),
+        &format!(
+            "#!/bin/bash\necho \"cargo $*\" >> \"$HOME/deploy-calls.log\"\n\
+             ln -sfn releases/succ \"{b}/.current.new\" && mv -T \"{b}/.current.new\" \"{b}/current\"\n\
+             ln -sfn releases/succ \"{b}/.staged.new\" && mv -T \"{b}/.staged.new\" \"{b}/staged\"\n\
+             exit 1\n",
+            b = s.bins.display()
+        ),
+    );
+
+    let o = s.deploy(&bad);
+    assert!(!o.status.success());
+
+    assert_eq!(s.link("current"), "releases/succ");
+    assert_eq!(s.link("staged"), "releases/succ");
+    assert!(succ.exists());
+    // Nothing was flipped by this run, so nothing is restarted.
+    let calls = s.calls();
+    assert!(
+        !calls.iter().any(|c| c.starts_with("systemctl")),
+        "{calls:?}"
+    );
+}
+
+#[test]
 fn deploy_self_never_stages_a_release_whose_own_doctor_fails() {
     let s = SelfDeploy::new();
     let bad = s.commit("baddoctor");

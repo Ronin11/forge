@@ -353,6 +353,7 @@ async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOutcome> {
             model: &model,
             max_turns,
             timeout,
+            check_timeout: std::time::Duration::ZERO,
             log_path: &log_path,
             provider,
             schema,

@@ -130,6 +130,7 @@ pub async fn rule(f: &Forge, t: &Task, deny: &[String], need: &Need) -> Result<R
             model: &cfg.model,
             max_turns: cfg.max_turns,
             timeout: std::time::Duration::from_secs(cfg.timeout_secs),
+            check_timeout: std::time::Duration::ZERO,
             log_path: &log_path,
             provider,
             schema: SCHEMA,

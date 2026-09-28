@@ -369,6 +369,9 @@ pub struct Launch<'a> {
     pub model: &'a str,
     pub max_turns: u32,
     pub timeout: Duration,
+    /// How long the checks after this run may take (zero when none follow):
+    /// the login must outlast both (see `login::refresh_window_ms`).
+    pub check_timeout: Duration,
     pub log_path: &'a Path,
     pub sandbox: Option<&'a Execution>,
     pub report: &'a Reporter,
@@ -1356,51 +1359,6 @@ fn next_local_time(now: i64, hour: i64, minute: i64) -> i64 {
     }
 }
 
-/// The schema as OpenAI's strict structured output accepts it: every
-/// object lists all of its properties as `required` and forbids
-/// additional ones. Claude takes the schemas as written, with optional
-/// keys; codex's phase two (`--output-schema`) is refused for the same
-/// text ("'required' is required to be supplied and to be an array
-/// including every key in properties", task 509, 2026-09-22). Nothing is
-/// made nullable: an optional string or array becomes required and the
-/// model sends it empty, which every envelope reader already treats as
-/// absent, whereas an explicit `null` would fail the `#[serde(default)]`
-/// fields.
-pub fn strict_schema(schema: &str) -> Result<String> {
-    let mut v: serde_json::Value =
-        serde_json::from_str(schema).context("the output schema is not valid JSON")?;
-    fn walk(v: &mut serde_json::Value) {
-        match v {
-            serde_json::Value::Object(map) => {
-                let is_object = map.get("type").and_then(|t| t.as_str()) == Some("object")
-                    || map.contains_key("properties");
-                if is_object && let Some(serde_json::Value::Object(props)) = map.get("properties") {
-                    let keys: Vec<serde_json::Value> = props
-                        .keys()
-                        .map(|k| serde_json::Value::String(k.clone()))
-                        .collect();
-                    map.insert("required".into(), serde_json::Value::Array(keys));
-                    map.insert(
-                        "additionalProperties".into(),
-                        serde_json::Value::Bool(false),
-                    );
-                }
-                for (_, child) in map.iter_mut() {
-                    walk(child);
-                }
-            }
-            serde_json::Value::Array(items) => {
-                for item in items.iter_mut() {
-                    walk(item);
-                }
-            }
-            _ => {}
-        }
-    }
-    walk(&mut v);
-    Ok(serde_json::to_string(&v)?)
-}
-
 /// codex's `exec` flags shared by both of the two phases below, after `exec
 /// [resume <id>]` and before whatever differs (`--output-schema` and the
 /// prompt): `--skip-git-repo-check --json -C <worktree> [-m <model>]`,
@@ -2283,7 +2241,7 @@ mod tests {
 
     #[test]
     fn strict_schema_requires_every_key_of_every_object_and_keeps_the_rest() {
-        let strict = strict_schema(crate::envelope::SCHEMA).unwrap();
+        let strict = inputs::strict_schema(crate::envelope::SCHEMA).unwrap();
         let v: serde_json::Value = serde_json::from_str(&strict).unwrap();
         fn check(v: &serde_json::Value) {
             if let Some(props) = v.get("properties").and_then(|p| p.as_object()) {
@@ -2351,7 +2309,7 @@ mod tests {
             crate::assess::SCHEMA,
             crate::deploy_look::SCHEMA,
         ] {
-            strict_schema(s).unwrap();
+            inputs::strict_schema(s).unwrap();
         }
     }
     use super::*;
@@ -2715,6 +2673,7 @@ mod tests {
             model: "fake-model",
             max_turns: 30,
             timeout: Duration::from_secs(5),
+            check_timeout: Duration::ZERO,
             log_path: &log_path,
             sandbox: None,
             report: &report,
@@ -2903,6 +2862,7 @@ fi\n"
             model: "sonnet",
             max_turns: 3,
             timeout: Duration::from_secs(5),
+            check_timeout: Duration::ZERO,
             log_path,
             sandbox: None,
             report,
@@ -3106,6 +3066,7 @@ fi\n"
             model: "test-model",
             max_turns: 1,
             timeout: Duration::from_secs(5),
+            check_timeout: Duration::ZERO,
             log_path,
             sandbox: None,
             report,
