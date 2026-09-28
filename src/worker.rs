@@ -819,6 +819,9 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         // Config reloads between claims: what is claimed from here on runs
         // on the new config; what already runs keeps the `Forge` it holds.
         if !stopping && let Some(next) = reloader.check(&f, std::mem::take(&mut hup)) {
+            if let Some(p) = &plugins {
+                p.reload(next.clone());
+            }
             f = next;
         }
         let mut superseded = false;

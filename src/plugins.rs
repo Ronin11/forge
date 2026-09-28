@@ -149,6 +149,13 @@ pub struct Plugin {
 pub struct Catalog {
     pub plugins: BTreeMap<String, Plugin>,
     pub problems: Vec<Problem>,
+    /// Plugins whose directory is there but whose `plugin.toml` could not
+    /// be read or parsed (one being rewritten, say): present but broken,
+    /// not absent.
+    pub broken: BTreeSet<String>,
+    /// Roots that exist but could not be listed: every plugin under one
+    /// is unknown, not absent.
+    pub unreadable: Vec<String>,
 }
 
 /// Discover plugins over the ordered roots: `<home>/plugins` first, then
@@ -159,6 +166,8 @@ pub struct Catalog {
 pub fn load_catalog(home: &Path, plugin_dirs: &[PathBuf]) -> Catalog {
     let mut plugins: BTreeMap<String, Plugin> = BTreeMap::new();
     let mut problems = Vec::new();
+    let mut broken = BTreeSet::new();
+    let mut unreadable = Vec::new();
 
     let roots: Vec<(PathBuf, bool)> = std::iter::once((home.join("plugins"), false))
         .chain(plugin_dirs.iter().cloned().map(|p| (p, true)))
@@ -178,6 +187,7 @@ pub fn load_catalog(home: &Path, plugin_dirs: &[PathBuf]) -> Catalog {
                 continue;
             }
             Err(e) => {
+                unreadable.push(format!("{}: {e}", root.display()));
                 problems.push(Problem {
                     file: root.display().to_string(),
                     blocking: false,
@@ -199,6 +209,7 @@ pub fn load_catalog(home: &Path, plugin_dirs: &[PathBuf]) -> Catalog {
             let text = match std::fs::read_to_string(&manifest_path) {
                 Ok(t) => t,
                 Err(e) => {
+                    broken.insert(name.clone());
                     problems.push(Problem {
                         file: format!("{name}/plugin.toml"),
                         blocking: true,
@@ -230,6 +241,7 @@ pub fn load_catalog(home: &Path, plugin_dirs: &[PathBuf]) -> Catalog {
                     );
                 }
                 Err(e) => {
+                    broken.insert(name.clone());
                     problems.push(Problem {
                         file: format!("{name}/plugin.toml"),
                         blocking: true,
@@ -240,7 +252,13 @@ pub fn load_catalog(home: &Path, plugin_dirs: &[PathBuf]) -> Catalog {
         }
     }
 
-    Catalog { plugins, problems }
+    broken.retain(|name| !plugins.contains_key(name));
+    Catalog {
+        plugins,
+        problems,
+        broken,
+        unreadable,
+    }
 }
 
 /// Copies `src` into `<home>/plugins/<name>`, `<name>` taken from `src`'s own
@@ -684,20 +702,40 @@ async fn supervise_plugin(
     }
 }
 
-/// Every enabled plugin right now: the catalog and the store's enabled
-/// flags, re-read each time so `forge plugin enable`/`disable` is seen.
-fn enabled_plugins_now(f: &Forge) -> BTreeMap<String, Plugin> {
-    let Ok(cfg) = crate::config::load_home(&f.paths.home) else {
-        return BTreeMap::new();
-    };
-    let cat = load_catalog(&f.paths.home, &cfg.plugin_dirs);
-    let Ok(enabled) = f.store.enabled_plugins() else {
-        return BTreeMap::new();
-    };
-    cat.plugins
-        .into_iter()
-        .filter(|(name, _)| enabled.contains(name))
-        .collect()
+/// The enabled plugins as the reconciler sees them on one tick: those it
+/// can run, and those the catalog lists as broken right now (a
+/// `plugin.toml` mid-rewrite), which are neither started nor stopped.
+struct Enabled {
+    plugins: BTreeMap<String, Plugin>,
+    broken: BTreeSet<String>,
+}
+
+/// Every enabled plugin right now: the catalog, over the roots of the
+/// config the worker has validated (`f.plugin_dirs`, see `crate::reload`),
+/// and the store's enabled flags, re-read each time so `forge plugin
+/// enable`/`disable` is seen. An error from either read is an error, never
+/// "nothing is enabled": the caller keeps what runs.
+fn enabled_plugins_now(f: &Forge) -> Result<Enabled> {
+    let enabled = f
+        .store
+        .enabled_plugins()
+        .context("reading the enabled plugins")?;
+    let cat = load_catalog(&f.paths.home, &f.plugin_dirs);
+    if !cat.unreadable.is_empty() {
+        bail!("listing plugin roots: {}", cat.unreadable.join("; "));
+    }
+    Ok(Enabled {
+        plugins: cat
+            .plugins
+            .into_iter()
+            .filter(|(name, _)| enabled.contains(name))
+            .collect(),
+        broken: cat
+            .broken
+            .into_iter()
+            .filter(|name| enabled.contains(name))
+            .collect(),
+    })
 }
 
 /// One plugin this supervisor runs: its stop channel, its supervising task,
@@ -748,6 +786,49 @@ impl Supervised {
     }
 }
 
+/// One reconcile tick over a successful read: replace what `forge plugin
+/// restart` asked for, start what is enabled and not running, and stop
+/// what is running and no longer enabled. A plugin the catalog lists as
+/// broken is left as it is, running or not, until its manifest parses
+/// again or its directory is gone.
+async fn reconcile(f: &Forge, running: &mut BTreeMap<String, Supervised>, enabled: &Enabled) {
+    let to_restart: Vec<String> = running
+        .iter()
+        .filter(|(name, s)| {
+            enabled.plugins.contains_key(*name)
+                && read_restart_gen(&f.paths.home, name) != s.restart_gen
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    for name in to_restart {
+        if let Some(s) = running.remove(&name) {
+            s.stop().await;
+        }
+    }
+
+    for (name, plugin) in &enabled.plugins {
+        if !running.contains_key(name)
+            && let Some(lock) = try_lock_plugin(&f.paths.home, name)
+        {
+            let restart_gen = read_restart_gen(&f.paths.home, name);
+            running.insert(
+                name.clone(),
+                Supervised::spawn(&f.paths.home, plugin, restart_gen, lock),
+            );
+        }
+    }
+    let gone: Vec<String> = running
+        .keys()
+        .filter(|n| !enabled.plugins.contains_key(*n) && !enabled.broken.contains(*n))
+        .cloned()
+        .collect();
+    for name in gone {
+        if let Some(s) = running.remove(&name) {
+            s.stop_because(StopReason::Disabled).await;
+        }
+    }
+}
+
 /// Supervises every enabled plugin for the life of `forge work`: starts
 /// them, restarts them per their manifest's `restart` policy, and stops
 /// them (SIGTERM, then SIGKILL after ten seconds) when told to. While
@@ -764,6 +845,9 @@ impl Supervised {
 /// waits on any, so the lock passes to a successor rather than overlapping.
 pub struct Supervisor {
     stop: watch::Sender<bool>,
+    /// The config the worker runs on, replaced by `reload` when it
+    /// accepts an edit; the reconciler never reads `config.toml` itself.
+    forge: watch::Sender<Arc<Forge>>,
     reconciler: JoinHandle<()>,
     /// Why the plugins still up when the supervisor stops are stopped.
     drain: Arc<Mutex<StopReason>>,
@@ -771,7 +855,12 @@ pub struct Supervisor {
 
 impl Supervisor {
     pub fn start(f: Arc<Forge>) -> Supervisor {
+        Supervisor::start_every(f, Duration::from_secs(RECONCILE_SECS))
+    }
+
+    fn start_every(f: Arc<Forge>, every: Duration) -> Supervisor {
         let (stop_tx, mut stop_rx) = watch::channel(false);
+        let (forge_tx, forge_rx) = watch::channel(f);
         let drain = Arc::new(Mutex::new(StopReason::Worker));
         let drained = drain.clone();
         let reconciler = tokio::spawn(async move {
@@ -779,50 +868,36 @@ impl Supervisor {
             // with; a mismatch against `read_restart_gen` on a later tick
             // means `forge plugin restart` ran while it was up.
             let mut running: BTreeMap<String, Supervised> = BTreeMap::new();
+            // The last read error logged, so a lasting one is logged once.
+            let mut failing: Option<String> = None;
             loop {
-                let enabled = enabled_plugins_now(&f);
-
-                let to_restart: Vec<String> = running
-                    .iter()
-                    .filter(|(name, s)| {
-                        enabled.contains_key(*name)
-                            && read_restart_gen(&f.paths.home, name) != s.restart_gen
-                    })
-                    .map(|(name, _)| name.clone())
-                    .collect();
-                for name in to_restart {
-                    if let Some(s) = running.remove(&name) {
-                        s.stop().await;
+                let f = forge_rx.borrow().clone();
+                let enabled = match enabled_plugins_now(&f) {
+                    Ok(e) => {
+                        failing = None;
+                        Some(e)
                     }
-                }
-
-                for (name, plugin) in &enabled {
-                    if !running.contains_key(name)
-                        && let Some(lock) = try_lock_plugin(&f.paths.home, name)
-                    {
-                        let restart_gen = read_restart_gen(&f.paths.home, name);
-                        running.insert(
-                            name.clone(),
-                            Supervised::spawn(&f.paths.home, plugin, restart_gen, lock),
-                        );
+                    Err(e) => {
+                        let text = format!("{e:#}");
+                        if failing.as_ref() != Some(&text) {
+                            eprintln!(
+                                "plugins: cannot tell what is enabled, keeping the {} running: {text}",
+                                running.len()
+                            );
+                            failing = Some(text);
+                        }
+                        None
                     }
-                }
-                let gone: Vec<String> = running
-                    .keys()
-                    .filter(|n| !enabled.contains_key(*n))
-                    .cloned()
-                    .collect();
-                for name in gone {
-                    if let Some(s) = running.remove(&name) {
-                        s.stop_because(StopReason::Disabled).await;
-                    }
+                };
+                if let Some(enabled) = enabled {
+                    reconcile(&f, &mut running, &enabled).await;
                 }
 
                 if *stop_rx.borrow() {
                     break;
                 }
                 tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(RECONCILE_SECS)) => {}
+                    _ = tokio::time::sleep(every) => {}
                     _ = stop_rx.changed() => {}
                 }
             }
@@ -848,9 +923,16 @@ impl Supervisor {
         });
         Supervisor {
             stop: stop_tx,
+            forge: forge_tx,
             reconciler,
             drain,
         }
+    }
+
+    /// The worker accepted a config edit (`crate::reload`): scan the
+    /// plugin roots it names from the next tick on.
+    pub fn reload(&self, f: Arc<Forge>) {
+        self.forge.send_replace(f);
     }
 
     pub async fn stop(self) {
