@@ -142,11 +142,22 @@ case a placeholder or empty page can hide behind.
 
 The verdict lands on the deploy row as `look_ok` and `look_json`, shown
 by `forge deploy log` and the initiative report. A `blocking` finding
-fails the deploy exactly like a failed check: rollback and the human
+fails the deploy like a failed check (subject to the confirming look
+above): rollback and the human
 rung below both apply, the finding's sentence named in the question. A
 `notable` finding is recorded but does not fail the deploy. A run that
 fails on its own — the agent errors, or its result does not fit the
 schema — is logged and ignored, never failing the deploy for it.
+
+The look is told the smoke result the step really had. The page's title
+and the smoke step's console-error and failed-request lists are strings
+the deployed site controls, so they reach the look only truncated, in a
+fenced block under the untrusted-data header. The look runs sandboxed,
+in an empty scratch directory with the deploy's output directory bound
+read-only, since all it reads is one image. And a look alone never rolls
+back a deploy whose check and smoke passed: a `blocking` finding then
+needs a second, confirming look to also find something blocking; if it
+does not, the deploy stands and a note says a person should look.
 
 ## When a deploy runs
 
