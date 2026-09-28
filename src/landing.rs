@@ -4,6 +4,7 @@
 //! under a per-repository lock; a conflict or a failing check goes back to
 //! the coder as a rewind. `forge land` runs the same function by hand.
 
+pub(crate) mod effects;
 mod round;
 
 use crate::audit::{Inputs, Outputs};
@@ -132,7 +133,7 @@ fn last_verified_sha(f: &Forge, task_id: i64) -> Result<Option<String>, Fault> {
 
 pub enum Integrate {
     /// On the base branch; its new tip.
-    Landed(String),
+    Landed(effects::Landing),
     /// The coder has to act: a conflict with the moved base, or checks that
     /// fail with the base merged in. The feedback, its first line, and the
     /// base commit the task now measures from: the caller must set the
@@ -284,6 +285,9 @@ pub async fn integrate(
     attempt_no: &mut i64,
     _lock: &std::fs::File,
 ) -> Result<Integrate, Fault> {
+    if let Some(landed) = effects::recorded(f, t)? {
+        return Ok(Integrate::Landed(landed));
+    }
     let repo = Path::new(&t.repo);
     let home = &f.paths.home;
     // The agent's clone is only ever a fetch source (and target for the
@@ -376,6 +380,13 @@ pub async fn integrate(
             git::place_branch(home, repo, wt, &main_sha, &placed)
                 .await
                 .task()?;
+        }
+        if git::is_ancestor(wt, &staged, &main_sha).await {
+            return Ok(Integrate::Landed(effects::Landing {
+                sha: main_sha,
+                base_sha,
+                already: true,
+            }));
         }
         if main_sha != base_sha && !git::is_ancestor(wt, &main_sha, "HEAD").await {
             let message = format!("Merge {} into {}", t.base_branch, t.branch);
@@ -668,9 +679,11 @@ pub async fn integrate(
                 text: &format!("landed   {} @ {}{folded}", t.base_branch, &sha[..8]),
             },
         );
-        deploy_on_landing(f, t, &sha).await;
-        crate::assess::run_on_landing(f, t, &base_sha, &sha).await;
-        return Ok(Integrate::Landed(sha));
+        return Ok(Integrate::Landed(effects::Landing {
+            sha,
+            base_sha,
+            already: false,
+        }));
     }
     unreachable!("the landing loop returns")
 }
@@ -738,44 +751,6 @@ async fn fold_tests(
         }
     }
     Ok(folded)
-}
-
-/// After landing, run every on-landing deploy target of the task's project
-/// on this repository, through the same path `forge deploy` uses
-/// (`deploy::run`), tied to this task. A deploy's own failure never
-/// changes the task's landed state: on a failed check, `deploy::run`
-/// already emits its events and follows the rollback-and-question path.
-/// Any other error (it never got that far, or a row was left open) is
-/// named on the task instead of dropped.
-async fn deploy_on_landing(f: &Forge, t: &Task, sha: &str) {
-    let Some(project) = t.project.clone() else {
-        return;
-    };
-    let Ok(targets) = f.store.deploy_targets(&project) else {
-        return;
-    };
-    for target in targets
-        .into_iter()
-        .filter(|d| d.on_landing && d.repo == t.repo)
-    {
-        if let Err(e) = crate::deploy::run(
-            f,
-            &project,
-            &target.name,
-            Some(sha.to_string()),
-            Some(t.id),
-            false,
-        )
-        .await
-        {
-            f.report.emit(
-                t.id,
-                Event::Note {
-                    text: &format!("deploy   {} failed: {e:#}", target.name),
-                },
-            );
-        }
-    }
 }
 
 /// The refs whose namespace files verify a task: the standing suite and
@@ -1175,7 +1150,7 @@ pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<Strin
         t.worktree = dir.display().to_string();
         recreated = Some(dir);
     }
-    let result = land_integrated(f, by_hand, demoted, t, &url, &remote, &lock).await;
+    let result = land_integrated(f, by_hand, demoted, t, &url, &remote, lock).await;
     if let Some(dir) = recreated {
         let _ = std::fs::remove_dir_all(&dir);
         crate::sandbox::discard_provider_state(&dir);
@@ -1190,18 +1165,19 @@ async fn land_integrated(
     mut t: Task,
     url: &str,
     remote: &str,
-    lock: &std::fs::File,
+    lock: std::fs::File,
 ) -> Result<String> {
     let id = t.id;
     let (url, remote) = (url.to_string(), remote.to_string());
     let mut seq = f.store.ops(id)?.len() as i64;
     let mut attempt_no = f.store.attempts(id)?.len() as i64;
-    match crate::landing::integrate(f, &mut t, &url, &remote, &mut seq, &mut attempt_no, lock)
+    match crate::landing::integrate(f, &mut t, &url, &remote, &mut seq, &mut attempt_no, &lock)
         .await
         .map_err(|e| match e {
             crate::engine::Fault::Task(e) | crate::engine::Fault::Env(e) => e,
         })? {
-        crate::landing::Integrate::Landed(sha) => {
+        crate::landing::Integrate::Landed(landed) => {
+            let sha = landed.sha.clone();
             t.reason = format!("landed {} @ {}", t.base_branch, &sha[..sha.len().min(8)]);
             t.landed_sha = sha.clone();
             t.landed_at = Some(crate::unix_now());
@@ -1212,6 +1188,8 @@ async fn land_integrated(
                 t.finished_at = Some(crate::unix_now());
             }
             f.store.update_task(&t)?;
+            drop(lock);
+            effects::run(f, &mut t, &landed).await;
             crate::queue::settle_superseded(f, id)?;
             if let Some(iid) = t.initiative {
                 crate::view::maybe_settle_initiative(f, id, iid)?;

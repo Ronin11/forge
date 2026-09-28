@@ -122,6 +122,9 @@ struct RunNow<'a> {
 mod directive_text;
 mod flow;
 mod input;
+mod recovery;
+#[cfg(test)]
+mod recovery_tests;
 use directive_text::{directive_inputs, directive_instructions, directive_prompt};
 
 use crate::ctx::Forge;
@@ -142,30 +145,6 @@ fn scratch_dir(f: &Forge, job_id: i64) -> PathBuf {
 
 pub(crate) fn input_dir(f: &Forge, job_id: i64) -> PathBuf {
     f.paths.worktrees.join(format!("job-{job_id}-input"))
-}
-
-/// Moves a prior run's input directory (its `effects.log` included) out of
-/// the way of a fresh one instead of deleting it: `effects.log` is the only
-/// record of an effect an operation performed but a crash or an abort kept
-/// the store from learning about (see `recover_interrupted`), so a rerun
-/// must never truncate it out from under that recovery.
-fn archive_prior_input(idir: &Path) -> Result<()> {
-    if !idir.exists() {
-        return Ok(());
-    }
-    let mut n = 0u32;
-    let prior = loop {
-        let candidate = idir.with_file_name(format!(
-            "{}.prev-{n}",
-            idir.file_name().unwrap_or_default().to_string_lossy()
-        ));
-        if !candidate.exists() {
-            break candidate;
-        }
-        n += 1;
-    };
-    std::fs::rename(idir, &prior)?;
-    Ok(())
 }
 
 /// Every top-level field of `input` whose value is a string, as
@@ -981,10 +960,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
     git::fresh_archive(repo, landed_sha, &scratch).await?;
     let repo_checks = config::load_working_checks(&scratch).unwrap_or_default();
 
-    let idir = input_dir(f, job_id);
-    archive_prior_input(&idir)?;
-    std::fs::create_dir_all(&idir)?;
-    std::fs::write(idir.join("input.json"), input_text)?;
+    let idir = recovery::prepare_run(f, job_id, input_text)?;
 
     let effect_log = idir.join("effects.log");
     std::fs::write(&effect_log, "")?;
@@ -998,7 +974,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
     let mut verdict: Vec<checks::CheckResult> = Vec::new();
     let mut step_outputs: Vec<(String, String)> = Vec::new();
     let mut output_paths: Vec<(String, String)> = Vec::new();
-    let mut total_cost = 0.0;
+    let mut total_cost = f.store.job_step_cost(job_id)?;
 
     // The repository's declared `setup` check, once, in the scratch tree
     // before `[skip_if]` and the steps, the way a task's clone has it run
@@ -1028,6 +1004,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
         let r = checks::run_one("OP", "setup", argv, &scratch, None, timeout, &env).await;
         let (tail, output_ref) = record_output(&idir, "setup", &r);
         f.store.append_job_step(&JobStep {
+            run: 0,
             id: 0,
             job_id,
             seq: -1,
@@ -1096,7 +1073,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
                     workflow,
                     job_id,
                     state: JobState::Skipped.as_str(),
-                    cost_usd: 0.0,
+                    cost_usd: total_cost,
                 },
             );
             return Ok(());
@@ -1156,6 +1133,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
                     };
                     let (tail, output_ref) = record_output(&idir, &seq.to_string(), &r);
                     f.store.append_job_step(&JobStep {
+                        run: 0,
                         id: 0,
                         job_id,
                         seq,
@@ -1242,6 +1220,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
                         }
                     };
                     f.store.append_job_step(&JobStep {
+                        run: 0,
                         id: 0,
                         job_id,
                         seq,
@@ -1635,94 +1614,7 @@ fn executor_error_verdict(e: &anyhow::Error) -> String {
 /// store never learned about. Any such line is still proof the effect
 /// happened, so it is recorded here — marked recovered — and treated the
 /// same as an effect the store already knew of: the run is never requeued.
-pub(crate) fn recover_interrupted(f: &Forge, job_id: i64, owner: &Owner) -> Result<()> {
-    // Another worker claimed the job since it was listed: it is not ours to
-    // recover, and mirroring its `effects.log` would record its effects twice.
-    if f.store.job_owner(job_id)?.as_ref() != Some(owner) {
-        return Ok(());
-    }
-    let job = f.store.job(job_id)?.context("interrupted job vanished")?;
-    let mut effects = f.store.job_effects(job_id)?;
-    let logged = log_lines(&input_dir(f, job_id).join("effects.log"));
-    for line in logged.iter().skip(effects.len()) {
-        let mut parts = line.splitn(3, '\t');
-        let (Some(kind), Some(target), Some(summary)) = (parts.next(), parts.next(), parts.next())
-        else {
-            continue;
-        };
-        let effect = JobEffect {
-            id: 0,
-            job_id,
-            seq: -1,
-            kind: kind.to_string(),
-            target: target.to_string(),
-            summary: format!("(recovered) {summary}"),
-            dry_run: job.dry_run,
-        };
-        f.store.append_job_effect(&effect)?;
-        effects.push(effect);
-    }
-    let previous = owner
-        .pid
-        .map_or_else(|| "unknown".into(), |pid| pid.to_string());
-    let mut reason = format!("previous worker {previous} exited");
-    if effects.is_empty() {
-        if f.store.requeue_job(job_id, owner)? {
-            f.store.append_job_step(&JobStep {
-                job_id,
-                action: "recovery".into(),
-                kind: "operation".into(),
-                tail: reason.clone(),
-                ..Default::default()
-            })?;
-            eprintln!("requeued job {job_id}: {reason}");
-        }
-        return Ok(());
-    }
-    for effect in &effects {
-        reason.push_str(&format!(
-            "\n{} {}: {}",
-            effect.kind, effect.target, effect.summary
-        ));
-    }
-    reason.push_str("\nAutomatic retry suppressed: effects already performed.");
-    let repo = f.store.first_repo(&job.project)?.unwrap_or_default();
-    let policy = workflows::resolve_job_for_project(
-        &f.paths.home,
-        Path::new(&repo),
-        &job.landed_sha,
-        &job.workflow,
-    );
-    // A missing workflow must not hide interrupted external work.
-    let action = match policy {
-        Ok((wf, _, _)) => {
-            let input = std::fs::read_to_string(input_dir(f, job_id).join("input.json"))
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or(serde_json::Value::Null);
-            let contact = trigger_contact(&job, wf.trigger.as_ref(), &input);
-            wf.limits
-                .as_ref()
-                .map_or(FailureAction::Ask(None), |limits| {
-                    decide_on_failure(&limits.on_failure, job.retry_count, contact.as_deref())
-                })
-        }
-        Err(_) => FailureAction::Ask(None),
-    };
-    match action {
-        FailureAction::Stop => {}
-        FailureAction::Ask(to) => ask(f, &job.project, &repo, to.as_deref(), reason.clone())?,
-        FailureAction::Retry => ask(f, &job.project, &repo, None, reason.clone())?,
-    }
-    f.store.finish_orphaned_job(
-        job_id,
-        owner,
-        JobState::Failed,
-        job.cost_usd,
-        &executor_error_verdict(&anyhow::anyhow!(reason)),
-    )?;
-    Ok(())
-}
+pub(crate) use recovery::recover_interrupted;
 
 /// What the worker's claim loop calls on a job it just claimed
 /// (`Store::claim_next_job`): run it to completion and report its final
@@ -1749,7 +1641,7 @@ pub async fn drive(f: Arc<Forge>, job_id: i64) -> JobState {
                     workflow: &job.workflow,
                     job_id,
                     state: JobState::Failed.as_str(),
-                    cost_usd: 0.0,
+                    cost_usd: job.cost_usd.unwrap_or(0.0),
                 },
             );
         }

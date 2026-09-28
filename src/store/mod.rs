@@ -16,6 +16,7 @@ mod daily;
 mod deploys;
 mod events;
 mod factors;
+mod job_runs;
 mod jobs;
 mod messages;
 mod migrations;
