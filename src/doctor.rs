@@ -499,10 +499,9 @@ fn check_workflows(paths: &Paths) -> Vec<Check> {
 
 /// Every plugin found across `<FORGE_HOME>/plugins` and the configured
 /// `plugin_dirs`, any problem loading one (a broken `plugin.toml`, a
-/// shadowed name, a configured root that does not exist), and each enabled
-/// plugin's last-known supervision state (running, restarting, or stopped;
-/// see `crate::plugins::Supervisor`). Never fails: a broken or crash-looping
-/// plugin is a warning, not a reason to fail doctor.
+/// shadowed name, a missing configured root), and each enabled plugin's
+/// last-known supervision state (see `crate::plugins::Supervisor`). Never
+/// fails: a broken or crash-looping plugin is a warning, not a failure.
 fn check_plugins(paths: &Paths, store: &Store) -> Vec<Check> {
     let cfg = match config::load_home(&paths.home) {
         Ok(c) => c,
