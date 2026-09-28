@@ -550,12 +550,12 @@ impl Sandbox {
             worktree,
             &claude_priv.join(crate::login::FILE),
         );
-        let _ = std::fs::copy(
-            self.config_dir.join("settings.json"),
-            claude_priv.join("settings.json"),
+        let _ = crate::login::seed_copy(
+            &self.config_dir.join("settings.json"),
+            &claude_priv.join("settings.json"),
         );
         for name in ["auth.json", "config.toml"] {
-            let _ = std::fs::copy(self.codex_dir.join(name), codex_priv.join(name));
+            let _ = crate::login::seed_copy(&self.codex_dir.join(name), &codex_priv.join(name));
         }
         cmd.arg("--bind").arg(&claude_priv).arg(&self.config_dir);
         cmd.arg("--bind").arg(&codex_priv).arg(&self.codex_dir);
@@ -563,9 +563,9 @@ impl Sandbox {
         // reseeded copy, bound where the CLI expects its home.
         let copilot_priv = provider_dir.join("copilot");
         let _ = std::fs::create_dir_all(&copilot_priv);
-        let _ = std::fs::copy(
-            self.copilot_dir.join("config.json"),
-            copilot_priv.join("config.json"),
+        let _ = crate::login::seed_copy(
+            &self.copilot_dir.join("config.json"),
+            &copilot_priv.join("config.json"),
         );
         cmd.arg("--bind").arg(&copilot_priv).arg(&self.copilot_dir);
         // The operator's package caches: read through, an attempt's own

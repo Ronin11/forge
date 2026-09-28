@@ -1648,9 +1648,7 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
         .worktree
         .join(".git")
         .join(format!("forge-{}-schema.json", l.step));
-    let strict = strict_schema(l.schema)?;
-    std::fs::write(&schema_path, strict)
-        .with_context(|| format!("writing {}", schema_path.display()))?;
+    inputs::write_codex_schema(&schema_path, l.schema)?;
 
     let mut extra_env = crate::git::identity(&l.worktree.join(".git")).await;
     extra_env.extend(inputs::provider_env(l.provider));
