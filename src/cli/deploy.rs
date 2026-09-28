@@ -71,6 +71,26 @@ pub(super) enum PluginCmd {
     /// this is the way to pick up a config edit without ever changing
     /// whether the plugin is enabled.
     Restart { name: String },
+    /// Copy the repo's current files for an installed plugin over the
+    /// installed copy (its config and plugins-state untouched, the old
+    /// files kept beside it as `.bak-<time>`), rebuild, and restart it if
+    /// enabled. A script the operator edited is reported, and never
+    /// overwritten without --force
+    Refresh {
+        /// The installed plugin; omit with --all
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        name: Option<String>,
+        /// Every installed plugin
+        #[arg(long)]
+        all: bool,
+        /// Overwrite an operator edit (the old file is still backed up)
+        #[arg(long)]
+        force: bool,
+        /// The plugin's source directory, for a copy installed before the
+        /// install record existed (then recorded)
+        #[arg(long, conflicts_with = "all")]
+        from: Option<PathBuf>,
+    },
     /// Copy a plugin directory into FORGE_HOME/plugins and run its build
     Install {
         /// The plugin's own directory, holding plugin.toml
@@ -243,6 +263,10 @@ fn plugin_list(json: bool) -> Result<()> {
         if !r.description.is_empty() {
             out!("             {}", r.description);
         }
+        if let (Some(_), Some(p)) = (&r.sync, cat.plugins.get(&r.name)) {
+            let standing = crate::plugins::drift::check(&p.dir, None);
+            out!("             installed  {}", standing.describe());
+        }
         if let Some(p) = cat.plugins.get(&r.name) {
             out!("             runs       {}", p.manifest.run.join(" "));
             if let Some(b) = &p.manifest.build {
@@ -329,6 +353,73 @@ fn plugin_restart(name: String) -> Result<()> {
     Ok(())
 }
 
+/// `forge plugin refresh`: see `plugins::drift::refresh`. Each plugin is
+/// reported on its own line; any refusal makes the command fail after every
+/// plugin has been looked at.
+fn plugin_refresh(name: Option<String>, force: bool, from: Option<PathBuf>) -> Result<()> {
+    use crate::plugins::drift::{self, Refresh};
+    let f = Forge::open(false, false)?;
+    let installed = f.paths.home.join("plugins");
+    let names: Vec<String> = match name {
+        Some(n) => vec![n],
+        None => {
+            let home_cfg = config::load_home(&f.paths.home)?;
+            let cat = crate::plugins::load_catalog(&f.paths.home, &home_cfg.plugin_dirs);
+            cat.plugins
+                .values()
+                .filter(|p| p.root == installed)
+                .map(|p| p.name.clone())
+                .collect()
+        }
+    };
+    let enabled = f.store.enabled_plugins()?;
+    let mut refused = Vec::new();
+    let mut failed = Vec::new();
+    for n in &names {
+        match drift::refresh(&f.paths.home, n, from.as_deref(), force) {
+            Ok(Refresh::Current) => out!("{n} already matches the repo copy"),
+            Ok(Refresh::Refreshed {
+                backups,
+                diff_lines,
+                manifest,
+            }) => {
+                out!("refreshed {n} ({diff_lines} diff line(s) from the old copy)");
+                for b in &backups {
+                    out!("  kept the old file as {}", b.display());
+                }
+                if let Some(build) = &manifest.build {
+                    out!("  build {} ok", build.join(" "));
+                }
+                if enabled.contains(n) {
+                    crate::plugins::request_restart(&f.paths.home, n)?;
+                    out!("  {n} restart requested");
+                }
+            }
+            Ok(Refresh::Refused { drift, diff_lines }) => {
+                out!(
+                    "{n} is an operator edit or has no install record ({}, {diff_lines} diff line(s) from the repo copy); not overwritten without --force",
+                    drift.as_str()
+                );
+                refused.push(n.clone());
+            }
+            Err(e) => {
+                out!("{n}: {e:#}");
+                failed.push(n.clone());
+            }
+        }
+    }
+    if !refused.is_empty() {
+        bail!(
+            "{} not refreshed: edited by the operator (rerun with --force to overwrite; the old file is backed up)",
+            refused.join(", ")
+        );
+    }
+    if !failed.is_empty() {
+        bail!("could not refresh {}", failed.join(", "));
+    }
+    Ok(())
+}
+
 fn plugin_install(path: PathBuf) -> Result<()> {
     let f = Forge::open(false, false)?;
     let manifest = crate::plugins::install(&f.paths.home, &path)?;
@@ -388,6 +479,12 @@ async fn dispatch_plugin(cmd: Cmd) -> Result<()> {
             PluginCmd::Enable { name } => plugin_set_enabled(name, true),
             PluginCmd::Disable { name } => plugin_set_enabled(name, false),
             PluginCmd::Restart { name } => plugin_restart(name),
+            PluginCmd::Refresh {
+                name,
+                all: _,
+                force,
+                from,
+            } => plugin_refresh(name, force, from),
             PluginCmd::Install { path } => plugin_install(path),
             PluginCmd::Uninstall { name } => plugin_uninstall(name),
             PluginCmd::Logs { name, follow } => plugin_logs(name, follow),

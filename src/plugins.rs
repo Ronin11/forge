@@ -3,6 +3,8 @@
 //! and for the same reason: one broken `plugin.toml` must not stop the
 //! others loading. See docs/PLUGINS.md.
 
+pub mod drift;
+
 use crate::ctx::Forge;
 use crate::workflows::Problem;
 use anyhow::{Context, Result, bail};
@@ -265,18 +267,24 @@ pub fn install(home: &Path, src: &Path) -> Result<Manifest> {
     copy_dir(src, &dest)
         .with_context(|| format!("copying {} to {}", src.display(), dest.display()))?;
 
+    drift::record_install(&dest, src)?;
+    run_build(&manifest, &dest)?;
+    Ok(manifest)
+}
+
+/// Runs the manifest's `build` argv, if it has one, in `dir`.
+fn run_build(manifest: &Manifest, dir: &Path) -> Result<()> {
     if let Some(build) = &manifest.build {
         let status = std::process::Command::new(&build[0])
             .args(&build[1..])
-            .current_dir(&dest)
+            .current_dir(dir)
             .status()
-            .with_context(|| format!("running build {build:?} in {}", dest.display()))?;
+            .with_context(|| format!("running build {build:?} in {}", dir.display()))?;
         if !status.success() {
-            bail!("build {build:?} failed in {}", dest.display());
+            bail!("build {build:?} failed in {}", dir.display());
         }
     }
-
-    Ok(manifest)
+    Ok(())
 }
 
 fn copy_dir(src: &Path, dst: &Path) -> Result<()> {

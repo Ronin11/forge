@@ -527,7 +527,41 @@ fn check_plugins(paths: &Paths, store: &Store) -> Vec<Check> {
             .collect();
         detail = format!("{detail}; enabled: {}", states.join(", "));
     }
-    vec![if cat.problems.is_empty() {
+    let installed = paths.home.join("plugins");
+    let standing: Vec<(&String, crate::plugins::drift::Standing)> = cat
+        .plugins
+        .values()
+        .filter(|p| p.root == installed)
+        .map(|p| (&p.name, crate::plugins::drift::check(&p.dir, None)))
+        .collect();
+    if !standing.is_empty() {
+        let parts: Vec<String> = standing
+            .iter()
+            .map(|(name, s)| match s.diff_lines {
+                Some(n) if s.drift.is_drifted() => {
+                    format!("{name} {} ({n} diff line(s))", s.drift.as_str())
+                }
+                _ => format!("{name} {}", s.drift.as_str()),
+            })
+            .collect();
+        detail = format!("{detail}; installed vs repo copy: {}", parts.join(", "));
+    }
+    let drifted: Vec<&str> = standing
+        .iter()
+        .filter(|(_, s)| s.drift.is_drifted())
+        .map(|(n, _)| n.as_str())
+        .collect();
+    vec![if cat.problems.is_empty() && !drifted.is_empty() {
+        check(
+            "plugins",
+            Status::Warn,
+            detail,
+            format!(
+                "forge plugin refresh {} (or --all): installed plugin files differ from the repo copy they were installed from",
+                drifted[0]
+            ),
+        )
+    } else if cat.problems.is_empty() {
         check("plugins", Status::Ok, detail, "")
     } else {
         let first = &cat.problems[0];

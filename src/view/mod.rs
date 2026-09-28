@@ -33,6 +33,15 @@ pub struct PluginRow {
     pub capabilities: Vec<String>,
     pub restart: String,
     pub enabled: bool,
+    /// For an installed plugin: `current`, `behind`, `operator-edit`,
+    /// `unrecorded`, or `source-missing`, against the repo copy it was
+    /// installed from (`plugins::drift`). `None` for a plugin run in place
+    /// from a `plugin_dirs` root.
+    pub sync: Option<String>,
+    /// Added plus removed lines between the installed files and the source's.
+    pub diff_lines: Option<usize>,
+    /// The directory the installed copy was installed from.
+    pub install_source: Option<String>,
 }
 
 impl From<&plugins::Plugin> for PluginRow {
@@ -50,6 +59,9 @@ impl From<&plugins::Plugin> for PluginRow {
                 .collect(),
             restart: p.manifest.restart.as_str().to_string(),
             enabled: false,
+            sync: None,
+            diff_lines: None,
+            install_source: None,
         }
     }
 }
@@ -113,6 +125,12 @@ pub fn plugin_rows(f: &Forge) -> Result<(Vec<PluginRow>, Vec<Problem>)> {
         .map(|p| {
             let mut row = PluginRow::from(p);
             row.enabled = enabled.contains(&p.name);
+            if p.root == f.paths.home.join("plugins") {
+                let standing = plugins::drift::check(&p.dir, None);
+                row.sync = Some(standing.drift.as_str().to_string());
+                row.diff_lines = standing.diff_lines;
+                row.install_source = standing.source;
+            }
             row
         })
         .collect();
