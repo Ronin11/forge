@@ -52,6 +52,7 @@ pub struct NewChatTurn<'a> {
     pub prompt_hash: &'a str,
 }
 
+#[cfg(test)]
 pub(super) const CHAT_SESSION_COLUMNS: &[&str] =
     &["id", "title", "provider", "created_at", "updated_at"];
 
