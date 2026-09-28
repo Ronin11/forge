@@ -500,3 +500,57 @@ fn a_policy_is_the_same_whatever_order_its_rules_came_in() {
     assert_eq!(a, b);
     assert_eq!(a.rules().len(), 2);
 }
+
+#[tokio::test]
+async fn a_granted_name_that_resolves_to_loopback_is_refused_but_an_operator_written_one_connects()
+{
+    let port = upstream(|got| format!("echo:{got}")).await;
+    let connect = |policy: Policy| async move {
+        let d = tempfile::tempdir().unwrap();
+        let sock = d.path().join("p.sock");
+        let task = tokio::spawn(serve(bind(&sock).unwrap(), Arc::new(policy)));
+        let mut s = UnixStream::connect(&sock).await.unwrap();
+        s.write_all(format!("CONNECT localhost:{port} HTTP/1.1\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut head = [0u8; 12];
+        tokio::time::timeout(Duration::from_secs(5), s.read_exact(&mut head))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut rest = Vec::new();
+        if head.starts_with(b"HTTP/1.1 502") {
+            s.read_to_end(&mut rest).await.unwrap();
+        }
+        task.abort();
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&head),
+            String::from_utf8_lossy(&rest)
+        )
+    };
+    let target = format!("localhost:{port}");
+    let refused = connect(Policy::new([Rule::granted(&target).unwrap()])).await;
+    assert!(refused.starts_with("HTTP/1.1 502"), "{refused}");
+    assert!(
+        refused.contains("127.0.0.1"),
+        "names the address: {refused}"
+    );
+    assert!(refused.contains("not a public address"), "{refused}");
+    let allowed = connect(Policy::new([rule(&target)])).await;
+    assert!(allowed.starts_with("HTTP/1.1 200"), "{allowed}");
+}
+
+#[test]
+fn a_granted_rule_matches_as_granted_and_an_operator_rule_outranks_it() {
+    let granted = Rule::granted("registry.example.net").unwrap();
+    assert_eq!(
+        granted.matches("registry.example.net", 443),
+        Some(Matched::Granted)
+    );
+    let both = Policy::new([granted, rule("registry.example.net")]);
+    assert_eq!(
+        both.allows("registry.example.net", 443),
+        Some(Matched::Exact)
+    );
+}
