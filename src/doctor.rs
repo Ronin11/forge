@@ -697,8 +697,9 @@ fn check_queue(store: &Store) -> Vec<Check> {
         Ok(r) => r,
         Err(e) => return vec![check("queue", Status::Fail, format!("{e:#}"), "")],
     };
-    let orphans: Vec<i64> = match store.orphans(worker::pid_alive) {
-        Ok(o) => o,
+    let caller = crate::store::Caller::this_process(false);
+    let orphans: Vec<i64> = match store.orphans(&caller, worker::pid_alive) {
+        Ok(o) => o.into_iter().map(|(id, _)| id).collect(),
         Err(e) => return vec![check("queue", Status::Fail, format!("{e:#}"), "")],
     };
     let mut c = match (running.len(), orphans.len()) {

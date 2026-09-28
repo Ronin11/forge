@@ -126,7 +126,7 @@ use directive_text::{directive_inputs, directive_instructions, directive_prompt}
 
 use crate::ctx::Forge;
 use crate::report::Event;
-use crate::store::{Job, JobEffect, JobState, JobStep, Message, Task, TaskState};
+use crate::store::{Job, JobEffect, JobState, JobStep, Message, Owner, Task, TaskState};
 use crate::workflows::{self, Kind};
 use crate::{checks, config, git, operation, unix_now};
 use anyhow::{Context, Result};
@@ -1635,7 +1635,12 @@ fn executor_error_verdict(e: &anyhow::Error) -> String {
 /// store never learned about. Any such line is still proof the effect
 /// happened, so it is recorded here — marked recovered — and treated the
 /// same as an effect the store already knew of: the run is never requeued.
-pub(crate) fn recover_interrupted(f: &Forge, job_id: i64, owner: Option<i64>) -> Result<()> {
+pub(crate) fn recover_interrupted(f: &Forge, job_id: i64, owner: &Owner) -> Result<()> {
+    // Another worker claimed the job since it was listed: it is not ours to
+    // recover, and mirroring its `effects.log` would record its effects twice.
+    if f.store.job_owner(job_id)?.as_ref() != Some(owner) {
+        return Ok(());
+    }
     let job = f.store.job(job_id)?.context("interrupted job vanished")?;
     let mut effects = f.store.job_effects(job_id)?;
     let logged = log_lines(&input_dir(f, job_id).join("effects.log"));
@@ -1657,18 +1662,21 @@ pub(crate) fn recover_interrupted(f: &Forge, job_id: i64, owner: Option<i64>) ->
         f.store.append_job_effect(&effect)?;
         effects.push(effect);
     }
-    let previous = owner.map_or_else(|| "unknown".into(), |pid| pid.to_string());
+    let previous = owner
+        .pid
+        .map_or_else(|| "unknown".into(), |pid| pid.to_string());
     let mut reason = format!("previous worker {previous} exited");
     if effects.is_empty() {
-        f.store.append_job_step(&JobStep {
-            job_id,
-            action: "recovery".into(),
-            kind: "operation".into(),
-            tail: reason.clone(),
-            ..Default::default()
-        })?;
-        f.store.requeue_job(job_id)?;
-        eprintln!("requeued job {job_id}: {reason}");
+        if f.store.requeue_job(job_id, owner)? {
+            f.store.append_job_step(&JobStep {
+                job_id,
+                action: "recovery".into(),
+                kind: "operation".into(),
+                tail: reason.clone(),
+                ..Default::default()
+            })?;
+            eprintln!("requeued job {job_id}: {reason}");
+        }
         return Ok(());
     }
     for effect in &effects {
@@ -1706,9 +1714,9 @@ pub(crate) fn recover_interrupted(f: &Forge, job_id: i64, owner: Option<i64>) ->
         FailureAction::Ask(to) => ask(f, &job.project, &repo, to.as_deref(), reason.clone())?,
         FailureAction::Retry => ask(f, &job.project, &repo, None, reason.clone())?,
     }
-    f.store.finish_job(
+    f.store.finish_orphaned_job(
         job_id,
-        unix_now(),
+        owner,
         JobState::Failed,
         job.cost_usd,
         &executor_error_verdict(&anyhow::anyhow!(reason)),

@@ -559,7 +559,7 @@ impl Store {
         self.lock().retry_execute(
             "UPDATE tasks SET repo=?2, task=?3, base_branch=?4, base_sha=?5, branch=?6, worktree=?7, model=?8,
              max_turns=?9, max_attempts=?10, timeout_secs=?11, checks_json=?12, state=?13, reason=?14,
-             started_at=?15, finished_at=?16, pushed=?17, worker_pid=?18, budget_usd=?19, allow_protected=?20,
+             started_at=?15, finished_at=?16, pushed=?17, worker_pid=?18, worker_start=CASE WHEN ?18 IS NULL THEN NULL ELSE worker_start END, budget_usd=?19, allow_protected=?20,
              workflow=?21, workflow_hash=?22, workflow_text=?23, actions_json=?24, interface=?25, show_checks=?26,
              land=?27, after_json=?28, verify_base=?29, retry_of=?30, journal=?31, context=?32,
              context_enabled=?33, resume_on_failure=?34, plan=?35, landed_sha=?36, journal_arm=?37,
@@ -692,8 +692,8 @@ impl Store {
     /// Atomically take one specific queued task.
     pub fn claim(&self, id: i64, pid: i64) -> Result<bool> {
         let n = self.lock().retry_execute(
-            "UPDATE tasks SET state='running', worker_pid=?2, started_at=?3 WHERE id=?1 AND state='queued'",
-            params![id, pid, crate::unix_now()],
+            "UPDATE tasks SET state='running', worker_pid=?2, worker_start=?4, started_at=?3 WHERE id=?1 AND state='queued'",
+            params![id, pid, crate::unix_now(), start_of(pid)],
         )?;
         Ok(n == 1)
     }
@@ -927,31 +927,51 @@ impl Store {
 
     /// Put a running task back in the queue, closing its open attempt as
     /// agent_failed with `why`, so the next worker resumes at the following
-    /// attempt number.
-    pub fn requeue(&self, id: i64, why: &str) -> Result<()> {
-        let c = self.lock();
-        c.retry_execute(
-            "UPDATE attempts SET state='agent_failed', reason=?2, finished_at=?3 WHERE task_id=?1 AND state='running'",
-            params![id, why, crate::unix_now()],
+    /// attempt number. Guarded on the `owner` the caller chose it for: a
+    /// task another worker has claimed since is left alone, and the pair of
+    /// writes is one transaction. Returns whether the task was requeued.
+    pub fn requeue(&self, id: i64, owner: &Owner, why: &str) -> Result<bool> {
+        let mut c = self.lock();
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let n = tx.execute(
+            "UPDATE tasks SET state='queued', worker_pid=NULL, worker_start=NULL, reason=?2
+             WHERE id=?1 AND state='running' AND worker_pid IS ?3 AND worker_start IS ?4",
+            params![id, format!("requeued: {why}"), owner.pid, owner.start],
         )?;
-        c.retry_execute(
-            "UPDATE tasks SET state='queued', worker_pid=NULL, reason=?2 WHERE id=?1 AND state='running'",
-            params![id, format!("requeued: {why}")],
-        )?;
-        Ok(())
+        if n == 1 {
+            tx.execute(
+                "UPDATE attempts SET state='agent_failed', reason=?2, finished_at=?3 WHERE task_id=?1 AND state='running'",
+                params![id, why, crate::unix_now()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(n == 1)
     }
 
-    /// Tasks left in `running` by a worker that no longer exists.
-    pub fn orphans(&self, alive: impl Fn(i64) -> bool) -> Result<Vec<i64>> {
+    /// Tasks left in `running` by a worker that no longer exists, each with
+    /// the owner it was found under, which `requeue` is then guarded on.
+    pub fn orphans(
+        &self,
+        caller: &Caller,
+        alive: impl Fn(i64) -> bool,
+    ) -> Result<Vec<(i64, Owner)>> {
         let c = self.lock();
-        let mut stmt = c.prepare("SELECT id, worker_pid FROM tasks WHERE state='running'")?;
-        let running: Vec<(i64, Option<i64>)> = stmt
-            .query_map([], |r| Ok((r.get("id")?, r.get("worker_pid")?)))?
+        let mut stmt =
+            c.prepare("SELECT id, worker_pid, worker_start FROM tasks WHERE state='running'")?;
+        let running: Vec<(i64, Owner)> = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get("id")?,
+                    Owner {
+                        pid: r.get("worker_pid")?,
+                        start: r.get("worker_start")?,
+                    },
+                ))
+            })?
             .collect::<rusqlite::Result<_>>()?;
         Ok(running
             .into_iter()
-            .filter(|(_, pid)| !pid.is_some_and(&alive))
-            .map(|(id, _)| id)
+            .filter(|(_, owner)| caller.is_orphan(owner, &alive))
             .collect())
     }
 }
@@ -984,7 +1004,10 @@ mod tests {
             ..Default::default()
         };
         s.insert_attempt(&a).unwrap();
-        s.requeue(id, "worker died").unwrap();
+        let owner = s.orphans(&Caller::this_process(false), |_| false).unwrap()[0]
+            .1
+            .clone();
+        assert!(s.requeue(id, &owner, "worker died").unwrap());
         let t = s.task(id).unwrap().unwrap();
         assert_eq!(t.state, TaskState::Queued);
         let att = s.attempts(id).unwrap();
@@ -994,6 +1017,88 @@ mod tests {
             s.claim_next(3, &[], |_| false).unwrap().map(|t| t.id),
             Some(id)
         );
+    }
+
+    fn queued_task(s: &Store) -> i64 {
+        s.insert_task(&Task {
+            repo: "r".into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 2,
+            timeout_secs: 1,
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    fn only_start_is(pid: i64) -> Option<String> {
+        (pid == 42).then(|| "2000".to_string())
+    }
+
+    #[test]
+    fn a_running_task_under_the_callers_own_pid_is_an_orphan_only_at_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        let id = queued_task(&s);
+        let me = i64::from(std::process::id());
+        assert!(s.claim(id, me).unwrap());
+        let alive = |pid| pid == me;
+        let started = s.orphans(&Caller::this_process(true), alive).unwrap();
+        assert_eq!(started.iter().map(|o| o.0).collect::<Vec<_>>(), [id]);
+        let running = s.orphans(&Caller::this_process(false), alive).unwrap();
+        assert!(running.is_empty(), "a live worker's own claim stays");
+    }
+
+    #[test]
+    fn a_live_pid_with_a_stale_start_time_is_an_orphan() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        let id = queued_task(&s);
+        assert!(s.claim(id, 42).unwrap());
+        let caller = Caller {
+            pid: 7,
+            just_started: false,
+            start_of: only_start_is,
+        };
+        s.lock()
+            .execute("UPDATE tasks SET worker_start='1000' WHERE id=?1", [id])
+            .unwrap();
+        let orphans = s.orphans(&caller, |_| true).unwrap();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].1.start.as_deref(), Some("1000"));
+        s.lock()
+            .execute("UPDATE tasks SET worker_start='2000' WHERE id=?1", [id])
+            .unwrap();
+        assert!(s.orphans(&caller, |_| true).unwrap().is_empty());
+    }
+
+    #[test]
+    fn requeue_of_a_listed_orphan_spares_a_claim_made_after_the_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        let id = queued_task(&s);
+        assert!(s.claim(id, 42).unwrap());
+        let listed = s.orphans(&Caller::this_process(false), |_| false).unwrap();
+        // Another worker requeues it and a live one claims it, under the very
+        // pid the listing saw: the pid alone cannot tell the two apart.
+        assert!(s.requeue(id, &listed[0].1, "first").unwrap());
+        assert!(s.claim(id, 42).unwrap());
+        s.lock()
+            .execute("UPDATE tasks SET worker_start='new' WHERE id=?1", [id])
+            .unwrap();
+        s.insert_attempt(&Attempt {
+            task_id: id,
+            attempt_no: 1,
+            started_at: 0,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(!s.requeue(id, &listed[0].1, "stale").unwrap());
+        let t = s.task(id).unwrap().unwrap();
+        assert_eq!((t.state, t.worker_pid), (TaskState::Running, Some(42)));
+        assert_eq!(s.attempts(id).unwrap()[0].state, AttemptState::Running);
     }
 
     #[test]

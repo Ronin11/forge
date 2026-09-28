@@ -317,7 +317,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     break;
                 }
                 StepFlow::Requeue(reason) => {
-                    f.store.requeue(id, &reason).env()?;
+                    f.store
+                        .requeue(id, &crate::store::Owner::this_process(), &reason)
+                        .env()?;
                     return Ok(TaskState::Queued);
                 }
             }

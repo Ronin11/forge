@@ -316,8 +316,8 @@ fn job_effect_from_row(r: &Row) -> rusqlite::Result<JobEffect> {
 /// taken as part of a larger transaction.
 fn create_job_row(conn: &Connection, j: &Job) -> Result<i64> {
     conn.retry_execute(
-        "INSERT INTO jobs (project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, workflow_source, dry_run, started_at, finished_at, cost_usd, verdict_json, due_at, retry_count, worker_pid)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, CASE WHEN ?7='running' THEN ?16 ELSE NULL END)",
+        "INSERT INTO jobs (project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, workflow_source, dry_run, started_at, finished_at, cost_usd, verdict_json, due_at, retry_count, worker_pid, worker_start)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, CASE WHEN ?7='running' THEN ?16 ELSE NULL END, CASE WHEN ?7='running' THEN ?17 ELSE NULL END)",
         params![
             j.project,
             j.workflow,
@@ -335,6 +335,7 @@ fn create_job_row(conn: &Connection, j: &Job) -> Result<i64> {
             j.due_at,
             j.retry_count,
             std::process::id(),
+            start_of(i64::from(std::process::id())),
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -483,10 +484,29 @@ impl Store {
         verdict_json: &str,
     ) -> Result<()> {
         self.lock().retry_execute(
-            "UPDATE jobs SET state=?2, finished_at=?3, cost_usd=?4, verdict_json=?5, worker_pid=NULL WHERE id=?1",
+            "UPDATE jobs SET state=?2, finished_at=?3, cost_usd=?4, verdict_json=?5, worker_pid=NULL, worker_start=NULL WHERE id=?1",
             params![id, state.as_str(), at, cost_usd, verdict_json],
         )?;
         Ok(())
+    }
+
+    /// `finish_job` for a job recovery found orphaned: only while the row
+    /// still belongs to `owner`, so a job another worker has claimed since
+    /// is left running. Returns whether the job was finished.
+    pub fn finish_orphaned_job(
+        &self,
+        id: i64,
+        owner: &Owner,
+        state: JobState,
+        cost_usd: Option<f64>,
+        verdict_json: &str,
+    ) -> Result<bool> {
+        let n = self.lock().retry_execute(
+            "UPDATE jobs SET state=?2, finished_at=?3, cost_usd=?4, verdict_json=?5, worker_pid=NULL, worker_start=NULL
+             WHERE id=?1 AND state='running' AND worker_pid IS ?6 AND worker_start IS ?7",
+            params![id, state.as_str(), crate::unix_now(), cost_usd, verdict_json, owner.pid, owner.start],
+        )?;
+        Ok(n == 1)
     }
 
     /// One job by id.
@@ -585,14 +605,18 @@ impl Store {
         let id: Option<i64> = self
             .lock()
             .retry_query_row(
-                "UPDATE jobs SET state='running', worker_pid=?2
+                "UPDATE jobs SET state='running', worker_pid=?2, worker_start=?3
                  WHERE id = (
                    SELECT id FROM jobs
                    WHERE state='queued' OR (state='scheduled' AND due_at <= ?1)
                    ORDER BY id LIMIT 1
                  )
                  RETURNING id",
-                params![crate::unix_now(), std::process::id()],
+                params![
+                    crate::unix_now(),
+                    std::process::id(),
+                    start_of(i64::from(std::process::id()))
+                ],
                 |r| r.get(0),
             )
             .optional()?;
@@ -651,29 +675,63 @@ impl Store {
             .optional()?)
     }
 
-    /// Running jobs whose owner died, including legacy rows without an owner.
-    pub fn orphan_jobs(&self, alive: impl Fn(i64) -> bool) -> Result<Vec<(i64, Option<i64>)>> {
+    /// Running jobs whose owner died, including legacy rows without an
+    /// owner, each with the owner it was found under.
+    pub fn orphan_jobs(
+        &self,
+        caller: &Caller,
+        alive: impl Fn(i64) -> bool,
+    ) -> Result<Vec<(i64, Owner)>> {
         let c = self.lock();
-        let mut stmt =
-            c.prepare("SELECT id, worker_pid FROM jobs WHERE state='running' ORDER BY id")?;
+        let mut stmt = c.prepare(
+            "SELECT id, worker_pid, worker_start FROM jobs WHERE state='running' ORDER BY id",
+        )?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get("id")?, r.get("worker_pid")?)))?
-            .collect::<rusqlite::Result<Vec<(i64, Option<i64>)>>>()?;
+            .query_map([], |r| {
+                Ok((
+                    r.get("id")?,
+                    Owner {
+                        pid: r.get("worker_pid")?,
+                        start: r.get("worker_start")?,
+                    },
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<(i64, Owner)>>>()?;
         Ok(rows
             .into_iter()
-            .filter(|(_, pid)| !pid.is_some_and(&alive))
+            .filter(|(_, owner)| caller.is_orphan(owner, &alive))
             .collect())
+    }
+
+    /// Who a `running` job belongs to now; `None` when it is not running.
+    pub fn job_owner(&self, id: i64) -> Result<Option<Owner>> {
+        Ok(self
+            .lock()
+            .retry_query_row(
+                "SELECT worker_pid, worker_start FROM jobs WHERE id=?1 AND state='running'",
+                [id],
+                |r| {
+                    Ok(Owner {
+                        pid: r.get(0)?,
+                        start: r.get(1)?,
+                    })
+                },
+            )
+            .optional()?)
     }
 
     /// Put a running job back in the queue: the worker aborted with it
     /// still in flight (see `worker::work`'s double-signal abort, which
-    /// does the same for a running task's `requeue`).
-    pub fn requeue_job(&self, id: i64) -> Result<()> {
-        self.lock().retry_execute(
-            "UPDATE jobs SET state='queued', worker_pid=NULL WHERE id=?1 AND state='running' AND NOT EXISTS (SELECT 1 FROM job_effects WHERE job_id=?1)",
-            params![id],
+    /// does the same for a running task's `requeue`), or its worker died.
+    /// Guarded on the `owner` the caller chose it for, like `Store::requeue`.
+    pub fn requeue_job(&self, id: i64, owner: &Owner) -> Result<bool> {
+        let n = self.lock().retry_execute(
+            "UPDATE jobs SET state='queued', worker_pid=NULL, worker_start=NULL
+             WHERE id=?1 AND state='running' AND worker_pid IS ?2 AND worker_start IS ?3
+               AND NOT EXISTS (SELECT 1 FROM job_effects WHERE job_id=?1)",
+            params![id, owner.pid, owner.start],
         )?;
-        Ok(())
+        Ok(n == 1)
     }
 }
 
@@ -722,12 +780,19 @@ mod tests {
         s.lock()
             .execute("UPDATE jobs SET worker_pid=NULL WHERE id=?1", [legacy])
             .unwrap();
-        s.requeue_job(queued).unwrap();
+        s.lock()
+            .execute("UPDATE jobs SET worker_start=NULL WHERE id=?1", [legacy])
+            .unwrap();
+        assert!(s.requeue_job(queued, &Owner::this_process()).unwrap());
+        let me = i64::from(std::process::id());
+        let caller = Caller::this_process(false);
+        let listed = s.orphan_jobs(&caller, |pid| pid == me).unwrap();
         assert_eq!(
-            s.orphan_jobs(|pid| pid == i64::from(std::process::id()))
-                .unwrap(),
-            vec![(dead, Some(42)), (legacy, None)]
+            listed.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [dead, legacy]
         );
+        assert_eq!(listed[0].1.pid, Some(42));
+        assert_eq!(listed[1].1, Owner::default());
         s.append_job_effect(&JobEffect {
             job_id: dead,
             kind: "message".into(),
@@ -735,19 +800,56 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        s.requeue_job(dead).unwrap();
+        assert!(!s.requeue_job(dead, &listed[0].1).unwrap());
         assert_eq!(s.job(dead).unwrap().unwrap().state, JobState::Running);
         assert_eq!(s.job(live).unwrap().unwrap().state, JobState::Running);
         let claimed = s.claim_next_job().unwrap().unwrap();
         assert_eq!(claimed.id, queued);
         assert!(
-            s.orphan_jobs(|_| true)
+            s.orphan_jobs(&caller, |_| true)
                 .unwrap()
                 .iter()
                 .all(|(id, _)| *id != queued)
         );
-        s.requeue_job(legacy).unwrap();
+        assert!(s.requeue_job(legacy, &listed[1].1).unwrap());
         assert_eq!(s.job(legacy).unwrap().unwrap().state, JobState::Queued);
+    }
+
+    #[test]
+    fn recovery_writes_on_a_job_spare_a_claim_made_after_the_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "acme");
+        let id = mk_job(&s, "acme", "w", 1);
+        s.lock()
+            .execute(
+                "UPDATE jobs SET worker_pid=42, worker_start='old' WHERE id=?1",
+                [id],
+            )
+            .unwrap();
+        let listed = s
+            .orphan_jobs(&Caller::this_process(false), |_| false)
+            .unwrap();
+        assert_eq!(listed[0].1.start.as_deref(), Some("old"));
+        // The same pid claims it again under a new start time.
+        s.lock()
+            .execute("UPDATE jobs SET worker_start='new' WHERE id=?1", [id])
+            .unwrap();
+        assert!(!s.requeue_job(id, &listed[0].1).unwrap());
+        let finished = s
+            .finish_orphaned_job(id, &listed[0].1, JobState::Failed, None, "[]")
+            .unwrap();
+        assert!(!finished);
+        let job = s.job(id).unwrap().unwrap();
+        assert_eq!((job.state, job.finished_at), (JobState::Running, None));
+        let now = Owner {
+            pid: Some(42),
+            start: Some("new".into()),
+        };
+        assert!(
+            s.finish_orphaned_job(id, &now, JobState::Failed, None, "[]")
+                .unwrap()
+        );
     }
 
     fn mk_message_job(s: &Store, message_id: i64, retry_count: i64) -> Result<i64> {

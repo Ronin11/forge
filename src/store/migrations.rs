@@ -697,6 +697,13 @@ CREATE UNIQUE INDEX jobs_schedule_slot ON jobs(project, workflow, trigger_ref)
   WHERE trigger_kind = 'schedule' AND retry_count = 0;
 ",
 
+    // Worker identity that a reused pid cannot forge: the claiming
+    // process's start time (or a random id where `/proc` gives none),
+    // recorded next to `worker_pid` and compared by orphan recovery.
+    "
+ALTER TABLE tasks ADD COLUMN worker_start TEXT;
+ALTER TABLE jobs ADD COLUMN worker_start TEXT;
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs
