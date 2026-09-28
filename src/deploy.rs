@@ -270,6 +270,58 @@ fn ask(f: &Forge, project: &str, repo: &str, reason: String) -> Result<()> {
     Ok(())
 }
 
+/// The last, human-shaped step (see docs/DEPLOY.md, "The deploy look"):
+/// whether or not the deterministic smoke check itself passed, look at what
+/// it caught. The look is told the smoke result it really had (`smoke_ok`),
+/// and a look alone never rolls back a deploy whose check and smoke passed:
+/// a second look must agree first. Fails `r` when the looks say so; returns
+/// what goes on the deploy row.
+async fn look_step(
+    f: &Forge,
+    target: &DeployTarget,
+    deploy_id: i64,
+    out_dir: &Path,
+    event_task: i64,
+    smoke_ok: bool,
+    r: &mut crate::checks::CheckResult,
+) -> Result<(Option<bool>, Option<String>)> {
+    use crate::deploy_look as look;
+    let note = |text: &str| f.report.emit(event_task, Event::Note { text });
+    let checks_passed = r.ok;
+    let v = match look::run(f, target, deploy_id, out_dir, smoke_ok, 1).await {
+        Ok(Some(v)) => v,
+        Ok(None) => return Ok((None, None)),
+        Err(e) => {
+            note(&format!("deploy-look failed: {e:#}"));
+            return Ok((None, None));
+        }
+    };
+    note(&format!(
+        "deploy-look {}, {} finding(s)",
+        if v.ok { "ok" } else { "not ok" },
+        v.findings.len()
+    ));
+    let second = if look::needs_second_look(checks_passed, &v) {
+        look::run(f, target, deploy_id, out_dir, smoke_ok, 2)
+            .await
+            .unwrap_or_else(|e| {
+                note(&format!("deploy-look confirming look failed: {e:#}"));
+                None
+            })
+    } else {
+        None
+    };
+    if let Some(finding) = look::failing_finding(checks_passed, &v, second.as_ref()) {
+        r.ok = false;
+        r.tail = format!("{}\n\n-- deploy look --\n{finding}", r.tail);
+    } else if look::blocking(&v).is_some() {
+        note(
+            "deploy-look found a blocking problem no second look confirmed; the deploy stands, a person should look",
+        );
+    }
+    Ok((Some(v.ok), Some(serde_json::to_string(&v.findings)?)))
+}
+
 /// Run a deploy target now: resolve it, check out `sha` (default: the
 /// repository's latest landed commit on its base branch), run the method,
 /// and record what happened. On a failed check, redeploy the last passing
@@ -367,44 +419,9 @@ pub async fn run(
                         r.tail = format!("{}\n\n-- smoke check ({url}) --\n{}", r.tail, sr.tail);
                     }
 
-                    // The last, human-shaped step (see docs/DEPLOY.md, "The
-                    // deploy look"): whether or not the deterministic smoke
-                    // check itself passed, look at what it caught.
                     let (look_ok, look_json) =
-                        match crate::deploy_look::run(f, &target, deploy_id, &out_dir).await {
-                            Ok(Some(v)) => {
-                                f.report.emit(
-                                    event_task,
-                                    Event::Note {
-                                        text: &format!(
-                                            "deploy-look {}, {} finding(s)",
-                                            if v.ok { "ok" } else { "not ok" },
-                                            v.findings.len()
-                                        ),
-                                    },
-                                );
-                                if let Some(blocking) =
-                                    v.findings.iter().find(|fnd| fnd.severity == "blocking")
-                                {
-                                    r.ok = false;
-                                    r.tail = format!(
-                                        "{}\n\n-- deploy look --\n{}",
-                                        r.tail, blocking.finding
-                                    );
-                                }
-                                (Some(v.ok), Some(serde_json::to_string(&v.findings)?))
-                            }
-                            Ok(None) => (None, None),
-                            Err(e) => {
-                                f.report.emit(
-                                    event_task,
-                                    Event::Note {
-                                        text: &format!("deploy-look failed: {e:#}"),
-                                    },
-                                );
-                                (None, None)
-                            }
-                        };
+                        look_step(f, &target, deploy_id, &out_dir, event_task, sr.ok, &mut r)
+                            .await?;
 
                     (Some(sr.ok), json, look_ok, look_json)
                 }
