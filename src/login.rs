@@ -61,12 +61,12 @@ impl Creds {
         let raw = o["expiresAt"].as_i64().unwrap_or(0).max(0);
         Creds {
             usable: token("accessToken") && token("refreshToken"),
-            expires_at_ms: if raw < 100_000_000_000 { raw * 1000 } else { raw },
+            expires_at_ms: if raw < 100_000_000_000 {
+                raw * 1000
+            } else {
+                raw
+            },
         }
-    }
-
-    pub fn read(path: &Path) -> Creds {
-        std::fs::read_to_string(path).map_or(Creds::NONE, |t| Creds::parse(&t))
     }
 
     /// Whether a launch should refresh this login on the host first.
@@ -116,7 +116,9 @@ pub fn should_write_back(host: Creds, private: Creds, now_ms: i64) -> bool {
 /// rename it over, so a reader sees the old file or the new one, never half.
 pub fn replace_atomic(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
     static SEQ: AtomicU64 = AtomicU64::new(0);
-    let name = dest.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+    let name = dest
+        .file_name()
+        .map_or(String::new(), |n| n.to_string_lossy().into_owned());
     let tmp = dest.with_file_name(format!(
         "{name}.forge-{}-{}.tmp",
         std::process::id(),
@@ -191,7 +193,11 @@ pub fn write_back(dir: &Path, private: &Path) -> std::io::Result<bool> {
 
 /// When the kernel last wrote a login back to the host file (unix seconds).
 pub fn last_write_back(dir: &Path) -> Option<i64> {
-    std::fs::read_to_string(dir.join(MARK)).ok()?.trim().parse().ok()
+    std::fs::read_to_string(dir.join(MARK))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// The private logins of the tasks that share `worktree`'s parent: each
@@ -274,10 +280,16 @@ mod tests {
     fn a_later_whole_private_login_is_written_back() {
         let c = |ms| Creds::parse(&login("a", "r", ms));
         assert!(should_write_back(c(NOW), c(NOW + 1), NOW));
-        assert!(!should_write_back(c(NOW), c(NOW), NOW), "equal is not later");
+        assert!(
+            !should_write_back(c(NOW), c(NOW), NOW),
+            "equal is not later"
+        );
         assert!(!should_write_back(c(NOW), c(NOW - 1), NOW));
         let empty = Creds::parse(&login("", "", NOW + 9));
-        assert!(!should_write_back(c(NOW), empty, NOW), "an empty copy never wins");
+        assert!(
+            !should_write_back(c(NOW), empty, NOW),
+            "an empty copy never wins"
+        );
     }
 
     #[test]
@@ -336,7 +348,11 @@ mod tests {
     fn write_back_does_not_resurrect_a_logged_out_host() {
         let dir = tempfile::tempdir().unwrap();
         let private = dir.path().join("private.json");
-        std::fs::write(&private, login("a", "r", crate::unix_now() * 1000 + 3_600_000)).unwrap();
+        std::fs::write(
+            &private,
+            login("a", "r", crate::unix_now() * 1000 + 3_600_000),
+        )
+        .unwrap();
         assert!(!write_back(dir.path(), &private).unwrap());
         assert!(!dir.path().join(FILE).exists());
     }
@@ -353,7 +369,10 @@ mod tests {
         let far = crate::unix_now() * 1000 + 8 * 3600 * 1000;
         std::fs::write(dir.join(FILE), login("a", "r", far)).unwrap();
         seed(&dir, &worktree, &private);
-        assert_eq!(std::fs::read_to_string(&private).unwrap(), login("a", "r", far));
+        assert_eq!(
+            std::fs::read_to_string(&private).unwrap(),
+            login("a", "r", far)
+        );
         // The host file is emptied and the private copy is expired: it must
         // neither be restored over the empty file nor left to seed anything.
         std::fs::write(dir.join(FILE), login("", "", 0)).unwrap();
@@ -370,14 +389,23 @@ mod tests {
         let other = root.path().join("work/other-provider/claude").join(FILE);
         let worktree = root.path().join("work/task");
         let private = root.path().join("work/task-provider/claude").join(FILE);
-        for d in [&dir, &worktree, other.parent().unwrap(), private.parent().unwrap()] {
+        for d in [
+            &dir,
+            &worktree,
+            other.parent().unwrap(),
+            private.parent().unwrap(),
+        ] {
             std::fs::create_dir_all(d).unwrap();
         }
         let far = crate::unix_now() * 1000 + 8 * 3600 * 1000;
         std::fs::write(dir.join(FILE), login("a", "dead", far)).unwrap();
         std::fs::write(&other, login("b", "live", far + 5000)).unwrap();
         seed(&dir, &worktree, &private);
-        assert!(std::fs::read_to_string(dir.join(FILE)).unwrap().contains("live"));
+        assert!(
+            std::fs::read_to_string(dir.join(FILE))
+                .unwrap()
+                .contains("live")
+        );
         assert!(std::fs::read_to_string(&private).unwrap().contains("live"));
     }
 }
