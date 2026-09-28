@@ -1150,7 +1150,7 @@ pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<Strin
         t.worktree = dir.display().to_string();
         recreated = Some(dir);
     }
-    let result = land_integrated(f, by_hand, demoted, t, &url, &remote, lock).await;
+    let result = land_integrated(f, by_hand, t, &url, &remote, lock).await;
     if let Some(dir) = recreated {
         let _ = std::fs::remove_dir_all(&dir);
         crate::sandbox::discard_provider_state(&dir);
@@ -1161,7 +1161,6 @@ pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<Strin
 async fn land_integrated(
     f: &Forge,
     by_hand: bool,
-    demoted: bool,
     mut t: Task,
     url: &str,
     remote: &str,
@@ -1183,7 +1182,7 @@ async fn land_integrated(
             t.landed_at = Some(crate::unix_now());
             t.hand_landed = by_hand;
             t.pushed = true;
-            if demoted {
+            if t.state != TaskState::Succeeded {
                 t.state = TaskState::Succeeded;
                 t.finished_at = Some(crate::unix_now());
             }

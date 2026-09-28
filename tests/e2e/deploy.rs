@@ -1087,6 +1087,15 @@ fn deploy_static_rsyncs_and_defaults_the_check_to_a_url_fetch_with_a_marker() {
 
 #[test]
 fn a_task_landing_on_a_repository_deploys_its_on_landing_targets_tied_to_the_task() {
+    landing_deploys(false);
+}
+
+#[test]
+fn forge_land_unverified_succeeds_settles_initiative_and_deploys() {
+    landing_deploys(true);
+}
+
+fn landing_deploys(by_hand: bool) {
     let e = Env::new();
     let repo_s = e.repo.to_str().unwrap();
 
@@ -1142,16 +1151,63 @@ fn a_task_landing_on_a_repository_deploys_its_on_landing_targets_tied_to_the_tas
     let fakehome = e._dir.path().join("fakehome");
     std::fs::create_dir_all(&fakehome).unwrap();
 
-    // The task lands on `main`, which runs the on-landing target through
-    // exactly the path `forge deploy` uses.
+    if by_hand {
+        assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
+        assert!(e.task(1).2, "the branch was pushed");
+        assert!(
+            e.forge(
+                "ok.sh",
+                &["initiative", "new", "demo", "--outcome", "ship answer"]
+            )
+            .status
+            .success()
+        );
+        // Model a pushed candidate whose review could not finish.
+        e.db().execute(
+            "UPDATE tasks SET state='unverified', reason='review login expired', finished_at=NULL, initiative=1 WHERE id=1",
+            [],
+        ).unwrap();
+        let before: serde_json::Value = serde_json::from_slice(
+            &e.forge("ok.sh", &["initiative", "show", "1", "--json"])
+                .stdout,
+        )
+        .unwrap();
+        assert_eq!(before["unverified"], 1);
+        assert_eq!(before["succeeded"], 0);
+    }
+    let args = if by_hand {
+        vec!["land", "1"]
+    } else {
+        vec!["run", repo_s, "write 42", "--retries", "0"]
+    };
     let o = e
         .cmd("ok.sh")
         .env("PATH", &path)
         .env("HOME", &fakehome)
-        .args(["run", repo_s, "write 42", "--retries", "0"])
+        .args(args)
         .output()
         .unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    if by_hand {
+        let after: serde_json::Value = serde_json::from_slice(
+            &e.forge("ok.sh", &["initiative", "show", "1", "--json"])
+                .stdout,
+        )
+        .unwrap();
+        assert_eq!(after["unverified"], 0);
+        assert_eq!(after["succeeded"], 1);
+        assert!(after["settled_at"].is_number());
+        let (sha, finished): (String, Option<i64>) = e
+            .db()
+            .query_row(
+                "SELECT landed_sha, finished_at FROM tasks WHERE id=1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(e.task(1).1, format!("landed main @ {}", &sha[..8]));
+        assert!(finished.is_some());
+    }
 
     let (state, reason, _) = e.task(1);
     assert_eq!(state, "succeeded");
