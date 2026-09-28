@@ -4,6 +4,7 @@
 //! own clock, never from the model's prose.
 
 mod chat;
+mod claude;
 mod codex;
 mod copilot;
 mod inputs;
@@ -13,6 +14,7 @@ mod relaunch;
 mod usage_limit;
 use chat::run_chat;
 pub(super) use chat::truncated_first_line;
+use claude::{claude_argv, run_claude};
 use codex::{apply_codex_event, run_codex};
 use copilot::{CopilotTally, apply_copilot_event, run_copilot};
 use inputs::{AgentRun, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
@@ -859,118 +861,6 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
     }
 }
 
-/// The tools an attempt gets, and no other: what a coder, a reviewer or a
-/// planner needs to read, search, edit and run. `StructuredOutput` is added
-/// by `--json-schema` on top and is not a member of this list.
-pub const ATTEMPT_TOOLS: &str = "Bash,Read,Edit,Write,Glob,Grep";
-
-/// The claude CLI's argv for one launch: the flags common to every run,
-/// `--json-schema` for the structured result every step (attempt or
-/// directive) is held to, and `--tools`: exactly Bash, Read, Edit, Write,
-/// Glob and Grep for an attempt, `""` when `no_tools` asks for a bounded
-/// judgment with none.
-///
-/// The launch is lean, and unconditionally so: `--strict-mcp-config` (no
-/// MCP server the operator configured), `--disable-slash-commands` (no
-/// skills), `--setting-sources project,local` (the operator's user settings
-/// stay out; the repository's own may apply) and
-/// `--exclude-dynamic-system-prompt-sections`. Measured 2026-09-22 over 900
-/// sandbox transcripts: an attempt's init event listed the operator's
-/// claude.ai connectors (mail, drive, calendar, documents), 30+ skills, LSP
-/// plugins and auto-memory, a security hole for an untrusted task and
-/// about 16k tokens on every turn; the probe with these flags took turn-1
-/// context from 33.5k to 17.2k and a second session wrote 0 (the prefix
-/// reused across sessions). `--bare` was not usable: it refuses OAuth.
-///
-/// `--tools ""` rather than `--disallowedTools *` for the no-tools case —
-/// they looked equivalent but are not: `--json-schema` forces a `StructuredOutput` tool into the run for
-/// the model to answer through, and `*` denies that one too, so the model
-/// can never submit its answer and the run ends at its turn cap with
-/// `error_max_turns` (docs/JOBS.md, "Steps"; reproduced by hand against the
-/// real CLI). `--tools ""` disables every other built-in tool while leaving
-/// `StructuredOutput` (which is not itself a member of the built-in set)
-/// reachable.
-fn claude_argv(bin: &str, l: &Launch<'_>) -> Vec<String> {
-    let mut argv = vec![
-        bin.to_string(),
-        "--print".to_string(),
-        "--verbose".to_string(),
-        "--output-format".to_string(),
-        "stream-json".to_string(),
-        "--dangerously-skip-permissions".to_string(),
-        "--strict-mcp-config".to_string(),
-        "--disable-slash-commands".to_string(),
-        "--setting-sources".to_string(),
-        "project,local".to_string(),
-        "--exclude-dynamic-system-prompt-sections".to_string(),
-        "--model".to_string(),
-        l.model.to_string(),
-        "--max-turns".to_string(),
-        l.max_turns.to_string(),
-        "--json-schema".to_string(),
-        l.schema.to_string(),
-        "--tools".to_string(),
-        if l.no_tools {
-            String::new()
-        } else {
-            ATTEMPT_TOOLS.to_string()
-        },
-    ];
-    argv.extend(l.provider.extra_args.iter().cloned());
-    if let Some(id) = l.resume {
-        argv.push("--resume".to_string());
-        argv.push(id.to_string());
-    }
-    argv
-}
-
-async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
-    // The binary itself, never a version-manager shim: a shim inside the
-    // sandbox reaches for state the sandbox does not have (a global tool
-    // config, a registry cache, a writable shims directory) and dies
-    // before the agent starts. Forge 1 learned this the same way.
-    let bin = crate::executor::agent_bin(l.sandbox, l.worktree, agent_bin_for(l.step));
-    let argv = claude_argv(&bin, &l);
-    let mut identity = crate::git::identity(&l.worktree.join(".git")).await;
-    identity.extend(inputs::provider_env(l.provider));
-    let mut log =
-        File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
-    writeln!(
-        log,
-        "{{\"type\":\"forge_prompt\",\"text\":{}}}",
-        serde_json::to_string(l.prompt)?
-    )?;
-
-    let (mut out, stderr_text) = run_with_relaunch(AgentRun {
-        sandbox: l.sandbox,
-        worktree: l.worktree,
-        argv: &argv,
-        identity: &identity,
-        prompt: l.prompt,
-        bin: &bin,
-        timeout: l.timeout,
-        writes: l.writes,
-        early_ending: l.early_ending,
-        task_id: l.task_id,
-        report: l.report,
-        log: &mut log,
-    })
-    .await?;
-
-    if !stderr_text.trim().is_empty() {
-        writeln!(
-            log,
-            "{{\"type\":\"forge_stderr\",\"text\":{}}}",
-            serde_json::to_string(&stderr_text)?
-        )?;
-    }
-    out.stderr_text = stderr_text;
-    if let Some(prices) = crate::pricing::Prices::for_claude(l.provider) {
-        crate::pricing::price_outcome(&mut out, &prices);
-    }
-    Ok(out)
-}
-
 /// One spawn of an agent CLI phase to exit or timeout, writing every raw
 /// line to `log` and folding each JSON frame into `out`/`watch` through
 /// `apply` — the plumbing the codex and copilot runners' phases share.
@@ -1372,121 +1262,6 @@ mod tests {
             no_tools,
             judgment: None,
         }
-    }
-
-    /// `--disallowedTools *` looked like "no tools" but denies the
-    /// `StructuredOutput` tool `--json-schema` itself forces into the run,
-    /// so the model could never submit its answer and the run always ended
-    /// at its turn cap (reproduced by hand against the real CLI: exit 1,
-    /// `subtype: "error_max_turns"`). `--tools ""` disables the built-in set
-    /// while leaving `StructuredOutput` reachable.
-    #[test]
-    fn claude_argv_with_no_tools_uses_the_tools_flag_not_disallowed_tools() {
-        let dir = tempfile::tempdir().unwrap();
-        let report = Reporter::new(false, None);
-        let provider = Provider::default();
-        let log_path = dir.path().join("log.jsonl");
-        let l = test_launch(dir.path(), &report, &provider, &log_path, "{}", true, None);
-        let argv = claude_argv("claude", &l);
-        assert!(!argv.iter().any(|a| a == "--disallowedTools"), "{argv:?}");
-        let tools_at = argv
-            .iter()
-            .position(|a| a == "--tools")
-            .expect("--tools present: {argv:?}");
-        assert_eq!(argv[tools_at + 1], "", "{argv:?}");
-    }
-
-    #[test]
-    fn claude_argv_without_no_tools_names_exactly_the_attempt_tools() {
-        let dir = tempfile::tempdir().unwrap();
-        let report = Reporter::new(false, None);
-        let provider = Provider::default();
-        let log_path = dir.path().join("log.jsonl");
-        let l = test_launch(dir.path(), &report, &provider, &log_path, "{}", false, None);
-        let argv = claude_argv("claude", &l);
-        let tools_at = argv.iter().position(|a| a == "--tools").unwrap();
-        assert_eq!(
-            argv[tools_at + 1],
-            "Bash,Read,Edit,Write,Glob,Grep",
-            "{argv:?}"
-        );
-    }
-
-    /// The lean flags are on every claude launch whatever the step: no MCP
-    /// server, no skill, no user settings, no dynamic system-prompt
-    /// sections. A security property, so it is asserted per step rather
-    /// than trusted to the one builder.
-    #[test]
-    fn every_claude_launch_is_lean() {
-        let dir = tempfile::tempdir().unwrap();
-        let report = Reporter::new(false, None);
-        let provider = Provider::default();
-        let log_path = dir.path().join("log.jsonl");
-        for (step, no_tools) in [
-            ("code", false),
-            ("review", false),
-            ("investigate", false),
-            ("supervisor", false),
-            ("summarise", true),
-        ] {
-            let mut l = test_launch(
-                dir.path(),
-                &report,
-                &provider,
-                &log_path,
-                "{}",
-                no_tools,
-                None,
-            );
-            l.step = step;
-            let argv = claude_argv("claude", &l);
-            for flag in [
-                "--strict-mcp-config",
-                "--disable-slash-commands",
-                "--exclude-dynamic-system-prompt-sections",
-            ] {
-                assert!(
-                    argv.iter().any(|a| a == flag),
-                    "{step}: {flag} missing: {argv:?}"
-                );
-            }
-            let at = argv.iter().position(|a| a == "--setting-sources").unwrap();
-            assert_eq!(argv[at + 1], "project,local", "{step}: {argv:?}");
-            assert!(
-                !argv.iter().any(|a| a == "--bare"),
-                "{step}: --bare refuses OAuth"
-            );
-            assert!(
-                argv.iter().any(|a| a == "--json-schema"),
-                "{step}: {argv:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn claude_argv_carries_the_schema_model_and_resume_id() {
-        let dir = tempfile::tempdir().unwrap();
-        let report = Reporter::new(false, None);
-        let provider = Provider::default();
-        let log_path = dir.path().join("log.jsonl");
-        let schema = r#"{"type":"object"}"#;
-        let l = test_launch(
-            dir.path(),
-            &report,
-            &provider,
-            &log_path,
-            schema,
-            true,
-            Some("sess-1"),
-        );
-        let argv = claude_argv("claude", &l);
-        assert_eq!(argv[0], "claude");
-        let schema_at = argv.iter().position(|a| a == "--json-schema").unwrap();
-        assert_eq!(argv[schema_at + 1], schema);
-        let model_at = argv.iter().position(|a| a == "--model").unwrap();
-        assert_eq!(argv[model_at + 1], "sonnet");
-        let resume_at = argv.iter().position(|a| a == "--resume").unwrap();
-        assert_eq!(argv[resume_at + 1], "sess-1");
     }
 
     #[test]
