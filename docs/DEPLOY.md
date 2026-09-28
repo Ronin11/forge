@@ -46,6 +46,14 @@ outright, so a repository it was `--on-landing` for stops deploying it on
 future landings; it is refused while a deploy of that target is still
 running, since there would be nothing left to record the result on.
 
+A method may declare `required_args` in its action file: `add` and `set`
+refuse a target that leaves one missing or blank (`deploy-command` needs
+`host` and `dest`; `deploy-user-service` also needs `unit`). A target
+waiting on `forge provision` for its host gives a placeholder `host`,
+which provisioning replaces. The two methods also refuse at run time an
+empty `host` or a `dest` that is empty or `/`, so their `rsync --delete`
+never targets the host's root.
+
 ## Methods
 
 A method is an action file under `src/builtins/operations/deploy-*.toml`,
