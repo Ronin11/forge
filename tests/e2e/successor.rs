@@ -53,7 +53,7 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
     let systemctl = fakes.join("systemctl");
     std::fs::write(
         &systemctl,
-        "#!/bin/bash\necho \"systemctl $*\" >> \"$SUCC_CALLS_LOG\"\n",
+        "#!/bin/bash\necho \"systemctl $*\" >> \"$SUCC_CALLS_LOG\"\nif [ \"$2\" = is-active ]; then echo active; fi\n",
     )
     .unwrap();
     std::fs::set_permissions(
@@ -143,7 +143,8 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
     );
     let calls = std::fs::read_to_string(&calls).unwrap_or_default();
     assert!(
-        calls.contains("systemctl --user restart --no-block forge-web forge-portal"),
+        calls.contains("systemctl --user restart --no-block forge-web")
+            && !calls.contains("forge-portal"),
         "{calls}"
     );
     assert!(
@@ -405,7 +406,11 @@ fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_o
     let systemctl_dir = e.home.join("fakebin");
     std::fs::create_dir_all(&systemctl_dir).unwrap();
     let systemctl = systemctl_dir.join("systemctl");
-    std::fs::write(&systemctl, "#!/bin/bash\nexit 0\n").unwrap();
+    std::fs::write(
+        &systemctl,
+        "#!/bin/bash\nif [ \"$2\" = is-active ]; then echo active; fi\nexit 0\n",
+    )
+    .unwrap();
     std::fs::set_permissions(
         &systemctl,
         std::os::unix::fs::PermissionsExt::from_mode(0o755),
@@ -459,4 +464,167 @@ fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_o
     );
     assert!(!dead.exists(), "the dead worker's directory was not swept");
     assert!(old.wait().success());
+}
+
+/// A fake `systemctl` with no `forge-portal` unit, whose other units
+/// answer `is-active` with the word in `<home>/units/<unit>`, and which
+/// records every call.
+fn fake_systemctl_without_portal(e: &Env) -> String {
+    let fakes = e.home.join("fakebin");
+    std::fs::create_dir_all(&fakes).unwrap();
+    std::fs::create_dir_all(e.home.join("units")).unwrap();
+    let systemctl = fakes.join("systemctl");
+    std::fs::write(
+        &systemctl,
+        format!(
+            r#"#!/bin/bash
+echo "systemctl $*" >> "{calls}"
+unit="${{@: -1}}"
+if [ "$2" = restart ] && [ "$unit" = forge-portal ]; then
+  echo "Failed to restart forge-portal.service: Unit forge-portal.service not found." >&2
+  exit 5
+fi
+if [ "$2" = is-active ]; then cat "{units}/$unit" 2>/dev/null || echo inactive; fi
+exit 0
+"#,
+            calls = e.home.join("calls.log").display(),
+            units = e.home.join("units").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &systemctl,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    format!(
+        "{}:{}",
+        fakes.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
+/// Declare the self deploy target with `args` (`--arg` values).
+fn declare_self_target(e: &Env, args: &[&str]) {
+    let repo = e.repo.to_str().unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &["project", "new", "forge", "--purpose", "p", "--repo", repo],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let mut cmd = vec![
+        "project",
+        "deploy",
+        "add",
+        "forge",
+        "self",
+        "--repo",
+        repo,
+        "--method",
+        "deploy-self",
+    ];
+    for a in args {
+        cmd.extend(["--arg", a]);
+    }
+    let o = e.forge("ok.sh", &cmd);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+/// Run a successor on release `new` (current is `old`) until it has taken
+/// over; returns what it logged and the `current` it left.
+fn takeover(e: &Env, path: &str) -> (String, String) {
+    let root = e.home.join("bin");
+    for id in ["old", "new"] {
+        std::fs::create_dir_all(root.join("releases").join(id)).unwrap();
+    }
+    std::os::unix::fs::symlink("releases/old", root.join("current")).unwrap();
+    let log = e.home.join("successor.log");
+    let mut cmd = e.cmd("ok.sh");
+    cmd.env("PATH", path)
+        .env("FORGE_RELEASE", "new")
+        .env("FORGE_SUCCESSOR_OF", "1")
+        .env_remove("NOTIFY_SOCKET")
+        .stderr(std::fs::File::create(&log).unwrap())
+        .args(["work", "--poll", "1"]);
+    let mut w = Worker::spawn(&mut cmd);
+    let _reap = Reap(e.home.clone());
+    assert!(
+        wait_until(
+            || root.join("successor-capable").exists(),
+            Duration::from_secs(30)
+        ),
+        "the successor never finished taking over: {}",
+        std::fs::read_to_string(&log).unwrap_or_default()
+    );
+    w.signal(libc::SIGTERM);
+    let _ = w.wait();
+    let current = std::fs::read_link(root.join("current")).unwrap();
+    (
+        std::fs::read_to_string(&log).unwrap(),
+        current.display().to_string(),
+    )
+}
+
+#[test]
+fn a_successor_restarts_the_units_the_self_target_declares_and_a_missing_one_is_a_note() {
+    let e = Env::new();
+    declare_self_target(&e, &["units=forge-web forge-portal", "tries=2"]);
+    let path = fake_systemctl_without_portal(&e);
+    std::fs::write(e.home.join("units/forge-web"), "active\n").unwrap();
+    let (log, current) = takeover(&e, &path);
+    assert!(log.contains("restarted forge-web"), "{log}");
+    assert!(log.contains("forge-portal: unit not found"), "{log}");
+    assert!(!log.contains("could not restart"), "{log}");
+    assert_eq!(current, "releases/new", "{log}");
+    let calls = std::fs::read_to_string(e.home.join("calls.log")).unwrap();
+    assert!(
+        calls.contains("systemctl --user restart --no-block forge-web"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("systemctl --user restart --no-block forge-portal"),
+        "{calls}"
+    );
+}
+
+#[test]
+fn a_successor_restarts_only_forge_web_when_the_target_declares_no_units() {
+    let e = Env::new();
+    declare_self_target(&e, &[]);
+    let path = fake_systemctl_without_portal(&e);
+    std::fs::write(e.home.join("units/forge-web"), "active\n").unwrap();
+    let (log, current) = takeover(&e, &path);
+    assert!(log.contains("restarted forge-web"), "{log}");
+    assert!(!log.contains("forge-portal"), "{log}");
+    assert_eq!(current, "releases/new", "{log}");
+    let calls = std::fs::read_to_string(e.home.join("calls.log")).unwrap();
+    assert!(!calls.contains("forge-portal"), "{calls}");
+}
+
+#[test]
+fn a_unit_that_does_not_come_back_active_flips_current_back() {
+    let e = Env::new();
+    declare_self_target(&e, &["units=forge-web forge-portal", "tries=2"]);
+    let path = fake_systemctl_without_portal(&e);
+    std::fs::write(e.home.join("units/forge-web"), "inactive\n").unwrap();
+    let (log, current) = takeover(&e, &path);
+    assert!(
+        log.contains("forge-web: did not become active within 2 tries"),
+        "{log}"
+    );
+    assert!(log.contains("forge-portal: unit not found"), "{log}");
+    assert!(
+        log.contains("putting current back to releases/old"),
+        "{log}"
+    );
+    assert_eq!(current, "releases/old", "{log}");
+    let calls = std::fs::read_to_string(e.home.join("calls.log")).unwrap();
+    let web_restarts = calls
+        .lines()
+        .filter(|c| c.contains("restart") && c.ends_with("forge-web"))
+        .count();
+    assert_eq!(
+        web_restarts, 2,
+        "restarted again on the old release: {calls}"
+    );
 }

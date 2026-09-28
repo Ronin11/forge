@@ -53,7 +53,7 @@ async fn deploy_at(
 }
 
 /// The method that deploys Forge itself through the release layout.
-const SELF_METHOD: &str = "deploy-self";
+pub(crate) const SELF_METHOD: &str = "deploy-self";
 
 /// What a `deploy-self` target deploys, and where its tree comes from:
 /// origin's base branch fetched into the kernel repository (never the

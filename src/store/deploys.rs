@@ -260,6 +260,22 @@ impl Store {
             .optional()?)
     }
 
+    /// The target that deploys Forge itself (method `method`): the first by
+    /// project and name when several are declared.
+    pub fn deploy_target_by_method(&self, method: &str) -> Result<Option<DeployTarget>> {
+        Ok(self
+            .lock()
+            .retry_query_row(
+                &format!(
+                    "SELECT {} FROM deploy_targets WHERE method=?1 ORDER BY project, name LIMIT 1",
+                    DEPLOY_TARGET_COLUMNS.join(", ")
+                ),
+                params![method],
+                deploy_target_from_row,
+            )
+            .optional()?)
+    }
+
     /// A project's deploy targets, alphabetically.
     pub fn deploy_targets(&self, project: &str) -> Result<Vec<DeployTarget>> {
         let c = self.lock();
