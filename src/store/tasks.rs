@@ -1409,6 +1409,7 @@ mod tests {
                         tdd: Some(true),
                         after: Some(vec![3, 4]),
                         checks: Some(vec!["true".into()]),
+                        provider: None,
                     }
                 )
                 .unwrap()

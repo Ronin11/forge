@@ -284,32 +284,87 @@ fn first_role(f: &Forge, t: &Task) -> String {
         .unwrap_or_else(|| "code".into())
 }
 
-/// Whether the provider that `t`'s next agent step will actually run
-/// under (see `first_role`) is currently held.
+/// How the claim loop treats `t` now: run under the provider its next
+/// agent step resolves to (see `first_role`), or, when that provider is
+/// held and `t`'s arm for the role was drawn from `experiment.toml`, under
+/// an arm of the same role that is not (`redraw::decide`). `None` when the
+/// provider does not resolve: the real error surfaces when the task runs.
+/// Nothing is written here.
+fn route_candidate(f: &Forge, t: &Task) -> Option<crate::redraw::Routing> {
+    let role = first_role(f, t);
+    let provider = f.effective_provider(t, &role).ok()?.name.clone();
+    let hold = |p: &str| window_hold(f, p).ok().flatten();
+    // The experiment is read only once the drawn provider is known to be
+    // held, so a free queue never touches `experiment.toml`.
+    let weights = hold(&provider).and_then(|_| {
+        let exp = workflows::catalog_dir(&f.paths.home)
+            .ok()
+            .and_then(|dir| crate::experiment::load(&dir).ok().flatten())?;
+        let mut w = exp.factors.get(&role)?.clone();
+        w.retain(|level, _| f.providers.contains_key(level));
+        Some(w)
+    });
+    Some(crate::redraw::decide(
+        t,
+        &role,
+        &provider,
+        weights.as_ref(),
+        hold,
+    ))
+}
+
+/// Whether the claim loop must skip `t` for its provider: held, and no
+/// other arm of its role could take it. A held drawn arm that another
+/// provider can run is re-drawn instead (recorded on the task's
+/// `explore`, noted on its event stream, and announced), and the task is
+/// not skipped.
 fn provider_is_held(f: &Forge, t: &Task) -> bool {
-    f.effective_provider(t, &first_role(f, t))
-        .ok()
-        .and_then(|p| window_hold(f, &p.name).ok().flatten())
-        .is_some()
+    match route_candidate(f, t) {
+        None | Some(crate::redraw::Routing::Free) => false,
+        Some(crate::redraw::Routing::Held { .. }) => true,
+        Some(crate::redraw::Routing::Redrawn { explore, note }) => {
+            match f.store.set_explore(t.id, &explore) {
+                Ok(true) => {
+                    eprintln!("task {}: {note}", t.id);
+                    f.report.emit(t.id, Event::Note { text: &note });
+                    false
+                }
+                // Claimed or edited in between: leave it to the next pass.
+                _ => true,
+            }
+        }
+    }
+}
+
+/// `msg` led by the provider it is about, unless it already is (a login
+/// hold's message names its provider).
+fn named(provider: &str, msg: &str) -> String {
+    if msg.starts_with(&format!("{provider}:")) {
+        msg.to_string()
+    } else {
+        format!("{provider}: {msg}")
+    }
 }
 
 /// The tightest (soonest-resetting) hold among every queued, unblocked
 /// task's own provider (the one `first_role` says its next agent step
-/// will run under), when *none* of them can be claimed right now;
-/// `None` as soon as one candidate's provider is not held, since the
-/// caller can claim it instead of waiting.
+/// will run under, or an arm it would be re-drawn to), when *none* of
+/// them can be claimed right now; `None` as soon as one candidate can run
+/// under a provider that is not held, since the caller can claim it
+/// instead of waiting. The message names the provider.
 fn tightest_provider_hold(f: &Forge, held_initiatives: &[i64]) -> Result<Option<(String, i64)>> {
     let mut tightest: Option<(String, i64)> = None;
     for t in f.store.queued_unblocked(held_initiatives)? {
-        let role = first_role(f, &t);
-        let Ok(provider) = f.effective_provider(&t, &role) else {
-            return Ok(None);
-        };
-        match window_hold(f, &provider.name)? {
-            None => return Ok(None),
-            Some((msg, until)) => {
+        match route_candidate(f, &t) {
+            None | Some(crate::redraw::Routing::Free) => return Ok(None),
+            Some(crate::redraw::Routing::Redrawn { .. }) => return Ok(None),
+            Some(crate::redraw::Routing::Held {
+                provider,
+                msg,
+                until,
+            }) => {
                 if tightest.as_ref().is_none_or(|(_, u)| until < *u) {
-                    tightest = Some((msg, until));
+                    tightest = Some((named(&provider, &msg), until));
                 }
             }
         }
