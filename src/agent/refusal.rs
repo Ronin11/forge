@@ -157,3 +157,41 @@ fn refuse_login(l: &Launch<'_>, why: &str) -> Result<Outcome> {
     l.report.emit(l.task_id, Event::Note { text: why });
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_probe_is_the_attempt_argv_cut_to_one_toolless_unsaved_turn() {
+        let s = |v: &[&str]| v.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        let argv = probe_argv(s(&[
+            "claude",
+            "--print",
+            "--max-turns",
+            "40",
+            "--json-schema",
+            "{}",
+            "--tools",
+            "Bash,Read",
+            "--resume",
+            "abc",
+            "--model",
+            "sonnet",
+        ]));
+        assert_eq!(
+            argv,
+            s(&[
+                "claude",
+                "--print",
+                "--max-turns",
+                "1",
+                "--tools",
+                "",
+                "--model",
+                "sonnet",
+                "--no-session-persistence"
+            ])
+        );
+    }
+}

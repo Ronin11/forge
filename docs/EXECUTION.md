@@ -296,3 +296,17 @@ Each depends on the one before it:
 Edges on build workflows. Joins. A counter-bounded loop. A backend that
 runs a directive with no egress bound and no doctor line saying so. A
 model call anywhere in the control flow.
+
+## The agent login
+
+The claude login (`<config dir>/.credentials.json`) is the kernel's, not any one sandbox's
+(`src/login.rs`). OAuth refresh tokens rotate, so a sandbox that refreshes its private copy leaves
+the host file's refresh token dead, and the next host-side refresh empties the file. So:
+
+- after every attempt, and before seeding any launch, a private copy whose `expiresAt` is later than
+  the host file's is copied back over it (a sibling file renamed into place, under a lock);
+- a host login within 30 minutes of `expiresAt` is refreshed on the host first, one launch at a time,
+  by a one-token `claude` probe through the attempts' own lean argv;
+- a host file with an empty or missing token is never seeded: the launch is a provider refusal
+  (held, not counted as an attempt), and `forge doctor` fails the `anthropic` row with
+  "run `claude login`". That row also shows the token's `expiresAt` and any write-back in the last 8 hours.
