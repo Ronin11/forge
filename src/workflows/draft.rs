@@ -497,7 +497,7 @@ fn step_info(st: &DraftStep, actions: &BTreeMap<String, ActionDef>) -> StepInfo 
 fn stand_in(name: &str, p: &Placeholder, wf: WorkflowKind) -> Result<ActionDef> {
     let desc = toml::Value::String(p.line()).to_string();
     let body = match (p.kind, wf) {
-        (Kind::Operation, _) => format!("kind = \"operation\"\nrun = [\"true\"]\n"),
+        (Kind::Operation, _) => "kind = \"operation\"\nrun = [\"true\"]\n".to_string(),
         (Kind::Directive, WorkflowKind::Run) => {
             "kind = \"directive\"\ncontract = \"plan\"\nschema = '{\"type\":\"object\"}'\n"
                 .to_string()

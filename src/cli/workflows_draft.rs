@@ -477,10 +477,10 @@ pub(super) async fn dispatch(args: DraftArgs) -> Result<()> {
             let d = open_draft(&home, &name, WorkflowKind::Build)?;
             let a = d.check(&home)?;
             if json {
-                print_json(&a)
-            } else {
-                Ok(out!("{}", show_text(&a)))
+                return print_json(&a);
             }
+            out!("{}", show_text(&a));
+            Ok(())
         }
         DraftCmd::Check => print_json(&read_doc()?.check(&home)?),
         DraftCmd::Import => {
