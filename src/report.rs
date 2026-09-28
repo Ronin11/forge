@@ -149,6 +149,19 @@ pub enum Event<'a> {
         state: &'a str,
         cost_usd: f64,
     },
+    /// A provider's agent login was refused: it is held, and every task on
+    /// it waits, until a probe answers or the operator runs `forge doctor`
+    /// after logging in (src/login_hold.rs). Emitted once per hold, never
+    /// once per refused attempt.
+    ProviderHeld {
+        provider: &'a str,
+        reason: &'a str,
+        since: i64,
+    },
+    /// The held provider's login answered again: its tasks run.
+    ProviderReleased {
+        provider: &'a str,
+    },
 }
 
 /// Every `type` an event carries in `events.jsonl`, the values a run
@@ -176,6 +189,8 @@ pub const EVENT_TYPES: &[&str] = &[
     "project_created",
     "job_started",
     "job_finished",
+    "provider_held",
+    "provider_released",
 ];
 
 impl Event<'_> {
@@ -305,6 +320,10 @@ impl Event<'_> {
                 "job {job_id} ({project}/{workflow}) {state} ({})",
                 money(Some(*cost_usd))
             ),
+            Event::ProviderHeld { reason, .. } => format!("held {reason}"),
+            Event::ProviderReleased { provider } => {
+                format!("released {provider}: its login answered")
+            }
         }
     }
 }
@@ -652,6 +671,7 @@ fn render(ev: Event) -> Vec<String> {
         Event::ProjectCreated { .. } => vec![summary],
         Event::JobStarted { .. } => vec![summary],
         Event::JobFinished { .. } => vec![String::new(), summary],
+        Event::ProviderHeld { .. } | Event::ProviderReleased { .. } => vec![summary],
     }
 }
 
@@ -898,6 +918,31 @@ mod tests {
                 "type": "job_finished", "project": "equitizr", "workflow": "quote-by-text",
                 "job_id": 9, "state": "ok", "cost_usd": 0.05,
                 "text": "job 9 (equitizr/quote-by-text) ok ($0.0500)",
+            })
+        );
+    }
+
+    #[test]
+    fn a_provider_hold_and_its_release_carry_the_provider_and_the_words() {
+        assert_eq!(
+            to_json(&Event::ProviderHeld {
+                provider: "anthropic",
+                reason: "anthropic: login expired since 23:48",
+                since: 1_790_000_000,
+            }),
+            json!({
+                "type": "provider_held", "provider": "anthropic",
+                "reason": "anthropic: login expired since 23:48", "since": 1_790_000_000,
+                "text": "held anthropic: login expired since 23:48",
+            })
+        );
+        assert_eq!(
+            to_json(&Event::ProviderReleased {
+                provider: "anthropic"
+            }),
+            json!({
+                "type": "provider_released", "provider": "anthropic",
+                "text": "released anthropic: its login answered",
             })
         );
     }

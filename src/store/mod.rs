@@ -17,6 +17,7 @@ mod deploys;
 mod descendants;
 mod events;
 mod factors;
+mod holds;
 mod job_runs;
 mod jobs;
 mod messages;
@@ -37,6 +38,7 @@ pub use attempts::{Attempt, AttemptState, FinishAttempt, Op, RateLimitSample, se
 pub use daily::DailyStat;
 pub use deploys::{Assessment, Deploy, DeployTarget, FinishDeploy};
 pub use factors::{FactorLevelStat, ROLES};
+pub use holds::LoginHold;
 pub use jobs::{Job, JobEffect, JobStat, JobState, JobStep, PerDayRefused};
 pub use messages::{Direction, InsertMessage, Message, MessageFilter};
 pub use owners::{Caller, Owner, start_of};
@@ -1249,6 +1251,7 @@ mod column_tests {
             ("jobs.rs", include_str!("jobs.rs")),
             ("deploys.rs", include_str!("deploys.rs")),
             ("descendants.rs", include_str!("descendants.rs")),
+            ("holds.rs", include_str!("holds.rs")),
             ("projects.rs", include_str!("projects.rs")),
             ("record.rs", include_str!("record.rs")),
             ("stats.rs", include_str!("stats.rs")),

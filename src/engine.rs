@@ -1030,8 +1030,12 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
             .and_then(|q| crate::envelope::addressee(q.to.as_deref()));
         // The provider refused the run: not an attempt the agent
         // spent. The hold at the top of the loop waits for the
-        // window; the same feedback and session go again.
+        // window, or for a refused login to answer a probe; the same
+        // feedback and session go again.
         if outcome.rate_limited && a.state != AttemptState::Unverified {
+            if outcome.login_refused {
+                crate::login_hold::hold(f, &ts.provider, &outcome, id).env()?;
+            }
             consecutive_refusals += 1;
             if consecutive_refusals > REFUSAL_LIMIT {
                 return Ok(StepFlow::End(refusal_exhausted()));

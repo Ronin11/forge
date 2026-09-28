@@ -88,6 +88,9 @@ pub fn structured<T: serde::de::DeserializeOwned>(o: &Outcome) -> Result<T> {
 pub enum Failure {
     /// The provider refused the run for a rate window: not the agent's fault.
     RateLimited,
+    /// The provider refused the agent's login (expired, revoked): a
+    /// refusal like a spent window, held until a person logs in again.
+    LoginRefused,
     /// Forge ended the run itself on signs it was going nowhere.
     EndedEarly(String),
     TimedOut,
@@ -104,7 +107,9 @@ pub enum Failure {
 }
 
 pub fn failure(a: &Outcome) -> Option<Failure> {
-    if a.rate_limited {
+    if a.login_refused {
+        Some(Failure::LoginRefused)
+    } else if a.rate_limited {
         Some(Failure::RateLimited)
     } else if let Some(why) = &a.ended_early {
         Some(Failure::EndedEarly(why.clone()))
@@ -139,6 +144,7 @@ impl Failure {
     pub fn reason(&self) -> String {
         match self {
             Failure::RateLimited => "rate limited by the provider".into(),
+            Failure::LoginRefused => "the provider refused the agent login".into(),
             Failure::EndedEarly(why) => format!("stopped early: {why}"),
             Failure::TimedOut => "agent timed out".into(),
             Failure::Error {
@@ -163,7 +169,9 @@ impl Failure {
             }
         };
         match self {
-            Failure::RateLimited | Failure::EndedEarly(_) => self.reason(),
+            Failure::RateLimited | Failure::LoginRefused | Failure::EndedEarly(_) => {
+                self.reason()
+            }
             Failure::Error { subtype, .. } => quote(format!(
                 "agent result {:?}",
                 subtype.as_deref().unwrap_or("error")

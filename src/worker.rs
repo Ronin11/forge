@@ -181,13 +181,13 @@ pub fn day_budget_reached(f: &Forge) -> Result<Option<String>> {
     }))
 }
 
-/// `provider`'s subscription window at or over its own cap, by the latest
-/// sample any attempt on it recorded: the message and the unix second the
-/// hold ends. A window whose reset time has passed no longer holds
-/// anything. Each provider has its own samples and its own caps (see
-/// `agent::Provider::five_hour_max`/`seven_day_max`), so a provider with no
-/// samples of its own is never held by another's.
+/// `provider` held: its login refused (see `login_hold`), else its own window
+/// at or over its own cap by its latest sample (never another provider's), a
+/// passed reset holding nothing. The message and the second to look again.
 pub fn window_hold(f: &Forge, provider: &str) -> Result<Option<(String, i64)>> {
+    if let h @ Some(_) = crate::login_hold::held(f, provider)? {
+        return Ok(h);
+    }
     let Some(s) = f.store.latest_rate_limit(provider)? else {
         return Ok(None);
     };
@@ -842,6 +842,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 && running.len() < jobs
                 && opts.max_tasks.is_none_or(|m| claimed < m)
             {
+                crate::login_hold::probe_due(&f).await;
                 let Some(held) = prepare_claim(&f)? else {
                     stopping = true;
                     break;
