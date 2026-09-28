@@ -393,6 +393,10 @@ outbound() {
             if [ -n "$to_name" ]; then
                 num=$(contact_number "$to_name") && [ -n "$num" ] && dest="$num"
                 notify_contact="$to_name"
+                # A person sees the bare question, never a task id or a
+                # state (docs/INTAKE.md, "What the person sees"); the
+                # operator's copy above keeps them.
+                [ "$dest" != "$SIGNAL_TO" ] && [ -n "$q" ] && msg="$q"
             fi
         fi
 

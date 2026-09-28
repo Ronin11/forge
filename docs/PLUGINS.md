@@ -224,10 +224,40 @@ forge plugin enable <name>        enable and start it
 forge plugin disable <name>       stop it and leave it installed
 forge plugin install <path>       copy into <FORGE_HOME>/plugins/<name> (refusing a name already
                                    installed there, validating the manifest first), then run `build`
+forge plugin refresh <name>|--all copy the repo's current files over the installed copy; see "Drift"
 forge plugin uninstall <name>     stop it, clear its enabled flag, remove the installed copy;
                                    its plugins-state is left alone
 forge plugin logs <name> [-f]     its log
 ```
+
+## Drift
+
+An installed copy does not follow the tree it was installed from, and a
+plugin that runs an old script keeps running it: an old `notify.sh` that
+still computes byte-offset cursors replays the whole event log after a
+restart. So `install` records, in `<FORGE_HOME>/plugins/<name>/.forge-install.json`,
+the directory it copied from and a hash of the plugin's `plugin.toml` and
+the script its `run` names (`["./notify.sh"]`, or `["sh", "./notify.sh"]`
+through an interpreter). `forge plugin list` (and `--json`, and the
+`plugins` row of `forge doctor`) compare three hashes, the installed
+files', the recorded one, and the source's current one:
+
+- `current`: the installed files are the source's.
+- `behind`: untouched since install, and the source has moved on. Shown
+  with the number of added plus removed lines. Doctor warns.
+- `operator-edit`: differs from both the recorded hash and the source's.
+  Doctor warns.
+- `unrecorded`: installed before the record existed, so an edit cannot be
+  told from a stale copy.
+- `source-missing`: the recorded directory is gone.
+
+`forge plugin refresh <name>` (or `--all`) copies the source's current
+files over the installed copy. `config` and `<FORGE_HOME>/plugins-state`
+are never touched; each replaced file is kept beside it as
+`<file>.bak-<unix time>`; the manifest's `build` runs again; an enabled
+plugin is restarted. An `operator-edit` or `unrecorded` copy is reported
+and left alone unless `--force` (the backup is still made). For an
+`unrecorded` copy, `--from <dir>` names the source once, and is recorded.
 
 `list` and `status` also answer `--json`, in the shape `docs/CLIENT.md`
 records, so the clients can show plugins without shelling out to
