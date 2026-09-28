@@ -905,6 +905,9 @@ pub struct PortalLanded {
     /// The look step's screenshot file, for the portal's own streaming;
     /// never rendered.
     pub screenshot: Option<String>,
+    /// Made by hand and only verified and landed by Forge (`forge
+    /// adopt`): no agent built it.
+    pub manual: bool,
 }
 
 /// One line on `PortalDoc`'s "Your requests" list, newest first, capped at
@@ -1159,6 +1162,7 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
             deployed_at: dep.as_ref().map(|d| d.0),
             deploy_id: dep.as_ref().and_then(|d| d.1.as_ref().map(|s| s.0)),
             screenshot: dep.and_then(|d| d.1.map(|s| s.1)),
+            manual: false,
         });
     }
     for t in latest
@@ -1173,6 +1177,7 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
             deployed_at: dep.as_ref().map(|d| d.0),
             deploy_id: dep.as_ref().and_then(|d| d.1.as_ref().map(|s| s.0)),
             screenshot: dep.and_then(|d| d.1.map(|s| s.1)),
+            manual: t.origin.is_manual(),
         });
     }
     landed.sort_by_key(|l| std::cmp::Reverse(l.landed_at));

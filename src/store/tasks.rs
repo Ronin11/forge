@@ -305,6 +305,12 @@ pub struct Task {
     /// The last handoff summary (`handoff::build`), kept with the
     /// session when the task ends `capped`; empty otherwise.
     pub handoff: String,
+    /// Where the work came from: an agent, or a human's branch `forge
+    /// adopt` verified and landed with no agent run. Set once at insert.
+    pub origin: Origin,
+    /// The adopted branch, commit and adopter; `None` unless `origin` is
+    /// `Adopted`. Set once at insert.
+    pub adoption: Option<Adoption>,
 }
 
 /// `Store::set_task_fields`: only a field that is `Some` replaces the
@@ -506,8 +512,8 @@ pub(super) fn insert_task_row(conn: &Connection, t: &Task) -> Result<i64> {
     conn.retry_execute(
         "INSERT INTO tasks (repo, task, title, base_branch, model, provider, max_turns, max_attempts, timeout_secs, checks_json,
                             state, reason, question_to, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm, explore_json,
-                            project, initiative, shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json, trust)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38)",
+                            project, initiative, shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json, trust, origin, adoption_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40)",
         params![
             t.repo,
             t.task,
@@ -547,6 +553,8 @@ pub(super) fn insert_task_row(conn: &Connection, t: &Task) -> Result<i64> {
             t.workflow_source,
             serde_json::to_string(&t.routing)?,
             t.trust.as_str(),
+            t.origin.as_str(),
+            super::adoption::to_column(t.adoption.as_ref())?,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -664,7 +672,7 @@ impl Store {
         let ids: Vec<i64> = {
             let c = self.lock();
             let mut stmt = c.prepare(
-                "SELECT t.id FROM tasks t WHERE t.state='queued' AND NOT EXISTS (
+                "SELECT t.id FROM tasks t WHERE t.state='queued' AND t.origin='agent' AND NOT EXISTS (
                    SELECT 1 FROM json_each(t.after_json) j LEFT JOIN tasks d ON d.id = j.value
                    WHERE d.id IS NULL OR d.state != 'succeeded' OR (d.land = 1 AND d.landed_sha = '')
                  ) ORDER BY t.id",
@@ -960,6 +968,8 @@ impl Store {
     /// attempt number. Guarded on the `owner` the caller chose it for: a
     /// task another worker has claimed since is left alone, and the pair of
     /// writes is one transaction. Returns whether the task was requeued.
+    /// An adopted task has no agent run to go back to: the `forge adopt`
+    /// verifying it died, so it blocks, and `forge retry` verifies again.
     pub fn requeue(&self, id: i64, owner: &Owner, why: &str) -> Result<bool> {
         self.requeue_at(id, owner, why, None)
     }
@@ -976,7 +986,9 @@ impl Store {
         let mut c = self.lock();
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let n = tx.execute(
-            "UPDATE tasks SET state='queued', worker_pid=NULL, worker_start=NULL, reason=?2,
+            "UPDATE tasks SET state=CASE WHEN origin='adopted' THEN 'blocked' ELSE 'queued' END,
+             worker_pid=NULL, worker_start=NULL,
+             reason=CASE WHEN origin='adopted' THEN ?2 || '; forge retry ' || id || ' verifies the adopted branch again' ELSE ?2 END,
              run_json=COALESCE(?5, run_json)
              WHERE id=?1 AND state='running' AND worker_pid IS ?3 AND worker_start IS ?4",
             params![

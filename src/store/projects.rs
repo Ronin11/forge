@@ -618,6 +618,7 @@ impl Store {
                           )
                     )) AS broke_base
              FROM tasks t WHERE t.project IS NOT NULL AND t.state IN ('succeeded','failed','blocked','unverified') AND t.started_at IS NOT NULL
+               AND t.origin = 'agent'
              GROUP BY t.project ORDER BY t.project",
         )?;
         let rows = stmt.query_map([], |r| {

@@ -62,7 +62,8 @@ pub(super) struct Set {
 }
 
 impl Set {
-    /// The request Jev is sent for `state`: a `choice`'s criteria are its
+    /// The request Jev is sent for `state`, in TypeSafe's shape (see
+    /// `agent::call`): a `choice`'s criteria are its
     /// labels with their meanings, a `noul`'s are `true` (`yes`) and `false`
     /// (`no`), and a `score`'s are its levels' names in order.
     fn request(&self, model: &str, state: &str) -> Value {
@@ -88,9 +89,9 @@ impl Set {
                 .collect(),
             _ => self.criteria.iter().cloned().collect(),
         };
-        json!({"model": model, "input": {"state": state, "questions": {
+        json!({"model": model, "state": state, "questions": {
             crate::workflows::OUTCOME_QUESTION: q,
-        }}})
+        }})
     }
 }
 

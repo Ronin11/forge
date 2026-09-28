@@ -334,7 +334,7 @@ fn workflow_fits(
     name: &str,
 ) -> Result<(workflows::Workflow, workflows::Resolved)> {
     let wf = workflows::get(&f.paths.home, name)?
-        .with_context(|| format!("unknown workflow {name:?}; see `forge workflows`"))?;
+        .with_context(|| crate::adopt::unknown_workflow(name))?;
     // One broken file blocks every task.
     let problems = workflows::check(&f.paths.home)?;
     if let Some(p) = problems.iter().find(|p| p.blocking) {

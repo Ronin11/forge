@@ -525,7 +525,7 @@ impl Store {
     pub fn landed_tasks(&self, scope: &StatsFilter) -> Result<Vec<Task>> {
         let c = self.lock();
         let mut stmt = c.prepare(&format!(
-            "SELECT {} FROM tasks WHERE landed_sha != ''
+            "SELECT {} FROM tasks WHERE landed_sha != '' AND origin = 'agent'
                AND (?1 IS NULL OR project = ?1) AND (?2 IS NULL OR initiative = ?2)
              ORDER BY id",
             TASK_COLUMNS.join(", ")
@@ -616,7 +616,7 @@ impl Store {
         let c = self.lock();
         let mut stmt = c.prepare(
             "SELECT DISTINCT provider FROM tasks
-             WHERE workflow=?1 AND (?2 IS NULL OR workflow_hash=?2)
+             WHERE workflow=?1 AND (?2 IS NULL OR workflow_hash=?2) AND origin = 'agent'
                AND state IN ('succeeded','failed','blocked','unverified')
                AND started_at IS NOT NULL
              ORDER BY provider",
@@ -657,6 +657,7 @@ impl Store {
                         SELECT 1 FROM task_refs r WHERE r.kind = 'repairs' AND r.url = 'forge://task/' || t.id
                     )) AS repaired
              FROM tasks t WHERE t.state IN ('succeeded','failed','blocked','unverified','capped') AND t.started_at IS NOT NULL
+               AND t.origin = 'agent'
                AND (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
              GROUP BY t.workflow, t.workflow_hash ORDER BY t.workflow, t.workflow_hash",
             )?;
@@ -755,7 +756,7 @@ impl Store {
         let mut tasks = c.prepare(
             "SELECT t.workflow AS workflow, t.workflow_hash AS hash, COALESCE(SUM(a.cost_usd), 0) AS cost
              FROM attempts a JOIN tasks t ON t.id = a.task_id
-             WHERE (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
+             WHERE t.origin = 'agent' AND (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
              GROUP BY t.workflow, t.workflow_hash",
         )?;
         let rows = tasks.query_map(params![scope.project, scope.initiative], |r| {
@@ -854,7 +855,7 @@ impl Store {
                           AND (?1 IS NULL OR dt.project = ?1) AND (?2 IS NULL OR dt.initiative = ?2)
                     ), 0) AS operator_answers,
                     SUM(t.hand_landed) AS hand_landed, SUM(t.state = 'withdrawn') AS withdrawals
-             FROM tasks t WHERE (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
+             FROM tasks t WHERE t.origin = 'agent' AND (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
              GROUP BY t.workflow, t.workflow_hash ORDER BY t.workflow, t.workflow_hash",
             )?;
             let rows = stmt.query_map(params![scope.project, scope.initiative], |r| {
@@ -894,7 +895,7 @@ impl Store {
                     COALESCE(json_extract(a.inputs_json, '$.prompt_hash'), '') AS prompt_hash,
                     COUNT(*) AS attempts, SUM(a.state='succeeded') AS succeeded,
                     COALESCE(SUM(a.cost_usd),0) AS cost
-             FROM attempts a JOIN tasks t ON t.id=a.task_id WHERE a.state != 'running'
+             FROM attempts a JOIN tasks t ON t.id=a.task_id WHERE a.state != 'running' AND t.origin = 'agent'
                AND (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
              GROUP BY t.workflow, a.step, prompt_hash ORDER BY t.workflow, a.step, prompt_hash",
         )?;
@@ -920,7 +921,7 @@ impl Store {
                     SUM(a.state='checks_failed') AS checks_failed, SUM(a.state='needs_input') AS needs_input,
                     AVG(a.num_turns) AS mean_turns, COALESCE(SUM(a.cost_usd),0) AS cost, AVG(a.agent_ms) AS mean_ms,
                     AVG(a.first_edit) AS mean_first_edit, AVG(a.input_tokens) AS mean_input_tokens
-             FROM attempts a JOIN tasks t ON t.id=a.task_id WHERE a.state != 'running'
+             FROM attempts a JOIN tasks t ON t.id=a.task_id WHERE a.state != 'running' AND t.origin = 'agent'
                AND (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
              GROUP BY t.workflow, a.step ORDER BY t.workflow, a.step",
         )?;
@@ -1015,7 +1016,7 @@ impl Store {
                           )
                     ) THEN t.id END) AS broke_base
              FROM attempts a JOIN tasks t ON t.id = a.task_id
-             WHERE a.state != 'running'
+             WHERE a.state != 'running' AND t.origin = 'agent'
              GROUP BY a.step, a.provider, attempt_model
              ORDER BY a.step, a.provider, attempt_model",
             )?;
@@ -1117,7 +1118,7 @@ impl Store {
                         WHERE dt.project = t.project AND d.answered_by != 'supervisor'
                     ), 0) AS operator_answers,
                     SUM(t.hand_landed) AS hand_landed, SUM(t.state = 'withdrawn') AS withdrawals
-             FROM tasks t WHERE t.project IS NOT NULL
+             FROM tasks t WHERE t.project IS NOT NULL AND t.origin = 'agent'
              GROUP BY t.project ORDER BY t.project",
             )?;
             let rows = stmt.query_map([], |r| {

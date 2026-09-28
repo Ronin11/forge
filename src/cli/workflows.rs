@@ -580,6 +580,8 @@ fn list_providers(json: bool) -> Result<()> {
                     "model": p.model,
                     "base_url": p.base_url,
                     "api_key_env": p.api_key_env,
+                    "backend": (p.runner == crate::agent::Runner::Jev)
+                        .then(|| crate::agent::backend_for(p).as_str()),
                     "env": p.env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
                     "extra_args": p.extra_args,
                     "notes": p.notes,

@@ -1086,6 +1086,21 @@ pub(crate) fn landable_needs_input(f: &Forge, t: &Task) -> Result<bool> {
         }))
 }
 
+/// How `land_task_outcome` ended when it got as far as the integrator:
+/// landed (the line to print), or not, and why. A caller that must not
+/// hand the branch to a coder (`adopt`) decides from this what the task
+/// becomes; `land_task` turns the last two into errors.
+pub(crate) enum LandOutcome {
+    Landed(String),
+    /// A conflict with the moved base, or checks failing with it merged
+    /// in: the first line, and the whole feedback with the check output.
+    Rewind {
+        first: String,
+        feedback: String,
+    },
+    Failed(String),
+}
+
 /// Land a task's verified branch on the base: a verified task, or one
 /// blocked on a review demotion or a question that a human or the
 /// supervisor set aside (see `landable_needs_input`). `by_hand` is true
@@ -1093,6 +1108,22 @@ pub(crate) fn landable_needs_input(f: &Forge, t: &Task) -> Result<bool> {
 /// automated accept-and-land (see `Task::hand_landed`, one of the
 /// human-attention signals). Returns the line to print.
 pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<String> {
+    match land_task_outcome(f, id, by_hand).await? {
+        LandOutcome::Landed(line) => Ok(line),
+        // No need to store base_sha or reload cfg here: this command
+        // only reports the conflict and exits without touching the task
+        // again. `forge retry` enqueues a brand-new task rather than
+        // resuming this one, so the stale base_sha left on this task is
+        // never read.
+        LandOutcome::Rewind { first, .. } => bail!(
+            "task {id} needs the coder again: {first}\n  forge retry {id} runs it through the integrator with the conflict as feedback"
+        ),
+        LandOutcome::Failed(reason) => bail!("task {id} could not land: {reason}"),
+    }
+}
+
+/// `land_task`, reporting a rewind or a failure instead of refusing.
+pub(crate) async fn land_task_outcome(f: &Forge, id: i64, by_hand: bool) -> Result<LandOutcome> {
     // Just enough of the task to name the repository to lock: a second
     // `land_task` for the same id, running concurrently (the supervisor's
     // accept-and-land against the operator's `forge land`, or two of
@@ -1174,7 +1205,7 @@ async fn land_integrated(
     url: &str,
     remote: &str,
     lock: std::fs::File,
-) -> Result<String> {
+) -> Result<LandOutcome> {
     let id = t.id;
     let (url, remote) = (url.to_string(), remote.to_string());
     let mut seq = f.store.ops(id)?.len() as i64;
@@ -1215,23 +1246,16 @@ async fn land_integrated(
                     remove_cmd: "",
                 },
             );
-            Ok(format!(
+            Ok(LandOutcome::Landed(format!(
                 "landed task {id} on {} @ {}",
                 t.base_branch,
                 &sha[..8]
-            ))
+            )))
         }
-        crate::landing::Integrate::Rewind { first, .. } => {
-            // No need to store base_sha or reload cfg here: this command
-            // only reports the conflict and exits without touching `t` or
-            // `cfg` again. `forge retry` enqueues a brand-new task rather
-            // than resuming this one, so the stale base_sha left on this
-            // task is never read.
-            bail!(
-                "task {id} needs the coder again: {first}\n  forge retry {id} runs it through the integrator with the conflict as feedback"
-            )
-        }
-        crate::landing::Integrate::Failed(reason) => bail!("task {id} could not land: {reason}"),
+        crate::landing::Integrate::Rewind {
+            first, feedback, ..
+        } => Ok(LandOutcome::Rewind { first, feedback }),
+        crate::landing::Integrate::Failed(reason) => Ok(LandOutcome::Failed(reason)),
     }
 }
 
