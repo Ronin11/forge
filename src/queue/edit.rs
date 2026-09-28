@@ -49,6 +49,28 @@ fn waits_on(f: &Forge, dep: i64, id: i64) -> Result<bool> {
     Ok(false)
 }
 
+/// The dependencies `--after` sets on task `id`, deduplicated in order:
+/// each must fit as at enqueue (`dependency_fits`) and must not be this
+/// task or wait on it.
+async fn after_fits(f: &Forge, id: i64, after: &[i64]) -> Result<Vec<i64>> {
+    let mut deps: Vec<i64> = Vec::new();
+    for &dep in after {
+        if dep == id {
+            bail!("--after {dep}: a task cannot wait on itself");
+        }
+        dependency_fits(f, dep).await?;
+        if waits_on(f, dep, id)? {
+            bail!(
+                "--after {dep}: that task already waits on task {id}; they would wait on each other"
+            );
+        }
+        if !deps.contains(&dep) {
+            deps.push(dep);
+        }
+    }
+    Ok(deps)
+}
+
 /// Apply `edit` to task `id` in place: the task must be queued or blocked
 /// (a running attempt might still finish; a finished task is done), and
 /// every new value is held to what `enqueue` holds it to: a positive
@@ -144,21 +166,7 @@ pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String
         up.workflow = Some((name.clone(), wf.hash.clone(), wf.text.clone()));
     }
     if let Some(after) = &edit.after {
-        let mut deps: Vec<i64> = Vec::new();
-        for &dep in after {
-            if dep == id {
-                bail!("--after {dep}: a task cannot wait on itself");
-            }
-            dependency_fits(f, dep).await?;
-            if waits_on(f, dep, id)? {
-                bail!(
-                    "--after {dep}: that task already waits on task {id}; they would wait on each other"
-                );
-            }
-            if !deps.contains(&dep) {
-                deps.push(dep);
-            }
-        }
+        let deps = after_fits(f, id, after).await?;
         changes.push(format!("after {:?} → {deps:?}", old.after));
         up.after = Some(deps);
     }

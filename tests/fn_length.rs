@@ -154,12 +154,6 @@ const ALLOWLIST: &[(&str, &str, usize, &str)] = &[
     ),
     (
         "src/queue.rs",
-        "edit_task",
-        145,
-        "existing function awaiting a focused split",
-    ),
-    (
-        "src/queue.rs",
         "enqueue",
         259,
         "existing function awaiting a focused split",
