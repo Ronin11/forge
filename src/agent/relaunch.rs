@@ -114,6 +114,12 @@ pub(crate) fn launches(counter: &std::path::Path) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::{
+        Launch, Outcome, Provider, Runner, Watch, inputs::RunJsonPhase, run_json_phase,
+    };
+    use crate::config::EarlyEnding;
+    use serde_json::Value;
+    use std::time::Instant;
 
     #[test]
     fn is_transient_bwrap_failure_matches_the_bind_mount_race() {
@@ -156,5 +162,84 @@ mod tests {
             "a slow exit ran"
         );
         assert!(!r.again("other", false, quick));
+    }
+
+    fn early_ending() -> EarlyEnding {
+        EarlyEnding {
+            no_edit_calls: 0,
+            edits_without_commit: 0,
+            repeats: 0,
+            signals_to_end: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_codex_phase_relaunches_when_bwrap_loses_the_bind_mount_race() {
+        let dir = tempfile::tempdir().unwrap();
+        let (execution, counter) = fake_bwrap(dir.path(), 2);
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let log_path = dir.path().join("log.jsonl");
+        let report = crate::report::Reporter::new(false, None);
+        let provider = Provider {
+            runner: Runner::CodexCli,
+            ..Provider::default()
+        };
+        let l = Launch {
+            task_id: 1,
+            worktree: &work,
+            prompt: "do the task",
+            system: "",
+            model: "fake-model",
+            max_turns: 30,
+            timeout: Duration::from_secs(10),
+            check_timeout: Duration::ZERO,
+            log_path: &log_path,
+            sandbox: Some(&execution),
+            report: &report,
+            step: "code",
+            provider: &provider,
+            resume: None,
+            writes: true,
+            start_sha: "",
+            schema: crate::envelope::SCHEMA,
+            early_ending: early_ending(),
+            no_tools: false,
+            judgment: None,
+        };
+        let argv: Vec<String> = [
+            "/bin/sh",
+            "-c",
+            "echo '{\"type\":\"thread.started\",\"thread_id\":\"t1\"}'",
+        ]
+        .iter()
+        .map(|a| a.to_string())
+        .collect();
+        let mut log = tempfile::NamedTempFile::new().unwrap();
+        let mut out = Outcome::default();
+        let mut watch = Watch::new(early_ending());
+        let mut seen = 0;
+        let mut apply = |_: &Value, _: &mut Outcome, _: &mut Watch| {
+            seen += 1;
+            None
+        };
+        let (code, timed_out, stderr) = run_json_phase(RunJsonPhase {
+            l: &l,
+            argv: &argv,
+            extra_env: &[],
+            start: &Instant::now(),
+            log: log.as_file_mut(),
+            out: &mut out,
+            watch: &mut watch,
+            apply: &mut apply,
+        })
+        .await
+        .unwrap();
+        assert_eq!((code, timed_out), (Some(0), false));
+        assert!(stderr.trim().is_empty(), "{stderr}");
+        assert_eq!(seen, 1, "the surviving launch's frame was read once");
+        assert_eq!(launches(&counter), 3, "two failed launches, then the run");
+        let text = std::fs::read_to_string(log.path()).unwrap();
+        assert_eq!(text.matches("forge_relaunch").count(), 2, "{text}");
     }
 }
