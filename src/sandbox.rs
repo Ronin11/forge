@@ -47,11 +47,16 @@ pub struct Sandbox {
     /// The claude CLI's real config directory (credentials, settings) and
     /// codex's real `~/.codex`. Read from, on the host, only to seed each
     /// attempt's own private copy (see `command`); never bound into a
-    /// sandbox themselves, so an attempt can neither read nor overwrite the
-    /// operator's actual session state. These paths also happen to be
-    /// where the sandbox's tmpfs `$HOME` puts the private copy, since
+    /// sandbox themselves, so an attempt cannot read the operator's actual
+    /// session state, and cannot overwrite it either: the kernel writes a
+    /// private login back over the real one only when the CLI could have
+    /// produced it from its seed (see `login`). These paths also happen to
+    /// be where the sandbox's tmpfs `$HOME` puts the private copy, since
     /// `home` shadows the operator's real `$HOME` at the identical path.
     config_dir: PathBuf,
+    /// FORGE_HOME: where the kernel records what it seeded into each
+    /// private login, out of any sandbox's reach (see `login`).
+    forge_home: PathBuf,
     codex_dir: PathBuf,
     /// copilot's real `~/.copilot`: read from, on the host, only to seed
     /// each sandbox's private copy of its `config.json` (the login), never
@@ -285,6 +290,7 @@ impl Sandbox {
     pub fn detect(
         agent_bin: &str,
         paths: &crate::config::SandboxPaths,
+        forge_home: PathBuf,
         extra_ro: Vec<PathBuf>,
         extra_rw: Vec<PathBuf>,
         model_hosts: Vec<Rule>,
@@ -352,6 +358,7 @@ impl Sandbox {
             home,
             agent_dirs,
             config_dir,
+            forge_home,
             codex_dir,
             copilot_dir,
             claude_json_seed,
@@ -443,17 +450,40 @@ impl Sandbox {
             .insert(worktree.to_path_buf(), dir);
     }
 
-    /// Copy `worktree`'s private login back over the host file when the
-    /// attempt refreshed it (see `login`). Whether it did.
-    pub fn write_back_login(&self, worktree: &Path) -> bool {
+    /// The real config directory of `shape`'s CLI, which its login is
+    /// seeded from and written back to.
+    fn login_dir(&self, shape: &crate::login::Shape) -> &Path {
+        match shape.cli {
+            "codex" => &self.codex_dir,
+            "copilot" => &self.copilot_dir,
+            _ => &self.config_dir,
+        }
+    }
+
+    /// Copy `worktree`'s private `shape` login back over the host file when
+    /// the attempt refreshed it (see `login`). Whether it did.
+    pub fn write_back_login(&self, shape: &crate::login::Shape, worktree: &Path) -> bool {
         [None, Some(Contract::Review)]
             .into_iter()
             .fold(false, |any, contract| {
                 let private = provider_dir_for(worktree, contract)
-                    .join("claude")
-                    .join(crate::login::FILE);
-                crate::login::write_back(&self.config_dir, &private).unwrap_or(false) || any
+                    .join(shape.cli)
+                    .join(shape.file);
+                shape
+                    .write_back(self.login_dir(shape), &self.forge_home, &private)
+                    .unwrap_or(false)
+                    || any
             })
+    }
+
+    /// `write_back_login` of the claude login for every task's private copy
+    /// beside `worktree`, for a caller that holds the login's lock (see
+    /// `login::lock`).
+    pub fn write_back_siblings_locked(&self, worktree: &Path) {
+        let claude = &crate::login::CLAUDE;
+        for copy in claude.private_copies(worktree) {
+            let _ = claude.write_back_locked(&self.config_dir, &self.forge_home, &copy);
+        }
     }
 
     fn cache_dir_for(&self, worktree: &Path) -> Option<PathBuf> {
@@ -468,6 +498,7 @@ impl Sandbox {
         Sandbox {
             bwrap,
             config_dir: home.join(".claude"),
+            forge_home: home.join("forge-home"),
             codex_dir: home.join(".codex"),
             copilot_dir: home.join(".copilot"),
             claude_json_seed: home.join(".claude.json"),
@@ -641,31 +672,30 @@ impl Sandbox {
         let codex_priv = provider_dir.join("codex");
         let _ = std::fs::create_dir_all(&claude_priv);
         let _ = std::fs::create_dir_all(&codex_priv);
-        // The login is the kernel's (see `login`): a later private pair is
+        let copilot_priv = provider_dir.join("copilot");
+        let _ = std::fs::create_dir_all(&copilot_priv);
+        // Each login is the kernel's (see `login`): a later private login is
         // written back over the host file first, and an empty host file
-        // seeds nothing. Settings are plain copies.
-        crate::login::seed(
-            &self.config_dir,
-            worktree,
-            &claude_priv.join(crate::login::FILE),
-        );
+        // seeds nothing. copilot's login lives in its `config.json`, beside
+        // its settings. The other settings are plain copies.
+        for shape in crate::login::SHAPES {
+            shape.seed(
+                self.login_dir(shape),
+                &self.forge_home,
+                worktree,
+                &provider_dir.join(shape.cli).join(shape.file),
+            );
+        }
         let _ = crate::login::seed_copy(
             &self.config_dir.join("settings.json"),
             &claude_priv.join("settings.json"),
         );
-        for name in ["auth.json", "config.toml"] {
-            let _ = crate::login::seed_copy(&self.codex_dir.join(name), &codex_priv.join(name));
-        }
+        let _ = crate::login::seed_copy(
+            &self.codex_dir.join("config.toml"),
+            &codex_priv.join("config.toml"),
+        );
         cmd.arg("--bind").arg(&claude_priv).arg(&self.config_dir);
         cmd.arg("--bind").arg(&codex_priv).arg(&self.codex_dir);
-        // copilot's login lives in its `config.json`; the same private,
-        // reseeded copy, bound where the CLI expects its home.
-        let copilot_priv = provider_dir.join("copilot");
-        let _ = std::fs::create_dir_all(&copilot_priv);
-        let _ = crate::login::seed_copy(
-            &self.copilot_dir.join("config.json"),
-            &copilot_priv.join("config.json"),
-        );
         cmd.arg("--bind").arg(&copilot_priv).arg(&self.copilot_dir);
         // What lives inside a directory just bound over (an agent under
         // `~/.claude/local`) is bound again on top of the private copy.
@@ -738,6 +768,8 @@ mod tests {
     const CREDS: &str =
         r#"{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":32503680000000}}"#;
 
+    const CODEX_AUTH: &str = r#"{"OPENAI_API_KEY":"sk-proj-abc","tokens":null}"#;
+
     #[test]
     fn review_provider_state_is_separate_and_discarded_with_the_coders() {
         let root = tempfile::tempdir().unwrap();
@@ -782,7 +814,7 @@ mod tests {
         std::fs::write(copilot_dir.join("config.json"), "login").unwrap();
         std::fs::write(config_dir.join(".credentials.json"), CREDS).unwrap();
         std::fs::write(config_dir.join("settings.json"), "settings").unwrap();
-        std::fs::write(codex_dir.join("auth.json"), "auth").unwrap();
+        std::fs::write(codex_dir.join("auth.json"), CODEX_AUTH).unwrap();
         std::fs::write(codex_dir.join("config.toml"), "cfg").unwrap();
         let npm_cache = root.path().join("opt/npm-cache");
         std::fs::create_dir_all(&npm_cache).unwrap();
@@ -793,6 +825,7 @@ mod tests {
             home: PathBuf::from("/home/attempt"),
             agent_dirs: vec![PathBuf::from("/opt/agent")],
             config_dir: config_dir.clone(),
+            forge_home: root.path().join("forge-home"),
             codex_dir: codex_dir.clone(),
             copilot_dir: copilot_dir.clone(),
             claude_json_seed: PathBuf::from("/home/real/.claude.json"),
@@ -902,7 +935,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(codex_priv.join("auth.json")).unwrap(),
-            "auth"
+            CODEX_AUTH
         );
         assert_eq!(
             std::fs::read_to_string(codex_priv.join("config.toml")).unwrap(),
@@ -1031,6 +1064,7 @@ mod tests {
             home: PathBuf::from("/home/attempt"),
             agent_dirs: vec![],
             config_dir: PathBuf::from("/home/attempt/.claude"),
+            forge_home: PathBuf::from("/home/attempt/forge-home"),
             codex_dir: PathBuf::from("/home/attempt/.codex"),
             copilot_dir: PathBuf::from("/home/attempt/.copilot"),
             claude_json_seed: PathBuf::from("/home/real/.claude.json"),

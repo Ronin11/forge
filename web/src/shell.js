@@ -35,6 +35,7 @@
     { key: 'activity', label: 'activity', href: '/activity' },
     { key: 'messages', label: 'messages', href: '/messages' },
     { key: 'doctor', label: 'doctor', href: '/doctor' },
+    { key: 'chat', label: 'chat', href: '/chat' },
   ];
 
   // `g` then a letter jumps to a page — one letter per nav entry, chosen
@@ -43,7 +44,7 @@
   const SHORTCUT_TARGETS = {
     t: '/tasks', r: '/requests', p: '/projects', i: '/initiatives',
     w: '/workflows', j: '/jobs', d: '/deploys', s: '/stats', g: '/graph',
-    l: '/plugins', a: '/activity', m: '/messages', o: '/doctor',
+    l: '/plugins', a: '/activity', m: '/messages', o: '/doctor', c: '/chat',
   };
 
   // The nav bar's inner HTML: every named page as a link, the current
