@@ -779,14 +779,24 @@ impl Store {
     }
 }
 
-/// `BEGIN IMMEDIATE` before re-reading `user_version`, so a second process
-/// racing this one blocks here (on the connection's `busy_timeout`) until
-/// the first commits, then sees its version and skips what it already
-/// applied instead of re-running a migration the first just committed.
+/// The common open is read-only: `user_version` is read under a deferred
+/// transaction, which never waits on a writer, and only a database below the
+/// target takes `BEGIN IMMEDIATE`. That re-reads `user_version` inside, so a
+/// second process racing this one blocks here (on the connection's
+/// `busy_timeout`) until the first commits, then sees its version and skips
+/// what it already applied instead of re-running a migration the first just
+/// committed.
 fn migrate(conn: &mut Connection) -> Result<()> {
+    let target = MIGRATIONS.len() as i64;
+    let seen: i64 = {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+        tx.query_row("PRAGMA user_version", [], |r| r.get(0))?
+    };
+    if seen == target {
+        return Ok(());
+    }
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let current: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    let target = MIGRATIONS.len() as i64;
     if current > target {
         bail!(
             "database schema version {current} is newer than this forge ({target}); upgrade forge"
@@ -831,6 +841,26 @@ mod tests {
         }
         conn.execute_batch(&format!("PRAGMA user_version={upto}"))
             .unwrap();
+    }
+
+    #[test]
+    fn opening_a_current_version_store_does_not_wait_on_a_held_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        drop(Store::open(&path).unwrap());
+
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let started = std::time::Instant::now();
+        let s = Store::open(&path).unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "open waited {:?} behind a held writer",
+            started.elapsed()
+        );
+        assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
+        writer.execute_batch("ROLLBACK").unwrap();
     }
 
     #[test]
