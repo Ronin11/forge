@@ -360,7 +360,11 @@ and does not parse stdout.
   withdraws a blocked or queued task the operator has decided not to do
   — a stale description, superseded, or the product decision went the
   other way. Terminal, refused (non-zero exit) on a running or already-
-  landed task. Recorded as the task's own reason and as a decision row
+  landed task, except that `--abort` stops a running task that
+  duplicates a live sibling (another queued, running or unverified task
+  retrying the same one): the worker stops the attempt and the task ends
+  `capped`, as a budget cap ends one, with the decision recorded (kind
+  `withdraw-abort`). Recorded as the task's own reason and as a decision row
   (see [`DecisionRow`](#decisionrow)); releases any task that was
   waiting on this one, the same as landing or failing does. Not `--json`;
   a client re-reads `forge log`/`forge requests` for the task it just

@@ -320,6 +320,9 @@ pub struct TraceTask {
     pub resume_on_failure: bool,
     pub parent: Option<i64>,
     pub children: Vec<i64>,
+    /// The tasks below this one that are still queued, running or
+    /// unverified: retries and review demotions' follow-ups, at any depth.
+    pub live_descendants: Vec<TraceLineage>,
     pub root: i64,
     pub lineage: Vec<TraceLineage>,
     pub refs: Vec<RefRow>,
@@ -538,6 +541,19 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
         resume_on_failure: t.resume_on_failure,
         parent: t.retry_of,
         children: f.store.dependents_retries(t.id)?,
+        live_descendants: f
+            .store
+            .live_descendants(t.id)?
+            .iter()
+            .map(|l| TraceLineage {
+                id: l.id,
+                parent: l.parent,
+                state: l.state.clone(),
+                reason: l.reason.clone(),
+                workflow: l.workflow.clone(),
+                cost_usd: l.cost,
+            })
+            .collect(),
         root: f.store.root_of(t.id)?,
         lineage: lineage
             .iter()
