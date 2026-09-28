@@ -111,6 +111,11 @@ impl Standing {
 /// scripts its `run` names (as the command or an argument to an
 /// interpreter), when they are files inside the directory.
 fn tracked_files(dir: &Path) -> Vec<String> {
+    tracked_files_in(dir, false)
+}
+
+/// `legacy` is what the first install records tracked: only `run[0]`.
+fn tracked_files_in(dir: &Path, legacy: bool) -> Vec<String> {
     let mut files = vec!["plugin.toml".to_string()];
     let name = dir
         .file_name()
@@ -122,7 +127,7 @@ fn tracked_files(dir: &Path) -> Vec<String> {
     if let Some(m) = manifest {
         // Any element of `run` may be the script: `["./demo.sh"]` launches
         // it directly, `["sh", "./demo.sh"]` through an interpreter.
-        for arg in &m.run {
+        for arg in m.run.iter().take(if legacy { 1 } else { usize::MAX }) {
             let script = arg.trim_start_matches("./").to_string();
             if !script.starts_with('/')
                 && !script.contains("..")
@@ -139,8 +144,18 @@ fn tracked_files(dir: &Path) -> Vec<String> {
 /// SHA-256 over each tracked file's name and bytes. A missing tracked file
 /// hashes as absent, so it differs from an empty one.
 pub fn tracked_hash(dir: &Path) -> String {
+    hash_files(dir, tracked_files(dir))
+}
+
+/// What installs recorded before scripts run through an interpreter were
+/// tracked: the manifest and `run[0]` alone.
+fn legacy_hash(dir: &Path) -> String {
+    hash_files(dir, tracked_files_in(dir, true))
+}
+
+fn hash_files(dir: &Path, files: Vec<String>) -> String {
     let mut h = Sha256::new();
-    for f in tracked_files(dir) {
+    for f in files {
         h.update(f.as_bytes());
         match std::fs::read(dir.join(&f)) {
             Ok(bytes) => {
@@ -234,11 +249,16 @@ pub fn check(dir: &Path, source_override: Option<&Path>) -> Standing {
         .filter(|s| source_is_plugin(s));
     let installed = tracked_hash(dir);
     let source_hash = source.as_deref().map(tracked_hash);
-    let drift = compare(
-        &installed,
-        record.as_ref().map(|r| r.hash.as_str()),
-        source_hash.as_deref(),
-    );
+    // A record made before interpreter-run scripts were tracked hashes the
+    // manifest alone; when it still matches, the copy is untouched.
+    let recorded = record.as_ref().map(|r| r.hash.as_str()).map(|r| {
+        if r != installed && r == legacy_hash(dir) {
+            installed.as_str()
+        } else {
+            r
+        }
+    });
+    let drift = compare(&installed, recorded, source_hash.as_deref());
     Standing {
         drift,
         diff_lines: source.as_deref().map(|s| dir_diff_lines(dir, s)),
@@ -494,6 +514,42 @@ mod tests {
         let base = tracked_hash(&dir);
         std::fs::write(dir.join("demo.sh"), "echo 2\n").unwrap();
         assert_ne!(tracked_hash(&dir), base);
+    }
+
+    #[test]
+    fn a_record_hashed_before_interpreter_scripts_were_tracked_is_untouched() {
+        let t = tempfile::tempdir().unwrap();
+        let mk = |dir: &Path, script: &str| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(
+                dir.join("plugin.toml"),
+                "name = \"demo\"\nrun = [\"sh\", \"./demo.sh\"]\ncapabilities = [\"events\"]\n",
+            )
+            .unwrap();
+            std::fs::write(dir.join("demo.sh"), script).unwrap();
+        };
+        let (src, dest) = (
+            t.path().join("src/demo"),
+            t.path().join("home/plugins/demo"),
+        );
+        mk(&src, "echo 1\necho 2\n");
+        mk(&dest, "echo 1\n");
+        let record = InstallRecord {
+            source: src.display().to_string(),
+            hash: legacy_hash(&dest),
+        };
+        std::fs::write(
+            dest.join(RECORD_FILE),
+            serde_json::to_string(&record).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(check(&dest, None).drift, Drift::Behind);
+        let home = t.path().join("home");
+        assert!(matches!(
+            refresh(&home, "demo", None, false).unwrap(),
+            Refresh::Refreshed { .. }
+        ));
+        assert_eq!(check(&dest, None).drift, Drift::Current);
     }
 
     #[test]
