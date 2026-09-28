@@ -105,7 +105,15 @@ elapsed time, landed count and the human-rung count roll up.
 claiming new tasks when it is spent, and stops when a configurable
 number of its tasks fail in a row on the same rule, since three tasks
 failing the same check say something about the initiative and not about
-the tasks.
+the tasks. A rule is an L0 rule, or an L1/L2 check together with the set
+of tests it saw fail: three `test` failures on three different tests are
+three unrelated flakes, not a streak. The worker announces a hold once,
+in its log and as an `initiative_held` event the notify and signal
+plugins carry to a person (only a person decides to continue), naming
+the reason, the tasks queued behind it and the remedy; `forge initiative
+show` prints it under state (`open, held: stop rule: …`), and `forge
+initiative set <id> --stop-after <n>` (or `--budget`) says when it
+releases the hold and how many tasks resume.
 
 **One notification and one report.** When the initiative settles, one
 event and one report: the outcome, each task and how it ended, what

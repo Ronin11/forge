@@ -290,7 +290,10 @@ with the task, its state and its reason as arguments for a `task_done`
 event, or `deploy`, the project, target, sha and status for a
 `deploy_finished` one, or `provider`, the provider, `held` and the
 hold's words for a `provider_held` one (a refused agent login, once per
-hold: see src/login_hold.rs); `command.example` ships a working example that
+hold: see src/login_hold.rs), or `initiative`, the initiative's id,
+`held` and the announcement's text for an `initiative_held` one (its
+stop rule or budget stopped its claims; sent once per hold, since its
+`audience` is a person); `command.example` ships a working example that
 shells out to `notify-send` for a desktop notification, for each
 shapes. A deploy that passes its check is quiet by default; a failed or
 rolled-back one always runs the command. `NOTIFY_DEPLOY_OK=1` in

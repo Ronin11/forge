@@ -76,6 +76,16 @@ while IFS= read -r line; do
         reason=$(printf '%s\n' "$line" | json_str reason)
         printf '%s' "$line" |
             sh "$FORGE_PLUGIN_DIR/command" provider "$provider" held "$reason" || true
+    elif [ "$type" = initiative_held ]; then
+        # Once per hold, for a person: only they decide to continue it.
+        # The text names the reason, the queue behind it and the remedy.
+        audience=$(printf '%s\n' "$line" | json_str audience)
+        if [ "$audience" = person ]; then
+            id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+            text=$(printf '%s\n' "$line" | json_str text)
+            printf '%s' "$line" |
+                sh "$FORGE_PLUGIN_DIR/command" initiative "$id" held "$text" || true
+        fi
     elif [ "$type" = deploy_finished ]; then
         ok=$(printf '%s\n' "$line" | sed -n 's/.*"ok":\(true\|false\).*/\1/p')
         if [ "$ok" = false ] || [ "$NOTIFY_DEPLOY_OK" = 1 ]; then

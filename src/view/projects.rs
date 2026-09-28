@@ -433,6 +433,9 @@ pub struct InitiativeRow {
     pub outcome: String,
     pub state: String,
     pub held_rule: Option<String>,
+    /// While held, why, in the words `forge doctor` uses ("stop rule:
+    /// L1 test: a::b (streak 3)" or "budget: $x of $y"); `None` otherwise.
+    pub held_reason: Option<String>,
     pub queued: i64,
     pub running: i64,
     pub succeeded: i64,
@@ -454,7 +457,7 @@ pub fn initiative_row(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
         .into_iter()
         .map(|(t, _)| t)
         .collect();
-    let hold = initiative_hold(f, ini)?;
+    let (hold, held_reason) = initiative_hold_detail(f, ini)?.unzip();
     let state = initiative_state(&latest, hold.as_deref()).to_string();
     let mut stats = crate::store::ProjectTaskStats::default();
     for t in &latest {
@@ -475,6 +478,7 @@ pub fn initiative_row(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
         outcome: ini.outcome.clone(),
         state,
         held_rule: hold,
+        held_reason,
         queued: stats.queued,
         running: stats.running,
         succeeded: stats.succeeded,
@@ -591,6 +595,8 @@ pub struct InitiativeDoc {
     pub outcome: String,
     pub state: String,
     pub held_rule: Option<String>,
+    /// While held, why (see `InitiativeRow::held_reason`).
+    pub held_reason: Option<String>,
     pub budget_usd: Option<f64>,
     pub stop_after_same_rule: i64,
     pub tasks: Vec<InitiativeTaskRow>,
@@ -612,7 +618,7 @@ pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
     let tasks = f.store.initiative_tasks(ini.id)?;
     let lineages = latest_per_lineage(f, &tasks)?;
     let latest: Vec<Task> = lineages.iter().map(|(t, _)| t.clone()).collect();
-    let hold = initiative_hold(f, ini)?;
+    let (hold, held_reason) = initiative_hold_detail(f, ini)?.unzip();
     let state = initiative_state(&latest, hold.as_deref()).to_string();
     let cost = f.store.initiative_cost(ini.id)?;
     let elapsed = tasks
@@ -691,6 +697,7 @@ pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
         outcome: ini.outcome.clone(),
         state,
         held_rule: hold,
+        held_reason,
         budget_usd: ini.budget_usd,
         stop_after_same_rule: ini.stop_after_same_rule,
         tasks: lineages
