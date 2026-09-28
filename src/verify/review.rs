@@ -227,7 +227,7 @@ fn tokens(text: &str) -> Vec<(bool, String)> {
         let word = raw.trim_start_matches('>');
         let tok = word
             .trim_matches(|c: char| matches!(c, '`' | '\'' | '"' | '[' | ']' | '{' | '}'))
-            .trim_end_matches(|c: char| matches!(c, '.' | ':' | '!' | '?'));
+            .trim_end_matches(['.', ':', '!', '?']);
         let tok = tok.trim_matches(|c: char| matches!(c, '`' | '\'' | '"'));
         if tok.is_empty() {
             writes_next = redirect || raw == "tee";

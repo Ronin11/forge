@@ -86,7 +86,14 @@ research: a fresh session in the coder's clone that may not write
 (`no-writes`), must run something (`executed-something`), and may end the
 task as `blocked` for human review with the defect and the command that
 shows it. A demotion from a session that ran no tool is recorded as a
-note and does not stand. The branch is still pushed so the human can
+note and does not stand. The demotion's reproduction must run from a
+fresh clone as written (`reproduction-self-contained`): a demotion citing
+a path under /tmp, a home directory, or an uncommitted file is refused,
+and the reviewer is asked once, without the attempt counting, to inline
+it. Files the reviewer writes under `tests/review-notes/<task>/` are
+taken off the branch and attached to the demotion (`review_notes` on the
+attempt's envelope), given verbatim to the follow-up task, and printed
+by `forge show`. The branch is still pushed so the human can
 look. What the human decides is how reviewer precision gets measured. A user-authored
 directive arrives when a workflow request shows the need, with one rule:
 it names the operations that verify its output. The Forge 1 directives
