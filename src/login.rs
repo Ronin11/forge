@@ -26,8 +26,25 @@ const LOCK: &str = ".forge-credentials.lock";
 /// Unix seconds of the last write-back, for `forge doctor`.
 const MARK: &str = ".forge-writeback";
 
-/// A token this close to expiring is refreshed on the host before a launch.
+/// A token this close to expiring is refreshed on the host before a launch,
+/// at the least (see `refresh_window_ms`).
 pub const REFRESH_WINDOW_MS: i64 = 30 * 60 * 1000;
+
+/// Slack past a launch's timeout and its checks' before its token may expire.
+const REFRESH_SLACK_MS: i64 = 5 * 60 * 1000;
+
+/// How close to expiring a token is refreshed on the host before a launch
+/// that may run for `timeout` and then its checks for `check_timeout`: long
+/// enough that the token cannot expire under the attempt, where concurrent
+/// attempts seeded with the same pair would all refresh with the one
+/// rotating refresh token and all but one lose it.
+pub fn refresh_window_ms(timeout: std::time::Duration, check_timeout: std::time::Duration) -> i64 {
+    let ms = |d: std::time::Duration| i64::try_from(d.as_millis()).unwrap_or(i64::MAX);
+    ms(timeout)
+        .saturating_add(ms(check_timeout))
+        .saturating_add(REFRESH_SLACK_MS)
+        .max(REFRESH_WINDOW_MS)
+}
 
 /// How far back `forge doctor` looks for a write-back.
 pub const WRITE_BACK_WINDOW_SECS: i64 = 8 * 3600;
@@ -69,9 +86,10 @@ impl Creds {
         }
     }
 
-    /// Whether a launch should refresh this login on the host first.
-    pub fn near_expiry(&self, now_ms: i64) -> bool {
-        self.expires_at_ms < now_ms + REFRESH_WINDOW_MS
+    /// Whether a launch should refresh this login on the host first, given
+    /// its refresh window (`refresh_window_ms`).
+    pub fn near_expiry(&self, now_ms: i64, window_ms: i64) -> bool {
+        self.expires_at_ms < now_ms.saturating_add(window_ms)
     }
 }
 
@@ -255,6 +273,7 @@ pub fn seed(dir: &Path, worktree: &Path, private: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn login(access: &str, refresh: &str, expires_at: i64) -> String {
         format!(
@@ -288,9 +307,24 @@ mod tests {
     #[test]
     fn near_expiry_is_within_thirty_minutes() {
         let c = |ms| Creds::parse(&login("a", "r", ms));
-        assert!(c(NOW + 29 * 60_000).near_expiry(NOW));
-        assert!(!c(NOW + 31 * 60_000).near_expiry(NOW));
-        assert!(c(NOW - 1).near_expiry(NOW));
+        let w = REFRESH_WINDOW_MS;
+        assert!(c(NOW + 29 * 60_000).near_expiry(NOW, w));
+        assert!(!c(NOW + 31 * 60_000).near_expiry(NOW, w));
+        assert!(c(NOW - 1).near_expiry(NOW, w));
+        let short = refresh_window_ms(Duration::from_secs(60), Duration::ZERO);
+        assert_eq!(short, REFRESH_WINDOW_MS);
+    }
+
+    #[test]
+    fn a_long_timeout_widens_the_refresh_window() {
+        // A two-hour attempt must not start on a token with 90 minutes left:
+        // it would expire under the attempt and every concurrent one.
+        let c = |ms| Creds::parse(&login("a", "r", ms));
+        let w = refresh_window_ms(Duration::from_secs(2 * 3600), Duration::from_secs(600));
+        assert_eq!(w, (120 + 10 + 5) * 60_000);
+        assert!(c(NOW + 90 * 60_000).near_expiry(NOW, w));
+        assert!(!c(NOW + 136 * 60_000).near_expiry(NOW, w));
+        assert!(!c(NOW + 90 * 60_000).near_expiry(NOW, REFRESH_WINDOW_MS));
     }
 
     #[test]

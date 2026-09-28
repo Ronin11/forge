@@ -273,10 +273,13 @@ two landings never build over each other:
    temporary directory renamed to `releases/<sha>/`. The archive has no
    `.git`, so the commit is handed to `build.rs` as `FORGE_BUILD_SHA`
    and `forge version` still names it.
-2. Run that release's own `forge doctor --json` against a scratch
-   `FORGE_HOME`, so its migration ladder runs on an empty store rather
-   than the live one, and require its `schema` check to be `ok` (a bare
-   home fails other rows, such as the agent login, which do not count).
+2. Copy the live `forge.db` with `sqlite3 .backup` (as `forge upgrade`
+   backs the store up) into a scratch `FORGE_HOME` and run that
+   release's own `forge doctor --json --only schema` there, so its
+   migration ladder runs on the real rows but never on the live file. It
+   must exit zero: the new binary itself decides that the `schema` check
+   ran and is not FAIL, nothing greps its JSON. A migration that fails on
+   data is refused here, before anything is staged.
 3. Write `FORGE_HOME/bin/staged -> releases/<sha>` (a symlink renamed
    into place). When the running worker starts successors, this is all
    the deploy does: the worker starts a successor on `staged`, which
