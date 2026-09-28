@@ -318,7 +318,7 @@ impl Forge {
         let fresh = match (&self.sandbox, &grant) {
             (_, Grant::Host(_) | Grant::ReadOnly(_)) if !declared => false,
             (Some(sb), Grant::Host(h)) => {
-                sb.grant_host(worktree, crate::egress::Rule::parse(h).ok()?)
+                sb.grant_host(worktree, crate::egress::Rule::granted(h).ok()?)
             }
             (Some(sb), Grant::ReadOnly(p)) => sb.grant_ro(worktree, p.clone()),
             (None, _) => {
