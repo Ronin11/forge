@@ -108,10 +108,93 @@ fn an_identical_seed_is_a_stale_seed_and_refresh_deletes_it() {
     );
     let o = e.forge("ok.sh", &["doctor"]);
     let out = String::from_utf8_lossy(&o.stdout);
-    assert!(out.contains("fmt.toml (stale seed"), "{out}");
+    assert!(
+        !out.contains("fmt.toml"),
+        "no diff lines, not listed: {out}"
+    );
     let o = e.forge("ok.sh", &["workflows", "refresh"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(!cat.join("actions/fmt.toml").exists());
+}
+
+/// Commit `text` as `actions/{name}.toml` by `who`.
+fn commit_copy(cat: &std::path::Path, name: &str, text: &str, who: &str) {
+    let rel = format!("actions/{name}.toml");
+    std::fs::write(cat.join(&rel), text).unwrap();
+    git(cat, &["add", &rel]);
+    git(
+        cat,
+        &[
+            "-c",
+            &format!("user.name={who}"),
+            "-c",
+            "user.email=x@localhost",
+            "commit",
+            "-qm",
+            "tune",
+        ],
+    );
+}
+
+#[test]
+fn an_operator_committed_copy_that_does_not_differ_is_removed_without_a_flag() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let cat = e.home.join("workflows");
+    commit_copy(&cat, "fmt", FMT, "operator");
+    let assess = include_str!("../../src/builtins/actions/assess.toml");
+    let spaced = format!("# my note\n\n{assess}\n\n");
+    commit_copy(&cat, "assess", &spaced, "operator");
+    assert!(cat.join("actions/assess.toml").exists());
+    let o = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(!out.contains("operator edit"), "{out}");
+    assert!(!out.contains("0 diff line(s)"), "{out}");
+    let o = e.forge("ok.sh", &["workflows", "refresh"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!cat.join("actions/fmt.toml").exists());
+    assert!(!cat.join("actions/assess.toml").exists());
+}
+
+#[test]
+fn refresh_flags_take_action_names_to_decide_one_copy_at_a_time() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let cat = e.home.join("workflows");
+    let edit = |text: &str| text.replacen("description = \"", "description = \"EDITED: ", 1);
+    let deploy = include_str!("../../src/builtins/operations/deploy-self.toml");
+    commit_copy(&cat, "fmt", &edit(FMT), "operator");
+    commit_copy(&cat, "deploy-self", &edit(deploy), "operator");
+    let path = |n: &str| cat.join(format!("actions/{n}.toml"));
+
+    // Neither named: both refused, both kept.
+    assert!(!e.forge("ok.sh", &["workflows", "refresh"]).status.success());
+    // Naming one drops only that one; the other is still undecided.
+    let o = e.forge(
+        "ok.sh",
+        &["workflows", "refresh", "--take-builtin", "deploy-self"],
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "fmt is still undecided");
+    assert!(err.contains("fmt.toml"), "{err}");
+    assert!(!err.contains("deploy-self.toml"), "{err}");
+    assert!(!path("deploy-self").exists());
+    assert!(path("fmt").exists());
+    // A name that is not a shadowing copy is refused and removes nothing.
+    let o = e.forge("ok.sh", &["workflows", "refresh", "--take-builtin", "nope"]);
+    assert!(!o.status.success());
+    assert!(path("fmt").exists());
+    // Keeping one by name settles it.
+    let o = e.forge("ok.sh", &["workflows", "refresh", "--keep", "fmt"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(path("fmt").exists());
+    // A bare flag still means every copy, and `.toml` is accepted.
+    let o = e.forge(
+        "ok.sh",
+        &["workflows", "refresh", "--take-builtin", "fmt.toml"],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!path("fmt").exists());
 }
 
 /// A `git diff --no-index` that dies (here, of a signal — the same shape of
@@ -127,7 +210,8 @@ fn a_git_diff_that_dies_reports_the_failure_not_zero_diff_lines() {
     let e = Env::new();
     assert!(e.forge("ok.sh", &["workflows"]).status.success());
     let cat = e.home.join("workflows");
-    std::fs::write(cat.join("actions/fmt.toml"), FMT).unwrap();
+    let edited = FMT.replacen("description = \"", "description = \"EDITED: ", 1);
+    std::fs::write(cat.join("actions/fmt.toml"), edited).unwrap();
 
     let fakebin = e._dir.path().join("fakebin");
     std::fs::create_dir_all(&fakebin).unwrap();

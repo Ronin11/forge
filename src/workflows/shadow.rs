@@ -40,6 +40,9 @@ pub struct Shadow {
     pub file: String,
     pub origin: Origin,
     pub age_secs: u64,
+    /// The copy has no real difference from the built-in (see `equivalent`).
+    /// Such a copy is always a stale seed, whatever its history says.
+    pub equivalent: bool,
     /// The unified diff, built-in to catalog copy, or the reason `git diff`
     /// could not produce one. `Err` must never be folded into an empty or
     /// zero-line diff: that would look exactly like "no differences".
@@ -60,6 +63,35 @@ impl Shadow {
                 .count()
         })
     }
+}
+
+/// A comparable form of `text` that ignores whitespace and comments: each
+/// line trimmed and its whitespace runs collapsed, blank lines and
+/// comment-only lines dropped.
+fn squeezed(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect()
+}
+
+/// Whether a catalog copy says nothing the built-in does not: its text is
+/// the built-in's byte for byte, or differs only in whitespace or comments
+/// (they parse to the same TOML, or their lines match once whitespace and
+/// comment-only lines are set aside). Such a copy is a stale seed, not an
+/// operator edit, however it got there.
+pub fn equivalent(builtin: &str, copy: &str) -> bool {
+    if builtin == copy {
+        return true;
+    }
+    if let (Ok(a), Ok(b)) = (
+        toml::from_str::<toml::Value>(builtin),
+        toml::from_str::<toml::Value>(copy),
+    ) && a == b
+    {
+        return true;
+    }
+    squeezed(builtin) == squeezed(copy)
 }
 
 /// The git blob hash of `text`, as `git hash-object` gives it.
@@ -186,7 +218,8 @@ fn scan_uncached(catalog: &Path) -> Vec<Shadow> {
             continue;
         };
         let rel = format!("actions/{file}");
-        let origin = if has_operator_commit(catalog, &rel) {
+        let equivalent = std::fs::read_to_string(&path).is_ok_and(|t| equivalent(builtin, &t));
+        let origin = if !equivalent && has_operator_commit(catalog, &rel) {
             Origin::OperatorEdit
         } else {
             Origin::StaleSeed
@@ -204,6 +237,7 @@ fn scan_uncached(catalog: &Path) -> Vec<Shadow> {
             file: file.to_string(),
             origin,
             age_secs,
+            equivalent,
             diff,
         });
     }
@@ -299,9 +333,15 @@ pub async fn remove(catalog: &Path, file: &str) -> Result<()> {
 
 /// The doctor's shadowing row: whether to warn, the detail, and the hint.
 /// A stale seed warns and points at `forge workflows refresh`; an operator
-/// edit is listed but is not a fault.
+/// edit is listed but is not a fault. Only copies with real diff lines are
+/// listed: one that does not differ from the built-in (or only in
+/// whitespace or comments) is a seed `refresh` removes without a flag, not
+/// something to read; a failed diff is still listed, as it hides nothing.
 pub fn report(catalog: &Path) -> (bool, String, String) {
-    let all = scan(catalog);
+    let all: Vec<Shadow> = scan(catalog)
+        .into_iter()
+        .filter(|s| !s.equivalent || s.diff.is_err())
+        .collect();
     if all.is_empty() {
         return (
             false,
@@ -357,6 +397,83 @@ pub fn doctor_check(home: &Path) -> crate::doctor::Check {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    const BUILTIN: &str =
+        "name = \"fmt\"\n# the formatter\ndescription = \"format\"\nrun = [\"cargo fmt\"]\n";
+
+    #[test]
+    fn a_byte_identical_copy_is_equivalent() {
+        assert!(equivalent(BUILTIN, BUILTIN));
+    }
+
+    #[test]
+    fn a_copy_differing_only_in_whitespace_or_comments_is_equivalent() {
+        let spaced =
+            "name   = \"fmt\"\n\n\n  description = \"format\"   \nrun = [ \"cargo fmt\" ]\n";
+        assert!(equivalent(BUILTIN, spaced));
+        let no_comment = "name = \"fmt\"\ndescription = \"format\"\nrun = [\"cargo fmt\"]\n";
+        assert!(equivalent(BUILTIN, no_comment));
+        let commented = "# operator note\nname = \"fmt\"\n# the formatter\ndescription = \"format\" # trailing\nrun = [\"cargo fmt\"]\n";
+        assert!(equivalent(BUILTIN, commented));
+    }
+
+    #[test]
+    fn a_copy_with_a_changed_value_or_key_is_not_equivalent() {
+        let changed = BUILTIN.replace("format", "EDITED format");
+        assert!(!equivalent(BUILTIN, &changed));
+        let extra = format!("{BUILTIN}timeout_secs = 60\n");
+        assert!(!equivalent(BUILTIN, &extra));
+        let joined = BUILTIN.replace("cargo fmt", "cargofmt");
+        assert!(!equivalent(BUILTIN, &joined));
+    }
+
+    #[test]
+    fn an_unparseable_copy_is_compared_line_by_line() {
+        let broken = "name = \"fmt\n# c\n";
+        assert!(equivalent(broken, "name = \"fmt\n\n"));
+        assert!(!equivalent(broken, "name = \"fmt2\n"));
+    }
+
+    #[test]
+    fn scan_treats_an_operator_committed_equivalent_copy_as_a_stale_seed() {
+        let home = tempfile::tempdir().unwrap();
+        let catalog = crate::workflows::catalog_dir(home.path()).unwrap();
+        let (_, builtin) = BUILTIN_OPERATIONS
+            .iter()
+            .find(|(f, _)| *f == "fmt.toml")
+            .unwrap();
+        std::fs::write(
+            catalog.join("actions/fmt.toml"),
+            format!("# mine\n{builtin}"),
+        )
+        .unwrap();
+        let git = |args: &[&str]| {
+            let o = Command::new("git")
+                .arg("-C")
+                .arg(&catalog)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(o.status.success(), "{o:?}");
+        };
+        git(&["add", "actions/fmt.toml"]);
+        git(&[
+            "-c",
+            "user.name=operator",
+            "-c",
+            "user.email=o@x",
+            "commit",
+            "-qm",
+            "note",
+        ]);
+        let found = scan(&catalog);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].equivalent);
+        assert_eq!(found[0].origin, Origin::StaleSeed);
+        let (stale, detail, _) = report(&catalog);
+        assert!(!stale, "{detail}");
+        assert!(!detail.contains("fmt.toml"), "{detail}");
+    }
 
     /// Eight threads diffing the same built-in against the same catalog
     /// copy at once used to race on a temp path shared by `std::process::

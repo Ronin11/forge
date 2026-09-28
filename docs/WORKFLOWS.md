@@ -413,15 +413,22 @@ the catalog's git history whether the copy is the operator's:
 
 - a copy that differs from the built-in and has a commit on that file
   other than seeding ones (author `forge`, or a message starting
-  `catalog: built-in`) is an **operator edit** and wins;
+  `catalog: built-in`) is an **operator edit** and wins, unless it does
+  not really differ (below);
 - any other differing copy is a **stale seed** (an old `ensure` wrote it):
   the built-in is used, and one line on stderr says the copy was ignored.
 
-`forge doctor` has a `shadowing` row listing each shadowing file with its
-age, stale seed or operator edit, and the diff's line count; stale seeds
-point at `forge workflows refresh`, which deletes them. For an operator
-edit it prints the diff and refuses unless given `--take-builtin` (drop
-the copy) or `--keep` (leave it).
+A copy equal to the built-in byte for byte, or differing only in
+whitespace or comments, is a stale seed whoever committed it.
+
+`forge doctor` has a `shadowing` row listing each shadowing file that has
+real diff lines, with its age, stale seed or operator edit, and the
+diff's line count; stale seeds point at `forge workflows refresh`, which
+deletes them (copies with no real difference too, silently). For an
+operator edit it prints the diff and refuses unless given
+`--take-builtin` (drop the copy) or `--keep` (leave it). Either flag
+takes action names to decide one copy at a time (`forge workflows
+refresh --take-builtin deploy-self`); bare, it applies to every copy.
 
 ### The page
 
