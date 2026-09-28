@@ -1,6 +1,6 @@
 name = "deploy-self"
 kind = "operation"
-description = "deploy Forge itself on this machine through the release layout (docs/OPS.md, 'The running binary'): under a lock, builds the landed tree (archived by `forge deploy` from origin, never the registered checkout) with `cargo build --release --workspace` into the build cache FORGE_HOME/bin/target, copies its binaries into FORGE_HOME/bin/releases/<sha>/ (skipped when that release already exists), runs that release's own `forge doctor --json` against a scratch FORGE_HOME and requires its schema check to pass, then writes FORGE_HOME/bin/staged -> releases/<sha>. When the running worker starts successors (FORGE_WORKER_SUCCESSORS=1, set by `forge deploy` from a live worker in the workers table, or a live pid in FORGE_HOME/bin/successor-capable) that is all: the successor flips current, restarts web and portal and takes the worker unit over, and the worker unit is never restarted. Only for a worker too old to start a successor does it then flip FORGE_HOME/bin/current to the release (previous keeps the old one), restarts the web and portal units (arg units, default 'forge-web forge-portal') and waits for them to be active, runs the target's check with bounded retries (default: curl the web client's /tasks, arg url, with the token from FORGE_HOME/web.token, expecting 200), and only then asks the worker unit (arg worker, default forge-worker) to restart with `systemctl --user restart --no-block`, last. A failed build, doctor or check puts current, previous and staged back, removes a release this run created, restarts the units on the old release, leaves the worker alone and exits non-zero. Optional arg tries (default 40) bounds each wait, half a second apart. Reads its args and the check command from the environment, injected there by `forge deploy` from the target's own record, and the commit as FORGE_DEPLOY_SHA (see docs/DEPLOY.md, 'Deploying Forge itself')."
+description = "deploy Forge itself on this machine through the release layout (docs/OPS.md, 'The running binary'): under a lock, builds the landed tree (archived by `forge deploy` from origin, never the registered checkout) with `cargo build --release --workspace` into the build cache FORGE_HOME/bin/target, copies its binaries into FORGE_HOME/bin/releases/<sha>/ (skipped when that release already exists), copies the live forge.db with `sqlite3 .backup` into a scratch FORGE_HOME and requires that release's own `forge doctor --json --only schema` to exit zero there (its migrations run on the real rows), then writes FORGE_HOME/bin/staged -> releases/<sha>. When the running worker starts successors (FORGE_WORKER_SUCCESSORS=1, set by `forge deploy` from a live worker in the workers table, or a live pid in FORGE_HOME/bin/successor-capable) that is all: the successor flips current, restarts web and portal and takes the worker unit over, and the worker unit is never restarted. Only for a worker too old to start a successor does it then flip FORGE_HOME/bin/current to the release (previous keeps the old one), restarts the web and portal units (arg units, default 'forge-web forge-portal') and waits for them to be active, runs the target's check with bounded retries (default: curl the web client's /tasks, arg url, with the token from FORGE_HOME/web.token, expecting 200), and only then asks the worker unit (arg worker, default forge-worker) to restart with `systemctl --user restart --no-block`, last. A failed build, doctor or check puts current, previous and staged back, removes a release this run created, restarts the units on the old release, leaves the worker alone and exits non-zero. Optional arg tries (default 40) bounds each wait, half a second apart. Reads its args and the check command from the environment, injected there by `forge deploy` from the target's own record, and the commit as FORGE_DEPLOY_SHA (see docs/DEPLOY.md, 'Deploying Forge itself')."
 run = ["bash", "-c", '''
 set -euo pipefail
 sha="${FORGE_DEPLOY_SHA:-}"
@@ -105,18 +105,27 @@ else
   echo "built ${sha:0:8} into $release"
 fi
 
-# The new binary's own doctor, against a scratch home: its migration
-# ladder runs on an empty store, never on the live one. Doctor exits
-# non-zero for any FAIL a bare home has (no agent login, say); what must
-# pass is the schema check.
+# The new binary's own doctor, against a scratch home holding a copy of
+# the live store (sqlite3 .backup, as `forge upgrade` backs it up): its
+# migration ladder runs on the real rows, never on the live file, so a
+# migration that fails on data fails here and not in the successor. The
+# new binary judges its own check: `doctor --json --only schema` exits
+# non-zero unless the schema check ran and did not fail.
 doctor_home="$(mktemp -d "$root/.doctor.XXXXXX")"
-doctor_out="$(FORGE_HOME="$doctor_home" "$release/forge" doctor --json 2>&1 || true)"
-if ! printf '%s' "$doctor_out" | tr -d ' \n' | grep -q '"name":"schema","status":"ok"'; then
-  echo "deploy-self: ${sha:0:8}'s own doctor did not pass its schema check against a scratch home:" >&2
+if [ ! -f "$home/forge.db" ]; then
+  echo "deploy-self: no live store at $home/forge.db to prove ${sha:0:8}'s migrations against" >&2
+  exit 1
+fi
+if ! sqlite3 "$home/forge.db" ".timeout 30000" ".backup '$doctor_home/forge.db'"; then
+  echo "deploy-self: sqlite3 .backup of $home/forge.db into $doctor_home failed" >&2
+  exit 1
+fi
+if ! doctor_out="$(FORGE_HOME="$doctor_home" "$release/forge" doctor --json --only schema 2>&1)"; then
+  echo "deploy-self: ${sha:0:8}'s own doctor did not pass its schema check against a copy of the live store:" >&2
   printf '%s\n' "$doctor_out" | tail -c 2000 >&2
   exit 1
 fi
-echo "doctor of ${sha:0:8}: schema ok against a scratch home"
+echo "doctor of ${sha:0:8}: schema ok against a copy of the live store"
 
 point staged "releases/$sha"
 echo "staged ${sha:0:8}: $root/staged -> releases/$sha"

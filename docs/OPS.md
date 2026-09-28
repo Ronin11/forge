@@ -47,13 +47,13 @@ who holds the pointer: **the store and every running binary agree.**
   `deploy-self.toml`): the commit is resolved in the kernel repository's
   fetch of origin's base, the release is built into
   `FORGE_HOME/bin/releases/<sha>/`, checked by its own doctor against a
-  scratch home and written to `FORGE_HOME/bin/staged`; only for a
+  copy of the live store and written to `FORGE_HOME/bin/staged`; only for a
   worker too old to start a successor does deploy-self also flip
   `current` and restart web, portal and the worker as before
   (docs/DEPLOY.md, "Deploying Forge itself").
 - **A staged release starts a successor worker; the old one drains.**
   Deploy only stages: build, run the new binary's doctor-lite against a
-  scratch home, write `staged`. The worker starts a successor on the new
+  copy of the live store, write `staged`. The worker starts a successor on the new
   binary; the old worker stops claiming as soon as the store shows a
   newer live worker, finishes what it holds, and exits. Claims go to the
   newest version only. Plugins and web restart under the successor. No
