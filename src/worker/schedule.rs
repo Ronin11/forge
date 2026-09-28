@@ -127,6 +127,60 @@ impl RefusalLog {
     }
 }
 
+/// A due slot the `per_day` cap refused: log it if it just began, and
+/// record it where the listing reads it.
+fn note_refusal(
+    f: &Forge,
+    log: &mut RefusalLog,
+    due: &Due,
+    r: &crate::store::PerDayRefused,
+    now: i64,
+    why: String,
+) {
+    let name = format!("{}/{}", due.project, due.workflow);
+    if let Some(line) = log.refused(&name, now, r.next_allowed, &why) {
+        eprintln!("{line}");
+    }
+    if let Err(e) = f
+        .store
+        .set_schedule_refusal(&crate::store::ScheduleRefusal {
+            project: due.project.clone(),
+            workflow: due.workflow.clone(),
+            since: log.since(&name).unwrap_or(now),
+            next_allowed: r.next_allowed,
+            reason: why,
+        })
+    {
+        eprintln!("schedule tick: {name}: {e:#}");
+    }
+}
+
+/// A refusal whose schedule is no longer due has cleared without a start
+/// of ours (`names` are the schedules that still resolve); one whose
+/// schedule is gone is dropped without a word.
+fn sweep_refusals(
+    f: &Forge,
+    log: &mut RefusalLog,
+    refused: &HashSet<String>,
+    names: &HashSet<String>,
+    now: i64,
+) {
+    for name in log.not_in(refused) {
+        let Some((project, workflow)) = name.split_once('/') else {
+            continue;
+        };
+        if names.contains(&name)
+            && let Some(line) = log.cleared(&name, now)
+        {
+            eprintln!("{line}");
+        }
+        log.since.remove(&name);
+        if let Err(e) = f.store.clear_schedule_refusal(project, workflow) {
+            eprintln!("schedule tick: {name}: {e:#}");
+        }
+    }
+}
+
 /// The worker's schedule trigger (docs/JOBS.md, "Triggers" and "Build
 /// order" step 3): for every project, every run workflow with `[trigger]
 /// on = "schedule"` that resolves for it, queue one job per cron slot due
@@ -217,43 +271,13 @@ pub(super) async fn schedule_tick(f: &Forge, runs: &[TickRun], log: &mut Refusal
             Err(e) => match e.downcast_ref::<crate::store::PerDayRefused>() {
                 Some(r) => {
                     refused.insert(name.clone());
-                    let why = format!("{e:#}");
-                    if let Some(line) = log.refused(&name, now, r.next_allowed, &why) {
-                        eprintln!("{line}");
-                    }
-                    if let Err(e) = f
-                        .store
-                        .set_schedule_refusal(&crate::store::ScheduleRefusal {
-                            project: due.project.clone(),
-                            workflow: due.workflow.clone(),
-                            since: log.since(&name).unwrap_or(now),
-                            next_allowed: r.next_allowed,
-                            reason: why,
-                        })
-                    {
-                        eprintln!("schedule tick: {name}: {e:#}");
-                    }
+                    note_refusal(f, log, &due, r, now, format!("{e:#}"));
                 }
                 None => eprintln!("schedule tick: {}/{}: {e:#}", due.project, due.workflow),
             },
         }
     }
-    // A refusal whose schedule is no longer due has cleared without a
-    // start of ours; one whose schedule is gone is dropped without a word.
-    for name in log.not_in(&refused) {
-        let Some((project, workflow)) = name.split_once('/') else {
-            continue;
-        };
-        if names.contains(&name)
-            && let Some(line) = log.cleared(&name, now)
-        {
-            eprintln!("{line}");
-        }
-        log.since.remove(&name);
-        if let Err(e) = f.store.clear_schedule_refusal(project, workflow) {
-            eprintln!("schedule tick: {name}: {e:#}");
-        }
-    }
+    sweep_refusals(f, log, &refused, &names, now);
     Ok(())
 }
 
