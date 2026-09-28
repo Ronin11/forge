@@ -4,16 +4,18 @@
 //! others loading. See docs/PLUGINS.md.
 
 pub mod drift;
+pub mod handoff;
 
 use crate::ctx::Forge;
 use crate::workflows::Problem;
 use anyhow::{Context, Result, bail};
+use handoff::{Reason, StopReason, reason_text};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::process::{Child, Command};
 use tokio::sync::watch;
@@ -574,10 +576,26 @@ impl Drop for GroupGuard {
     }
 }
 
+/// Records that `name` is stopped, and why.
+fn write_stopped(home: &Path, name: &str, why: String) {
+    write_run_state(
+        home,
+        name,
+        &RunState::Stopped {
+            last_exit: Some(why),
+        },
+    );
+}
+
 /// One plugin, started, restarted per its manifest's policy, and stopped
 /// when `stop` fires. Runs until told to stop; a plugin's own failure
 /// never propagates out of this task.
-async fn supervise_plugin(home: PathBuf, plugin: Plugin, mut stop: watch::Receiver<bool>) {
+async fn supervise_plugin(
+    home: PathBuf,
+    plugin: Plugin,
+    mut stop: watch::Receiver<bool>,
+    reason: Reason,
+) {
     let name = plugin.name.clone();
     let state_dir = home.join("plugins-state").join(&name);
     let _ = std::fs::create_dir_all(&state_dir);
@@ -600,13 +618,7 @@ async fn supervise_plugin(home: PathBuf, plugin: Plugin, mut stop: watch::Receiv
         let mut child = match spawn_plugin(&plugin, &home, &state_dir, &log_path) {
             Ok(c) => c,
             Err(e) => {
-                write_run_state(
-                    &home,
-                    &name,
-                    &RunState::Stopped {
-                        last_exit: Some(format!("failed to start: {e:#}")),
-                    },
-                );
+                write_stopped(&home, &name, format!("failed to start: {e:#}"));
                 if plugin.manifest.restart == Restart::Never
                     || wait_backoff_or_stop(&mut stop, backoff).await
                 {
@@ -637,24 +649,12 @@ async fn supervise_plugin(home: PathBuf, plugin: Plugin, mut stop: watch::Receiv
         let status = match waited {
             None => {
                 stop_child(&mut child).await;
-                write_run_state(
-                    &home,
-                    &name,
-                    &RunState::Stopped {
-                        last_exit: Some("stopped by worker".to_string()),
-                    },
-                );
+                write_stopped(&home, &name, reason_text(&reason));
                 return;
             }
             Some(Ok(s)) => s,
             Some(Err(e)) => {
-                write_run_state(
-                    &home,
-                    &name,
-                    &RunState::Stopped {
-                        last_exit: Some(format!("wait failed: {e:#}")),
-                    },
-                );
+                write_stopped(&home, &name, format!("wait failed: {e:#}"));
                 return;
             }
         };
@@ -666,13 +666,7 @@ async fn supervise_plugin(home: PathBuf, plugin: Plugin, mut stop: watch::Receiv
             Restart::Never => false,
         };
         if !should_restart {
-            write_run_state(
-                &home,
-                &name,
-                &RunState::Stopped {
-                    last_exit: Some(desc),
-                },
-            );
+            write_stopped(&home, &name, desc);
             return;
         }
 
@@ -684,13 +678,7 @@ async fn supervise_plugin(home: PathBuf, plugin: Plugin, mut stop: watch::Receiv
         let wait = backoff;
         backoff = (backoff * 2).min(BACKOFF_MAX);
         if wait_backoff_or_stop(&mut stop, wait).await {
-            write_run_state(
-                &home,
-                &name,
-                &RunState::Stopped {
-                    last_exit: Some(desc),
-                },
-            );
+            write_stopped(&home, &name, desc);
             return;
         }
     }
@@ -718,6 +706,7 @@ fn enabled_plugins_now(f: &Forge) -> BTreeMap<String, Plugin> {
 struct Supervised {
     stop: watch::Sender<bool>,
     handle: JoinHandle<()>,
+    reason: Reason,
     restart_gen: u64,
     _lock: std::fs::File,
 }
@@ -725,10 +714,17 @@ struct Supervised {
 impl Supervised {
     fn spawn(home: &Path, plugin: &Plugin, restart_gen: u64, lock: std::fs::File) -> Supervised {
         let (stop, rx) = watch::channel(false);
-        let handle = tokio::spawn(supervise_plugin(home.to_path_buf(), plugin.clone(), rx));
+        let reason = Reason::default();
+        let handle = tokio::spawn(supervise_plugin(
+            home.to_path_buf(),
+            plugin.clone(),
+            rx,
+            reason.clone(),
+        ));
         Supervised {
             stop,
             handle,
+            reason,
             restart_gen,
             _lock: lock,
         }
@@ -736,6 +732,14 @@ impl Supervised {
 
     fn signal_stop(&self) {
         let _ = self.stop.send(true);
+    }
+
+    /// Stop for `why`: what `forge plugin status` says of the stopped plugin.
+    async fn stop_because(self, why: StopReason) {
+        if let Ok(mut r) = self.reason.lock() {
+            *r = why;
+        }
+        self.stop().await;
     }
 
     async fn stop(self) {
@@ -761,11 +765,15 @@ impl Supervised {
 pub struct Supervisor {
     stop: watch::Sender<bool>,
     reconciler: JoinHandle<()>,
+    /// Why the plugins still up when the supervisor stops are stopped.
+    drain: Arc<Mutex<StopReason>>,
 }
 
 impl Supervisor {
     pub fn start(f: Arc<Forge>) -> Supervisor {
         let (stop_tx, mut stop_rx) = watch::channel(false);
+        let drain = Arc::new(Mutex::new(StopReason::Worker));
+        let drained = drain.clone();
         let reconciler = tokio::spawn(async move {
             // `restart_gen` is the generation this instance was started
             // with; a mismatch against `read_restart_gen` on a later tick
@@ -806,7 +814,7 @@ impl Supervisor {
                     .collect();
                 for name in gone {
                     if let Some(s) = running.remove(&name) {
-                        s.stop().await;
+                        s.stop_because(StopReason::Disabled).await;
                     }
                 }
 
@@ -827,7 +835,11 @@ impl Supervisor {
             if !running.is_empty() {
                 tokio::time::sleep(STOP_SETTLE).await;
             }
+            let why = drained.lock().map(|r| *r).unwrap_or_default();
             for s in running.values() {
+                if let Ok(mut r) = s.reason.lock() {
+                    *r = why;
+                }
                 s.signal_stop();
             }
             for s in running.into_values() {
@@ -837,6 +849,7 @@ impl Supervisor {
         Supervisor {
             stop: stop_tx,
             reconciler,
+            drain,
         }
     }
 

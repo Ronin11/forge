@@ -66,8 +66,9 @@ who holds the pointer: **the store and every running binary agree.**
   arguments and `FORGE_HOME`, in its own process group, and records it in
   `workers` (pid, version, registration order). A worker with a newer
   live worker of another version in that table claims nothing, stops its
-  plugins, finishes its tasks and jobs and exits; if the successor dies
-  before that, it claims again and does not restart the same release. The
+  plugins once that worker has claimed (not before), finishes its tasks
+  and jobs and exits; if the successor dies before that, it claims again,
+  restarts its plugins and does not restart the same release. The
   successor flips `current` to its release (when a deploy has not already)
   and restarts the units the self deploy target declares (its `units`
   arg, the one `deploy-self` reads; `forge-web` when it declares none),

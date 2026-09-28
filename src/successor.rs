@@ -98,9 +98,9 @@ impl Succession {
     }
 
     /// Whether a newer version is live, so this worker claims no more.
-    /// Starts the successor when a newer release is staged, after stopping
-    /// this worker's plugins, so their locks pass to the successor's set
-    /// instead of the two overlapping.
+    /// Starts the successor when a newer release is staged. The plugins stay
+    /// here until the successor has claimed, and come back here when it
+    /// exits without (or after) claiming while this worker still does.
     pub async fn superseded(
         &mut self,
         f: &Arc<Forge>,
@@ -117,37 +117,34 @@ impl Succession {
             self.child = None;
         }
         let live = f.store.live_workers(pid_alive)?;
-        if !live
+        let newer: Vec<_> = live
             .iter()
-            .any(|w| w.id > self.id && w.version != self.version)
-        {
-            if let Some(next) = self.staged_successor(&f.paths, &live) {
-                if let Some(p) = plugins.take() {
-                    p.stop().await;
+            .filter(|w| w.id > self.id && w.version != self.version)
+            .collect();
+        let claimant = read_capability(&release::root(&f.paths.home))
+            .filter(|pid| newer.iter().any(|w| w.pid == *pid));
+        crate::plugins::handoff::settle(f, plugins, claimant).await;
+        if !newer.is_empty() {
+            return Ok(true);
+        }
+        if let Some(next) = self.staged_successor(&f.paths, &live) {
+            match self.spawn(&f.paths, &next) {
+                Ok(child) => {
+                    f.store.register_worker(i64::from(child.id()), &next)?;
+                    eprintln!(
+                        "release {next} staged: successor pid {} started; this worker drains",
+                        child.id()
+                    );
+                    self.child = Some((child, next));
+                    return Ok(true);
                 }
-                match self.spawn(&f.paths, &next) {
-                    Ok(child) => {
-                        f.store.register_worker(i64::from(child.id()), &next)?;
-                        eprintln!(
-                            "release {next} staged: successor pid {} started; this worker drains",
-                            child.id()
-                        );
-                        self.child = Some((child, next));
-                        return Ok(true);
-                    }
-                    Err(e) => {
-                        eprintln!("release {next} staged but its worker did not start: {e:#}");
-                        self.failed.insert(next);
-                        *plugins = Some(Supervisor::start(f.clone()));
-                    }
+                Err(e) => {
+                    eprintln!("release {next} staged but its worker did not start: {e:#}");
+                    self.failed.insert(next);
                 }
             }
-            return Ok(false);
         }
-        if let Some(p) = plugins.take() {
-            p.stop().await;
-        }
-        Ok(true)
+        Ok(false)
     }
 
     /// The staged release to start a worker on: not this one, not one that
