@@ -47,6 +47,10 @@ assert.match(renderRefused([]), /^$/);
 // The held reason: state `held` on rule `budget` shows "held: budget".
 assert.match(html, /held: budget/);
 assert.match(renderStateLine(FIXTURE), /held: budget/);
+const stopLine = renderStateLine({
+  ...FIXTURE, held_rule: 'L1 test: a::b', held_reason: 'stop rule: L1 test: a::b (streak 3)',
+});
+assert.match(stopLine, /open<\/span><span class="warn">, held: stop rule: L1 test: a::b \(streak 3\)/);
 const openLine = renderStateLine({ ...FIXTURE, state: 'open', held_rule: null });
 assert.doesNotMatch(openLine, /held/);
 

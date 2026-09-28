@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
-fn plugin_status_json(e: &Env, name: &str) -> serde_json::Value {
+pub(crate) fn plugin_status_json(e: &Env, name: &str) -> serde_json::Value {
     serde_json::from_slice(
         &e.forge("ok.sh", &["plugin", "status", name, "--json"])
             .stdout,
@@ -206,6 +206,44 @@ fn the_worker_supervises_a_failing_plugin_and_stops_it_when_disabled() {
     let status: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(status["enabled"], false);
     assert_eq!(status["state"], "stopped");
+}
+
+#[test]
+fn uninstall_waits_for_a_running_plugin_before_removing_its_directory() {
+    let e = Env::new();
+    let dir = e.home.join("plugins/uninstall-me");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("plugin.toml"),
+        "name = \"uninstall-me\"\nrun = [\"sleep\", \"3600\"]\ncapabilities = [\"events\"]\nrestart = \"always\"\n",
+    )
+    .unwrap();
+    assert!(
+        e.forge("ok.sh", &["plugin", "enable", "uninstall-me"])
+            .status
+            .success()
+    );
+    let mut worker = Worker::spawn(e.cmd("ok.sh").args(["work", "--poll", "1"]));
+    assert!(wait_until(
+        || plugin_status_json(&e, "uninstall-me")["state"] == "running",
+        Duration::from_secs(30)
+    ));
+    let pid = plugin_status_json(&e, "uninstall-me")["pid"]
+        .as_i64()
+        .unwrap();
+    let o = e.forge("ok.sh", &["plugin", "uninstall", "uninstall-me"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!dir.exists());
+    assert_eq!(
+        unsafe { libc::kill(pid as i32, 0) },
+        -1,
+        "plugin still alive"
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
+    worker.stop();
 }
 
 /// Disabling then re-enabling a plugin already replaces its process (the
@@ -437,7 +475,7 @@ fn worker_running_notify(e: &Env) -> (Worker, i32) {
     (worker, pid.get())
 }
 
-fn pid_gone_within(pid: i32, limit: Duration) -> bool {
+pub(crate) fn pid_gone_within(pid: i32, limit: Duration) -> bool {
     wait_until(
         || {
             // A zombie awaiting its reaper is not running.

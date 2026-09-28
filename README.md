@@ -274,6 +274,7 @@ src/assess.rs       the assess directive: a read-only score of a landed diff's m
 src/attempt.rs      one attempt of a directive: prompt, launch, verdict, the row
 src/audit.rs        diagnosis for a terminal failure; cost anti-patterns
 src/builtins/       built-in actions, operations, and workflows, as TOML
+src/chat/           Ask Forge: forge chat's fixed tools, the confirm gate in front of the writes, the redactor, and the turn loop (docs/CHAT.md)
 src/checks.rs       run one command as a check under a timeout
 src/cli.rs          commands and all terminal output
 src/concierge.rs    forge ask: sorts a customer message into request, question, need, or unclear
@@ -305,6 +306,7 @@ src/pricing.rs      pricing: a claude attempt priced at list from the CLI's toke
 src/profile.rs      a workflow's measured cost and success, from its runs
 src/prompts.rs      what each contract's agent is told, assembled from pieces
 src/queue.rs        how a task comes to exist; enqueue validates a TaskRequest
+src/redraw.rs       a held experiment arm is re-drawn among the free ones at claim time
 src/reload.rs       config reloads between claims: re-read, re-validate, keep the old config on a bad edit
 src/render.rs       text rendering for documents: first sentence, path-like tokens stripped, word-boundary cuts
 src/report.rs       typed events; the stderr printer is one consumer
@@ -328,6 +330,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   descendants.rs    the live tasks below and beside a task in its retry lineage, and the `withdraw --abort` decision a worker reads
   projects.rs       projects, project_repos, backlog, initiatives, portal_tokens
   record.rs         decisions, task_refs, plugins
+  chat.rs           chat_sessions and chat_turns: every turn of Ask Forge, its tool calls and cost
   messages.rs       messages: one row per inbound/outbound message on a channel, so a rule can ask "has this contact replied since"
   holds.rs          provider_holds and provider_probes: a provider held for a refused login, and every probe of it with its cost
   webhooks.rs       webhook_tokens: per-hook tokens (only their hashes) that let `forge job fire` start a webhook-triggered job

@@ -107,7 +107,7 @@ fn login_file() -> Vec<Check> {
                     format!("in {}m", (at - now) / 60)
                 }
             );
-            if c.near_expiry(now * 1000) {
+            if c.near_expiry(now * 1000, crate::login::REFRESH_WINDOW_MS) {
                 row(
                     Status::Warn,
                     detail,

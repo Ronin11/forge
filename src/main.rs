@@ -11,6 +11,7 @@ mod assess;
 mod attempt;
 mod audit;
 mod binary;
+mod chat;
 mod checks;
 mod cli;
 mod concierge;
@@ -44,6 +45,7 @@ mod pricing;
 mod profile;
 mod prompts;
 mod queue;
+mod redraw;
 mod release;
 mod reload;
 mod render;
@@ -71,6 +73,7 @@ pub fn unix_now() -> i64 {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _own_egress_dir = egress::MadeDirGuard;
     cli::main().await
 }
 

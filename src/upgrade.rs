@@ -209,12 +209,17 @@ fn backup_store(home: &Path, version: &str) -> Result<PathBuf> {
 /// web or portal units exist, best-effort — never the worker, so a
 /// rollback leaves it running the binary it already trusted (see
 /// docs/DEPLOY.md, "Rollback").
-fn roll_back(root: &Path, was: &(Option<String>, Option<String>), new_id: &str) {
+fn roll_back(
+    lock: &release::Lock,
+    root: &Path,
+    was: &(Option<String>, Option<String>),
+    new_id: &str,
+) {
     println!(
         "upgrade: flipping current back to {}",
         was.0.as_deref().unwrap_or("nothing")
     );
-    let _ = release::restore(root, was);
+    let _ = release::restore(lock, root, was);
     let _ = std::fs::remove_dir_all(release::release_dir(root, new_id));
     let units = existing_units();
     let _ = restart_units_and_wait(&units, TRIES);
@@ -422,8 +427,17 @@ pub fn run(source: Option<String>, check_only: bool, force: bool) -> Result<()> 
     let backup = backup_store(&paths.home, &new_version)?;
     println!("backed up the store to {}", backup.display());
 
-    release::install(&root, &extracted, &new_version)?;
-    let was = release::flip(&root, &new_version)?;
+    let lock = release::lock(&root)?;
+    release::install(&lock, &root, &extracted, &new_version)?;
+    // A stage left by a self-deploy would start a successor on it once the
+    // worker restarts, and that successor would flip `current` back.
+    if let Some(staged) = release::drop_staged(&lock, &root)? {
+        println!(
+            "dropped {} (it named {staged})",
+            root.join("staged").display()
+        );
+    }
+    let was = release::flip(&lock, &root, &new_version)?;
     println!(
         "flipped {} to releases/{new_version}; previous is {}",
         root.join("current").display(),
@@ -432,7 +446,7 @@ pub fn run(source: Option<String>, check_only: bool, force: bool) -> Result<()> 
             .unwrap_or("nothing")
     );
     if let Err(e) = bring_up(&root, &paths.home) {
-        roll_back(&root, &was, &new_version);
+        roll_back(&lock, &root, &was, &new_version);
         return Err(e.context("forge upgrade failed; restored the previous release"));
     }
 

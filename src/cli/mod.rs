@@ -23,6 +23,7 @@ macro_rules! out {
     }};
 }
 
+mod chat;
 mod demo;
 mod deploy;
 mod eval;
@@ -37,7 +38,9 @@ mod task_records;
 mod tasks;
 mod web;
 mod workflows;
+mod workflows_draft;
 
+use chat::ChatCmd;
 use deploy::{DeployArgs, PluginCmd, ProvisionArgs};
 use eval::EvalCmd;
 use initiatives::InitiativeCmd;
@@ -164,6 +167,10 @@ enum Cmd {
         #[arg(long)]
         from: Option<String>,
     },
+    /// Ask Forge about its own state, or tell it to file work: a
+    /// sessionized conversation whose writes wait for your confirmation
+    /// (see docs/CHAT.md)
+    Chat(ChatCmd),
     /// Run queued tasks: stay up and poll, or drain and exit with --once
     Work {
         /// Tasks to run at the same time
@@ -262,6 +269,9 @@ enum Cmd {
         /// Run a different workflow
         #[arg(long)]
         workflow: Option<String>,
+        /// Route every role of the new task to this provider (default: as before)
+        #[arg(long)]
+        provider: Option<String>,
     },
     /// Answer a task blocked on a question and re-queue it as a retry
     Answer {
@@ -342,6 +352,12 @@ enum Cmd {
         /// symlinks and the units through it. Idempotent.
         #[arg(long)]
         relink: bool,
+        /// Install deploy/post-update.mirror as the post-update hook of
+        /// every registered repository's bare origin on this machine,
+        /// mirroring main and v* tags to this remote (a name or URL,
+        /// stored as the bare repository's `forge.mirror`)
+        #[arg(long, value_name = "REMOTE")]
+        mirror: Option<String>,
     },
     /// A newcomer's first run: a scratch repository under FORGE_HOME/demo,
     /// one small task run to completion, and where to look afterward.
@@ -359,6 +375,11 @@ enum Cmd {
         /// Machine-readable: a JSON array of {name, status, detail, hint}
         #[arg(long)]
         json: bool,
+        /// Run only the named check (`schema`: open and migrate the store,
+        /// nothing else) and exit non-zero unless it is present and not
+        /// FAIL; repeatable
+        #[arg(long, value_name = "CHECK")]
+        only: Vec<String>,
     },
     /// Print the crate version and, if built from a git checkout, its commit
     Version,
@@ -672,6 +693,7 @@ pub async fn main() -> Result<()> {
         | Cmd::Job { .. }
         | Cmd::Economist { .. }
         | Cmd::Experiment { .. } => jobs::dispatch(cmd).await,
+        Cmd::Chat(..) => chat::dispatch(cmd).await,
         Cmd::Workflows { .. } | Cmd::Providers { .. } => workflows::dispatch(cmd).await,
         Cmd::Plugin { .. } | Cmd::Deploy(..) | Cmd::Provision(..) => deploy::dispatch(cmd).await,
         Cmd::Gc { .. }

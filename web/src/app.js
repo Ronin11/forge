@@ -66,7 +66,9 @@
     if (location.pathname === '/messages') return { page: 'messages' };
     if (location.pathname === '/doctor') return { page: 'doctor' };
     if (location.pathname === '/stats') return { page: 'stats' };
-    let m = location.pathname.match(/^\/graph(\/modules)?\/?$/);
+    let m = location.pathname.match(/^\/chat(?:\/(\d+))?\/?$/);
+    if (m) return { page: 'chat', id: m[1] ? Number(m[1]) : null };
+    m = location.pathname.match(/^\/graph(\/modules)?\/?$/);
     if (m) return { page: 'graph', modules: !!m[1], repo: new URLSearchParams(location.search).get('repo') || '' };
     m = location.pathname.match(/^\/projects\/([^/]+)\/?$/);
     if (m) return { page: 'project', name: decodeURIComponent(m[1]) };
@@ -78,6 +80,7 @@
     if (m) {
       const name = m[1] ? decodeURIComponent(m[1]) : null;
       if (name === 'new') return { page: 'workflow-new' };
+      if (name === 'draft') { const q = new URLSearchParams(location.search); return { page: 'workflow-draft', name: q.get('name') || null, project: q.get('project') || null }; }
       return { page: 'workflows', name, project: new URLSearchParams(location.search).get('project') || null };
     }
     m = location.pathname.match(/^\/tasks(?:\/(\d+)(\/run)?)?\/?$/);
@@ -129,7 +132,7 @@
       : '';
     const activeKey = r.page === 'project' ? 'projects'
       : (r.page === 'initiative' || r.page === 'initiatives-list') ? 'initiatives'
-      : r.page === 'workflow-new' ? 'workflows'
+      : (r.page === 'workflow-new' || r.page === 'workflow-draft') ? 'workflows'
       : r.page;
     $('#nav').innerHTML = ForgeShell.renderNav(activeKey, taskLinks + graphLinks);
   }
@@ -148,10 +151,12 @@
       : r.page === 'activity' ? activityView()
       : r.page === 'messages' ? messagesView()
       : r.page === 'doctor' ? doctorView()
+      : r.page === 'chat' ? chatView(r.id)
       : r.page === 'graph' ? (r.modules ? graphModulesView(r.repo) : graphView(r.repo))
       : r.page === 'stats' ? statsView()
       : r.page === 'jobs' ? (r.id === null ? jobsView() : jobView(r.id))
       : r.page === 'workflow-new' ? promptView()
+      : r.page === 'workflow-draft' ? draftView(r.name, r.project)
       : r.page === 'workflows' ? (r.name === null ? workflowsView() : workflowView(r.name, r.project))
       : (r.id === null ? listView(r.filters, r.before) : (r.run ? runView(r.id) : detailView(r.id)));
     await view.show();
@@ -676,7 +681,7 @@
     return {
       async show() {
         $('#main').innerHTML = `
-          <h2>Workflows <a href="/workflows/new">+ new</a></h2>
+          <h2>Workflows <a href="/workflows/draft">+ draft</a> <a href="/workflows/new">+ describe</a></h2>
           <table><thead><tr><th>name</th><th>kind</th><th>source</th><th>steps</th><th>measured</th></tr></thead><tbody id="workflow-rows"></tbody></table>`;
         $('#workflow-rows').addEventListener('click', ev => {
           if (ev.target.closest('a')) return;
@@ -747,7 +752,7 @@
     function draw(d) {
       const saveLabel = d.source === 'repo' ? 'file as a task' : 'save';
       $('#main').innerHTML = `
-        <h2>Workflow ${esc(d.name)} <span class="mute">${esc(d.kind)} · ${d.source === 'repo' ? esc(project) : 'catalog'}</span> <a href="/workflows">← workflows</a></h2>
+        <h2>Workflow ${esc(d.name)} <span class="mute">${esc(d.kind)} · ${d.source === 'repo' ? esc(project) : 'catalog'}</span> <a href="/workflows/draft?name=${encodeURIComponent(d.name)}${d.source === 'repo' ? '&project=' + encodeURIComponent(project) : ''}">edit as a draft</a> <a href="/workflows">← workflows</a></h2>
         <div class="two">
           <section>${editorHtml(d.text, saveLabel)}</section>
           <section>
@@ -878,6 +883,171 @@
     };
   }
 
+  // ---- the draft editor: /workflows/draft[?name=NAME&project=P], the
+  // workflow as a step list with edges, composed from the catalog in one
+  // sitting (docs/WORKFLOWS.md, "The draft editor"). Every change is sent
+  // whole to `/api/drafts/check`, which runs the catalog's own linter, and
+  // the annotated answer is what renders: the draft is always clean or
+  // annotated. The author directive is a helper here ("suggest steps"),
+  // never the path a draft has to take.
+  function draftView(name, project) {
+    let draft = null, annotated = null, actions = [], picked = '', seq = 0, note = '';
+    const app = ForgeDrafts;
+
+    async function check() {
+      const mine = ++seq;
+      let a;
+      try { a = await postBody('/api/drafts/check', JSON.stringify(app.bare(draft)), 'application/json'); }
+      catch { return; }
+      if (mine !== seq) return; // a newer change already started another check
+      if (a.error) { note = a.error; } else { annotated = a; draft.tasks = a.tasks; draft.status = a.status; }
+      paint();
+    }
+    // A change: the draft moves first (so the list answers at once), the
+    // linter's answer follows.
+    function change(next) { draft = next; if (annotated) annotated = Object.assign({}, annotated, draft); paint(); check(); }
+
+    const value = sel => ($(sel) ? $(sel).value : '');
+    function paint() {
+      const a = annotated || Object.assign({ problems: [], info: [], pending: [] }, draft);
+      const main = $('#main'); if (!main) return;
+      main.innerHTML = `
+        <h2>Draft ${esc(draft.name || '(unnamed)')} <span class="mute">${esc(draft.kind)}</span> <a href="/workflows">← workflows</a></h2>
+        <div class="card">
+          <input data-h="name" placeholder="name" value="${esc(draft.name)}">
+          <select data-h="kind">${['build', 'run'].map(k => `<option${draft.kind === k ? ' selected' : ''}>${k}</option>`).join('')}</select>
+          <input data-h="project" placeholder="project (for placeholder tasks)" value="${esc(draft.project || '')}">
+          <input data-h="description" placeholder="description" style="width:40%" value="${esc(draft.description)}">
+        </div>
+        <div class="two">
+          <section>
+            <h2>Steps</h2>
+            <div class="card" id="draft-steps">${app.renderStepList(a)}</div>
+            <div class="card">
+              <select id="draft-pick">${app.renderActionOptions(actions, picked)}</select>
+              <button data-act="add">add step</button>
+              <div id="draft-contract">${app.renderActionContract(actions, picked)}</div>
+            </div>
+            <div class="card">
+              <b>an action that does not exist yet</b>
+              <input id="ph-name" placeholder="action name" size="16">
+              <select id="ph-kind"><option>operation</option><option>directive</option></select>
+              <input id="ph-inputs" placeholder="inputs" size="14"> <input id="ph-outputs" placeholder="outputs" size="14">
+              <button data-act="add-placeholder">add placeholder</button>
+            </div>
+            <div class="card">
+              <textarea id="suggest-desc" placeholder="or describe it and ask for suggested steps" style="width:100%;height:4em"></textarea>
+              <button data-act="suggest">suggest steps</button> <span id="suggest-status" class="mute"></span>
+            </div>
+            ${app.renderProposal(draft)}
+          </section>
+          <section>
+            <h2>Graph</h2>
+            <div class="card" id="draft-graph">${app.renderGraph(draft.steps)}</div>
+            <h2>Lint</h2>
+            <div class="card" id="draft-problems">${app.renderProblems(a.problems)}</div>
+            <div class="card" id="draft-pending">${app.renderPending(a)}</div>
+            <div class="card">
+              <input id="draft-message" placeholder="commit message" style="width:50%">
+              ${draft.project ? '<label><input type="checkbox" id="draft-repo"> file as a repository task</label>' : ''}
+              <button data-act="save">save draft</button>
+              <button data-act="put">put</button>
+              <div id="draft-result" class="mute">${esc(note)}</div>
+            </div>
+            <details><summary>the file</summary><pre>${esc(a.toml || '')}</pre></details>
+          </section>
+        </div>`;
+    }
+
+    async function suggest() {
+      const description = value('#suggest-desc').trim() || draft.description;
+      if (!description) return;
+      const status = $('#suggest-status'); status.textContent = 'asking…';
+      try {
+        const r = await postBody('/api/workflows/draft', JSON.stringify({ description }), 'application/json');
+        if (r.error) { status.textContent = r.error; return; }
+        const doc = await get(`/api/job/${r.job}`);
+        const out = ForgeWorkflows.draftOutput(doc);
+        if (!out) { status.textContent = `job ${r.job} ${doc.state}, no draft`; return; }
+        const imp = await postBody('/api/drafts/import', out.toml, 'text/plain');
+        if (imp.error) { status.textContent = imp.error; return; }
+        draft = Object.assign({}, draft, { proposal: imp.steps });
+        note = out.rationale || '';
+        change(draft);
+      } catch (e) { status.textContent = String(e); }
+    }
+
+    async function send(kind) {
+      const body = { draft: app.bare(draft), message: value('#draft-message'), to_repo: !!($('#draft-repo') && $('#draft-repo').checked) };
+      const url = kind === 'put' ? `/api/drafts/${encodeURIComponent(draft.name)}/put` : '/api/drafts/save';
+      const r = await postBody(url, JSON.stringify(body), 'application/json');
+      if (r.error) note = r.error;
+      else if (kind === 'save') { annotated = r; draft = app.bare(r); note = `saved (${r.status})`; }
+      else if (r.result === 'incomplete') { note = `saved incomplete; filed ${r.filed.length} build task(s): ${r.filed.map(t => 'task ' + t.task_id).join(', ') || 'none new'}`; draft.tasks = r.tasks; draft.status = r.status; }
+      else note = r.result === 'filed' ? `filed as task ${r.task_id}` : `committed ${(r.hash || '').slice(0, 8)}`;
+      await check();
+    }
+
+    function onClick(ev) {
+      const b = ev.target.closest('button[data-act]'); if (!b) return;
+      const i = Number(b.dataset.i), act = b.dataset.act;
+      if (act === 'add') change(app.addStep(draft, value('#draft-pick') || picked));
+      else if (act === 'add-placeholder') {
+        change(app.addPlaceholder(draft, value('#ph-name').trim(), { kind: value('#ph-kind'), inputs: value('#ph-inputs'), outputs: value('#ph-outputs') }));
+      }
+      else if (act === 'rm') change(app.removeStep(draft, i));
+      else if (act === 'up') change(app.moveStep(draft, i, -1));
+      else if (act === 'down') change(app.moveStep(draft, i, 1));
+      else if (act === 'unedge') change(app.removeEdge(draft, i, b.dataset.key));
+      else if (act === 'edge') {
+        const card = b.closest('.step-card');
+        const key = card.querySelector('[data-f="edge-key"]').value.trim() || 'failure';
+        const to = card.querySelector('[data-f="edge-to"]').value.trim();
+        if (to) change(app.setEdge(draft, i, key, to));
+      }
+      else if (act === 'accept') change(app.acceptProposal(draft, [i]));
+      else if (act === 'accept-all') change(app.acceptProposal(draft, []));
+      else if (act === 'suggest') suggest();
+      else if (act === 'save' || act === 'put') send(act).catch(e => { note = String(e); paint(); });
+    }
+    function onChange(ev) {
+      const t = ev.target;
+      if (t.id === 'draft-pick') { picked = t.value; $('#draft-contract').innerHTML = app.renderActionContract(actions, picked); return; }
+      if (t.dataset.h) {
+        if (t.dataset.h === 'kind') return change(app.setKind(draft, t.value));
+        return change(Object.assign({}, draft, { [t.dataset.h]: t.dataset.h === 'project' && !t.value ? null : t.value }));
+      }
+      const i = Number(t.dataset.i), f = t.dataset.f;
+      if (f && f.startsWith('ph-')) change(app.setPlaceholderField(draft, i, f.slice(3), t.value));
+      else if (f === 'role' || f === 'judgment' || f === 'effect') change(app.setField(draft, i, f, t.value));
+    }
+
+    return {
+      async show() {
+        $('#main').innerHTML = '<div class="mute" style="margin:16px">loading…</div>';
+        actions = await get('/api/drafts/actions').catch(() => []);
+        picked = actions.length ? actions[0].name : '';
+        if (name && project) {
+          // A repository workflow: its file text becomes the draft.
+          const wf = await get(`/api/workflows/${encodeURIComponent(name)}?project=${encodeURIComponent(project)}`).catch(() => null);
+          if (wf) { annotated = await postBody('/api/drafts/import', wf.text, 'text/plain'); if (!annotated.error) draft = app.bare(annotated); }
+        } else if (name) {
+          annotated = await get(`/api/drafts/${encodeURIComponent(name)}`).catch(() => null);
+          if (annotated) draft = app.bare(annotated);
+        }
+        if (!draft) draft = app.emptyDraft(name || '', 'build');
+        if (project) draft.project = project;
+        paint();
+        const main = $('#main');
+        main.addEventListener('click', onClick);
+        main.addEventListener('change', onChange);
+        if (draft.name) check();
+      },
+      onEvent(e) { if (INVALIDATES.workflows.includes(e.type) && draft && draft.name) check(); },
+      teardown() { seq++; const main = $('#main'); if (main) { main.removeEventListener('click', onClick); main.removeEventListener('change', onChange); } },
+    };
+  }
+
   // ---- stats view: the full record (web UI task 5) — a 30-day chart of
   // daily landings and daily spend above tabbed, sortable tables:
   // workflows (the verified-rate interval as a bar, with the regression
@@ -934,7 +1104,7 @@
       ]);
       const iniRows = initiatives.map(i => `
         <tr><td><a href="/initiatives/${i.id}">${i.id}</a></td>
-          <td>${esc(i.state)}${i.held_rule ? ' (' + esc(i.held_rule) + ')' : ''}</td>
+          <td>${esc(i.state)}${i.held_rule ? ' (' + esc(i.held_reason || i.held_rule) + ')' : ''}</td>
           <td>${esc(i.outcome)}</td>
           <td class="num">${usd(i.cost_usd)}</td></tr>`).join('');
       const backlogRows = backlog.map(b => `
@@ -1253,6 +1423,112 @@
         timer = setInterval(() => draw().catch(() => {}), 60000);
       },
       teardown() { if (timer) clearInterval(timer); },
+    };
+  }
+
+  // ---- chat: Ask Forge (docs/CHAT.md). The sessions on the left are
+  // `forge chat sessions`, the transcript is `forge chat show`, and a
+  // message is `forge chat --stream` relayed as server-sent events: each
+  // tool call lands as it happens, then the reply. A write verb comes
+  // back as a proposal with confirm/reject buttons (`forge chat confirm`
+  // / `reject`); nothing has run until the operator presses confirm.
+  // Rendering lives in web/src/chat.js, tested under node.
+  function chatView(sessionId) {
+    let current = sessionId, busy = false;
+    const scroll = () => { const el = $('#chat-log'); if (el) el.scrollTop = el.scrollHeight; };
+    async function drawSessions() {
+      const doc = await get('/api/chat');
+      const el = $('#chat-list');
+      if (el) el.innerHTML = ForgeChat.renderSessions(doc, fmtTime, current);
+    }
+    async function drawSession() {
+      const el = $('#chat-log');
+      if (!el) return;
+      if (current === null) { el.innerHTML = '<p class="mute">Ask Forge about its own state: why a task failed, what an initiative is waiting on, what last night cost. Ask it to file a task, answer a question or retry one, and it proposes; you confirm.</p>'; return; }
+      const doc = await get(`/api/chat/${current}`);
+      el.innerHTML = doc.error ? `<p class="failed">${esc(doc.error)}</p>` : ForgeChat.renderSession(doc, fmtTime);
+      scroll();
+    }
+    async function send(message) {
+      busy = true;
+      let live = ForgeChat.emptyLive(message);
+      const log = $('#chat-log');
+      if (current === null) log.innerHTML = '';
+      const box = document.createElement('div');
+      log.appendChild(box);
+      const paint = () => { box.innerHTML = ForgeChat.renderLive(live); scroll(); };
+      paint();
+      try {
+        const body = { message };
+        if (current !== null) body.session = current;
+        const r = await fetch('/api/chat/message', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (r.status === 401) { document.body.innerHTML = '<p style="margin:2em">Not signed in: open the link forge-web printed when it started.</p>'; return; }
+        if (!r.ok || !r.body) {
+          const e = await r.json().catch(() => ({}));
+          live = ForgeChat.apply(live, { type: 'error', message: e.error || `HTTP ${r.status}` });
+        } else {
+          const reader = r.body.getReader(), dec = new TextDecoder();
+          let carry = '';
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            const parsed = ForgeChat.parseFrames(dec.decode(value, { stream: true }), carry);
+            carry = parsed.carry;
+            for (const ev of parsed.events) {
+              live = ForgeChat.apply(live, ev);
+              if (ev.type === 'session' && current === null) { current = ev.session; history.replaceState(null, '', `/chat/${current}`); }
+            }
+            paint();
+          }
+          if (!live.done) live = ForgeChat.apply(live, { type: 'error', message: 'the connection ended before Forge finished' });
+        }
+        paint();
+      } catch (e) {
+        live = ForgeChat.apply(live, { type: 'error', message: String(e) });
+        paint();
+      } finally { busy = false; }
+      if (current !== null && !live.error) await drawSession();
+      await drawSessions().catch(() => {});
+    }
+    async function onSubmit(ev) {
+      if (!ev.target.closest('form#chat-form')) return;
+      ev.preventDefault();
+      const ta = $('#chat-input');
+      const message = ta.value.trim();
+      if (!message || busy) return;
+      ta.value = '';
+      await send(message);
+    }
+    async function onClick(ev) {
+      const b = ev.target.closest('button.chat-confirm, button.chat-reject');
+      if (!b) return;
+      const box = b.closest('.chat-proposal');
+      box.querySelectorAll('button').forEach(x => { x.disabled = true; });
+      const r = await post(`/api/chat/${b.dataset.verb}/${encodeURIComponent(b.dataset.action)}`);
+      if (r.error) alert(r.error);
+      await drawSession();
+      await drawSessions().catch(() => {});
+    }
+    function onKey(ev) {
+      if (ev.target.id === 'chat-input' && ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+        ev.preventDefault();
+        $('#chat-form').requestSubmit();
+      }
+    }
+    return {
+      async show() {
+        $('#main').innerHTML = '<div id="chat-page"><div id="chat-list" class="chat-side mute">loading…</div>' +
+          '<div class="chat-main"><div id="chat-log"></div>' +
+          '<form id="chat-form"><textarea id="chat-input" rows="3" placeholder="Ask Forge… (ctrl-enter sends)"></textarea>' +
+          '<button type="submit">send</button></form></div></div>';
+        const page = $('#chat-page');
+        page.addEventListener('submit', onSubmit);
+        page.addEventListener('click', onClick);
+        page.addEventListener('keydown', onKey);
+        await Promise.all([drawSessions().catch(() => { $('#chat-list').textContent = 'no sessions'; }), drawSession()]);
+        $('#chat-input').focus();
+      },
+      teardown() {},
     };
   }
 

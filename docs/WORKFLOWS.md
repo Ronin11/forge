@@ -347,6 +347,14 @@ repository's own catalog, rebalances the weights weekly from `forge
 stats --factors`; see docs/ECONOMIST.md for the arithmetic and
 `docs/CHECKS.md` for the job itself.
 
+A drawn arm is a draw, not a promise: at claim time the worker re-draws a
+task whose arm for its next role is held (its provider's window at its
+cap, or its login refused) among that role's other arms, by the same
+weights renormalised over the arms that are free, and records the
+re-draw on the task's `explore` with a note. The task waits only when
+every arm is held (docs/ECONOMIST.md, "A held arm is re-drawn at claim
+time").
+
 ## Authoring
 
 The first agent that needs to author a workflow is a run workflow itself:
@@ -414,6 +422,64 @@ may declare `outcomes = [...]`, which its schema then requires as an
 `outcome` field (docs/EXECUTION.md, docs/JOBS.md "Steps"). A workflow
 drafted here must carry both where they apply.
 
+### The draft editor
+
+Drafting a workflow is synchronous; only building what it lacks is a
+task. `forge workflows draft` (a terminal session) and the Draft view
+(`/workflows/draft`) compose a workflow from the catalog in one sitting:
+pick an action (build or run kind) with its contract shown, set its role,
+judgment and effect, add `on` edges from a step's failure (or one of its
+outcomes) to a step or `end`, and see the catalog's own linter's answer
+after every change (`forge workflows lint`, the same code) — so a draft is
+always either clean or annotated, each problem on the step it belongs to.
+The graph is data (`workflows::draft::Draft`: a step list with edges),
+rendered as a list plus a simple SVG of the edges; the editor carries no
+lint or validity rule of its own, and the file it renders is the file
+`put` writes.
+
+- **A placeholder.** A step may name an action that does not exist yet.
+  The editor accepts it with a one-line contract the operator writes —
+  inputs, outputs, kind (`operation` or `directive`) — and the linter is
+  given a stand-in action of that kind, so the rest of the flow (data
+  flow, edges, a run workflow's shape) is still checked against what the
+  placeholder promises. The rule (`Draft::placeholder_problems`): a step
+  naming an action that is not in the catalog must carry a placeholder
+  whose inputs and outputs are written, with a valid action name, and two
+  steps naming the same missing action must agree on its contract (one
+  task builds it). An action that exists is never a placeholder.
+- **Incomplete.** A draft naming an action that does not exist yet cannot
+  be a catalog file (the catalog would refuse to load it), so a draft is
+  kept beside the catalog, `<home>/drafts/NAME.json`, with a status:
+  `draft`, `incomplete`, or `enabled`. `put` on a draft with pending
+  placeholders refuses on any lint problem, saves it `incomplete`, and
+  files **one task per missing action** — `build action NAME with
+  contract inputs: …; outputs: …; kind: …` — on the draft's `project`,
+  under the initiative `workflow NAME` (created if the project has no open
+  one). A second `put` files nothing again for an action that already has
+  a task. It refuses a draft with placeholders and no project: the task
+  needs somewhere to be filed.
+- **Enabled on its own.** When every placeholder's action is in the
+  catalog and the lint passes, an `incomplete` draft becomes `enabled`:
+  the worker's tick (`workflows::draft::reconcile`, also `forge workflows
+  draft reconcile`) writes the file into the catalog and commits it
+  there, and the draft is marked `enabled`. The transition is
+  `draft::transition`, and only an `incomplete` draft moves. "Landed"
+  means in the catalog the linter reads (the operator's `actions/`, or a
+  built-in); an action a task lands only in a project's repository is not
+  yet seen by it.
+- **Editing an existing workflow.** `draft NAME` (or `/workflows/draft?
+  name=NAME`, "edit as a draft" on a workflow's page) loads the catalog
+  workflow — or a repository workflow, with `?project=`, from its file
+  text — into the same editor; `put` commits to the catalog, or with
+  `--repo` (the Draft view's "file as a repository task") files a
+  repository task, as `forge workflows put` does today. Comments in the
+  file are not kept: the draft is the data, and the file is rendered from
+  it.
+- **The author directive is a helper.** "Suggest steps from this
+  description" is one call to `author-workflow`; its draft comes back as a
+  *proposed* step list the operator accepts, whole or step by step, and
+  edits. It is never the path a draft has to take.
+
 ### Where a built-in ends and an operator's copy begins
 
 Built-in actions and operations live in the binary, never in the catalog:
@@ -422,23 +488,26 @@ Built-in actions and operations live in the binary, never in the catalog:
 authored, plus any copy of a built-in the operator chose to change.
 
 A catalog file named like a built-in shadows it, and the loader decides by
-the catalog's git history whether the copy is the operator's:
+the copy's content, never by who committed it or whether it is committed:
 
-- a copy that differs from the built-in and has a commit on that file
-  other than seeding ones (author `forge`, or a message starting
-  `catalog: built-in`) is an **operator edit** and wins, unless it does
-  not really differ (below);
-- any other differing copy is a **stale seed** (an old `ensure` wrote it):
-  the built-in is used, and one line on stderr says the copy was ignored.
+- a copy whose text is, byte for byte, a text the built-in shipped in this
+  or an earlier release (`src/builtins/history.tsv`), or that differs from
+  the built-in only in whitespace or comments, is a **stale seed** (an old
+  `ensure` wrote it): the built-in is used, and one line on stderr says the
+  copy was ignored;
+- any other copy is an **operator edit** and wins, committed or not.
 
-A copy equal to the built-in byte for byte, or differing only in
-whitespace or comments, is a stale seed whoever committed it.
+`forge init` commits only the files it wrote (the built-in workflows and the
+untrusted-data fragment), never the rest of the catalog.
 
 `forge doctor` has a `shadowing` row listing each shadowing file that has
 real diff lines, with its age, stale seed or operator edit, and the
 diff's line count; stale seeds point at `forge workflows refresh`, which
-deletes them (copies with no real difference too, silently). For an
-operator edit it prints the diff and refuses unless given
+deletes them (copies with no real difference too, silently). It removes
+only a file the catalog's repository tracks and has not changed since its
+last commit, and commits the removal; an untracked or dirty copy is refused
+whatever its origin. For an operator edit it prints the diff and refuses
+unless given
 `--take-builtin` (drop the copy) or `--keep` (leave it). Either flag
 takes action names to decide one copy at a time (`forge workflows
 refresh --take-builtin deploy-self`); bare, it applies to every copy.
@@ -515,6 +584,6 @@ Workflow conditionals or variables (for build workflows; run workflows
 get outcomes and failure edges, docs/EXECUTION.md, decided 2026-09-25).
 Per-step prompts as configuration. A step that runs outside an executor
 the kernel controls (docs/EXECUTION.md, "Executors"). A step the kernel
-cannot verify afterward. A visual workflow editor (the TOML editor with
-live lint on `/workflows/<name>` is the editor until the model it edits
-stops moving).
+cannot verify afterward. A drag-and-drop workflow editor (the draft editor is a step list
+and a simple SVG of its edges; the TOML editor with live lint on
+`/workflows/<name>` stays).

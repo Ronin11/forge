@@ -113,6 +113,7 @@ impl Paths {
         };
         std::fs::create_dir_all(&p.worktrees)?;
         std::fs::create_dir_all(&p.logs)?;
+        crate::egress::set_run_root(&p.home);
         Ok(p)
     }
 
@@ -166,6 +167,9 @@ pub struct Forge {
     /// `[environment]`: what a failed attempt's environment need may be
     /// granted automatically (see `environment`).
     pub environment: crate::environment::Policy,
+    /// Extra plugin roots from the validated `config.toml`: what the
+    /// plugin supervisor scans, so a mid-edit file never empties it.
+    pub plugin_dirs: Vec<PathBuf>,
     pub sandbox: Option<Execution>,
     /// Grants already applied per worktree when there is no sandbox to
     /// remember them, so each applies once here too.
@@ -199,6 +203,7 @@ impl Forge {
             Execution::detect(
                 &agent::agent_bin(),
                 &home.sandbox,
+                paths.home.clone(),
                 extra_ro,
                 Vec::new(),
                 crate::egress::model_rules(&home.providers),
@@ -220,6 +225,7 @@ impl Forge {
             roles: home.roles,
             project_secrets: home.project_secrets,
             environment: home.environment,
+            plugin_dirs: home.plugin_dirs,
             sandbox,
             applied: Default::default(),
             report,
@@ -257,6 +263,7 @@ impl Forge {
             roles: home.roles,
             project_secrets: home.project_secrets,
             environment: home.environment,
+            plugin_dirs: home.plugin_dirs,
             sandbox: None,
             applied: Default::default(),
             report,
@@ -280,8 +287,9 @@ impl Forge {
     /// Apply what the environment policy grants for `need` to attempts in
     /// `worktree`: the host on top of its egress, or the cache path
     /// read-only. `None` when the policy does not cover the need, the
-    /// trust level reaches the model endpoints alone, there is no sandbox,
-    /// or the grant was already applied (a re-run would fail the same way).
+    /// trust level reaches the model endpoints alone (neither a host nor a
+    /// cache is opened to it), or the grant was already applied (a re-run
+    /// would fail the same way; without a sandbox it is only remembered).
     pub fn grant_environment(
         &self,
         worktree: &Path,
@@ -309,9 +317,9 @@ impl Forge {
         // remembered: the first time it is seen the run repeats, the
         // second it would fail the same way.
         let fresh = match (&self.sandbox, &grant) {
-            (_, Grant::Host(_)) if !declared => false,
+            (_, Grant::Host(_) | Grant::ReadOnly(_)) if !declared => false,
             (Some(sb), Grant::Host(h)) => {
-                sb.grant_host(worktree, crate::egress::Rule::parse(h).ok()?)
+                sb.grant_host(worktree, crate::egress::Rule::granted(h).ok()?)
             }
             (Some(sb), Grant::ReadOnly(p)) => sb.grant_ro(worktree, p.clone()),
             (None, _) => {
@@ -650,6 +658,22 @@ mod tests {
         );
         assert_eq!(f.apply_grant(Path::new("/w/1"), g.clone(), t), None);
         assert_eq!(f.apply_grant(Path::new("/w/2"), g.clone(), t), Some(g));
+    }
+
+    #[test]
+    fn a_public_tasks_read_only_grant_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("forge.db")).unwrap();
+        let paths = Paths {
+            home: dir.path().to_path_buf(),
+            worktrees: dir.path().join("worktrees"),
+            logs: dir.path().join("logs"),
+        };
+        let f = Forge::open_with(paths, store).unwrap();
+        let g = crate::environment::Grant::ReadOnly(PathBuf::from("/home/x/.cache/pw"));
+        let public = crate::store::Trust::Public;
+        assert_eq!(f.apply_grant(Path::new("/w/1"), g.clone(), public), None);
+        assert_eq!(f.apply_grant(Path::new("/w/1"), g, public), None);
     }
 
     #[test]

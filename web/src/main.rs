@@ -37,6 +37,9 @@
 //! header that does not match is ignored and the token path stands. See
 //! docs/CLIENT.md, "Reaching forge-web (operator)".
 
+mod chat;
+mod drafts;
+
 use anyhow::{Context, Result};
 use forge_client::{Forge, Workflow, WorkflowPutResult};
 use serde_json::Value;
@@ -49,6 +52,7 @@ const INDEX: &str = include_str!("index.html");
 const APP_JS: &str = include_str!("app.js");
 const TIME_JS: &str = include_str!("time.js");
 const WORKFLOWS_JS: &str = include_str!("workflows.js");
+const DRAFTS_JS: &str = include_str!("drafts.js");
 const GRAPH_JS: &str = include_str!("graph.js");
 const REQUESTS_JS: &str = include_str!("requests.js");
 const TASK_JS: &str = include_str!("task.js");
@@ -60,6 +64,7 @@ const ACTIVITY_JS: &str = include_str!("activity.js");
 const MESSAGES_JS: &str = include_str!("messages.js");
 const SEARCH_JS: &str = include_str!("search.js");
 const SHELL_JS: &str = include_str!("shell.js");
+const CHAT_JS: &str = include_str!("chat.js");
 const STYLES_CSS: &str = include_str!("styles.css");
 
 /// Where Forge keeps its data: `FORGE_HOME` (`FORGE2_HOME` for one release),
@@ -1282,6 +1287,8 @@ fn handle(req: Request, forge: &Forge, secret: &str, tailscale_login: Option<&st
             || path.starts_with("/api/withdraw/")
             || path.starts_with("/api/land/")
             || path.starts_with("/api/workflows/")
+            || path.starts_with("/api/drafts/")
+            || path.starts_with("/api/chat/")
             || path.starts_with("/api/initiatives/")
             || path == "/api/gc"
             || path.starts_with("/api/deploys/run/")
@@ -1352,12 +1359,16 @@ fn handle(req: Request, forge: &Forge, secret: &str, tailscale_login: Option<&st
             || p == "/messages"
             || p == "/doctor"
             || p == "/workflows"
-            || p.starts_with("/workflows/") =>
+            || p.starts_with("/workflows/")
+            || p == "/chat"
+            || p.starts_with("/chat/") =>
         {
             text(200, INDEX, "text/html; charset=utf-8")
         }
         "/time.js" => text(200, TIME_JS, "application/javascript"),
         "/workflows.js" => text(200, WORKFLOWS_JS, "application/javascript"),
+        "/drafts.js" => text(200, DRAFTS_JS, "application/javascript"),
+        "/chat.js" => text(200, CHAT_JS, "application/javascript"),
         "/graph.js" => text(200, GRAPH_JS, "application/javascript"),
         "/shell.js" => text(200, SHELL_JS, "application/javascript"),
         "/requests.js" => text(200, REQUESTS_JS, "application/javascript"),
@@ -1408,6 +1419,14 @@ fn handle(req: Request, forge: &Forge, secret: &str, tailscale_login: Option<&st
             _ => text(404, "not found", "text/plain"),
         },
         "/api/workflows" => json_or_error(workflows_merged(forge)),
+        p if p == "/api/drafts" || p.starts_with("/api/drafts/") => {
+            drafts::route(req, forge, p);
+            return;
+        }
+        p if p == "/api/chat" || p.starts_with("/api/chat/") => {
+            chat::route(req, forge, p);
+            return;
+        }
         "/api/workflows/draft" => {
             if req.method() != &Method::Post {
                 text(405, "POST only", "text/plain")

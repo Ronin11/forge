@@ -41,8 +41,8 @@ fn version() -> Result<()> {
 }
 
 /// `forge init [--home DIR]`: see `Cmd::Init`.
-async fn cmd_init(home: Option<PathBuf>, relink: bool) -> Result<()> {
-    let report = crate::init::run(home, relink).await?;
+async fn cmd_init(home: Option<PathBuf>, relink: bool, mirror: Option<String>) -> Result<()> {
+    let report = crate::init::run(home, relink, mirror.as_deref()).await?;
     for s in &report.steps {
         let tag = if s.changed { "done" } else { "ok  " };
         out!("{tag} {:<10} {}", s.name, s.detail);
@@ -78,17 +78,26 @@ fn print_doctor_checks(checks: &[doctor::Check]) -> bool {
     failed
 }
 
-fn run_doctor(json: bool) -> Result<()> {
-    let checks = doctor::run()?;
+fn run_doctor(json: bool, only: Vec<String>) -> Result<()> {
+    let checks = if only.is_empty() {
+        doctor::run()?
+    } else {
+        doctor::run_only(&only)?
+    };
+    // With --only, a named check that did not run is as bad as one that
+    // failed: a caller gating on it must not pass on its absence.
+    let missing = only
+        .iter()
+        .any(|name| !checks.iter().any(|c| &c.name == name));
     if json {
-        let failed = checks.iter().any(|c| c.status == doctor::Status::Fail);
+        let failed = missing || checks.iter().any(|c| c.status == doctor::Status::Fail);
         out!("{}", serde_json::to_string(&checks)?);
         if failed {
             std::process::exit(1);
         }
         return Ok(());
     }
-    if print_doctor_checks(&checks) {
+    if print_doctor_checks(&checks) || missing {
         std::process::exit(1);
     }
     Ok(())
@@ -258,7 +267,11 @@ async fn dispatch_gc(cmd: Cmd) -> Result<()> {
 
 async fn dispatch_init(cmd: Cmd) -> Result<()> {
     match cmd {
-        Cmd::Init { home, relink } => cmd_init(home, relink).await,
+        Cmd::Init {
+            home,
+            relink,
+            mirror,
+        } => cmd_init(home, relink, mirror).await,
         _ => unreachable!("command routed to the wrong family"),
     }
 }
@@ -272,7 +285,7 @@ async fn dispatch_demo(cmd: Cmd) -> Result<()> {
 
 async fn dispatch_doctor(cmd: Cmd) -> Result<()> {
     match cmd {
-        Cmd::Doctor { json } => run_doctor(json),
+        Cmd::Doctor { json, only } => run_doctor(json, only),
         _ => unreachable!("command routed to the wrong family"),
     }
 }

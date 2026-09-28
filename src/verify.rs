@@ -36,6 +36,8 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub mod review;
+
 /// Overlay refs for a human: a pinned forge-verify commit reads as
 /// `forge-verify@<sha8>`, everything else as itself.
 pub fn overlay_label(refs: &[String]) -> String {
@@ -229,10 +231,11 @@ pub enum Rule {
     CitesRealThings,
     Substantive,
     SupersedesWithALandedTask,
+    ReproductionSelfContained,
 }
 
 impl Rule {
-    pub const ALL: [Rule; 24] = [
+    pub const ALL: [Rule; 25] = [
         Rule::ResultStructured,
         Rule::SuiteNamesAHiddenTest,
         Rule::CleanTree,
@@ -257,6 +260,7 @@ impl Rule {
         Rule::CitesRealThings,
         Rule::Substantive,
         Rule::SupersedesWithALandedTask,
+        Rule::ReproductionSelfContained,
     ];
 
     pub fn name(self) -> &'static str {
@@ -285,6 +289,7 @@ impl Rule {
             Rule::CitesRealThings => "cites-real-things",
             Rule::Substantive => "substantive",
             Rule::SupersedesWithALandedTask => "supersedes-with-a-landed-task",
+            Rule::ReproductionSelfContained => "reproduction-self-contained",
         }
     }
 
@@ -1038,7 +1043,8 @@ pub async fn verify_integration(s: &Subject<'_>) -> Result<Verdict> {
 ///   overlaid.
 /// - tests: only the namespace changed, the interface is described, and
 ///   the new tests fail on the base (red-on-base) in a scratch copy.
-/// - review: no writes, and a demotion stands only with something run.
+/// - review: no writes, and a demotion stands only with something run
+///   and a reproduction a fresh clone can run (`review::rows`).
 /// - plan: untouched, and a plan that is substantive and names real paths.
 pub async fn verify_directive(
     contract: Contract,
@@ -1052,6 +1058,10 @@ pub async fn verify_directive(
         return Ok(verdict);
     }
     let agent_reason = crate::directive::agent_failure(agent);
+    let notes = match contract {
+        Contract::Review => review::capture_notes(s).await?,
+        _ => Vec::new(),
+    };
     let common = common_l0(s, agent).await?;
     let mut v = Verdict::open(&common.facts);
     let mut question: Option<(Kind, String)> = None;
@@ -1135,42 +1145,8 @@ pub async fn verify_directive(
                 }
             }
             Contract::Review => {
-                let added = crate::git::changed_paths(s.worktree, s.start_sha).await?;
-                v.checks.push(l0(
-                    Rule::NoWrites,
-                    added.is_empty() && facts.dirty.is_empty(),
-                    format!(
-                        "the reviewer changed the branch: {}",
-                        added
-                            .iter()
-                            .chain(facts.dirty.iter())
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                ));
-                v.checks.push(CheckResult {
-                    level: Rule::ExecutedSomething.level().into(),
-                    name: Rule::ExecutedSomething.name().into(),
-                    ok: agent.tool_calls > 0,
-                    tail: if agent.tool_calls > 0 { String::new() } else { "the reviewer ran no tool; a review that reads without running is an opinion, so any demotion is ignored".into() },
-                    ..Default::default()
-                });
-                emit_rows(s.report, s.task_id, &v.checks);
-                // A demotion stands only with something executed.
-                if let Some((Kind::Review, text)) = &question
-                    && agent.tool_calls == 0
-                {
-                    s.report.emit(
-                        s.task_id,
-                        Event::Note {
-                            text: &format!(
-                                "review   demotion ignored (no executed evidence): {text}"
-                            ),
-                        },
-                    );
-                    question = None;
-                }
+                let env = common.envelope.as_ref();
+                review::rows(s, agent, facts, env, &notes, &mut question, &mut v.checks).await?;
             }
             Contract::Plan => {
                 let added = crate::git::changed_paths(s.worktree, s.start_sha).await?;
@@ -1194,6 +1170,10 @@ pub async fn verify_directive(
             }
         }
         v.envelope = common.envelope;
+        // The notes travel with the demotion they reproduce.
+        if let (Some(e), Some((Kind::Review, _))) = (&mut v.envelope, &question) {
+            e.review_notes = notes;
+        }
     }
     v.settle(
         agent_reason.as_deref(),

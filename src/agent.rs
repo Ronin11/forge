@@ -6,8 +6,12 @@
 mod inputs;
 mod jev;
 pub mod refusal;
+mod relaunch;
 use inputs::{AgentRun, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
 pub use jev::*;
+pub(crate) use relaunch::Relaunch;
+#[cfg(test)]
+pub(crate) use relaunch::{fake_bwrap, launches};
 
 use crate::executor::Execution;
 use crate::report::{Event, Reporter};
@@ -369,6 +373,9 @@ pub struct Launch<'a> {
     pub model: &'a str,
     pub max_turns: u32,
     pub timeout: Duration,
+    /// How long the checks after this run may take (zero when none follow):
+    /// the login must outlast both (see `login::refresh_window_ms`).
+    pub check_timeout: Duration,
     pub log_path: &'a Path,
     pub sandbox: Option<&'a Execution>,
     pub report: &'a Reporter,
@@ -513,20 +520,6 @@ impl Watch {
         let tripped = self.tripped(writes);
         (tripped.len() >= n as usize).then_some(tripped)
     }
-}
-
-/// The launch race this covers: two sandboxes seed `$HOME/.claude.json`
-/// from the same host file at once, and bwrap's own bind-mount setup (not
-/// the claude CLI's rename) loses. bwrap always reports it exactly this
-/// way, so matching the message is precise enough without a regex crate.
-fn is_transient_bwrap_failure(stderr: &str) -> bool {
-    stderr.lines().any(|line| {
-        let Some(rest) = line.trim_start().strip_prefix("bwrap: Can") else {
-            return false;
-        };
-        let mut chars = rest.chars();
-        chars.next().is_some() && chars.as_str().starts_with("t bind mount")
-    })
 }
 
 /// One spawn of `argv` through to exit or timeout: the same shape `run` has
@@ -732,7 +725,7 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
 }
 
 /// Runs `run_once`, retrying up to three times when bwrap loses the
-/// seed-bind race documented on `is_transient_bwrap_failure`: the child
+/// seed-bind race documented on `relaunch::is_transient_bwrap_failure`: the child
 /// exits within two seconds with that message on stderr. That is a launch
 /// failure, not an attempt, so it gets a few silent relaunches rather than
 /// burning one of the attempt's own retries. Any other quick exit (a real
@@ -752,8 +745,7 @@ async fn run_with_relaunch(args: AgentRun<'_>) -> Result<(Outcome, String)> {
         report,
         log,
     } = args;
-    const MAX_RELAUNCHES: u32 = 3;
-    let mut relaunches = 0u32;
+    let mut relaunch = Relaunch::default();
     loop {
         let (out, stderr_text) = run_once(AgentRun {
             sandbox,
@@ -771,18 +763,15 @@ async fn run_with_relaunch(args: AgentRun<'_>) -> Result<(Outcome, String)> {
         })
         .await?;
 
-        let quick_exit = !out.timed_out && out.wall_ms < 2_000;
-        if quick_exit && relaunches < MAX_RELAUNCHES && is_transient_bwrap_failure(&stderr_text) {
-            relaunches += 1;
-            let msg = format!(
-                "transient bwrap bind-mount failure on launch, relaunching (attempt {relaunches}/{MAX_RELAUNCHES})"
+        let wall = Duration::from_millis(out.wall_ms as u64);
+        if relaunch.again(&stderr_text, out.timed_out, wall) {
+            report.emit(
+                task_id,
+                Event::Note {
+                    text: &relaunch.note(),
+                },
             );
-            report.emit(task_id, Event::Note { text: &msg });
-            writeln!(
-                log,
-                "{{\"type\":\"forge_relaunch\",\"attempt\":{relaunches},\"reason\":{}}}",
-                serde_json::to_string(&stderr_text)?
-            )?;
+            writeln!(log, "{}", relaunch.log_line(&stderr_text))?;
             continue;
         }
         return Ok((out, stderr_text));
@@ -1356,51 +1345,6 @@ fn next_local_time(now: i64, hour: i64, minute: i64) -> i64 {
     }
 }
 
-/// The schema as OpenAI's strict structured output accepts it: every
-/// object lists all of its properties as `required` and forbids
-/// additional ones. Claude takes the schemas as written, with optional
-/// keys; codex's phase two (`--output-schema`) is refused for the same
-/// text ("'required' is required to be supplied and to be an array
-/// including every key in properties", task 509, 2026-09-22). Nothing is
-/// made nullable: an optional string or array becomes required and the
-/// model sends it empty, which every envelope reader already treats as
-/// absent, whereas an explicit `null` would fail the `#[serde(default)]`
-/// fields.
-pub fn strict_schema(schema: &str) -> Result<String> {
-    let mut v: serde_json::Value =
-        serde_json::from_str(schema).context("the output schema is not valid JSON")?;
-    fn walk(v: &mut serde_json::Value) {
-        match v {
-            serde_json::Value::Object(map) => {
-                let is_object = map.get("type").and_then(|t| t.as_str()) == Some("object")
-                    || map.contains_key("properties");
-                if is_object && let Some(serde_json::Value::Object(props)) = map.get("properties") {
-                    let keys: Vec<serde_json::Value> = props
-                        .keys()
-                        .map(|k| serde_json::Value::String(k.clone()))
-                        .collect();
-                    map.insert("required".into(), serde_json::Value::Array(keys));
-                    map.insert(
-                        "additionalProperties".into(),
-                        serde_json::Value::Bool(false),
-                    );
-                }
-                for (_, child) in map.iter_mut() {
-                    walk(child);
-                }
-            }
-            serde_json::Value::Array(items) => {
-                for item in items.iter_mut() {
-                    walk(item);
-                }
-            }
-            _ => {}
-        }
-    }
-    walk(&mut v);
-    Ok(serde_json::to_string(&v)?)
-}
-
 /// codex's `exec` flags shared by both of the two phases below, after `exec
 /// [resume <id>]` and before whatever differs (`--output-schema` and the
 /// prompt): `--skip-git-repo-check --json -C <worktree> [-m <model>]`,
@@ -1494,6 +1438,46 @@ before finishing, matching the schema you were given exactly.";
 /// itself timed out; the caller decides what either means for the attempt
 /// as a whole.
 async fn run_json_phase(args: RunJsonPhase<'_>) -> Result<(Option<i32>, bool, String)> {
+    let RunJsonPhase {
+        l,
+        argv,
+        extra_env,
+        start,
+        log,
+        out,
+        watch,
+        apply,
+    } = args;
+    let mut relaunch = Relaunch::default();
+    loop {
+        let began = Instant::now();
+        let (code, timed_out, stderr) = run_json_phase_once(RunJsonPhase {
+            l,
+            argv,
+            extra_env,
+            start,
+            log: &mut *log,
+            out: &mut *out,
+            watch: &mut *watch,
+            apply: &mut *apply,
+        })
+        .await?;
+        if relaunch.again(&stderr, timed_out, began.elapsed()) {
+            l.report.emit(
+                l.task_id,
+                Event::Note {
+                    text: &relaunch.note(),
+                },
+            );
+            writeln!(log, "{}", relaunch.log_line(&stderr))?;
+            continue;
+        }
+        return Ok((code, timed_out, stderr));
+    }
+}
+
+/// One spawn of `run_json_phase`, without the bwrap relaunch.
+async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, bool, String)> {
     let RunJsonPhase {
         l,
         argv,
@@ -1648,9 +1632,7 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
         .worktree
         .join(".git")
         .join(format!("forge-{}-schema.json", l.step));
-    let strict = strict_schema(l.schema)?;
-    std::fs::write(&schema_path, strict)
-        .with_context(|| format!("writing {}", schema_path.display()))?;
+    inputs::write_codex_schema(&schema_path, l.schema)?;
 
     let mut extra_env = crate::git::identity(&l.worktree.join(".git")).await;
     extra_env.extend(inputs::provider_env(l.provider));
@@ -2285,7 +2267,7 @@ mod tests {
 
     #[test]
     fn strict_schema_requires_every_key_of_every_object_and_keeps_the_rest() {
-        let strict = strict_schema(crate::envelope::SCHEMA).unwrap();
+        let strict = inputs::strict_schema(crate::envelope::SCHEMA).unwrap();
         let v: serde_json::Value = serde_json::from_str(&strict).unwrap();
         fn check(v: &serde_json::Value) {
             if let Some(props) = v.get("properties").and_then(|p| p.as_object()) {
@@ -2353,7 +2335,7 @@ mod tests {
             crate::assess::SCHEMA,
             crate::deploy_look::SCHEMA,
         ] {
-            strict_schema(s).unwrap();
+            inputs::strict_schema(s).unwrap();
         }
     }
     use super::*;
@@ -2426,28 +2408,6 @@ mod tests {
         }
         assert!(w.tripped(true).is_empty());
         assert_eq!(w.near(true), vec!["no-edit"]);
-    }
-
-    #[test]
-    fn is_transient_bwrap_failure_matches_the_bind_mount_race() {
-        let msg = "bwrap: Can't bind mount /home/ronin/.claude.json on \
-                    /home/ronin/.claude.json: Unable to mount source on \
-                    destination: No such file or directory";
-        assert!(is_transient_bwrap_failure(msg));
-        // Leading indentation on the line is still a match.
-        assert!(is_transient_bwrap_failure(&format!("  {msg}")));
-    }
-
-    #[test]
-    fn is_transient_bwrap_failure_ignores_other_stderr() {
-        assert!(!is_transient_bwrap_failure(""));
-        assert!(!is_transient_bwrap_failure("agent crashed: out of memory"));
-        assert!(!is_transient_bwrap_failure(
-            "bwrap: Can't create file /run/forge/seed/claude.json: Permission denied"
-        ));
-        assert!(!is_transient_bwrap_failure(
-            "bwrap: execvp claude: No such file or directory"
-        ));
     }
 
     async fn run_counting_script(dir: &std::path::Path, body: &str) -> (Outcome, String) {
@@ -2717,6 +2677,7 @@ mod tests {
             model: "fake-model",
             max_turns: 30,
             timeout: Duration::from_secs(5),
+            check_timeout: Duration::ZERO,
             log_path: &log_path,
             sandbox: None,
             report: &report,
@@ -2905,6 +2866,7 @@ fi\n"
             model: "sonnet",
             max_turns: 3,
             timeout: Duration::from_secs(5),
+            check_timeout: Duration::ZERO,
             log_path,
             sandbox: None,
             report,
@@ -3108,6 +3070,7 @@ fi\n"
             model: "test-model",
             max_turns: 1,
             timeout: Duration::from_secs(5),
+            check_timeout: Duration::ZERO,
             log_path,
             sandbox: None,
             report,

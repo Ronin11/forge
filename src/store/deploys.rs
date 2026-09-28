@@ -311,6 +311,19 @@ impl Store {
     /// (`None`, `None` otherwise), and `deploy-look`'s verdict on the same
     /// terms (`None`, `None` when it never ran).
     pub fn finish_deploy(&self, args: FinishDeploy<'_>) -> Result<()> {
+        self.finish_deploy_where(args, "WHERE id=?1")?;
+        Ok(())
+    }
+
+    /// `finish_deploy`, but only while the row is still open: a row that
+    /// already has `finished_at` (an outcome `deploy::run` deliberately
+    /// recorded, such as a rollback) is left exactly as it is. Returns
+    /// whether the row was finished here.
+    pub fn finish_open_deploy(&self, args: FinishDeploy<'_>) -> Result<bool> {
+        Ok(self.finish_deploy_where(args, "WHERE id=?1 AND finished_at IS NULL")? > 0)
+    }
+
+    fn finish_deploy_where(&self, args: FinishDeploy<'_>, filter: &str) -> Result<usize> {
         let FinishDeploy {
             id,
             at,
@@ -323,9 +336,11 @@ impl Store {
             look_ok,
             look_json,
         } = args;
-        self.lock().retry_execute(
-            "UPDATE deploys SET finished_at=?2, check_ok=?3, check_output=?4, rolled_back_to=?5, reason=?6, smoke_ok=?7, smoke_json=?8, look_ok=?9, look_json=?10
-             WHERE id=?1",
+        let n = self.lock().retry_execute(
+            &format!(
+                "UPDATE deploys SET finished_at=?2, check_ok=?3, check_output=?4, rolled_back_to=?5, reason=?6, smoke_ok=?7, smoke_json=?8, look_ok=?9, look_json=?10
+             {filter}"
+            ),
             params![
                 id,
                 at,
@@ -339,7 +354,7 @@ impl Store {
                 look_json
             ],
         )?;
-        Ok(())
+        Ok(n)
     }
 
     /// A project's deploys, newest first; only `target`'s when given: what
@@ -548,6 +563,61 @@ mod tests {
         s.remove_deploy_target("equitizr", "prod").unwrap();
         assert!(s.deploy_targets("equitizr").unwrap().is_empty());
         assert!(s.deploy_target("equitizr", "prod").unwrap().is_none());
+    }
+
+    /// `deploy::run`'s error path must not overwrite an outcome it already
+    /// recorded (docs/REVIEW-4.md, E3-10): `finish_open_deploy` finishes an
+    /// open row and says so, and leaves a finished one, rollback and all,
+    /// exactly as it was.
+    #[test]
+    fn finish_open_deploy_never_overwrites_a_finished_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "equitizr");
+        let error = |id| FinishDeploy {
+            id,
+            at: 300,
+            check_ok: false,
+            check_output: "",
+            rolled_back_to: None,
+            reason: "some later error",
+            smoke_ok: None,
+            smoke_json: None,
+            look_ok: None,
+            look_json: None,
+        };
+
+        let rolled = s
+            .start_deploy("equitizr", "prod", "bbbbbbb", 200, None)
+            .unwrap();
+        s.finish_deploy(FinishDeploy {
+            id: rolled,
+            at: 250,
+            check_ok: false,
+            check_output: "connection refused",
+            rolled_back_to: Some("aaaaaaa"),
+            reason: "rolled back to aaaaaaa",
+            smoke_ok: None,
+            smoke_json: None,
+            look_ok: None,
+            look_json: None,
+        })
+        .unwrap();
+        assert!(!s.finish_open_deploy(error(rolled)).unwrap());
+        let row = &s.deploys("equitizr", None).unwrap()[0];
+        assert_eq!(row.rolled_back_to.as_deref(), Some("aaaaaaa"));
+        assert_eq!(row.reason, "rolled back to aaaaaaa");
+        assert_eq!(row.finished_at, Some(250));
+
+        let open = s
+            .start_deploy("equitizr", "prod", "ccccccc", 400, None)
+            .unwrap();
+        assert!(s.finish_open_deploy(error(open)).unwrap());
+        let row = &s.deploys("equitizr", None).unwrap()[0];
+        assert_eq!(row.id, open);
+        assert_eq!(row.reason, "some later error");
+        assert_eq!(row.finished_at, Some(300));
+        assert_eq!(row.check_ok, Some(false));
     }
 
     #[test]

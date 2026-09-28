@@ -394,10 +394,10 @@ pub async fn demotion_as_task(f: &Forge, id: i64) -> Result<Option<i64>> {
     if last.state != AttemptState::NeedsInput {
         return Ok(None);
     }
-    let Some(q) = serde_json::from_str::<Envelope>(&last.envelope_json)
-        .ok()
-        .and_then(|e| e.needs_input)
-    else {
+    let Some(env) = serde_json::from_str::<Envelope>(&last.envelope_json).ok() else {
+        return Ok(None);
+    };
+    let (Some(q), Some(text)) = (env.needs_input.clone(), env.demotion_text()) else {
         return Ok(None);
     };
     if q.kind != Kind::Review || !demotion_is_task(&q.question) {
@@ -427,7 +427,9 @@ answered_for: t.question_to.as_deref()
         &crate::queue::RetryOverrides::none(),
         true,
         after,
-        Some(q.question.clone()),
+        // The question and every review note attached to it, verbatim:
+        // the follow-up starts from a fresh clone without the reviewer's.
+        Some(text),
     );
     let n = crate::queue::enqueue(f, &req, Some(id)).await?;
     f.store.set_decision_retry(decision, n.id)?;
@@ -562,6 +564,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
             model: &cfg.model,
             max_turns: cfg.max_turns,
             timeout: std::time::Duration::from_secs(cfg.timeout_secs),
+            check_timeout: std::time::Duration::ZERO,
             log_path: &log_path,
             provider,
             schema: SCHEMA,

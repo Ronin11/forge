@@ -35,6 +35,38 @@ pub struct Envelope {
     pub checks_run: Vec<CheckRun>,
     #[serde(default)]
     pub claims: Vec<Claim>,
+    /// Files a reviewer wrote under its review notes path
+    /// (`tests/review-notes/<task>/`), captured by the kernel before the
+    /// verdict and attached here so a demotion's reproduction outlives the
+    /// reviewer's sandbox. Never the model's to fill: the schema has no
+    /// such field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_notes: Vec<ReviewNote>,
+}
+
+/// One file from a reviewer's notes path, verbatim.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ReviewNote {
+    pub path: String,
+    pub content: String,
+}
+
+impl Envelope {
+    /// A demotion's whole reproduction: the question, then every attached
+    /// review note in full, fenced. What a follow-up task is given as its
+    /// text and what `forge show` prints; `None` without a question.
+    pub fn demotion_text(&self) -> Option<String> {
+        let q = self.needs_input.as_ref()?;
+        let mut text = q.question.clone();
+        for n in &self.review_notes {
+            text.push_str(&format!(
+                "\n\nReproduction file {} (attached by the review):\n```\n{}\n```",
+                n.path,
+                n.content.trim_end_matches('\n')
+            ));
+        }
+        Some(text)
+    }
 }
 
 /// Why an agent stopped. `Question` (default): the operator must answer.

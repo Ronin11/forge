@@ -284,6 +284,32 @@ and does not parse stdout.
   content, so a repository's own automation still lands through the
   normal build-and-verify path rather than a direct write; stdout is the
   new task's id instead of a hash. Not `--json`.
+- **`forge workflows draft`** — the draft editor's verbs (docs/WORKFLOWS.md,
+  "The draft editor"). A draft is one JSON document: `{name, kind,
+  description, project, steps, settings, status, tasks}`, where `steps` is
+  the step list (`{action, role, judgment, effect, on: {failure|outcome:
+  step|node id|end}, placeholder: {kind, inputs, outputs}}`) and `settings`
+  holds every section the step list does not model (`trigger`, `limits`,
+  ...). Every verb that takes one reads it on stdin, and every answer is
+  that document **annotated**: `toml` (the workflow file it renders to),
+  `problems` (`{line, step, message}` — the catalog linter's own, each
+  placed on its step when its line is one), `info` (per step: kind,
+  contract, description, whether a placeholder has landed), `clean`, and
+  `pending` (the placeholders whose action is still missing).
+  `check` lints and prints, writing nothing; `import` turns a workflow
+  file's text on stdin into a draft; `save` keeps it under
+  `<FORGE_HOME>/drafts/NAME.json` (`incomplete` while a placeholder is
+  pending); `put NAME --message TEXT [--repo PATH]` commits a clean draft
+  exactly as `forge workflows put` does (`{"result": "committed", "hash"}`
+  or `{"result": "filed", "task_id"}`), and a draft with placeholders is
+  saved `incomplete` and files one task per placeholder on the draft's
+  `project` (`{"result": "incomplete", "status", "tasks", "filed",
+  "pending"}`) — a refusal (any lint problem, a placeholder with no
+  project) is a non-zero exit with the problems on stdout; `list --json`,
+  `show NAME --json` (a saved draft, else the catalog workflow as a draft)
+  and `actions --json` (every action a step may name) read; `reconcile`
+  enables what has become complete. With just a `NAME` it is a terminal
+  session, one edit per line (`help` lists them), not a client verb.
 - **`forge stats --json [--tools] [--step S] [--quality] [--journal] [--by-role]`** —
   outcomes per workflow version and per step. One
   [`StatsDoc`](#statsdoc) object. `--quality` (text mode only; the JSON
@@ -373,7 +399,8 @@ and does not parse stdout.
   withdraw control.
 - **`forge task set ID [--budget USD] [--max-turns N] [--timeout-secs N]
   [--retries N] [--text TEXT | --text-file PATH] [--workflow NAME]
-  [--after ID... | --no-after] [--check CMD... | --no-checks]`** — write
+  [--after ID... | --no-after] [--check CMD... | --no-checks]
+  [--provider NAME]`** — write
   verb: changes a queued or blocked task's spec in place, replacing only
   the fields given; refused (non-zero exit) on a running or finished
   task, and when none are given. `--after` and `--check` repeat and
@@ -383,7 +410,10 @@ and does not parse stdout.
   and is allowed at the task's trust level, dependencies that exist, will
   land and do not already wait on this task, and checks that leave
   something to verify the work (`--no-checks` is refused when the
-  repository declares no `[checks]`). State is untouched: a blocked task
+  repository declares no `[checks]`). `--provider NAME` routes every role
+  of the task to that configured provider by hand; the worker never
+  re-draws a task that names one (docs/ECONOMIST.md, "A held arm is
+  re-drawn at claim time"). State is untouched: a blocked task
   stays blocked, and a queued one is claimed with its new spec. Recorded
   as a decision on the task (see [`DecisionRow`](#decisionrow)) whose
   `question` is `task ID's spec` and whose `answer` names each field's
@@ -429,6 +459,42 @@ and does not parse stdout.
   names the oldest retained worktree's age. This is the write verb the
   doctor page's gc control (`POST /api/gc`, web UI task 7) calls.
 
+- **`forge chat`** — Ask Forge, the operator's conversation with Forge
+  about its own state ([CHAT.md](CHAT.md)). Every form but the first is
+  `--json`-shaped like the other verbs:
+  - `forge chat sessions [--limit N] --json` — `{"sessions": [{id, title,
+    provider, created_at, updated_at, turns, cost_usd}]}`, most recently
+    active first.
+  - `forge chat show ID --json` — `{"session": {...}, "turns": [{id,
+    role, text, tool_calls, cost_usd, provider, model, prompt_hash,
+    at}]}`. `role` is `user`, `assistant`, or `action` (the record of a
+    proposal the operator confirmed or rejected). A turn's `tool_calls`
+    are `{tool, arguments, note, result | error, proposal?}`; a write
+    verb's call carries `action`, the id to decide it by, and `proposal`
+    `{summary, status, outcome}` with `status` one of `proposed`,
+    `confirmed`, `rejected`, `failed`.
+  - `forge chat [--session ID] [--provider P] --json [--] MESSAGE...` —
+    say something, run it to a reply, print `{session, turn, reply,
+    cost_usd, tool_calls, proposals}`. A client passes `--` before the
+    message so the operator's words are never read as options.
+  - `forge chat --stream [--session ID] [--] MESSAGE...` — the same,
+    printing one JSON event per line as it happens: `{"type":"session"}`,
+    `{"type":"turn"}` (the operator's own), one `{"type":"tool", tool,
+    arguments, result | error | proposal}` per tool call, then
+    `{"type":"reply", session, turn, text, cost_usd, proposals}` or
+    `{"type":"error", message}`. The process exits when the turn does; a
+    turn a client stops reading still finishes and is recorded.
+  - `forge chat confirm ACTION --json` / `forge chat reject ACTION
+    --json` — decide a proposed write (`ACTION` is `turn.position`, like
+    `12.0`). `{action, status, outcome, turn}`; a confirm whose action
+    fails exits non-zero. Confirming runs the action once, through the
+    same code `forge add`, `forge answer` and `forge retry` use; a second
+    decision on the same action is refused.
+
+  `forge-client` reaches the streaming form through `Forge::follow`,
+  which runs a verb without the client's usual deadline and yields its
+  stdout line by line.
+
 `forge doctor --json` also exists (a JSON array of
 `{name, status, detail, hint}`, plus a handful of optional structured
 fields a few checks carry alongside their prose so a client can draw a
@@ -448,7 +514,7 @@ scraping this prose (`tests/boundary.rs` reads this block and
 asserts every verb a client source file invokes appears in it):
 
 ```text
-snapshot log requests decisions trace journal graph workflows stats events retry land doctor plugin ref project initiative task job deploy answer withdraw ask message gc providers
+snapshot log requests decisions trace journal graph workflows stats events retry land doctor plugin ref project initiative task job deploy answer withdraw ask message gc providers chat
 ```
 
 ## Reaching forge-web (operator)
@@ -765,7 +831,8 @@ and its own settings. See docs/PROJECTS.md, "Initiative".
 | `project` | string | The project it belongs to. |
 | `outcome` | string | One sentence saying what is true when the initiative is done. |
 | `state` | string | `open`, `held`, `done`, or `done with failures` (see docs/PROJECTS.md, "State"). |
-| `held_rule` | string or null | While `state` is `held`: `"budget"`, or the L0 rule name whose repeated failure triggered the stop rule. |
+| `held_rule` | string or null | While `state` is `held`: `"budget"`, or the rule whose repeated failure triggered the stop rule: an L0 rule's name, or an L1/L2 check keyed by the tests it saw fail (`"L1 test: a::x, b::y"`). |
+| `held_reason` | string or null | While `state` is `held`: why, as `forge doctor` says it (`"stop rule: <rule> (streak n)"` or `"budget: $x of $y"`). The text form prints the state as `open, held: <held_reason>`. |
 | `queued`, `running`, `succeeded`, `failed`, `unverified`, `blocked`, `withdrawn` | integer | Task counts by state, across the initiative's tasks. |
 | `cost_usd` | number | Total cost across every attempt of every task in the initiative. |
 | `budget_usd` | number or null | This initiative's own cost cap; `null` falls to the project's `per_initiative_usd`. |
@@ -780,7 +847,7 @@ report (see docs/PROJECTS.md, "One notification and one report").
 
 | field | type | meaning |
 |---|---|---|
-| `id`, `project`, `outcome`, `state`, `held_rule`, `budget_usd`, `stop_after_same_rule`, `cost_usd`, `created_at`, `settled_at` | | as [`InitiativeRow`](#initiativerow). |
+| `id`, `project`, `outcome`, `state`, `held_rule`, `held_reason`, `budget_usd`, `stop_after_same_rule`, `cost_usd`, `created_at`, `settled_at` | | as [`InitiativeRow`](#initiativerow). |
 | `tasks` | array of `{id, state, reason, retries, score, cost_usd}` | Every task in the initiative and how it ended. `retries` is how many retries its lineage took to reach it. `score` is the assess directive's 0-10 maintainability score for that task's own landing, or `null` if it never ran (see docs/ACTIONS.md, "Assessment"). `cost_usd` is that lineage's own total cost across every attempt, the same figure `TaskRow.cost_usd` carries for the task alone. |
 | `refused` | array of `{rule, count}` | How many attempts of the initiative's tasks each verification rule refused, by name. |
 | `rulings` | array of `{task_id, question, answer, citations}` | Decisions the supervisor made on the initiative's tasks. |
@@ -1353,6 +1420,7 @@ Every variant, with its own fields (beyond `type`/`text`/`ts`/`task`):
 | `job_finished` | `project`, `workflow`, `job_id`, `state`, `cost_usd` | A job reached a final state: `ok`, `failed`, `needs_human` or `dropped`. |
 | `provider_held` | `provider`, `reason`, `since` | The provider's agent login was refused (expired, revoked): every task on it waits, and none of its refusals counts as an attempt, until a probe the worker makes every 10 minutes answers or the operator logs in and runs `forge doctor`. Once per hold; `task` is the task whose attempt was refused. |
 | `provider_released` | `provider` | The held provider's login answered a probe again; its tasks run. |
+| `initiative_held` | `id`, `project`, `reason`, `queued`, `audience` | An initiative's budget was spent or its stop rule tripped (`reason`: "budget: $x of $y" or "stop rule: <rule> (streak n)", where an L1/L2 rule names the check and the tests it saw fail), and the worker stopped claiming its `queued` tasks. Once per hold; `audience` is always `person` (only a person decides to raise the budget or `--stop-after`, or to fix the rule), and `text` carries the remedy. `task` is the initiative's latest finished task, else its first queued one. |
 | `initiative_settled` | `id`, `state`, `cost_usd` | The last of an initiative's tasks reached a terminal state and its own record closed (see docs/PROJECTS.md, "One notification and one report"); `task` (every event's own field) is the task whose change completed it, not the initiative — `id` here is the initiative's. |
 
 ### What to re-read on which event
@@ -1442,7 +1510,7 @@ across a rotation, not to the snapshot protocol itself.
   page mounts into one shared shell (`web/src/shell.js`, `web/src/styles.css`):
   a nav bar naming every page on the client contract (`ForgeShell.NAV_PAGES` —
   tasks, requests, projects, initiatives, workflows, jobs, deploys, stats,
-  graph, plugins, activity, messages, doctor; a page not yet built still
+  graph, plugins, activity, messages, doctor, chat; a page not yet built still
   gets a nav entry and a route, to a placeholder view, so the nav never
   claims a page that isn't reachable), and a header strip built from one
   `/api/snapshot` and one `/api/doctor` read: the worker's state, both
@@ -1480,6 +1548,19 @@ across a rotation, not to the snapshot protocol itself.
   `before` paging as before) advances the URL's `before` to the page just
   loaded. The list's columns are sortable by clicking a header (client-side,
   over whatever page is loaded so far — sorting never refetches).
+  **Chat** (`/chat`, `/chat/<id>`, `web/src/chat.js`): Ask Forge
+  ([CHAT.md](CHAT.md)). The sessions beside the transcript are
+  `GET /api/chat` → `chat sessions --json`, a transcript is `GET
+  /api/chat/<id>` → `chat show <id> --json`, and a message is `POST
+  /api/chat/message` (`{message, session?}`) → `chat --stream --session
+  <id> -- <message>`, its JSON lines relayed as server-sent events, one
+  `data:` frame each, so tool calls appear as they happen and the reply
+  when it lands. A write verb comes back as a proposal with confirm and
+  reject buttons: `POST /api/chat/confirm/<action>` and
+  `/api/chat/reject/<action>` → `chat confirm|reject <action> --json`,
+  the action id checked to be `turn.position` before it reaches an
+  argument. Nothing the model proposes has run until a confirm. `g` then
+  `c` jumps to the page.
   **The inbox.** `/requests` (`web/src/requests.js`) is everything waiting
   on a person: `/api/requests` (`forge requests --json`) for every blocked
   task — an open question with its text and who it is addressed to
@@ -1532,6 +1613,20 @@ across a rotation, not to the snapshot protocol itself.
   `repos[0].repo`) and runs `workflow_put` with `--repo`, filing a task
   instead (`{"result": "filed", "task_id": ...}`) — the editor labels this
   control "file as a task" rather than "save" when `source` is `"repo"`.
+  **The draft editor.** `/workflows/draft[?name=N&project=P]` is the Draft
+  view; its `web/src/drafts.js` holds the draft as data and renders the
+  step list and a simple SVG of the edges, and keeps no lint of its own.
+  `POST /api/drafts/check` and `/api/drafts/save` take the draft document
+  and run `forge workflows draft check|save --`; `POST /api/drafts/import`
+  takes a workflow file's text; `POST /api/drafts/<name>/put` takes `{draft,
+  message, to_repo}` and runs `forge workflows draft put NAME --message M`,
+  with `--repo` set to the draft's project's first repository when
+  `to_repo` is true; `GET /api/drafts`, `/api/drafts/actions` and
+  `/api/drafts/<name>` read. Answers are the verbs' JSON; a refusal is
+  **422** with `{"error"}`. "Suggest steps" is the prompter's own two calls
+  (`POST /api/workflows/draft`, `/api/job/<id>`) and then `import` of the
+  `toml` it returned: the proposal is shown for the operator to accept
+  step by step, never applied on its own.
   **The prompter.** `POST /api/workflows/draft` is `/workflows/new`'s
   "Draft it": a JSON body `{"description"}`, written as `{"description":
   ...}` to a private temporary file and handed to `forge job start forge

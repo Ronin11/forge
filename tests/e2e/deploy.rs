@@ -45,6 +45,10 @@ fn deploy_targets_are_added_listed_and_forge_deploy_log_starts_empty() {
             "deploy-user-service",
             "--arg",
             "unit=demo.service",
+            "--arg",
+            "host=box1",
+            "--arg",
+            "dest=/srv/demo",
             "--check",
             "systemctl --user is-active demo.service",
             "--on-landing",
@@ -85,6 +89,10 @@ fn deploy_targets_are_added_listed_and_forge_deploy_log_starts_empty() {
             repo,
             "--method",
             "deploy-command",
+            "--arg",
+            "host=local",
+            "--arg",
+            "dest=/srv/demo",
             "--check",
             "true",
         ],
@@ -104,6 +112,10 @@ fn deploy_targets_are_added_listed_and_forge_deploy_log_starts_empty() {
             repo,
             "--method",
             "deploy-command",
+            "--arg",
+            "host=local",
+            "--arg",
+            "dest=/srv/demo",
             "--check",
             "true",
         ],
@@ -1085,8 +1097,12 @@ fn deploy_static_rsyncs_and_defaults_the_check_to_a_url_fetch_with_a_marker() {
     assert_eq!(rows.as_array().unwrap()[0]["check_ok"], false);
 }
 
+#[path = "deploy/errors.rs"]
+mod errors;
 #[path = "deploy/landing.rs"]
 mod landing;
+#[path = "deploy/required_args.rs"]
+mod required_args;
 
 /// An on-landing deploy's row shows up where people look at the task: a
 /// `forge show` line starting with "deploy" (target, sha, ok or rolled
@@ -1211,6 +1227,8 @@ fn deploy_set_changes_one_arg_and_keeps_the_rest() {
             "unit=demo.service",
             "--arg",
             "host=box1",
+            "--arg",
+            "dest=/srv/demo",
             "--check",
             "systemctl --user is-active demo.service",
             "--smoke",
@@ -1439,9 +1457,11 @@ fn deploy_remove_deletes_the_target_and_its_future_on_landing_runs() {
 /// target directory and commit the method handed it), then "builds" the
 /// release binaries into `$CARGO_TARGET_DIR/release`, each stamped with
 /// the landed tree's `flag.txt` so a test can tell which tree built it.
-/// Its `forge doctor --json` records the home it was pointed at and
-/// reports the schema check ok, unless the tree's flag is `baddoctor`;
-/// like the real one on a bare home, it exits non-zero either way.
+/// Its `forge doctor --json --only schema` records the home it was
+/// pointed at and how it was called, and reports the schema check ok,
+/// exiting zero, unless the tree's flag is `baddoctor`, or `badmigration`
+/// and the home's store has a project row in it: a migration that runs on
+/// an empty store and fails on real data.
 const FAKE_CARGO: &str = r#"#!/bin/bash
 echo "cargo $* target=$CARGO_TARGET_DIR sha=$FORGE_BUILD_SHA cwd=$PWD" >> "$HOME/deploy-calls.log"
 mkdir -p "$CARGO_TARGET_DIR/release"
@@ -1450,14 +1470,18 @@ for b in forge-web forge-portal forge-repomap forge-tui forge-test; do
   printf '#!/bin/sh\n# %s sha=%s\n' "$flag" "$FORGE_BUILD_SHA" > "$CARGO_TARGET_DIR/release/$b"
   chmod +x "$CARGO_TARGET_DIR/release/$b"
 done
-status=ok
-if [ "$flag" = baddoctor ]; then status=fail; fi
 {
   printf '#!/bin/sh\n# %s sha=%s\n' "$flag" "$FORGE_BUILD_SHA"
   printf 'if [ "$1" = doctor ]; then\n'
-  printf '  echo "doctor $FORGE_HOME" >> "%s/deploy-calls.log"\n' "$HOME"
-  printf '  echo %s\n' "'[{\"name\":\"schema\",\"status\":\"$status\",\"detail\":\"version 1\",\"hint\":\"\"}]'"
-  printf '  exit 1\nfi\n'
+  printf '  echo "doctor $FORGE_HOME $*" >> "%s/deploy-calls.log"\n' "$HOME"
+  printf '  status=ok\n'
+  if [ "$flag" = baddoctor ]; then printf '  status=fail\n'; fi
+  if [ "$flag" = badmigration ]; then
+    printf '  rows="$(sqlite3 "$FORGE_HOME/forge.db" "SELECT count(*) FROM projects" 2>/dev/null || echo 0)"\n'
+    printf '  if [ "${rows:-0}" -gt 0 ]; then status=fail; fi\n'
+  fi
+  printf '  echo "[{\\"name\\":\\"schema\\",\\"status\\":\\"$status\\",\\"detail\\":\\"version 1\\",\\"hint\\":\\"\\"}]"\n'
+  printf '  [ "$status" = ok ]; exit $?\nfi\n'
 } > "$CARGO_TARGET_DIR/release/forge"
 chmod +x "$CARGO_TARGET_DIR/release/forge"
 "#;
@@ -1844,6 +1868,40 @@ fn deploy_self_puts_the_pointers_back_and_leaves_the_worker_alone_when_the_check
 }
 
 #[test]
+fn deploy_self_whose_build_fails_leaves_a_pointer_a_successor_flipped_mid_build() {
+    let s = SelfDeploy::new();
+    let bad = s.commit("bad");
+    // A fake successor flips the pointers while the build runs, then the
+    // build fails.
+    let succ = s.bins.join("releases/succ");
+    std::fs::create_dir_all(&succ).unwrap();
+    let fakebin = s.e._dir.path().join("fakebin");
+    write_fake(
+        &fakebin.join("cargo"),
+        &format!(
+            "#!/bin/bash\necho \"cargo $*\" >> \"$HOME/deploy-calls.log\"\n\
+             ln -sfn releases/succ \"{b}/.current.new\" && mv -T \"{b}/.current.new\" \"{b}/current\"\n\
+             ln -sfn releases/succ \"{b}/.staged.new\" && mv -T \"{b}/.staged.new\" \"{b}/staged\"\n\
+             exit 1\n",
+            b = s.bins.display()
+        ),
+    );
+
+    let o = s.deploy(&bad);
+    assert!(!o.status.success());
+
+    assert_eq!(s.link("current"), "releases/succ");
+    assert_eq!(s.link("staged"), "releases/succ");
+    assert!(succ.exists());
+    // Nothing was flipped by this run, so nothing is restarted.
+    let calls = s.calls();
+    assert!(
+        !calls.iter().any(|c| c.starts_with("systemctl")),
+        "{calls:?}"
+    );
+}
+
+#[test]
 fn deploy_self_never_stages_a_release_whose_own_doctor_fails() {
     let s = SelfDeploy::new();
     let bad = s.commit("baddoctor");
@@ -1869,6 +1927,67 @@ fn deploy_self_never_stages_a_release_whose_own_doctor_fails() {
         "{:?}",
         rows[0]
     );
+}
+
+/// REVIEW-4 E3-6: the release's doctor runs on a copy of the live store,
+/// so a migration that passes on an empty store and fails on a row is
+/// refused at staging.
+#[test]
+fn deploy_self_refuses_a_release_whose_migration_fails_on_a_store_with_a_row() {
+    let s = SelfDeploy::new();
+    let bad = s.commit("badmigration");
+
+    let o = s.deploy(&bad);
+    assert!(
+        !o.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(s.link("current"), "releases/old");
+    assert_eq!(s.link("staged"), "");
+    assert!(!s.bins.join(format!("releases/{bad}")).exists());
+    let calls = s.calls();
+    let doctor = calls.iter().find(|c| c.starts_with("doctor ")).unwrap();
+    assert!(
+        doctor.starts_with(&format!("doctor {}/.doctor.", s.bins.display())),
+        "{doctor}"
+    );
+    assert!(doctor.ends_with(" doctor --json --only schema"), "{doctor}");
+    // The scratch home holding the copy is gone.
+    assert!(
+        !std::fs::read_dir(&s.bins)
+            .unwrap()
+            .flatten()
+            .any(|d| d.file_name().to_string_lossy().starts_with(".doctor.")),
+    );
+    let rows = s.deploy_rows();
+    assert!(
+        rows[0]["check_output"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("copy of the live store"),
+        "{:?}",
+        rows[0]
+    );
+}
+
+/// What deploy-self gates on: the binary itself says whether its schema
+/// check passed, through its exit code, and a name it has no check for
+/// never passes.
+#[test]
+fn forge_doctor_only_schema_reports_one_check_and_exits_on_its_status() {
+    let e = Env::new();
+    let o = e.forge("ok.sh", &["doctor", "--json", "--only", "schema"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let checks: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let checks = checks.as_array().unwrap();
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert_eq!(checks[0]["name"], "schema");
+    assert_eq!(checks[0]["status"], "ok");
+
+    let o = e.forge("ok.sh", &["doctor", "--json", "--only", "no-such-check"]);
+    assert!(!o.status.success());
 }
 
 #[test]

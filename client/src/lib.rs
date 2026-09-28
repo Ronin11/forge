@@ -463,6 +463,32 @@ impl Forge {
         })
     }
 
+    /// `forge <args>` with `stdin` piped in, stdout parsed as one JSON
+    /// value: the draft editor's verbs (`forge workflows draft check`,
+    /// `save`, `put`, `import`), each a draft document in and an answer
+    /// out. A non-zero exit is the error, carrying what the verb printed
+    /// (a lint refusal lists its problems on stdout) and its stderr.
+    pub fn json_with_stdin(&self, args: &[&str], stdin: &str) -> Result<Value> {
+        let mut child = self.spawn_piped(args)?;
+        child
+            .stdin
+            .take()
+            .context("stdin")?
+            .write_all(stdin.as_bytes())
+            .with_context(|| format!("writing stdin to forge {}", args.join(" ")))?;
+        let out = self.wait_with_deadline(child, args)?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "forge {}: {}{}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stdout).trim(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        serde_json::from_slice(&out.stdout)
+            .with_context(|| format!("parsing forge {}", args.join(" ")))
+    }
+
     /// `forge stats --json`: see [`StatsDoc`].
     pub fn stats(&self) -> Result<StatsDoc> {
         let args = ["stats", "--json"];
@@ -474,9 +500,20 @@ impl Forge {
     /// events. The subordinate process is killed when the iterator is
     /// dropped.
     pub fn subscribe(&self, offset: impl std::fmt::Display) -> Result<Subscription> {
+        let offset = offset.to_string();
+        self.follow(&["events", "--since", &offset, "--follow"])
+    }
+
+    /// `forge <args>` with its stdout followed line by line as it is
+    /// printed: for a verb that answers as it works (`forge chat
+    /// --stream`) or one that never ends (`forge events --follow`). The
+    /// process is not held to [`Forge::timeout`]; it is killed when the
+    /// [`Subscription`] is dropped, or by its [`Killer`]. Reads that
+    /// reach the end of stdout mean the verb has exited.
+    pub fn follow(&self, args: &[&str]) -> Result<Subscription> {
         let mut command = Command::new(&self.bin);
         command
-            .args(["events", "--since", &offset.to_string(), "--follow"])
+            .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         // Drop cannot run when the owning process is killed. Linux also
@@ -496,8 +533,8 @@ impl Forge {
             });
         }
         let mut child = retry_on_etxtbsy(|| command.spawn())
-            .with_context(|| format!("running {} events --follow", self.bin))?;
-        let stdout = child.stdout.take().context("events stdout")?;
+            .with_context(|| format!("running {} {}", self.bin, args.join(" ")))?;
+        let stdout = child.stdout.take().context("stdout")?;
         Ok(Subscription {
             child: Arc::new(Mutex::new(child)),
             lines: std::io::BufReader::new(stdout).lines(),
@@ -968,6 +1005,9 @@ pub struct InitiativeRow {
     pub state: String,
     #[serde(default)]
     pub held_rule: Option<String>,
+    /// While held, why: "stop rule: <rule> (streak n)" or "budget: $x of $y".
+    #[serde(default)]
+    pub held_reason: Option<String>,
     pub queued: i64,
     pub running: i64,
     pub succeeded: i64,
@@ -1053,6 +1093,9 @@ pub struct InitiativeDoc {
     pub state: String,
     #[serde(default)]
     pub held_rule: Option<String>,
+    /// While held, why: "stop rule: <rule> (streak n)" or "budget: $x of $y".
+    #[serde(default)]
+    pub held_reason: Option<String>,
     #[serde(default)]
     pub budget_usd: Option<f64>,
     pub stop_after_same_rule: i64,

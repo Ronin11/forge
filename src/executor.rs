@@ -199,6 +199,7 @@ impl Execution {
     pub fn detect(
         agent: &str,
         paths: &config::SandboxPaths,
+        forge_home: PathBuf,
         ro: Vec<PathBuf>,
         rw: Vec<PathBuf>,
         hosts: Vec<Rule>,
@@ -208,10 +209,21 @@ impl Execution {
         }
         Ok(Some(Self {
             fallback: default_backend(),
-            bwrap: Sandbox::detect(agent, paths, ro, rw, hosts).map_err(|e| format!("{e:#}")),
+            bwrap: Sandbox::detect(agent, paths, forge_home, ro, rw, hosts)
+                .map_err(|e| format!("{e:#}")),
             backends: Mutex::new(BTreeMap::new()),
             remotes: Mutex::new(BTreeMap::new()),
         }))
+    }
+    /// An execution that runs everything through `sandbox`.
+    #[cfg(test)]
+    pub(crate) fn bwrap_only(sandbox: Sandbox) -> Self {
+        Self {
+            bwrap: Ok(sandbox),
+            fallback: Backend::Bwrap,
+            backends: Mutex::new(BTreeMap::new()),
+            remotes: Mutex::new(BTreeMap::new()),
+        }
     }
     pub fn set_backend(&self, path: &Path, backend: Backend) {
         self.backends
@@ -305,6 +317,13 @@ impl Execution {
         match &self.bwrap {
             Ok(sb) if self.backend(path) == Backend::Bwrap => sb.write_back_login(path),
             _ => false,
+        }
+    }
+    /// `write_back_login` for every task's private login beside `path`, for
+    /// a caller holding the login's lock.
+    pub fn write_back_siblings_locked(&self, path: &Path) {
+        if let Ok(sb) = &self.bwrap {
+            sb.write_back_siblings_locked(path);
         }
     }
     pub fn set_egress(&self, path: &Path, rules: &[Rule]) {

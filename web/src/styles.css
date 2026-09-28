@@ -126,6 +126,17 @@ details { margin: var(--space-1) 0 } summary { cursor: pointer; color: var(--mut
 #wf-steps .step-card { display: block; margin-bottom: 4px }
 #wf-text { font: var(--font-mono); padding: var(--space-2); border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--fg); resize: vertical }
 .lint-problem { font-size: var(--text-sm); padding: 2px 0; color: var(--bad) }
+/* draft editor */
+.draft-graph { display: block; max-width: 100% }
+.draft-graph .graph-node rect { fill: var(--panel); stroke: var(--line) }
+.draft-graph .graph-node.placeholder rect { stroke-dasharray: 4 2 }
+.draft-graph text { font-size: var(--text-sm); fill: var(--fg) }
+.draft-graph .graph-next { stroke: var(--mute) }
+.draft-graph .graph-edge { fill: none; stroke: var(--bad); stroke-dasharray: 3 2 }
+.draft-graph marker path { fill: var(--mute) }
+#draft-steps .step-card { display: block; margin-bottom: 6px; padding: 4px 6px }
+#draft-steps .step-card.has-problem { border-color: var(--bad) }
+.edge-chip { font-size: var(--text-sm); color: var(--mute) }
 /* placeholder pages for a page 'named' by the nav but not yet built */
 .stub { margin: var(--space-5) var(--space-4); color: var(--mute) }
 /* initiative view: cost-vs-budget bar */
@@ -151,3 +162,23 @@ th.sortable:hover { color: var(--fg) }
 #stats-chart .chart-bar { fill: var(--run); opacity: .5 }
 #stats-chart .chart-line { stroke: var(--warn); stroke-width: 1.5 }
 #stats-chart .chart-dot { fill: var(--warn) }
+
+/* Chat (web/src/chat.js): sessions beside the transcript */
+#chat-page { display: flex; gap: 16px; margin: 16px; align-items: flex-start }
+.chat-side { width: 240px; flex: none }
+.chat-sessions { list-style: none; margin: 8px 0 0; padding: 0 }
+.chat-sessions li { padding: 4px 6px; border-radius: 4px }
+.chat-sessions li.active { background: var(--panel); border: 1px solid var(--line) }
+.chat-main { flex: 1; min-width: 0 }
+#chat-log { max-height: 65vh; overflow-y: auto; padding-right: 8px }
+.chat-turn { margin: 0 0 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel) }
+.chat-user { border-left: 3px solid var(--run) }
+.chat-action { border-style: dashed }
+.chat-who { font-size: var(--text-sm); color: var(--mute); margin-bottom: 4px }
+.chat-text { white-space: pre-wrap; overflow-wrap: anywhere }
+.chat-calls { margin: 0 0 6px; padding-left: 18px; font-size: var(--text-sm) }
+.chat-result { max-height: 240px; overflow: auto; white-space: pre-wrap }
+.chat-proposal { margin-top: 8px; padding: 6px 8px; border: 1px solid var(--warn); border-radius: 4px }
+.chat-proposal.decided { border-color: var(--line) }
+#chat-form { display: flex; gap: 8px; margin-top: 8px }
+#chat-input { flex: 1; font: inherit }

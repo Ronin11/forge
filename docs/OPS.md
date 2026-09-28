@@ -47,13 +47,13 @@ who holds the pointer: **the store and every running binary agree.**
   `deploy-self.toml`): the commit is resolved in the kernel repository's
   fetch of origin's base, the release is built into
   `FORGE_HOME/bin/releases/<sha>/`, checked by its own doctor against a
-  scratch home and written to `FORGE_HOME/bin/staged`; only for a
+  copy of the live store and written to `FORGE_HOME/bin/staged`; only for a
   worker too old to start a successor does deploy-self also flip
   `current` and restart web, portal and the worker as before
   (docs/DEPLOY.md, "Deploying Forge itself").
 - **A staged release starts a successor worker; the old one drains.**
   Deploy only stages: build, run the new binary's doctor-lite against a
-  scratch home, write `staged`. The worker starts a successor on the new
+  copy of the live store, write `staged`. The worker starts a successor on the new
   binary; the old worker stops claiming as soon as the store shows a
   newer live worker, finishes what it holds, and exits. Claims go to the
   newest version only. Plugins and web restart under the successor. No
@@ -87,7 +87,21 @@ who holds the pointer: **the store and every running binary agree.**
   draining worker listed beside it in the unit's cgroup. Once it has
   sent that, a worker writes its pid to `FORGE_HOME/bin/successor-capable`;
   the old worker exits (0) only once that file names its successor, so
-  the unit is active on the new pid with no stop job. Restarting the
+  the unit is active on the new pid with no stop job. A worker that
+  starts a successor records `<pid> <release>` in `bin/successor-started`;
+  a successor that dies after claiming (the old worker has exited by
+  then) is found there by the worker `Restart=on-failure` brings back on
+  `current`: pid dead and `current` never moved to that release, so it
+  writes `bin/staged-failed` (`<release> <unix time>`), retires `staged`
+  and does not start that release again. Staging a release anew clears
+  the record. `staged` is a request that is acknowledged: the successor
+  removes it when it takes over, and a worker that finds it naming the
+  release it runs removes it too, so it never outlives the deploy that
+  wrote it. Every other flip of `current` (`forge upgrade`, `forge init`)
+  drops `staged` first, and a worker ignores a `staged` that names
+  `previous` or predates the last flip of `current` (a hand `ln -sfn` of
+  `current` back to `previous`): an upgrade or an emergency rollback is
+  never undone by a successor on the older release (2026-09-28). Restarting the
   unit instead would stop the old worker before the new one claimed, which
   is the wait this removes; worse, a restart queued alongside a successor
   (2026-09-26) sent SIGTERM to the old pid only and sat `deactivating`
@@ -126,8 +140,16 @@ who holds the pointer: **the store and every running binary agree.**
   worker restart (and its 40-minute drain) it took on 2026-09-25.
 - **Doctor tells the truth about it.** Built: the worker row reads
   "release <id> staged; successor pid N claiming; M attempts draining on
-  <old id>" while two versions are live, instead of "runs a binary rebuilt
-  since it started" (still shown for a worker that has no successor).
+  <old id>; N of M slots: predecessor a, successor b" while two versions
+  are live, instead of "runs a binary rebuilt since it started" (still
+  shown for a worker that has no successor). The row WARNs when a plus b
+  exceeds M. It FAILs when `staged` names a release that is not `current`
+  and no worker runs it or is starting on it: remove `staged`, or start
+  the worker so a successor takes it over.
+- **Slots are one budget per machine.** Each worker records its `--jobs`
+  in the `workers` table, and a successor claims `jobs` less the attempts
+  the other live workers still run, re-read every pass, so a draining
+  predecessor's attempts are not added to the successor's full count.
 
 Not a daemon, and not containers: the binary has nothing to isolate
 (SQLite and TLS are bundled) and everything a container would separate
@@ -369,6 +391,21 @@ builds from there without a hand push. `forge upgrade
 https://github.com/Ronin11/forge/releases/download/v<version>/forge-<version>-<target>.tar.gz`
 installs it on another machine.
 
+The hook is `deploy/post-update.mirror`, reviewed in this repository.
+`forge init --mirror <remote>` (a remote name or URL, e.g.
+`git@github.com:Ronin11/forge.git`) installs it as `hooks/post-update` in
+the bare origin of every registered repository whose push remote is a bare
+repository on this machine, keeps a different hook already there once as
+`post-update.before-forge`, and stores the target as the bare repository's
+`git config forge.mirror`; re-run it after editing the file. The hook
+mirrors by explicit refspec only (`+refs/heads/main` and
+`refs/tags/v*`, tags never forced, nothing deleted), and only when the push
+touched one of them. The mirror push runs in the background with its
+output in the bare repository's `mirror.log` (trimmed past 1 MiB) and is
+bounded by `timeout` (120 s), and the hook always exits 0: an unreachable
+or hung GitHub never fails or holds open a landing's push, and a missed
+mirror is caught up by the next push to `main` or a tag.
+
 
 ### When the worker dies
 
@@ -432,8 +469,9 @@ A host or cache need the `[environment]` table does not cover goes to the
 supervisor (`src/env_supervisor.rs`), not the operator, when the supervisor is
 on. It is given the typed need, the evidence line, the table and a ceiling it
 may not exceed: **one named host** (never a wildcard, never `github.com`,
-never a model endpoint), or **one directory under `~/.cache`**, read-only.
-It approves or denies with a one-line reason.
+never a model endpoint), or a cache **the operator's own `cache_paths` list already names**,
+read-only (a cache outside the list is always the operator's question).
+Neither is granted to a trust level whose egress is `model`. It approves or denies with a one-line reason.
 
 - An approval within the ceiling is applied like an automatic grant, the run
   repeats without spending a retry, and the decision row (kind

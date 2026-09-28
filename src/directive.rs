@@ -27,13 +27,14 @@ pub struct Spec<'a> {
     pub model: &'a str,
     pub max_turns: u32,
     pub timeout: Duration,
+    /// How long the checks after this run may take; zero when none follow.
+    pub check_timeout: Duration,
     pub log_path: &'a Path,
     pub provider: &'a agent::Provider,
     pub schema: &'a str,
     /// Whether the run goes through the operator's sandbox. A job's
-    /// directive step and the deploy look never do: the first has no
-    /// tools, the second reads a screenshot from a scratch directory,
-    /// and `forge deploy` never sandboxes its own steps.
+    /// directive step never does: it has no tools. The deploy look does,
+    /// in an empty scratch directory with the smoke output bound read-only.
     pub sandboxed: bool,
     pub writes: bool,
     pub start_sha: &'a str,
@@ -52,6 +53,7 @@ pub async fn launch(f: &Forge, s: Spec<'_>) -> Result<Outcome> {
         model: s.model,
         max_turns: s.max_turns,
         timeout: s.timeout,
+        check_timeout: s.check_timeout,
         log_path: s.log_path,
         sandbox: if s.sandboxed {
             f.sandbox.as_ref()

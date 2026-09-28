@@ -86,7 +86,14 @@ research: a fresh session in the coder's clone that may not write
 (`no-writes`), must run something (`executed-something`), and may end the
 task as `blocked` for human review with the defect and the command that
 shows it. A demotion from a session that ran no tool is recorded as a
-note and does not stand. The branch is still pushed so the human can
+note and does not stand. The demotion's reproduction must run from a
+fresh clone as written (`reproduction-self-contained`): a demotion citing
+a path under /tmp, a home directory, or an uncommitted file is refused,
+and the reviewer is asked once, without the attempt counting, to inline
+it. Files the reviewer writes under `tests/review-notes/<task>/` are
+taken off the branch and attached to the demotion (`review_notes` on the
+attempt's envelope), given verbatim to the follow-up task, and printed
+by `forge show`. The branch is still pushed so the human can
 look. What the human decides is how reviewer precision gets measured. A user-authored
 directive arrives when a workflow request shows the need, with one rule:
 it names the operations that verify its output. The Forge 1 directives
@@ -147,6 +154,17 @@ blocks a small placeholder task with the question addressed to the
 contact — recording the decision as a `concierge_json` column on the task
 it produced, or a `decisions` row (`answered_by` "concierge") for an
 answer.
+
+`chat` is the plan contract's fourth directive and, like `assess`, never
+sits in a workflow's `steps`: it is the system prompt of Ask Forge
+(docs/CHAT.md), the operator's conversation with Forge about its own
+state. `forge chat` and the web client's Chat page launch it once per
+step with no tools at all — it answers with a JSON object that either
+names one of a fixed set of read tools or finishes with a reply, and the
+three write tools it may name only record a proposal the operator
+confirms. Its text is the `prompt` of `actions/chat.toml`, so it is
+versioned like every other prompt and an operator's own `chat.toml` in the
+catalog shadows it.
 
 A plan can also become an initiative's tasks instead of one task's code.
 `forge initiative from-plan <task id> [--outcome <text>]` reads a

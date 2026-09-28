@@ -311,9 +311,15 @@ pub(super) async fn guarded_claude(l: Launch<'_>) -> Result<Outcome> {
     }
     let (sandbox, worktree, report, id) = (l.sandbox, l.worktree, l.report, l.task_id);
     let out = read_stderr(super::run_claude(l).await);
-    if dir.is_some_and(|_| sandbox.is_some_and(|sb| sb.write_back_login(worktree))) {
-        let text = "login    a refreshed token was written back to the host file";
-        report.emit(id, Event::Note { text });
+    if let Some(dir) = dir
+        && sandbox.is_some_and(|sb| sb.write_back_login(worktree))
+    {
+        let prev = dir.join(crate::login::PREV);
+        let text = format!(
+            "login    a refreshed token was written back to the host file; the login it replaced is kept as {} (0600, one copy), to restore by hand if this was wrong",
+            prev.display()
+        );
+        report.emit(id, Event::Note { text: &text });
     }
     out
 }
@@ -321,9 +327,10 @@ pub(super) async fn guarded_claude(l: Launch<'_>) -> Result<Outcome> {
 /// Why the host login cannot start an attempt, after refreshing it if it is
 /// near expiry; `None` when it can (or there is no file to speak of).
 async fn login_problem(l: &Launch<'_>, dir: &Path) -> Option<String> {
+    let window = crate::login::refresh_window_ms(l.timeout, l.check_timeout);
     let state = match crate::login::host_state(dir) {
-        crate::login::Host::Usable(c) if c.near_expiry(crate::unix_now() * 1000) => {
-            refresh_on_host(l, dir).await
+        crate::login::Host::Usable(c) if c.near_expiry(crate::unix_now() * 1000, window) => {
+            refresh_on_host(l, dir, window).await
         }
         s => s,
     };
@@ -340,17 +347,17 @@ async fn login_problem(l: &Launch<'_>, dir: &Path) -> Option<String> {
 /// one; probing with the host's dead one would empty the file), and only if
 /// the host file is still near expiry, run a one-token probe through the
 /// attempts' own lean argv so the CLI refreshes it. The file as it stands.
-async fn refresh_on_host(l: &Launch<'_>, dir: &Path) -> crate::login::Host {
+async fn refresh_on_host(l: &Launch<'_>, dir: &Path, window: i64) -> crate::login::Host {
     let owned = dir.to_path_buf();
     let _lock = tokio::task::spawn_blocking(move || crate::login::lock(&owned))
         .await
         .ok();
-    for copy in crate::login::private_copies(l.worktree) {
-        let _ = crate::login::write_back_locked(dir, &copy);
+    if let Some(sb) = l.sandbox {
+        sb.write_back_siblings_locked(l.worktree);
     }
     let state = crate::login::host_state(dir);
     match state {
-        crate::login::Host::Usable(c) if c.near_expiry(crate::unix_now() * 1000) => {
+        crate::login::Host::Usable(c) if c.near_expiry(crate::unix_now() * 1000, window) => {
             probe(l).await;
             crate::login::host_state(dir)
         }

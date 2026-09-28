@@ -41,9 +41,11 @@ struct AttemptLaunch<'a> {
     prompt: &'a str,
     log_path: &'a Path,
     resume: Option<&'a str>,
-    writes: bool,
+    contract: Contract,
     start_sha: &'a str,
     provider: &'a agent::Provider,
+    /// How long the checks after the attempt may take (`check_timeout_secs`).
+    check_timeout: Duration,
 }
 
 use crate::audit::{Inputs, Outputs};
@@ -56,6 +58,7 @@ use crate::prompts::{
 };
 use crate::report::Event;
 use crate::store::{Attempt, AttemptState, FinishAttempt, Task};
+use crate::verify::review::asked;
 use crate::verify::{self, Subject, Verdict};
 use crate::workflows::{Contract, ResolvedStep};
 use crate::{agent, config, git, unix_now};
@@ -246,9 +249,10 @@ pub async fn run_attempt(
         },
         Contract::Review => Spec {
             dir: PathBuf::from(&t.worktree),
-            prompt: review_prompt(t, cfg, step, outcome.as_deref()),
+            prompt: review_prompt(t, cfg, step, outcome.as_deref(), asked(feedback)),
             // A review is told nothing of earlier attempts: it judges the
-            // branch as it stands. Feedback owed to it is recorded, not shown.
+            // branch as it stands. Feedback owed to it is recorded, not
+            // shown, but for the one ask to inline a reproduction.
             inputs: Inputs {
                 journal: None,
                 context: None,
@@ -300,9 +304,10 @@ pub async fn run_attempt(
         resume: resume
             .filter(|r| r.fresh_from.is_none())
             .map(|r| r.session.as_str()),
-        writes: contract.writes(),
+        contract,
         start_sha: &a.start_sha,
         provider,
+        check_timeout: Duration::from_secs(cfg.check_timeout_secs),
     })
     .await?;
     let refused = crate::egress::read_refused(&spec.dir);
@@ -576,9 +581,10 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
         prompt,
         log_path,
         resume,
-        writes,
+        contract,
         start_sha,
         provider,
+        check_timeout,
     } = args;
     let model = attempt_model(
         step,
@@ -587,6 +593,10 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
         provider,
         model_pinned(&t.model_source),
     );
+    let mut provider = provider.clone();
+    provider
+        .env
+        .push(("FORGE_CONTRACT".into(), contract.as_str().into()));
     let run = crate::directive::launch(
         f,
         crate::directive::Spec {
@@ -598,11 +608,12 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
             model: &model,
             max_turns: t.max_turns as u32,
             timeout: Duration::from_secs(t.timeout_secs as u64),
+            check_timeout,
             log_path,
-            provider,
+            provider: &provider,
             schema: crate::envelope::SCHEMA,
             sandboxed: true,
-            writes,
+            writes: contract.writes(),
             start_sha,
             resume,
             no_tools: false,

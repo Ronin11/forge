@@ -9,7 +9,7 @@ use serde::Serialize;
 
 mod login;
 
-#[derive(PartialEq, Eq, Clone, Copy, Serialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     Ok,
@@ -133,6 +133,8 @@ mod plugins;
 use plugins::check_plugins;
 mod presence;
 use presence::check_presence;
+mod succession;
+use succession::check_succession;
 
 /// What an attempt can reach: whether bwrap can give it a network namespace
 /// at all, the model endpoints that are always allowed, and each project's
@@ -140,7 +142,7 @@ use presence::check_presence;
 fn check_egress(paths: &Paths, store: &Store) -> Vec<Check> {
     let mut out = Vec::new();
     // Dead workers' proxy directories, which a crashed worker leaves behind.
-    let swept = crate::egress::sweep_dead(&std::env::temp_dir());
+    let swept = crate::egress::sweep_dead_in_run_root();
     let model: Vec<String> = match config::load_home(&paths.home) {
         Ok(c) => crate::egress::model_rules(&c.providers)
             .iter()
@@ -589,33 +591,6 @@ fn check_learning(paths: &Paths, store: &Store) -> Vec<Check> {
     }]
 }
 
-/// A successor claiming while an older worker drains: the release staged,
-/// the successor's pid, and what the old one still holds.
-fn check_succession(paths: &Paths, store: &Store) -> Option<Check> {
-    let live = store.live_workers(worker::pid_alive).ok()?;
-    let newest = live.last()?;
-    let old: Vec<_> = live
-        .iter()
-        .filter(|w| w.version != newest.version)
-        .collect();
-    let first = old.first()?;
-    let draining: i64 = old
-        .iter()
-        .filter_map(|w| store.held_by_worker(w.pid).ok())
-        .sum();
-    let staged = crate::release::pointed_at(&crate::release::root(&paths.home), "staged")
-        .unwrap_or_else(|| newest.version.clone());
-    Some(check(
-        "worker",
-        Status::Ok,
-        format!(
-            "release {staged} staged; successor pid {} claiming; {draining} attempts draining on {}",
-            newest.pid, first.version
-        ),
-        "",
-    ))
-}
-
 /// The worker unit sitting in a stop job while a worker still claims: the
 /// stop's SIGTERM went to a pid that has since handed the unit to a
 /// successor, and systemd waits out `TimeoutStopSec` without signalling
@@ -647,6 +622,9 @@ fn check_worker(paths: &Paths, store: &Store) -> Vec<Check> {
         return vec![c];
     }
     if let Some(c) = check_succession(paths, store) {
+        return vec![c];
+    }
+    if let Some(c) = succession::check_staged(paths, store) {
         return vec![c];
     }
     let Some(w) = worker::worker_status(paths) else {
@@ -1106,6 +1084,30 @@ pub fn run() -> Result<Vec<Check>> {
             Ok(out)
         }
     }
+}
+
+/// Only the checks `names` asks for. `schema` alone takes the short way:
+/// open (and so migrate) the store and read its version, without the
+/// probes the full run makes, so a caller such as `deploy-self` can prove
+/// a new binary against a copy of the live store and nothing else. A
+/// store that will not open is the schema check failing. Any other name
+/// runs everything and keeps the checks so named.
+pub fn run_only(names: &[String]) -> Result<Vec<Check>> {
+    if names.iter().all(|n| n == "schema") {
+        let paths = Paths::resolve()?;
+        return Ok(match Store::open(&paths.home.join("forge.db")) {
+            Ok(store) => check_schema(&store),
+            Err(e) => vec![check(
+                "schema",
+                Status::Fail,
+                format!("{e:#}"),
+                "the new binary cannot open or migrate this store",
+            )],
+        });
+    }
+    let mut checks = run()?;
+    checks.retain(|c| names.contains(&c.name));
+    Ok(checks)
 }
 
 fn check_executors(store: &Store, paths: &Paths) -> Vec<Check> {

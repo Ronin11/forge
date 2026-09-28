@@ -12,6 +12,7 @@ use std::sync::Mutex;
 
 mod arms;
 mod attempts;
+mod chat;
 mod daily;
 mod deploys;
 mod descendants;
@@ -37,6 +38,7 @@ mod webhooks;
 mod workers;
 
 pub use attempts::{Attempt, AttemptState, FinishAttempt, Op, RateLimitSample, seed_used};
+pub use chat::{ChatSession, ChatTurn, NewChatTurn};
 pub use daily::DailyStat;
 pub use deploys::{Assessment, Deploy, DeployTarget, FinishDeploy};
 pub use factors::{FactorLevelStat, ROLES};
@@ -779,14 +781,27 @@ impl Store {
     }
 }
 
-/// `BEGIN IMMEDIATE` before re-reading `user_version`, so a second process
-/// racing this one blocks here (on the connection's `busy_timeout`) until
-/// the first commits, then sees its version and skips what it already
-/// applied instead of re-running a migration the first just committed.
+/// The common open is read-only: `user_version` is read under a deferred
+/// transaction, which never waits on a writer, and only a database below the
+/// target takes `BEGIN IMMEDIATE`. That re-reads `user_version` inside, so a
+/// second process racing this one blocks here (on the connection's
+/// `busy_timeout`) until the first commits, then sees its version and skips
+/// what it already applied instead of re-running a migration the first just
+/// committed.
 fn migrate(conn: &mut Connection) -> Result<()> {
+    let target = MIGRATIONS.len() as i64;
+    let seen: i64 = {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+        tx.query_row("PRAGMA user_version", [], |r| r.get(0))?
+    };
+    if seen > target {
+        bail!("database schema version {seen} is newer than this forge ({target}); upgrade forge");
+    }
+    if seen == target {
+        return Ok(());
+    }
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let current: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    let target = MIGRATIONS.len() as i64;
     if current > target {
         bail!(
             "database schema version {current} is newer than this forge ({target}); upgrade forge"
@@ -831,6 +846,53 @@ mod tests {
         }
         conn.execute_batch(&format!("PRAGMA user_version={upto}"))
             .unwrap();
+    }
+
+    #[test]
+    fn opening_a_current_version_store_does_not_wait_on_a_held_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        drop(Store::open(&path).unwrap());
+
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let started = std::time::Instant::now();
+        let s = Store::open(&path).unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "open waited {:?} behind a held writer",
+            started.elapsed()
+        );
+        assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
+        writer.execute_batch("ROLLBACK").unwrap();
+    }
+
+    #[test]
+    fn opening_a_newer_schema_store_refuses_at_once_despite_a_held_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        drop(Store::open(&path).unwrap());
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(&format!("PRAGMA user_version={}", MIGRATIONS.len() + 1))
+            .unwrap();
+
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let started = std::time::Instant::now();
+        let err = match Store::open(&path) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("opened a db from the future"),
+        };
+        assert!(err.contains("newer than this forge"), "{err}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "open waited {:?} behind a held writer",
+            started.elapsed()
+        );
+        writer.execute_batch("ROLLBACK").unwrap();
     }
 
     #[test]
@@ -905,6 +967,29 @@ mod tests {
             Ok(_) => panic!("opened a db from the future"),
         };
         assert!(err.contains("newer than this forge"), "{err}");
+    }
+
+    #[test]
+    fn apply_contracts_waits_for_an_older_worker_to_exit_then_runs_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        // Undo the contract step the fresh open already applied, to have
+        // one pending again.
+        s.lock()
+            .execute_batch("DELETE FROM contract_steps")
+            .unwrap();
+        let old = s.register_worker(10, "old").unwrap();
+        s.register_worker(11, "new").unwrap();
+        // Both versions are live: an older worker still shares the store,
+        // so the step stays pending.
+        assert_eq!(s.apply_contracts("new", |_| true).unwrap(), 0);
+        // The older worker exits: only "new" is left live, so the pending
+        // steps run.
+        s.stop_worker(old).unwrap();
+        let applied = s.apply_contracts("new", |_| true).unwrap();
+        assert!(applied > 0, "expected pending contract steps to run");
+        // Nothing pending now: one SELECT per step, no write.
+        assert_eq!(s.apply_contracts("new", |_| true).unwrap(), 0);
     }
 
     #[test]
@@ -1141,6 +1226,8 @@ mod column_tests {
             ("messages", messages::MESSAGE_COLUMNS),
             ("webhook_tokens", webhooks::WEBHOOK_TOKEN_COLUMNS),
             ("event_cursors", events::EVENT_CURSOR_COLUMNS),
+            ("chat_sessions", chat::CHAT_SESSION_COLUMNS),
+            ("chat_turns", chat::CHAT_TURN_COLUMNS),
         ] {
             let listed: Vec<String> = cols
                 .iter()
