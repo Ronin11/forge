@@ -52,8 +52,8 @@ point() { # <name> <link target or empty>
     rm -f "$root/$1"
     return
   fi
-  ln -sfn "$2" "$root/.$1.new"
-  mv -T "$root/.$1.new" "$root/$1"
+  ln -sfn "$2" "$root/.$1.new.$$"
+  mv -T "$root/.$1.new.$$" "$root/$1"
 }
 link_of() { readlink "$root/$1" 2>/dev/null || true; }
 set_staged="" old_staged=""
@@ -113,7 +113,7 @@ else
   done
   # A release is never overwritten and never half-written: copy into a
   # temporary directory, then rename it into place.
-  tmp="$root/releases/.$sha.tmp"
+  tmp="$root/releases/.$sha.tmp.$$"
   rm -rf "$tmp"
   mkdir -p "$tmp"
   for b in $bins; do

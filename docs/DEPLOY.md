@@ -271,7 +271,10 @@ archived from that fetched commit, never the checkout's working tree.
 
 `deploy-self` (`src/builtins/operations/deploy-self.toml`) runs, in that
 scratch archive, under a lock (`FORGE_HOME/bin/.deploy-self.lock`) so
-two landings never build over each other:
+two landings never build over each other (the same lock, taken by
+`release::lock`, is held by `forge upgrade`, `init --relink` and the
+successor's take-over around every write to the pointers and
+`releases/`, whose temporary names carry the writer's pid):
 
 1. Unless `FORGE_HOME/bin/releases/<sha>/` already exists (a rollback to
    a commit built before), `cargo build --release --workspace` with
