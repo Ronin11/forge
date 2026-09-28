@@ -391,6 +391,21 @@ builds from there without a hand push. `forge upgrade
 https://github.com/Ronin11/forge/releases/download/v<version>/forge-<version>-<target>.tar.gz`
 installs it on another machine.
 
+The hook is `deploy/post-update.mirror`, reviewed in this repository.
+`forge init --mirror <remote>` (a remote name or URL, e.g.
+`git@github.com:Ronin11/forge.git`) installs it as `hooks/post-update` in
+the bare origin of every registered repository whose push remote is a bare
+repository on this machine, keeps a different hook already there once as
+`post-update.before-forge`, and stores the target as the bare repository's
+`git config forge.mirror`; re-run it after editing the file. The hook
+mirrors by explicit refspec only (`+refs/heads/main` and
+`refs/tags/v*`, tags never forced, nothing deleted), and only when the push
+touched one of them. The mirror push runs in the background with its
+output in the bare repository's `mirror.log` (trimmed past 1 MiB) and is
+bounded by `timeout` (120 s), and the hook always exits 0: an unreachable
+or hung GitHub never fails or holds open a landing's push, and a missed
+mirror is caught up by the next push to `main` or a tag.
+
 
 ### When the worker dies
 

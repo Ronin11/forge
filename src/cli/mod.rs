@@ -346,6 +346,12 @@ enum Cmd {
         /// symlinks and the units through it. Idempotent.
         #[arg(long)]
         relink: bool,
+        /// Install deploy/post-update.mirror as the post-update hook of
+        /// every registered repository's bare origin on this machine,
+        /// mirroring main and v* tags to this remote (a name or URL,
+        /// stored as the bare repository's `forge.mirror`)
+        #[arg(long, value_name = "REMOTE")]
+        mirror: Option<String>,
     },
     /// A newcomer's first run: a scratch repository under FORGE_HOME/demo,
     /// one small task run to completion, and where to look afterward.
