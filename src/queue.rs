@@ -252,13 +252,19 @@ fn initiative_within_trust_cap(
 /// What the request's trust level decides at enqueue: the budget the task
 /// files with, the level's `per_day` cap, and, when the operator's flag let
 /// the budget past the level's cap, the `(budget, cap)` to record.
+struct TrustGate {
+    budget: Option<f64>,
+    per_day: Option<u32>,
+    over_cap: Option<(f64, f64)>,
+}
+
 fn trust_gate(
     f: &Forge,
     args: &TaskRequest,
     level: crate::store::Trust,
     workflow: &str,
     initiative: Option<i64>,
-) -> Result<(Option<f64>, Option<u32>, Option<(f64, f64)>)> {
+) -> Result<TrustGate> {
     let policy = match level {
         crate::store::Trust::Operator => &f.trust.operator,
         crate::store::Trust::Contact => &f.trust.contact,
@@ -273,7 +279,11 @@ fn trust_gate(
         args.allow_over_trust_cap,
     )?;
     initiative_within_trust_cap(f, level, policy, initiative)?;
-    Ok((budget, policy.per_day, over_trust_cap(policy, budget)))
+    Ok(TrustGate {
+        budget,
+        per_day: policy.per_day,
+        over_cap: over_trust_cap(policy, budget),
+    })
 }
 
 /// Record that the operator let task `t` past its level's cap, as a
@@ -727,7 +737,11 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         None => crate::store::Trust::Operator,
     };
     let initiative_id = initiative.as_ref().map(|i| i.id);
-    let (budget, per_day_cap, over_cap) = trust_gate(f, args, trust, &workflow, initiative_id)?;
+    let TrustGate {
+        budget,
+        per_day: per_day_cap,
+        over_cap,
+    } = trust_gate(f, args, trust, &workflow, initiative_id)?;
     let mut t = Task {
         repo: repo.display().to_string(),
         task: args.task.clone(),
@@ -1482,7 +1496,8 @@ mod tests {
                 &policy,
                 "tdd-reviewed",
                 false,
-                None
+                None,
+                false,
             )
             .is_ok()
         );

@@ -711,6 +711,10 @@ fn github_issues_files_a_task_and_reports_back_when_it_lands() {
     );
     let calls_text = std::fs::read_to_string(&calls).unwrap();
     assert!(calls_text.contains("comment 42"), "{calls_text}");
+    assert!(
+        calls_text.contains("Forge will spend up to $5 on this; a maintainer can raise it"),
+        "{calls_text}"
+    );
     assert!(calls_text.contains("unverified"), "{calls_text}");
     assert!(calls_text.contains("landed"), "{calls_text}");
     assert!(
