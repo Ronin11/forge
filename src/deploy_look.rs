@@ -134,6 +134,8 @@ pub fn failing_finding<'a>(
     Some(&found.finding)
 }
 
+const NEEDS_SANDBOX: &str = "the deploy look needs the sandbox; not run unsandboxed";
+
 /// Run look number `look_no` (1-based; a confirming look is 2) of
 /// `deploy-look` against a deploy's smoke output, when the target declared
 /// a smoke url and the smoke step left a screenshot to look at. `smoke_ok`
@@ -157,6 +159,11 @@ pub async fn run(
     let screenshot = out_dir.join("screenshot.png");
     if !screenshot.exists() {
         return Ok(None);
+    }
+    // The look reads a page's own output with file tools: without the
+    // sandbox it would run on the host, so it does not run at all.
+    if f.sandbox.is_none() {
+        bail!("{NEEDS_SANDBOX}");
     }
     // A smoke step that failed may have left no readable smoke.json; the
     // look still gets the screenshot.
@@ -215,8 +222,13 @@ pub async fn run(
     let scratch = out_dir.with_file_name(format!("{deploy_id}-look-{look_no}"));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).context("creating the look's scratch directory")?;
-    if let Some(sandbox) = &f.sandbox {
-        sandbox.grant_ro(&scratch, out_dir.to_path_buf());
+    let granted = f
+        .sandbox
+        .as_ref()
+        .is_some_and(|sandbox| sandbox.grant_ro(&scratch, out_dir.to_path_buf()));
+    if !granted {
+        let _ = std::fs::remove_dir_all(&scratch);
+        bail!("{NEEDS_SANDBOX}");
     }
 
     let outcome = crate::directive::launch(
@@ -298,6 +310,48 @@ mod tests {
                 "expected {needle:?} exactly once in:\n{text}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_look_without_a_sandbox_is_refused_and_leaves_the_screenshot_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(&dir.path().join("forge.db")).unwrap();
+        let paths = crate::ctx::Paths {
+            home: dir.path().to_path_buf(),
+            worktrees: dir.path().join("worktrees"),
+            logs: dir.path().join("logs"),
+        };
+        let f = Forge::open_with(paths, store).unwrap();
+        assert!(f.sandbox.is_none());
+        let out = dir.path().join("deploys/7/out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("screenshot.png"), b"png bytes").unwrap();
+        let target = DeployTarget {
+            project: "p".into(),
+            name: "t".into(),
+            repo: "r".into(),
+            scope: None,
+            method: "deploy-command".into(),
+            args: Default::default(),
+            check_cmd: String::new(),
+            on_landing: false,
+            smoke_url: Some("https://example.com".into()),
+        };
+        let err = run(&f, &target, 7, &out, true, 1).await.unwrap_err();
+        assert!(format!("{err:#}").contains("needs the sandbox"), "{err:#}");
+        assert_eq!(
+            std::fs::read(out.join("screenshot.png")).unwrap(),
+            b"png bytes"
+        );
+        // Nothing was launched: no scratch directory and no agent log.
+        assert!(!out.with_file_name("7-look-1").exists());
+        assert!(
+            !dir.path().join("logs").exists()
+                || std::fs::read_dir(dir.path().join("logs"))
+                    .unwrap()
+                    .next()
+                    .is_none()
+        );
     }
 
     fn look(prompt_smoke_ok: bool) -> String {
