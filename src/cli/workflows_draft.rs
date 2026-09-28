@@ -448,6 +448,48 @@ async fn session(name: String, kind: String, project: Option<String>) -> Result<
     Ok(())
 }
 
+fn list_drafts(home: &Path, json: bool) -> Result<()> {
+    let all = draft::list(home)?;
+    if json {
+        return print_json(&all);
+    }
+    for d in all {
+        out!(
+            "{:<28} {:<10} {} step(s), {} task(s) filed",
+            d.name,
+            d.status.as_str(),
+            d.steps.len(),
+            d.tasks.len()
+        );
+    }
+    Ok(())
+}
+
+fn show_draft(home: &Path, name: &str, json: bool) -> Result<()> {
+    let a = open_draft(home, name, WorkflowKind::Build)?.check(home)?;
+    if json {
+        return print_json(&a);
+    }
+    out!("{}", show_text(&a));
+    Ok(())
+}
+
+fn list_actions(home: &Path, json: bool) -> Result<()> {
+    let all = actions_doc(home)?;
+    if json {
+        return print_json(&all);
+    }
+    for a in all {
+        out!(
+            "{:<28} {} {}",
+            a["name"].as_str().unwrap_or_default(),
+            a["kind"].as_str().unwrap_or_default(),
+            a["description"].as_str().unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
 pub(super) async fn dispatch(args: DraftArgs) -> Result<()> {
     let Some(cmd) = args.cmd else {
         let name = args
@@ -457,31 +499,8 @@ pub(super) async fn dispatch(args: DraftArgs) -> Result<()> {
     };
     let home = home()?;
     match cmd {
-        DraftCmd::List { json } => {
-            let all = draft::list(&home)?;
-            if json {
-                return print_json(&all);
-            }
-            for d in all {
-                out!(
-                    "{:<28} {:<10} {} step(s), {} task(s) filed",
-                    d.name,
-                    d.status.as_str(),
-                    d.steps.len(),
-                    d.tasks.len()
-                );
-            }
-            Ok(())
-        }
-        DraftCmd::Show { name, json } => {
-            let d = open_draft(&home, &name, WorkflowKind::Build)?;
-            let a = d.check(&home)?;
-            if json {
-                return print_json(&a);
-            }
-            out!("{}", show_text(&a));
-            Ok(())
-        }
+        DraftCmd::List { json } => list_drafts(&home, json),
+        DraftCmd::Show { name, json } => show_draft(&home, &name, json),
         DraftCmd::Check => print_json(&read_doc()?.check(&home)?),
         DraftCmd::Import => {
             let mut text = String::new();
@@ -509,21 +528,7 @@ pub(super) async fn dispatch(args: DraftArgs) -> Result<()> {
             );
             print_json(&put_draft(d, &message, repo).await?)
         }
-        DraftCmd::Actions { json } => {
-            let all = actions_doc(&home)?;
-            if json {
-                return print_json(&all);
-            }
-            for a in all {
-                out!(
-                    "{:<28} {} {}",
-                    a["name"].as_str().unwrap_or_default(),
-                    a["kind"].as_str().unwrap_or_default(),
-                    a["description"].as_str().unwrap_or_default()
-                );
-            }
-            Ok(())
-        }
+        DraftCmd::Actions { json } => list_actions(&home, json),
         DraftCmd::Reconcile => {
             for n in draft::reconcile(&home).await? {
                 out!("enabled {n}");
