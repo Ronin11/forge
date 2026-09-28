@@ -368,3 +368,23 @@ fn a_stream_prints_each_event_as_it_happens() {
     let kinds: Vec<&str> = events.iter().map(|v| v["type"].as_str().unwrap()).collect();
     assert_eq!(kinds, ["session", "turn", "tool", "reply"], "{events:?}");
 }
+
+#[test]
+fn with_no_chat_provider_the_operators_default_answers_and_is_told_the_directive() {
+    let e = Env::new();
+    let mut c = e.with_role("ok.sh", "CHAT", "chat-answer.sh");
+    let o = c.args(["chat", "--json", "hello"]).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let doc: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(doc["reply"], "told who I am and what I can use", "{doc}");
+    assert!(doc["cost_usd"].as_f64().unwrap() > 0.0);
+    let provider: String = e
+        .db()
+        .query_row(
+            "SELECT provider FROM chat_turns WHERE role='assistant'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(provider, "anthropic");
+}
