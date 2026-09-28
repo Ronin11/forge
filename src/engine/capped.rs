@@ -62,3 +62,14 @@ pub(super) async fn check_cap(
         pushes: last.is_some(),
     }))
 }
+
+/// An operator's `forge withdraw --abort` on this running task (a
+/// duplicate of a live sibling): it ends `capped`, as a cost cap would end
+/// it, with the decision's reason. Nothing is pushed: the sibling carries
+/// the work.
+pub(super) fn check_abort(f: &Forge, t: &Task) -> Result<Option<End>, Fault> {
+    Ok(f.store.abort_requested(t.id).env()?.map(|why| End::Capped {
+        reason: format!("aborted: {why}"),
+        pushes: false,
+    }))
+}
