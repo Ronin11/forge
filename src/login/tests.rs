@@ -716,6 +716,32 @@ fn seed_first_writes_back_a_later_private_login_from_a_sibling_task() {
     }
 }
 
+/// docs/REVIEW-4.md #1.23: a `-provider` directory whose own worktree is
+/// gone is written back once, then discarded, so a later launch never
+/// scans it again under the login lock.
+#[test]
+fn write_back_private_copies_discards_a_stale_providers_directory_once_written_back() {
+    for f in rotating() {
+        let s = f.shape;
+        let t = seeded(s, &f.login("a", "dead", far()));
+        // A leftover from a task whose worktree no longer exists, seeded
+        // (so it carries a record a write-back can judge) before it rotates.
+        let stale_dir = t.root.path().join("work/gone-provider");
+        let stale = stale_dir.join(s.cli).join(s.file);
+        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        block_on(s.seed(&t.dir, &t.state, &t.worktree, &stale));
+        std::fs::write(&stale, f.good("b", "live", far() + 5000)).unwrap();
+        block_on(async {
+            let _lock = lock(&t.dir).await;
+            s.write_back_private_copies_locked(&t.dir, &t.state, &t.worktree);
+        });
+        let host = std::fs::read_to_string(t.dir.join(s.file)).unwrap();
+        assert!(host.contains("live"), "{}", s.cli);
+        assert!(!stale_dir.exists(), "{}", s.cli);
+        assert!(!s.private_copies(&t.worktree).contains(&stale), "{}", s.cli);
+    }
+}
+
 #[test]
 fn each_login_keeps_its_own_lock_mark_and_backup_beside_its_file() {
     let t = seeded(&CODEX, &codex_raw("a0", "r0", far()));

@@ -469,6 +469,34 @@ impl Shape {
             .collect()
     }
 
+    /// `write_back_locked` every sibling private copy `private_copies` finds,
+    /// then discard whichever sibling's own worktree no longer exists: past
+    /// that write-back nothing will ever read the copy again (its task is
+    /// gone), so leaving the directory for every later launch to scan and
+    /// open under the login lock (docs/REVIEW-4.md #1.23) buys nothing.
+    pub fn write_back_private_copies_locked(&self, dir: &Path, state: &Path, worktree: &Path) {
+        let Some(parent) = worktree.parent() else {
+            return;
+        };
+        for copy in self.private_copies(worktree) {
+            let _ = self.write_back_locked(dir, state, &copy);
+            let Some(provider_dir) = copy.parent().and_then(Path::parent) else {
+                continue;
+            };
+            let stale = provider_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| {
+                    n.strip_suffix("-review-provider")
+                        .or_else(|| n.strip_suffix("-provider"))
+                })
+                .is_some_and(|base| !parent.join(base).exists());
+            if stale {
+                let _ = std::fs::remove_dir_all(provider_dir);
+            }
+        }
+    }
+
     /// `write_back` for a caller that holds the lock. `state` is FORGE_HOME,
     /// where the seed of `private` was recorded.
     pub fn write_back_locked(
@@ -526,9 +554,7 @@ impl Shape {
     pub async fn seed(&self, dir: &Path, state: &Path, worktree: &Path, private: &Path) {
         let _probe = probe_lock(dir).await;
         let _lock = lock(dir).await;
-        for copy in self.private_copies(worktree) {
-            let _ = self.write_back_locked(dir, state, &copy);
-        }
+        self.write_back_private_copies_locked(dir, state, worktree);
         let seeded = std::fs::read_to_string(dir.join(self.file))
             .ok()
             .filter(|t| self.settings_too || self.parse(t).usable);

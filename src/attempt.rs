@@ -395,7 +395,7 @@ pub fn tests_clone_dir(worktree: &str) -> PathBuf {
     PathBuf::from(format!("{worktree}-tests"))
 }
 
-fn scratch_dir(worktree: &str) -> PathBuf {
+pub fn scratch_dir(worktree: &str) -> PathBuf {
     PathBuf::from(format!("{worktree}-red"))
 }
 

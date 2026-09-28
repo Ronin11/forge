@@ -42,11 +42,7 @@ pub(super) async fn gc(dry_run: bool, older_than: Option<i64>) -> Result<()> {
                 return Ok(Err(reason));
             }
             if !dry_run {
-                std::fs::remove_dir_all(wt)?;
-                crate::sandbox::discard_provider_state(wt);
-                let tests_clone = crate::attempt::tests_clone_dir(&t.worktree);
-                let _ = std::fs::remove_dir_all(&tests_clone);
-                crate::sandbox::discard_provider_state(&tests_clone);
+                remove_worktree_and_siblings(wt, &t.worktree)?;
             }
             Ok(Ok(()))
         }
@@ -86,6 +82,22 @@ pub(super) async fn gc(dry_run: bool, older_than: Option<i64>) -> Result<()> {
         "{} {removed}, kept {kept}",
         if dry_run { "would remove" } else { "removed" }
     );
+    Ok(())
+}
+
+/// Remove `wt` and its tests-clone and scratch siblings, and each one's
+/// private provider-state directory (see `sandbox::discard_provider_state`):
+/// otherwise a copy of the login leaks per task (docs/REVIEW-4.md #1.23).
+fn remove_worktree_and_siblings(wt: &Path, worktree: &str) -> Result<()> {
+    std::fs::remove_dir_all(wt)?;
+    crate::sandbox::discard_provider_state(wt);
+    for sibling in [
+        crate::attempt::tests_clone_dir(worktree),
+        crate::attempt::scratch_dir(worktree),
+    ] {
+        let _ = std::fs::remove_dir_all(&sibling);
+        crate::sandbox::discard_provider_state(&sibling);
+    }
     Ok(())
 }
 
