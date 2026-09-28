@@ -765,23 +765,22 @@ pub fn set_run_root(home: &Path) {
 }
 
 /// The directory proxy directories live in: `$FORGE_HOME/run` (as named to
-/// `set_run_root`), else `$XDG_RUNTIME_DIR/forge`. Never the shared temp
-/// directory, where another local user could pre-create the name.
-pub fn run_root() -> Result<PathBuf> {
+/// `set_run_root`), else `$XDG_RUNTIME_DIR/forge`, else a per-user name in
+/// the temp directory, which `create_private` refuses unless it is ours and
+/// private (another user can pre-create it, but not use it).
+pub fn run_root() -> PathBuf {
     if let Some(root) = RUN_ROOT.get() {
-        return Ok(root.clone());
+        return root.clone();
     }
     match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(d) if !d.is_empty() => Ok(PathBuf::from(d).join("forge")),
-        _ => bail!(
-            "no forge home opened and XDG_RUNTIME_DIR is not set: nowhere private for the egress proxy"
-        ),
+        Some(d) if !d.is_empty() => PathBuf::from(d).join("forge"),
+        _ => std::env::temp_dir().join(format!("forge-run-{}", unsafe { libc::geteuid() })),
     }
 }
 
 /// This process's proxy directory.
-pub fn own_dir() -> Result<PathBuf> {
-    Ok(run_root()?.join(format!("egress-{}", std::process::id())))
+pub fn own_dir() -> PathBuf {
+    run_root().join(format!("egress-{}", std::process::id()))
 }
 
 /// `path` is a real directory (not a link) of this user that no one else
@@ -838,7 +837,7 @@ fn own_dir_ready() -> Result<PathBuf> {
         verify_private(path)?;
         return Ok(path.clone());
     }
-    let path = own_dir()?;
+    let path = own_dir();
     create_private(&path)?;
     *made = Some(path.clone());
     Ok(path)
@@ -846,9 +845,7 @@ fn own_dir_ready() -> Result<PathBuf> {
 
 /// Remove this process's proxy directory: a worker does it once, at exit.
 pub fn remove_own_dir() {
-    if let Ok(dir) = own_dir() {
-        let _ = std::fs::remove_dir_all(dir);
-    }
+    let _ = std::fs::remove_dir_all(own_dir());
 }
 
 /// Removes the process's proxy directory when dropped.
@@ -893,9 +890,9 @@ pub fn sweep_dead(root: &Path) -> usize {
     swept
 }
 
-/// `sweep_dead` over `run_root()`: 0 when there is none.
+/// `sweep_dead` over `run_root()`.
 pub fn sweep_dead_in_run_root() -> usize {
-    run_root().map_or(0, |root| sweep_dead(&root))
+    sweep_dead(&run_root())
 }
 
 #[cfg(test)]
