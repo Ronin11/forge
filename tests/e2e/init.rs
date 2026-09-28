@@ -79,7 +79,7 @@ fn forge_init_sets_up_a_fresh_home_and_prints_the_systemd_commands() {
     assert!(unit_dir.join("forge-web.service").exists());
     let worker_unit = std::fs::read_to_string(unit_dir.join("forge-worker.service")).unwrap();
     assert!(worker_unit.contains("ExecStart="));
-    assert!(worker_unit.contains(&format!("FORGE_HOME={}", e.home.display())));
+    assert!(worker_unit.contains(&format!("Environment=\"FORGE_HOME={}\"", e.home.display())));
 
     assert!(out.contains("no systemd user session detected"), "{out}");
     assert!(out.contains("systemctl --user daemon-reload"), "{out}");
@@ -255,7 +255,10 @@ fn forge_init_relink_moves_an_existing_install_onto_the_release_layout() {
     let unit =
         std::fs::read_to_string(e.xdg_config.join("systemd/user/forge-worker.service")).unwrap();
     assert!(
-        unit.contains(&format!("ExecStart={}/current/forge work", bin.display())),
+        unit.contains(&format!(
+            "ExecStart=\"{}/current/forge\" \"work\"",
+            bin.display()
+        )),
         "{unit}"
     );
     assert!(out.contains("done release"), "{out}");
@@ -327,9 +330,12 @@ fn forge_init_bakes_the_shell_path_into_the_units_and_prints_it() {
         let unit = std::fs::read_to_string(unit_dir.join(name)).unwrap();
         let line = unit
             .lines()
-            .find(|l| l.starts_with("Environment=PATH="))
+            .find(|l| l.starts_with("Environment=\"PATH="))
             .unwrap();
-        let dirs: Vec<&str> = line["Environment=PATH=".len()..].split(':').collect();
+        let value = line["Environment=\"PATH=".len()..]
+            .strip_suffix('"')
+            .unwrap();
+        let dirs: Vec<&str> = value.split(':').collect();
         assert_eq!(
             &dirs[1..],
             [agents.to_str().unwrap(), "/usr/bin", "/bin"],
@@ -380,4 +386,56 @@ fn doctor_fails_when_the_worker_units_path_cannot_find_claude() {
         out.contains("forge init --relink"),
         "the fix is named: {out}"
     );
+}
+
+#[test]
+fn forge_init_units_survive_a_home_and_path_with_spaces_under_systemd_analyze_verify() {
+    let probe = std::process::Command::new("systemd-analyze")
+        .arg("--version")
+        .output();
+    if !probe.map(|o| o.status.success()).unwrap_or(false) {
+        eprintln!("systemd-analyze not available; skipping");
+        return;
+    }
+    let e = Env::new();
+    let home = e.home.parent().unwrap().join("my home");
+    let agents = e.home.parent().unwrap().join("agent dir$x");
+    std::fs::create_dir_all(&agents).unwrap();
+    let shell_path = format!("{}:/usr/bin:/bin", agents.display());
+    let mut cmd = e.cmd("ok.sh");
+    cmd.env_remove("XDG_RUNTIME_DIR")
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        .env("PATH", &shell_path)
+        .arg("init")
+        .arg("--home")
+        .arg(&home);
+    let o = cmd.output().expect("forge init");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    let unit_dir = e.xdg_config.join("systemd/user");
+    for name in ["forge-worker.service", "forge-web.service"] {
+        let file = unit_dir.join(name);
+        let unit = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            unit.contains(&format!("Environment=\"FORGE_HOME={}\"", home.display())),
+            "{unit}"
+        );
+        assert!(unit.contains("dir$x") && !unit.contains("dir$$x"), "{unit}");
+        let v = std::process::Command::new("systemd-analyze")
+            .args(["--user", "verify"])
+            .arg(&file)
+            .output()
+            .expect("systemd-analyze verify");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&v.stdout),
+            String::from_utf8_lossy(&v.stderr)
+        );
+        // A missing forge-web next to the test binary is not what is under test.
+        let bad: Vec<&str> = text
+            .lines()
+            .filter(|l| !l.contains("is not executable") && !l.contains("No such file"))
+            .filter(|l| l.contains(name))
+            .collect();
+        assert!(bad.is_empty(), "{name}: {text}");
+    }
 }

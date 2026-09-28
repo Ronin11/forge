@@ -47,12 +47,79 @@ pub fn compose(bin_dir: &Path, shell_path: Option<OsString>) -> String {
         .join(":")
 }
 
+/// `s` as one double-quoted systemd word: `\` and `"` escaped and `%`
+/// doubled (a specifier), so whitespace stays inside the word. A newline
+/// would end the line and start another directive, so it is refused.
+/// `expand` also doubles `$`, which `ExecStart=` arguments need
+/// (`$VAR` expansion) and `Environment=` values must not have: systemd
+/// does no expansion there, so `$$` would reach the process as two dollars.
+fn quote(s: &str, expand: bool) -> Result<String> {
+    if s.contains(['\n', '\r']) {
+        bail!("cannot write {s:?} into a systemd unit: it contains a newline");
+    }
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '%' => out.push_str("%%"),
+            '$' if expand => out.push_str("$$"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    Ok(out)
+}
+
+/// `Environment="key=value"`, with no `$` doubling.
+pub fn environment_line(key: &str, value: &str) -> Result<String> {
+    Ok(format!(
+        "Environment={}",
+        quote(&format!("{key}={value}"), false)?
+    ))
+}
+
+/// `ExecStart=` with each argument quoted; `$` is doubled.
+pub fn exec_start_line(args: &[&str]) -> Result<String> {
+    let words = args
+        .iter()
+        .map(|a| quote(a, true))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(format!("ExecStart={}", words.join(" ")))
+}
+
+/// The value of an `Environment=` line: unquoted and unescaped when it is
+/// double-quoted, as written by `environment_line`, else taken as is.
+/// Only `Environment=` is read, where `$` has no meaning and is kept.
+fn unquote(v: &str) -> String {
+    let v = v.trim();
+    let Some(inner) = v.strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
+        return v.to_string();
+    };
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek()) {
+            ('\\', Some(&n)) if n == '\\' || n == '"' => {
+                out.push(n);
+                chars.next();
+            }
+            ('%', Some('%')) => {
+                out.push('%');
+                chars.next();
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// The `Environment=PATH=` a unit file declares, if it exists and has one.
 pub fn declared_path(unit: &Path) -> Option<String> {
     let text = std::fs::read_to_string(unit).ok()?;
     text.lines().find_map(|l| {
-        let v = l.trim().strip_prefix("Environment=")?;
-        let v = v.trim().trim_matches('"');
+        let v = unquote(l.trim().strip_prefix("Environment=")?);
         v.strip_prefix("PATH=").map(str::to_string)
     })
 }
@@ -119,6 +186,42 @@ mod tests {
         )
         .unwrap();
         assert_eq!(declared_path(&f).as_deref(), Some("/a:/b"));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn quote_escapes_and_refuses_a_newline() {
+        assert_eq!(
+            quote(r#"a b\c"d%e$f"#, false).unwrap(),
+            r#""a b\\c\"d%%e$f""#
+        );
+        assert_eq!(
+            quote(r#"a b\c"d%e$f"#, true).unwrap(),
+            r#""a b\\c\"d%%e$$f""#
+        );
+        assert!(quote("a\nb", false).is_err());
+        assert!(quote("a\rb", true).is_err());
+    }
+
+    #[test]
+    fn exec_start_quotes_each_argument_and_doubles_dollars() {
+        let l = exec_start_line(&["/h ome/forge", "work", "$x"]).unwrap();
+        assert_eq!(l, r#"ExecStart="/h ome/forge" "work" "$$x""#);
+    }
+
+    #[test]
+    fn declared_path_reads_back_a_home_and_path_with_spaces_and_specials() {
+        let home = "/tmp/my home/h$x%y";
+        let path = "/tmp/my home/bin:/tmp/dir$y:/mnt/c/Program Files/a\"b";
+        let h = environment_line("FORGE_HOME", home).unwrap();
+        let p = environment_line("PATH", path).unwrap();
+        assert_eq!(h, r#"Environment="FORGE_HOME=/tmp/my home/h$x%%y""#);
+        assert!(p.contains("/tmp/dir$y:") && !p.contains("$$"), "{p}");
+        let d = std::env::temp_dir().join(format!("unit-path-q-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("u.service");
+        std::fs::write(&f, format!("[Service]\n{h}\n{p}\n")).unwrap();
+        assert_eq!(declared_path(&f).as_deref(), Some(path));
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

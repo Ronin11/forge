@@ -60,8 +60,14 @@ fn systemd_available() -> bool {
         && std::env::var_os("XDG_RUNTIME_DIR").is_some()
 }
 
-fn worker_unit(home: &Path, forge_bin: &Path, path: &str) -> String {
-    format!(
+use crate::unit_path::{environment_line as env_line, exec_start_line as exec_line};
+
+fn display(p: &Path) -> String {
+    p.display().to_string()
+}
+
+fn worker_unit(home: &Path, forge_bin: &Path, path: &str) -> Result<String> {
+    Ok(format!(
         "# Written by `forge init`; re-run it after moving the binary.\n\
 [Unit]\n\
 Description=Forge worker\n\
@@ -72,9 +78,9 @@ StartLimitBurst=5\n\
 [Service]\n\
 Type=notify\n\
 NotifyAccess=all\n\
-Environment=FORGE_HOME={home}\n\
-Environment=PATH={path}\n\
-ExecStart={forge_bin} work --jobs 4\n\
+{home}\n\
+{path}\n\
+{exec}\n\
 KillSignal=SIGTERM\n\
 KillMode=mixed\n\
 TimeoutStopSec=2400\n\
@@ -85,34 +91,34 @@ RestartMaxDelaySec=900\n\
 \n\
 [Install]\n\
 WantedBy=default.target\n",
-        home = home.display(),
-        path = path,
-        forge_bin = forge_bin.display(),
-    )
+        home = env_line("FORGE_HOME", &display(home))?,
+        path = env_line("PATH", path)?,
+        exec = exec_line(&[&display(forge_bin), "work", "--jobs", "4"])?,
+    ))
 }
 
-fn web_unit(home: &Path, forge_bin: &Path, web_bin: &Path, path: &str) -> String {
-    format!(
+fn web_unit(home: &Path, forge_bin: &Path, web_bin: &Path, path: &str) -> Result<String> {
+    Ok(format!(
         "# Written by `forge init`; re-run it after moving the binary.\n\
 [Unit]\n\
 Description=Forge web client\n\
 After=network.target\n\
 \n\
 [Service]\n\
-Environment=FORGE_HOME={home}\n\
-Environment=FORGE_BIN={forge_bin}\n\
-Environment=PATH={path}\n\
-ExecStart={web_bin} --bind 127.0.0.1:7788\n\
+{home}\n\
+{forge_bin}\n\
+{path}\n\
+{exec}\n\
 Restart=on-failure\n\
 RestartSec=3\n\
 \n\
 [Install]\n\
 WantedBy=default.target\n",
-        home = home.display(),
-        path = path,
-        forge_bin = forge_bin.display(),
-        web_bin = web_bin.display(),
-    )
+        home = env_line("FORGE_HOME", &display(home))?,
+        forge_bin = env_line("FORGE_BIN", &display(forge_bin))?,
+        path = env_line("PATH", path)?,
+        exec = exec_line(&[&display(web_bin), "--bind", "127.0.0.1:7788"])?,
+    ))
 }
 
 /// Write `path` only when its content would change, so a second run
@@ -189,8 +195,8 @@ fn install_units(home: &Path) -> Result<StepResult> {
     let worker_path = dir.join("forge-worker.service");
     let web_path = dir.join("forge-web.service");
     let path = unit_path(&bin_dir);
-    let worker_changed = write_if_changed(&worker_path, &worker_unit(home, &forge_bin, &path))?;
-    let web_changed = write_if_changed(&web_path, &web_unit(home, &forge_bin, &web_bin, &path))?;
+    let worker_changed = write_if_changed(&worker_path, &worker_unit(home, &forge_bin, &path)?)?;
+    let web_changed = write_if_changed(&web_path, &web_unit(home, &forge_bin, &web_bin, &path)?)?;
     let files_changed = worker_changed || web_changed;
 
     if !systemd_available() {
