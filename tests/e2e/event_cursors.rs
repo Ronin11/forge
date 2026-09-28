@@ -108,3 +108,46 @@ esac
         "7:999\n8:42\n"
     );
 }
+
+fn follow_lines(e: &Env, want: usize) -> Vec<String> {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    let mut child = e
+        .cmd("ok.sh")
+        .env("FORGE_PLUGIN_NAME", "replay")
+        .args(["events", "--follow"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = Vec::new();
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    while lines.len() < want {
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap() == 0 {
+            break;
+        }
+        lines.push(line);
+    }
+    // Killed while blocked waiting for more, as a crash would.
+    child.kill().unwrap();
+    child.wait().unwrap();
+    lines
+}
+
+#[test]
+fn a_followed_subscription_resumes_after_a_kill_without_replaying_delivered_events() {
+    let e = Env::new();
+    fs::create_dir_all(&e.home).unwrap();
+    let path = e.home.join("events.jsonl");
+    let mut log = String::new();
+    for i in 0..100 {
+        log.push_str(&format!("{{\"type\":\"note\",\"text\":\"{i}\"}}\n"));
+    }
+    fs::write(&path, &log).unwrap();
+    assert_eq!(follow_lines(&e, 100).len(), 100);
+    let mut more = fs::OpenOptions::new().append(true).open(&path).unwrap();
+    std::io::Write::write_all(&mut more, b"{\"type\":\"note\",\"text\":\"new\"}\n").unwrap();
+    let again = follow_lines(&e, 1);
+    assert_eq!(again.len(), 1);
+    assert!(again[0].contains("\"new\""), "{again:?}");
+}

@@ -40,16 +40,20 @@ pub(super) enum WorkflowsCmd {
         name: Option<String>,
     },
     /// Remove catalog copies of built-in actions that only shadow the
-    /// built-in (stale seeds). An operator-edited copy is shown as a diff
+    /// built-in (stale seeds, including copies that differ from it only in
+    /// whitespace or comments). An operator-edited copy is shown as a diff
     /// and refused unless `--take-builtin` (drop the copy) or `--keep`
-    /// (leave it) says which
+    /// (leave it) says which; either takes action names to decide one copy
+    /// at a time
     Refresh {
-        /// Drop operator-edited copies too, so the built-in applies
-        #[arg(long, conflicts_with = "keep")]
-        take_builtin: bool,
-        /// Keep operator-edited copies as they are
-        #[arg(long)]
-        keep: bool,
+        /// Drop operator-edited copies too, so the built-in applies: all
+        /// of them, or only the named actions (`--take-builtin deploy-self`)
+        #[arg(long, value_name = "ACTION", num_args = 0..)]
+        take_builtin: Option<Vec<String>>,
+        /// Keep operator-edited copies as they are: all of them, or only
+        /// the named actions (`--keep deploy-self`)
+        #[arg(long, value_name = "ACTION", num_args = 0..)]
+        keep: Option<Vec<String>>,
     },
     /// Write a candidate workflow file into the operator's catalog once
     /// it lints clean, commit it in the catalog's own git, and print the
@@ -581,15 +585,78 @@ fn list_providers(json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Whether `name` (`deploy-self` or `deploy-self.toml`) is `file`.
+fn names_file(name: &str, file: &str) -> bool {
+    name.trim_end_matches(".toml") == file.trim_end_matches(".toml")
+}
+
+/// What a `--take-builtin`/`--keep` flag says about `file`: `Some(true)` if
+/// it names the file, `Some(false)` if it is bare (every copy), `None` if
+/// it is absent or names other files only.
+fn says(flag: &Option<Vec<String>>, file: &str) -> Option<bool> {
+    let names = flag.as_ref()?;
+    if names.is_empty() {
+        return Some(false);
+    }
+    names.iter().any(|n| names_file(n, file)).then_some(true)
+}
+
+/// Whether an operator-edited `file` is dropped (`Some(true)`), kept
+/// (`Some(false)`) or left undecided (`None`). A flag that names the file
+/// beats a bare one on the other side.
+fn decision(take: &Option<Vec<String>>, keep: &Option<Vec<String>>, file: &str) -> Option<bool> {
+    match (says(take, file), says(keep, file)) {
+        (Some(true), _) | (Some(false), None) => Some(true),
+        (_, Some(true)) | (None, Some(false)) => Some(false),
+        _ => None,
+    }
+}
+
+/// Refuse a flag that contradicts itself or names a copy that is not there,
+/// before anything is removed.
+fn check_refresh_flags(
+    take: &Option<Vec<String>>,
+    keep: &Option<Vec<String>>,
+    files: &[String],
+) -> Result<()> {
+    let named = |flag: &Option<Vec<String>>| flag.iter().flatten().cloned().collect::<Vec<_>>();
+    if matches!(take, Some(v) if v.is_empty()) && matches!(keep, Some(v) if v.is_empty()) {
+        bail!(
+            "--take-builtin and --keep cannot both apply to every copy; name the actions for one"
+        );
+    }
+    for n in named(take).iter().chain(&named(keep)) {
+        if !files.iter().any(|f| names_file(n, f)) {
+            bail!("no catalog copy of a built-in action is named {n:?}");
+        }
+    }
+    for n in named(take) {
+        if named(keep).iter().any(|k| names_file(k, &n)) {
+            bail!("{n} is named by both --take-builtin and --keep");
+        }
+    }
+    Ok(())
+}
+
 /// `forge workflows refresh`: see `workflows::shadow`.
-async fn refresh_workflows(take_builtin: bool, keep: bool) -> Result<()> {
+async fn refresh_workflows(
+    take_builtin: Option<Vec<String>>,
+    keep: Option<Vec<String>>,
+) -> Result<()> {
     use workflows::shadow::{self, Origin};
     let f = Forge::open(false, false)?;
     let dir = workflows::catalog_dir(&f.paths.home)?;
+    let shadows = shadow::scan(&dir);
+    let files: Vec<String> = shadows.iter().map(|s| s.file.clone()).collect();
+    check_refresh_flags(&take_builtin, &keep, &files)?;
     let mut refused = Vec::new();
-    for s in shadow::scan(&dir) {
-        match (s.origin, take_builtin, keep) {
-            (Origin::StaleSeed, ..) | (Origin::OperatorEdit, true, _) => {
+    for s in shadows {
+        let decided = match s.origin {
+            Origin::StaleSeed => Some(true),
+            Origin::OperatorEdit => decision(&take_builtin, &keep, &s.file),
+        };
+        match decided {
+            Some(true) => {
                 shadow::remove(&dir, &s.file).await?;
                 out!(
                     "removed {} ({}); the built-in applies",
@@ -597,8 +664,8 @@ async fn refresh_workflows(take_builtin: bool, keep: bool) -> Result<()> {
                     s.origin.as_str()
                 );
             }
-            (Origin::OperatorEdit, false, true) => out!("kept {} (operator edit)", s.file),
-            (Origin::OperatorEdit, false, false) => {
+            Some(false) => out!("kept {} (operator edit)", s.file),
+            None => {
                 match &s.diff {
                     Ok(diff) => out!(
                         "{} is an operator edit ({} diff line(s), {} old):\n{}",
@@ -619,7 +686,7 @@ async fn refresh_workflows(take_builtin: bool, keep: bool) -> Result<()> {
     }
     if !refused.is_empty() {
         bail!(
-            "{} differ(s) from the built-in and were edited by the operator: rerun with --take-builtin to drop the copy or --keep to keep it",
+            "{} differ(s) from the built-in and were edited by the operator: rerun with --take-builtin [ACTION...] to drop the copy or --keep [ACTION...] to keep it",
             refused.join(", ")
         );
     }

@@ -208,6 +208,7 @@ and check gets (`PATH`, `HOME`, and the rest in `src/agent.rs`).
 | `FORGE_BIN` | The stable forge launch path to call: the worker's inherited FORGE_BIN, or its launch name. It stays usable across binary replacement and plugin restarts during deploys. Always set; never assume `forge` is on `PATH`. |
 | `FORGE_HOME` | Forge's data directory, so a plugin's `forge` calls see the same store. The name from now on. |
 | `FORGE2_HOME` | The same value as `FORGE_HOME`, kept for one release for a plugin still written against the old name; do not rely on it past that. |
+| `FORGE_PLUGIN_NAME` | The plugin's name. `forge events --follow` with no `--since` is a subscription under this name: Forge records the cursor of each line it hands over, so a restarted plugin resumes after the last delivery instead of replaying the log. Outside a plugin the subscription is called `default`. |
 | `FORGE_PLUGIN_DIR` | The plugin's own directory: its config, its assets. |
 | `FORGE_PLUGIN_STATE` | A directory Forge creates for the plugin to keep its cursor and anything else it must remember across restarts. |
 
