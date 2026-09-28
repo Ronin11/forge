@@ -379,6 +379,15 @@ impl Sandbox {
             .insert(worktree.to_path_buf(), dir);
     }
 
+    /// Copy `worktree`'s private login back over the host file when the
+    /// attempt refreshed it (see `login`). Whether it did.
+    pub fn write_back_login(&self, worktree: &Path) -> bool {
+        let private = provider_state_dir(worktree)
+            .join("claude")
+            .join(crate::login::FILE);
+        crate::login::write_back(&self.config_dir, &private).unwrap_or(false)
+    }
+
     fn cache_dir_for(&self, worktree: &Path) -> Option<PathBuf> {
         let caches = self.caches.lock().unwrap();
         worktree.ancestors().find_map(|d| caches.get(d)).cloned()
@@ -533,9 +542,18 @@ impl Sandbox {
         let codex_priv = provider_dir.join("codex");
         let _ = std::fs::create_dir_all(&claude_priv);
         let _ = std::fs::create_dir_all(&codex_priv);
-        for name in [".credentials.json", "settings.json"] {
-            let _ = std::fs::copy(self.config_dir.join(name), claude_priv.join(name));
-        }
+        // The login is the kernel's (see `login`): a later private pair is
+        // written back over the host file first, and an empty host file
+        // seeds nothing. Settings are plain copies.
+        crate::login::seed(
+            &self.config_dir,
+            worktree,
+            &claude_priv.join(crate::login::FILE),
+        );
+        let _ = std::fs::copy(
+            self.config_dir.join("settings.json"),
+            claude_priv.join("settings.json"),
+        );
         for name in ["auth.json", "config.toml"] {
             let _ = std::fs::copy(self.codex_dir.join(name), codex_priv.join(name));
         }
@@ -613,6 +631,9 @@ impl Sandbox {
 mod tests {
     use super::*;
 
+    const CREDS: &str =
+        r#"{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":32503680000000}}"#;
+
     #[test]
     fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
         let root = tempfile::tempdir().unwrap();
@@ -625,7 +646,7 @@ mod tests {
         std::fs::create_dir_all(&codex_dir).unwrap();
         std::fs::create_dir_all(&copilot_dir).unwrap();
         std::fs::write(copilot_dir.join("config.json"), "login").unwrap();
-        std::fs::write(config_dir.join(".credentials.json"), "creds").unwrap();
+        std::fs::write(config_dir.join(".credentials.json"), CREDS).unwrap();
         std::fs::write(config_dir.join("settings.json"), "settings").unwrap();
         std::fs::write(codex_dir.join("auth.json"), "auth").unwrap();
         std::fs::write(codex_dir.join("config.toml"), "cfg").unwrap();
@@ -739,7 +760,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(claude_priv.join(".credentials.json")).unwrap(),
-            "creds"
+            CREDS
         );
         assert_eq!(
             std::fs::read_to_string(claude_priv.join("settings.json")).unwrap(),

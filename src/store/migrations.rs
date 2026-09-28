@@ -696,6 +696,9 @@ DROP INDEX jobs_schedule_slot;
 CREATE UNIQUE INDEX jobs_schedule_slot ON jobs(project, workflow, trigger_ref)
   WHERE trigger_kind = 'schedule' AND retry_count = 0;
 ",
+    "ALTER TABLE jobs ADD COLUMN run INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE job_steps ADD COLUMN run INTEGER NOT NULL DEFAULT 0;
+     CREATE INDEX job_steps_run ON job_steps(job_id, run, seq);",
 
 ];
 

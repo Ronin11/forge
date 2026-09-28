@@ -1413,10 +1413,11 @@ async fn try_land(args: TryLand<'_>) -> Result<Option<End>, Fault> {
     let outcome = integrate(f, t, url, remote, &mut seq, attempt_no, &lock).await?;
     run.seq = seq;
     match outcome {
-        Integrate::Landed(sha) => {
-            t.landed_sha = sha.clone();
-            t.landed_at = Some(unix_now());
-            Ok(Some(End::Landed(sha)))
+        Integrate::Landed(landed) => {
+            crate::landing::effects::persist(f, t, &landed)?;
+            drop(lock);
+            crate::landing::effects::run(f, t, &landed).await;
+            Ok(Some(End::Landed(landed.sha)))
         }
         Integrate::Rewind {
             feedback,

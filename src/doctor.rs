@@ -7,6 +7,8 @@ use crate::{agent, config, sandbox, unix_now, worker, workflows};
 use anyhow::Result;
 use serde::Serialize;
 
+mod login;
+
 #[derive(PartialEq, Eq, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
@@ -1240,6 +1242,7 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     out.extend(check_executors(&store, &paths));
     out.extend(check_project_purposes(&store));
     out.extend(check_egress(&paths, &store));
+    out.extend(login::anthropic());
     out.extend(check_environment_grants(&store));
     out.extend(check_workflows(&paths));
     out.push(workflows::shadow::doctor_check(&paths.home));

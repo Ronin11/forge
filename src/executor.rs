@@ -271,6 +271,15 @@ impl Execution {
             _ => Ok(()),
         }
     }
+    /// After a launch in `path`: write the attempt's private login back over
+    /// the host file if it refreshed it (see `login`). Only a bwrap launch
+    /// has a private copy; whether a write-back happened.
+    pub fn write_back_login(&self, path: &Path) -> bool {
+        match &self.bwrap {
+            Ok(sb) if self.backend(path) == Backend::Bwrap => sb.write_back_login(path),
+            _ => false,
+        }
+    }
     pub fn set_egress(&self, path: &Path, rules: &[Rule]) {
         if let Ok(sb) = &self.bwrap {
             sb.set_egress(path, rules);

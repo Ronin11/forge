@@ -307,6 +307,7 @@ src/render.rs       text rendering for documents: first sentence, path-like toke
 src/report.rs       typed events; the stderr printer is one consumer
 src/executor.rs     executor contract, backend selection, and guarantees
 src/sandbox.rs      bubblewrap
+src/login.rs        the agent login: a refreshed token written back over the host file, an empty one never seeded
 src/successor.rs     the successor worker: a staged release starts forge work on it, the old worker drains
 src/store/          SQLite, forward-only migrations by user_version, one file per table family (workers.rs: the registered workers and their releases)
   mod.rs            types, column lists, open, schema_version, the migration runner
@@ -316,6 +317,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   arms.rs           insert_task_armed: insert a task and draw its journal/explore arms in one transaction
   attempts.rs       attempts and ops: insert, finish, rate limits, tool facts
   jobs.rs           jobs, job_steps, job_effects
+  job_runs.rs       recovered job run numbers and cumulative step costs
   deploys.rs        deploys, deploy_targets, assessments
   projects.rs       projects, project_repos, backlog, initiatives, portal_tokens
   record.rs         decisions, task_refs, plugins
