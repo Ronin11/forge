@@ -340,7 +340,7 @@ src/release.rs      releases as directories under FORGE_HOME/bin, the atomic cur
 src/upgrade.rs      forge upgrade: verify, backup, unpack a release, flip current, migrate, restart
 src/verify.rs       L0/L1/L2, the claim rule, and the pure verdict table
 src/view.rs         shapes behind `log`, `requests`, `decisions`: text and JSON from one struct
-src/worker.rs       drive, the queue loop, signals
+src/worker.rs       drive, the queue loop, signals; worker/schedule.rs: the schedule tick and its refusal log
 src/workflows.rs    the workflow and action tables, loaded as one Catalog
 tests/e2e/          the real binary against fake agents in tests/fakes/
 
