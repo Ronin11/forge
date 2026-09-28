@@ -113,6 +113,14 @@ pub async fn run_attempt(
     } = args;
     let contract = step.action.contract;
     let repo = Path::new(&t.repo);
+    // The tests contract's own clone and scratch directory are siblings
+    // of the worktree on disk, not descendants: without registering them
+    // an environment grant applied to the worktree would never reach an
+    // attempt running in either (E1-22).
+    f.register_task_dirs(
+        Path::new(&t.worktree),
+        &[tests_clone_dir(&t.worktree), scratch_dir(&t.worktree)],
+    );
     // The initiative's outcome, when this task belongs to one: placed in
     // every step's prompt as "Why this task exists" (see
     // docs/PROJECTS.md, "Initiative").

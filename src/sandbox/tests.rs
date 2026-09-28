@@ -134,6 +134,7 @@ fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
         caches: Mutex::new(BTreeMap::new()),
         targets: Mutex::new(BTreeMap::new()),
         granted: Mutex::new(BTreeMap::new()),
+        directories: Mutex::new(BTreeMap::new()),
     };
     sandbox.set_provider_hosts(&worktree, &[Rule::parse("api.example.com").unwrap()]);
     sandbox.set_cache_dir(&worktree, repo_cache.clone());
@@ -356,6 +357,7 @@ fn test_sandbox(model: &str) -> Sandbox {
         caches: Mutex::new(BTreeMap::new()),
         targets: Mutex::new(BTreeMap::new()),
         granted: Mutex::new(BTreeMap::new()),
+        directories: Mutex::new(BTreeMap::new()),
     };
     sb.set_provider_hosts(Path::new("/work/1"), &[Rule::parse(model).unwrap()]);
     sb
@@ -730,3 +732,32 @@ fn relay_missing_executable_stops_before_launching_agent() {
     assert!(began.elapsed() >= std::time::Duration::from_secs(5));
     assert!(began.elapsed() < std::time::Duration::from_secs(15));
 }
+
+#[test]
+fn a_grant_for_a_worktree_reaches_its_registered_tests_and_red_siblings() {
+    let sb = test_sandbox("api.example.com");
+    let names = |p: &Policy| p.rules().iter().map(|r| r.to_string()).collect::<Vec<_>>();
+    let wt = PathBuf::from("/work/1");
+    let tests_dir = PathBuf::from("/work/1-tests");
+    let red_dir = PathBuf::from("/work/1-red");
+    // The tests contract's own clone and its scratch directory are
+    // siblings of the worktree on disk, not descendants, so without
+    // registering them a grant applied to the worktree would never
+    // reach either (E1-22).
+    sb.register_task(&wt, &[tests_dir.clone(), red_dir.clone()]);
+    assert!(sb.grant_host(&wt, Rule::parse("registry.npmjs.org").unwrap()));
+    for dir in [&wt, &tests_dir, &red_dir] {
+        assert!(
+            names(&sb.policy_for(dir)).contains(&"registry.npmjs.org".to_string()),
+            "{dir:?}: {:?}",
+            names(&sb.policy_for(dir))
+        );
+    }
+    // A worktree never registered with any task keeps the old sibling
+    // isolation: the grant does not leak to it.
+    assert!(
+        !names(&sb.policy_for(Path::new("/work/2")))
+            .contains(&"registry.npmjs.org".to_string())
+    );
+}
+

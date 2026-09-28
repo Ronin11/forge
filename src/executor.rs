@@ -378,6 +378,11 @@ impl Execution {
             sb.set_cache_dir(path, dir);
         }
     }
+    pub fn register_task(&self, path: &Path, siblings: &[PathBuf]) {
+        if let Ok(sb) = &self.bwrap {
+            sb.register_task(path, siblings);
+        }
+    }
     pub fn grant_host(&self, path: &Path, rule: Rule) -> bool {
         self.bwrap
             .as_ref()
