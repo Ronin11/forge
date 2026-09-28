@@ -18,6 +18,7 @@ mod descendants;
 mod events;
 mod factors;
 mod holds;
+mod job_resolutions;
 mod job_runs;
 mod jobs;
 mod messages;
@@ -38,6 +39,7 @@ pub use attempts::{Attempt, AttemptState, FinishAttempt, Op, RateLimitSample, se
 pub use daily::DailyStat;
 pub use deploys::{Assessment, Deploy, DeployTarget, FinishDeploy};
 pub use factors::{FactorLevelStat, ROLES};
+pub use job_resolutions::JobResolution;
 pub use jobs::{Job, JobEffect, JobStat, JobState, JobStep, PerDayRefused};
 pub use messages::{Direction, InsertMessage, Message, MessageFilter};
 pub use owners::{Caller, Owner, start_of};

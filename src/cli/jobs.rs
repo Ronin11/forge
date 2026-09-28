@@ -483,6 +483,12 @@ fn job_show(id: i64, json: bool) -> Result<()> {
             out!("reason     {}", c.tail);
         }
     }
+    if let Some(r) = &doc.resolution {
+        out!("resolution {} by {}", r.resolution, r.answered_by);
+        for line in r.answer.lines() {
+            out!("  {line}");
+        }
+    }
     if !doc.steps.is_empty() {
         out!("steps");
         let verdict: Vec<crate::checks::CheckResult> =

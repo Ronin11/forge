@@ -755,6 +755,19 @@ CREATE TABLE provider_probes (
   detail TEXT NOT NULL DEFAULT ''
 );
 ",
+    // How a job's `needs_human` ended: the answer to its `job question`
+    // task (docs/JOBS.md, "The human rung, per run"), read by `forge job
+    // show`. One row per job; the job's own state stays as it ended.
+    "
+CREATE TABLE job_resolutions (
+  job_id INTEGER PRIMARY KEY REFERENCES jobs(id),
+  resolution TEXT NOT NULL,
+  answer TEXT NOT NULL,
+  answered_by TEXT NOT NULL,
+  task_id INTEGER,
+  at INTEGER NOT NULL
+);
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

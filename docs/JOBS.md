@@ -658,9 +658,20 @@ to a person, as it does now. Skipped runs never reach `on_failure` at
 all — a skip is not a failure ("Skipping a run", above) — and neither
 does a dry run.
 
-Answering the task is a human's own action today; it records a decision
-the way any other answer does, but does not itself re-run the job. A
-daily question cap per contact, the way intake already has one, is not
+Answering the task is a human's own action: `forge answer <task> <text>`
+settles a job question, which has no attempt behind it to retry. The
+answer is the job's resolution: a decision row `job <id> answered:
+<text>` (by `--by`, the operator by default), the job's `needs_human`
+closed as `answered`, and the task moved to `succeeded` with the answer
+as its reason — not `withdrawn`, which reads as "not doing it". Nothing
+is re-queued, and the job is not re-run. `forge job show <id>` prints the
+answer under a `resolution` line (and `--json` as `resolution`). An
+`ask:contact` question is answered the same way from the contact's own
+channel: the plugin runs `forge answer <task> <text> --by <contact>`
+exactly as it does for a task's question, and `--project` scopes it the
+same way. A task
+that really is blocked on an agent attempt's question still re-queues as
+a retry carrying the answer. A daily question cap per contact, the way intake already has one, is not
 built here.
 
 ## The portal
