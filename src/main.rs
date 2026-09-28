@@ -71,6 +71,7 @@ pub fn unix_now() -> i64 {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _own_egress_dir = egress::MadeDirGuard;
     cli::main().await
 }
 

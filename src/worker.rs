@@ -798,7 +798,10 @@ fn write_pid_file(paths: &Paths, pid: i64) {
 /// draining predecessor's, is never touched); the guard removes this
 /// worker's own at exit.
 fn claim_egress_dir() -> crate::egress::OwnDirGuard {
-    let swept = crate::egress::sweep_dead(&std::env::temp_dir());
+    // Nothing of this process has made its directory yet, so one under its
+    // pid is a dead worker's whose pid was reused.
+    crate::egress::remove_own_dir();
+    let swept = crate::egress::sweep_dead_in_run_root();
     if swept > 0 {
         eprintln!("egress: swept {swept} proxy director(ies) of dead pids");
     }
@@ -839,6 +842,9 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         // Config reloads between claims: what is claimed from here on runs
         // on the new config; what already runs keeps the `Forge` it holds.
         if !stopping && let Some(next) = reloader.check(&f, std::mem::take(&mut hup)) {
+            if let Some(p) = &plugins {
+                p.reload(next.clone());
+            }
             f = next;
         }
         let mut superseded = false;

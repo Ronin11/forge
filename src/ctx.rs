@@ -113,6 +113,7 @@ impl Paths {
         };
         std::fs::create_dir_all(&p.worktrees)?;
         std::fs::create_dir_all(&p.logs)?;
+        crate::egress::set_run_root(&p.home);
         Ok(p)
     }
 
@@ -166,6 +167,9 @@ pub struct Forge {
     /// `[environment]`: what a failed attempt's environment need may be
     /// granted automatically (see `environment`).
     pub environment: crate::environment::Policy,
+    /// Extra plugin roots from the validated `config.toml`: what the
+    /// plugin supervisor scans, so a mid-edit file never empties it.
+    pub plugin_dirs: Vec<PathBuf>,
     pub sandbox: Option<Execution>,
     /// Grants already applied per worktree when there is no sandbox to
     /// remember them, so each applies once here too.
@@ -220,6 +224,7 @@ impl Forge {
             roles: home.roles,
             project_secrets: home.project_secrets,
             environment: home.environment,
+            plugin_dirs: home.plugin_dirs,
             sandbox,
             applied: Default::default(),
             report,
@@ -257,6 +262,7 @@ impl Forge {
             roles: home.roles,
             project_secrets: home.project_secrets,
             environment: home.environment,
+            plugin_dirs: home.plugin_dirs,
             sandbox: None,
             applied: Default::default(),
             report,

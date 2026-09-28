@@ -390,8 +390,8 @@ fn deploy_self_only_stages_for_a_successor_capable_worker_and_restarts_an_older_
 fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_ones() {
     let e = Env::new();
     let root = e.home.join("bin");
-    let tmp = e.home.join("tmp");
-    std::fs::create_dir_all(&tmp).unwrap();
+    let run = e.home.join("run");
+    std::fs::create_dir_all(&run).unwrap();
     for id in ["old", "new"] {
         let dir = root.join("releases").join(id);
         std::fs::create_dir_all(&dir).unwrap();
@@ -430,7 +430,6 @@ fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_o
             .filter_map(|(k, v)| Some((k, v?))),
     )
     .env("PATH", &path)
-    .env("TMPDIR", &tmp)
     .args(["work", "--poll", "1"]);
     let mut old = Worker::spawn(&mut cmd);
     let _reap = Reap(e.home.clone());
@@ -438,15 +437,19 @@ fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_o
         wait_until(|| running_pid(&e, first).is_some(), Duration::from_secs(30)),
         "the old worker never claimed task {first}"
     );
-    let old_pid = running_pid(&e, first).unwrap();
 
-    // The live predecessor's directory, and one left by a worker that died.
+    // A live worker's directory (a stand-in process, so the old worker's own
+    // `mkdir` of its directory cannot collide with ours), and one left by a
+    // worker that died.
+    let mut alive = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
     let mut gone = std::process::Command::new("true").spawn().unwrap();
     gone.wait().unwrap();
-    let live = tmp.join(format!("forge-egress-{old_pid}"));
-    let dead = tmp.join(format!("forge-egress-{}", gone.id()));
-    // The old worker makes its own once it starts the task: either may win.
-    std::fs::create_dir_all(&live).unwrap();
+    let live = run.join(format!("egress-{}", alive.id()));
+    let dead = run.join(format!("egress-{}", gone.id()));
+    std::fs::create_dir(&live).unwrap();
     std::fs::create_dir(&dead).unwrap();
 
     std::os::unix::fs::symlink("releases/new", root.join("staged")).unwrap();
@@ -464,6 +467,8 @@ fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_o
     );
     assert!(!dead.exists(), "the dead worker's directory was not swept");
     assert!(old.wait().success());
+    alive.kill().unwrap();
+    alive.wait().unwrap();
 }
 
 /// A fake `systemctl` with no `forge-portal` unit, whose other units
