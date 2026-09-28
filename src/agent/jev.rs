@@ -88,7 +88,9 @@ pub fn dropin_dir() -> Option<std::path::PathBuf> {
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .filter(|v| !v.is_empty())
         .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
+        })?;
     Some(config.join("systemd/user/forge-worker.service.d"))
 }
 
@@ -514,11 +516,17 @@ pub(super) async fn run(l: Launch<'_>) -> Result<Outcome> {
     let mut out = Outcome::default();
     let body = request(l.model, judgment.action, judgment.state);
     let mut written = Ok(());
-    let called = call(l.provider, &body, Some(l.model), l.timeout, &mut |kind, v| {
-        if written.is_ok() {
-            written = writeln!(log, "{{\"type\":\"{kind}\",\"body\":{v}}}");
-        }
-    })
+    let called = call(
+        l.provider,
+        &body,
+        Some(l.model),
+        l.timeout,
+        &mut |kind, v| {
+            if written.is_ok() {
+                written = writeln!(log, "{{\"type\":\"{kind}\",\"body\":{v}}}");
+            }
+        },
+    )
     .await;
     written?;
     let result = match called {
@@ -620,10 +628,11 @@ mod tests {
             instructions: "How soon?".into(),
             criteria: Some(serde_json::json!(["low", "high"])),
         });
-        let req = request("typesafe/jev", &a, "The input document:\nhi");
-        assert_eq!(req["model"], "typesafe/jev");
-        assert_eq!(req["input"]["state"], "The input document:\nhi");
-        let q = &req["input"]["questions"];
+        let req = request("jev-latest", &a, "The input document:\nhi");
+        assert_eq!(req["model"], "jev-latest");
+        assert_eq!(req["state"], "The input document:\nhi");
+        assert!(req.get("input").is_none(), "{req}");
+        let q = &req["questions"];
         assert_eq!(q["outcome"]["type"], "choice");
         assert_eq!(q["outcome"]["instructions"], "Route the email.");
         assert_eq!(
@@ -699,10 +708,84 @@ mod tests {
             instructions: "How big?".into(),
             criteria: Some(serde_json::json!({"a-small": "few lines", "b-large": "many"})),
         });
-        let req = request("typesafe/jev", &a, "s");
+        let req = request("jev-latest", &a, "s");
         assert_eq!(
-            req["input"]["questions"]["size"]["criteria"],
+            req["questions"]["size"]["criteria"],
             serde_json::json!(["a-small", "b-large"])
         );
+    }
+
+    /// TypeSafe's answer to a triage request with a score and a noul beside
+    /// the outcomes, in the documented response shape.
+    const RECORDED: &str = include_str!("testdata/typesafe-systemone.json");
+
+    #[test]
+    fn a_typesafe_response_is_read_from_its_top_level_answers_and_usage() {
+        let resp: Value = serde_json::from_str(RECORDED).unwrap();
+        let env = envelope(&action(), &resp["answers"]).unwrap();
+        assert_eq!(env["outcome"], "reply");
+        assert_eq!(env["confidence"], 0.91);
+        assert!(env.get("choice").is_none());
+        assert_eq!(env["answers"]["urgency"]["legend"]["1"], "medium");
+        assert_eq!(env["answers"]["personal"]["noul"], 0.22);
+        let p = crate::agent::Provider {
+            runner: crate::agent::Runner::Jev,
+            price_input_per_million: JEV_PRICE_INPUT_PER_MILLION,
+            ..Default::default()
+        };
+        let cost = usage_cost(
+            &p,
+            resp["usage"]["input_tokens"].as_i64(),
+            resp["usage"]["output_tokens"].as_i64(),
+        )
+        .unwrap();
+        assert!((cost - 500.0 * 0.042 / 1e6).abs() < 1e-15, "{cost}");
+        let priced = crate::agent::Provider {
+            price_output_per_million: 1.0,
+            ..p
+        };
+        let cost = usage_cost(&priced, Some(500), Some(87)).unwrap();
+        assert!(
+            (cost - (500.0 * 0.042 + 87.0) / 1e6).abs() < 1e-15,
+            "{cost}"
+        );
+    }
+
+    #[test]
+    fn cloudflare_takes_the_same_request_under_input_by_its_own_model_name() {
+        let body = request("jev-latest", &action(), "s");
+        let cf = cloudflare_request(JEV_CLOUDFLARE_MODEL, &body);
+        assert_eq!(cf["model"], "typesafe/jev");
+        assert_eq!(cf["input"]["state"], "s");
+        assert_eq!(cf["input"]["questions"], body["questions"]);
+    }
+
+    #[test]
+    fn each_backend_reads_its_own_variables() {
+        let p = crate::agent::Provider {
+            name: "jev".into(),
+            runner: crate::agent::Runner::Jev,
+            api_key_env: Some("FORGE_TEST_JEV_UNSET_TYPESAFE".into()),
+            cloudflare_key_env: Some("FORGE_TEST_JEV_UNSET_CLOUDFLARE".into()),
+            ..Default::default()
+        };
+        let e = endpoint(&p, JevBackend::TypeSafe).unwrap_err().to_string();
+        assert!(e.contains("$FORGE_TEST_JEV_UNSET_TYPESAFE"), "{e}");
+        let e = endpoint(&p, JevBackend::Cloudflare)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("CLOUDFLARE_ACCOUNT_ID") || e.contains("FORGE_TEST_JEV_UNSET_CLOUDFLARE"),
+            "{e}"
+        );
+        // Without a Cloudflare token set, `auto` has only TypeSafe to go to.
+        assert_eq!(backend_for(&p), JevBackend::TypeSafe);
+        let forced = crate::agent::Provider {
+            jev_backend: JevBackend::Cloudflare,
+            ..p
+        };
+        assert_eq!(backend_for(&forced), JevBackend::Cloudflare);
+        assert_eq!("typesafe".parse(), Ok(JevBackend::TypeSafe));
+        assert!("workers".parse::<JevBackend>().is_err());
     }
 }

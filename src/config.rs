@@ -1209,7 +1209,9 @@ fn build_providers(
         // defaults.
         if jev
             && p.cloudflare_url.is_none()
-            && p.base_url.as_deref().is_some_and(|u| u.contains("{account_id}"))
+            && p.base_url
+                .as_deref()
+                .is_some_and(|u| u.contains("{account_id}"))
         {
             p.cloudflare_url = p.base_url.take();
             if p.cloudflare_api_key_env.is_none() {
