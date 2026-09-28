@@ -47,11 +47,16 @@ pub struct Sandbox {
     /// The claude CLI's real config directory (credentials, settings) and
     /// codex's real `~/.codex`. Read from, on the host, only to seed each
     /// attempt's own private copy (see `command`); never bound into a
-    /// sandbox themselves, so an attempt can neither read nor overwrite the
-    /// operator's actual session state. These paths also happen to be
-    /// where the sandbox's tmpfs `$HOME` puts the private copy, since
+    /// sandbox themselves, so an attempt cannot read the operator's actual
+    /// session state, and cannot overwrite it either: the kernel writes a
+    /// private login back over the real one only when the CLI could have
+    /// produced it from its seed (see `login`). These paths also happen to
+    /// be where the sandbox's tmpfs `$HOME` puts the private copy, since
     /// `home` shadows the operator's real `$HOME` at the identical path.
     config_dir: PathBuf,
+    /// FORGE_HOME: where the kernel records what it seeded into each
+    /// private login, out of any sandbox's reach (see `login`).
+    forge_home: PathBuf,
     codex_dir: PathBuf,
     /// copilot's real `~/.copilot`: read from, on the host, only to seed
     /// each sandbox's private copy of its `config.json` (the login), never
@@ -285,6 +290,7 @@ impl Sandbox {
     pub fn detect(
         agent_bin: &str,
         paths: &crate::config::SandboxPaths,
+        forge_home: PathBuf,
         extra_ro: Vec<PathBuf>,
         extra_rw: Vec<PathBuf>,
         model_hosts: Vec<Rule>,
@@ -352,6 +358,7 @@ impl Sandbox {
             home,
             agent_dirs,
             config_dir,
+            forge_home,
             codex_dir,
             copilot_dir,
             claude_json_seed,
@@ -452,8 +459,18 @@ impl Sandbox {
                 let private = provider_dir_for(worktree, contract)
                     .join("claude")
                     .join(crate::login::FILE);
-                crate::login::write_back(&self.config_dir, &private).unwrap_or(false) || any
+                crate::login::write_back(&self.config_dir, &self.forge_home, &private)
+                    .unwrap_or(false)
+                    || any
             })
+    }
+
+    /// `write_back_login` for every task's private copy beside `worktree`,
+    /// for a caller that holds the login's lock (see `login::lock`).
+    pub fn write_back_siblings_locked(&self, worktree: &Path) {
+        for copy in crate::login::private_copies(worktree) {
+            let _ = crate::login::write_back_locked(&self.config_dir, &self.forge_home, &copy);
+        }
     }
 
     fn cache_dir_for(&self, worktree: &Path) -> Option<PathBuf> {
@@ -468,6 +485,7 @@ impl Sandbox {
         Sandbox {
             bwrap,
             config_dir: home.join(".claude"),
+            forge_home: home.join("forge-home"),
             codex_dir: home.join(".codex"),
             copilot_dir: home.join(".copilot"),
             claude_json_seed: home.join(".claude.json"),
@@ -646,6 +664,7 @@ impl Sandbox {
         // seeds nothing. Settings are plain copies.
         crate::login::seed(
             &self.config_dir,
+            &self.forge_home,
             worktree,
             &claude_priv.join(crate::login::FILE),
         );
@@ -793,6 +812,7 @@ mod tests {
             home: PathBuf::from("/home/attempt"),
             agent_dirs: vec![PathBuf::from("/opt/agent")],
             config_dir: config_dir.clone(),
+            forge_home: root.path().join("forge-home"),
             codex_dir: codex_dir.clone(),
             copilot_dir: copilot_dir.clone(),
             claude_json_seed: PathBuf::from("/home/real/.claude.json"),
@@ -1031,6 +1051,7 @@ mod tests {
             home: PathBuf::from("/home/attempt"),
             agent_dirs: vec![],
             config_dir: PathBuf::from("/home/attempt/.claude"),
+            forge_home: PathBuf::from("/home/attempt/forge-home"),
             codex_dir: PathBuf::from("/home/attempt/.codex"),
             copilot_dir: PathBuf::from("/home/attempt/.copilot"),
             claude_json_seed: PathBuf::from("/home/real/.claude.json"),

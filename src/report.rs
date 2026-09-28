@@ -162,6 +162,21 @@ pub enum Event<'a> {
     ProviderReleased {
         provider: &'a str,
     },
+    /// An initiative's budget or stop rule began holding its queued tasks
+    /// (see docs/PROJECTS.md, "Stop rule and budget"): announced once per
+    /// hold by the worker that first saw it. `reason` is the hold's detail
+    /// ("stop rule: L1 test: a::b (streak 3)" or "budget: $x of $y"),
+    /// `queued` how many of its tasks wait behind it, and `audience` who
+    /// the plugins carry it to: always "person", since raising the stop
+    /// rule or the budget, or fixing the rule, is a decision only a
+    /// person makes.
+    InitiativeHeld {
+        id: i64,
+        project: &'a str,
+        reason: &'a str,
+        queued: usize,
+        audience: &'a str,
+    },
 }
 
 /// Every `type` an event carries in `events.jsonl`, the values a run
@@ -191,6 +206,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "job_finished",
     "provider_held",
     "provider_released",
+    "initiative_held",
 ];
 
 impl Event<'_> {
@@ -324,6 +340,12 @@ impl Event<'_> {
             Event::ProviderReleased { provider } => {
                 format!("released {provider}: its login answered")
             }
+            Event::InitiativeHeld {
+                id, reason, queued, ..
+            } => format!(
+                "initiative {id} held: {reason}; {queued} task(s) queued behind it; {}",
+                initiative_remedy(*id, reason)
+            ),
         }
     }
 }
@@ -503,6 +525,16 @@ impl Reporter {
         }
     }
 
+    /// Appends `ev` to the event log without printing it: for an event
+    /// whose caller already said the same thing on its own terms (the
+    /// worker's hold announcement).
+    pub fn record(&self, task_id: i64, ev: &Event) {
+        if self.quiet {
+            return;
+        }
+        self.append_log(task_id, ev);
+    }
+
     pub fn emit(&self, task_id: i64, ev: Event) {
         if self.quiet {
             return;
@@ -672,6 +704,17 @@ fn render(ev: Event) -> Vec<String> {
         Event::JobStarted { .. } => vec![summary],
         Event::JobFinished { .. } => vec![String::new(), summary],
         Event::ProviderHeld { .. } | Event::ProviderReleased { .. } => vec![summary],
+        Event::InitiativeHeld { .. } => vec![summary],
+    }
+}
+
+/// What lifts an initiative hold whose detail is `reason`: a higher
+/// budget for a spent one, a longer stop rule (or a fix) for a streak.
+pub fn initiative_remedy(id: i64, reason: &str) -> String {
+    if reason.starts_with("budget") {
+        format!("forge initiative set {id} --budget <usd> to continue")
+    } else {
+        format!("forge initiative set {id} --stop-after <n> to continue, or fix the rule")
     }
 }
 
@@ -944,6 +987,36 @@ mod tests {
                 "type": "provider_released", "provider": "anthropic",
                 "text": "released anthropic: its login answered",
             })
+        );
+    }
+
+    #[test]
+    fn an_initiative_hold_names_its_reason_its_queue_and_the_remedy_for_a_person() {
+        assert_eq!(
+            to_json(&Event::InitiativeHeld {
+                id: 56,
+                project: "forge",
+                reason: "stop rule: L1 test: a::b (streak 3)",
+                queued: 24,
+                audience: "person",
+            }),
+            json!({
+                "type": "initiative_held", "id": 56, "project": "forge",
+                "reason": "stop rule: L1 test: a::b (streak 3)", "queued": 24,
+                "audience": "person",
+                "text": "initiative 56 held: stop rule: L1 test: a::b (streak 3); 24 task(s) queued behind it; forge initiative set 56 --stop-after <n> to continue, or fix the rule",
+            })
+        );
+        assert!(
+            Event::InitiativeHeld {
+                id: 2,
+                project: "p",
+                reason: "budget: $1.00 of $1.00",
+                queued: 1,
+                audience: "person",
+            }
+            .summary()
+            .ends_with("forge initiative set 2 --budget <usd> to continue")
         );
     }
 

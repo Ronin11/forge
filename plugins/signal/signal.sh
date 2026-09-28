@@ -363,6 +363,21 @@ outbound() {
             continue
         fi
 
+        # An initiative's stop rule or budget stopped its claims: one
+        # message per hold, for a person, since only a person decides to
+        # continue it. The text names why, what waits and the remedy.
+        if [ "$type" = initiative_held ]; then
+            audience=$(printf '%s\n' "$line" | json_str audience)
+            if [ "$audience" = person ]; then
+                msg=$(printf '%s\n' "$line" | json_str text)
+                project=$(printf '%s\n' "$line" | json_str project)
+                if signal_send "$SIGNAL_TO" "$msg"; then
+                    record_message "$project" out operator "$msg"
+                fi
+            fi
+            continue
+        fi
+
         if [ "$type" = project_created ]; then
             project=$(printf '%s\n' "$line" | json_str project)
             person=$(printf '%s\n' "$line" | json_str person)

@@ -23,7 +23,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinSet;
 
+mod holds;
 mod schedule;
+pub(crate) use holds::held_initiatives;
+use holds::new_holds;
 use schedule::{RefusalLog, schedule_tick};
 
 /// What one slot of the worker's `--jobs` cap finished running: a task
@@ -345,10 +348,14 @@ fn named(provider: &str, msg: &str) -> String {
 /// will run under, or an arm it would be re-drawn to), when *none* of
 /// them can be claimed right now; `None` as soon as one candidate can run
 /// under a provider that is not held, since the caller can claim it
-/// instead of waiting. The message names the provider.
+/// instead of waiting. The message names the provider and how many
+/// tasks wait on it: those outside `held_initiatives`, whose own hold is
+/// announced on its own (`new_holds`).
 fn tightest_provider_hold(f: &Forge, held_initiatives: &[i64]) -> Result<Option<(String, i64)>> {
     let mut tightest: Option<(String, i64)> = None;
-    for t in f.store.queued_unblocked(held_initiatives)? {
+    let queued = f.store.queued_unblocked(held_initiatives)?;
+    let n = queued.len();
+    for t in queued {
         match route_candidate(f, &t) {
             None | Some(crate::redraw::Routing::Free) => return Ok(None),
             Some(crate::redraw::Routing::Redrawn { .. }) => return Ok(None),
@@ -363,7 +370,7 @@ fn tightest_provider_hold(f: &Forge, held_initiatives: &[i64]) -> Result<Option<
             }
         }
     }
-    Ok(tightest)
+    Ok(tightest.map(|(msg, until)| (format!("{msg}; holding, {n} task(s) queued"), until)))
 }
 
 fn p_config(f: &Forge) -> String {
@@ -399,57 +406,6 @@ fn intake_is_held(f: &Forge, t: &Task) -> bool {
         .interview_questions_since(unix_now() - 86_400)
         .map(|n| n >= f.intake.max_questions_per_day as i64)
         .unwrap_or(false)
-}
-
-/// Every initiative currently holding new claims: its budget is spent, or
-/// its trailing run of same-rule failures reached its stop rule (see
-/// docs/PROJECTS.md, "Stop rule and budget"). Only initiatives with a
-/// queued task are worth checking.
-pub(crate) fn held_initiatives(f: &Forge) -> Result<Vec<i64>> {
-    let mut held = Vec::new();
-    for id in f.store.initiatives_with_queued_tasks()? {
-        if let Some(ini) = f.store.initiative(id)?
-            && crate::view::initiative_hold(f, &ini)?.is_some()
-        {
-            held.push(id);
-        }
-    }
-    Ok(held)
-}
-
-/// One line for each initiative that just entered `held` (an id not seen
-/// in `announced` before), naming why and how many of its tasks are stuck
-/// queued behind it; nothing for a hold already announced, so a slow poll
-/// interval does not turn into a flood (see `work`, which prints whatever
-/// this returns). `announced` drops an id as soon as it leaves `held`, so
-/// a later, separate hold on the same initiative is announced again.
-fn new_holds(f: &Forge, held: &[i64], announced: &mut HashSet<i64>) -> Vec<String> {
-    let mut lines = Vec::new();
-    for &id in held {
-        if !announced.insert(id) {
-            continue;
-        }
-        let Ok(Some(ini)) = f.store.initiative(id) else {
-            continue;
-        };
-        let queued = f
-            .store
-            .initiative_tasks(id)
-            .map(|ts| ts.iter().filter(|t| t.state == TaskState::Queued).count())
-            .unwrap_or(0);
-        if queued == 0 {
-            continue;
-        }
-        let reason = crate::view::initiative_hold_reason(f, &ini)
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| "held".to_string());
-        lines.push(format!(
-            "initiative {id} held ({reason}): {queued} queued task(s) skipped"
-        ));
-    }
-    announced.retain(|id| held.contains(id));
-    lines
 }
 
 /// Every run workflow that resolves for `project` right now (the schedule
@@ -980,8 +936,8 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     // every queued candidate's own provider is at its cap.
                     // Only the latter is a hold worth waiting out.
                     if let Some((msg, until)) = tightest_provider_hold(&f, &held)? {
-                        if f.store.queued_count()? > 0 && hold_until != Some(until) {
-                            eprintln!("{msg}; holding, {} task(s) queued", f.store.queued_count()?);
+                        if hold_until != Some(until) {
+                            eprintln!("{msg}");
                         }
                         hold_until = Some(until);
                     } else {
@@ -1173,7 +1129,7 @@ mod tests {
 
     /// A `Forge` over a fresh, empty store in a throwaway home: enough to
     /// resolve the builtin workflows `first_role` reads.
-    fn fixture() -> (tempfile::TempDir, Forge) {
+    pub(super) fn fixture() -> (tempfile::TempDir, Forge) {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
         let paths = Paths {
@@ -1188,7 +1144,7 @@ mod tests {
         (dir, f)
     }
 
-    fn task_on(workflow: &str) -> Task {
+    pub(super) fn task_on(workflow: &str) -> Task {
         Task {
             repo: "repo".into(),
             task: "do a thing".into(),
@@ -1851,59 +1807,5 @@ mod tests {
         tick_events(&f).await;
         assert_eq!(event_jobs(&f).len(), 1);
         assert_eq!(event_jobs(&f)[0].trigger_ref, "0:0");
-    }
-
-    /// A held initiative with a queued task is announced the first time
-    /// `new_holds` sees it, never again while the hold continues (even
-    /// across many polls), and again once it leaves `held` and re-enters
-    /// (docs/PROJECTS.md, "Stop rule and budget"): the claim loop calls
-    /// this every poll, so this is what keeps a slow poll from spamming.
-    #[test]
-    fn new_holds_announces_a_held_initiative_once_per_hold() {
-        let (_dir, f) = fixture();
-        f.store
-            .create_project(&crate::store::Project {
-                name: "demo".into(),
-                purpose: "p".into(),
-                created_at: 1,
-                ..Default::default()
-            })
-            .unwrap();
-        let ini_id = f
-            .store
-            .create_initiative(&crate::store::Initiative {
-                project: "demo".into(),
-                outcome: "o".into(),
-                budget_usd: Some(0.0),
-                stop_after_same_rule: 3,
-                created_at: 1,
-                ..Default::default()
-            })
-            .unwrap();
-        let mut t = task_on("direct");
-        t.project = Some("demo".into());
-        t.initiative = Some(ini_id);
-        t.id = f.store.insert_task(&t).unwrap();
-        f.store.update_task(&t).unwrap();
-
-        let mut announced = HashSet::new();
-        let held = vec![ini_id];
-        let first = new_holds(&f, &held, &mut announced);
-        assert_eq!(first.len(), 1);
-        assert!(
-            first[0].contains(&format!("initiative {ini_id}")),
-            "{first:?}"
-        );
-        assert!(first[0].contains("budget"), "{first:?}");
-
-        // Same hold, three more polls: nothing new to say.
-        for _ in 0..3 {
-            assert!(new_holds(&f, &held, &mut announced).is_empty());
-        }
-
-        // The hold lifts (no longer in `held`), then recurs: announced again.
-        assert!(new_holds(&f, &[], &mut announced).is_empty());
-        let again = new_holds(&f, &held, &mut announced);
-        assert_eq!(again.len(), 1);
     }
 }

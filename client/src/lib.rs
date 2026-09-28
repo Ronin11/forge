@@ -1005,6 +1005,9 @@ pub struct InitiativeRow {
     pub state: String,
     #[serde(default)]
     pub held_rule: Option<String>,
+    /// While held, why: "stop rule: <rule> (streak n)" or "budget: $x of $y".
+    #[serde(default)]
+    pub held_reason: Option<String>,
     pub queued: i64,
     pub running: i64,
     pub succeeded: i64,
@@ -1090,6 +1093,9 @@ pub struct InitiativeDoc {
     pub state: String,
     #[serde(default)]
     pub held_rule: Option<String>,
+    /// While held, why: "stop rule: <rule> (streak n)" or "budget: $x of $y".
+    #[serde(default)]
+    pub held_reason: Option<String>,
     #[serde(default)]
     pub budget_usd: Option<f64>,
     pub stop_after_same_rule: i64,

@@ -831,7 +831,8 @@ and its own settings. See docs/PROJECTS.md, "Initiative".
 | `project` | string | The project it belongs to. |
 | `outcome` | string | One sentence saying what is true when the initiative is done. |
 | `state` | string | `open`, `held`, `done`, or `done with failures` (see docs/PROJECTS.md, "State"). |
-| `held_rule` | string or null | While `state` is `held`: `"budget"`, or the L0 rule name whose repeated failure triggered the stop rule. |
+| `held_rule` | string or null | While `state` is `held`: `"budget"`, or the rule whose repeated failure triggered the stop rule: an L0 rule's name, or an L1/L2 check keyed by the tests it saw fail (`"L1 test: a::x, b::y"`). |
+| `held_reason` | string or null | While `state` is `held`: why, as `forge doctor` says it (`"stop rule: <rule> (streak n)"` or `"budget: $x of $y"`). The text form prints the state as `open, held: <held_reason>`. |
 | `queued`, `running`, `succeeded`, `failed`, `unverified`, `blocked`, `withdrawn` | integer | Task counts by state, across the initiative's tasks. |
 | `cost_usd` | number | Total cost across every attempt of every task in the initiative. |
 | `budget_usd` | number or null | This initiative's own cost cap; `null` falls to the project's `per_initiative_usd`. |
@@ -846,7 +847,7 @@ report (see docs/PROJECTS.md, "One notification and one report").
 
 | field | type | meaning |
 |---|---|---|
-| `id`, `project`, `outcome`, `state`, `held_rule`, `budget_usd`, `stop_after_same_rule`, `cost_usd`, `created_at`, `settled_at` | | as [`InitiativeRow`](#initiativerow). |
+| `id`, `project`, `outcome`, `state`, `held_rule`, `held_reason`, `budget_usd`, `stop_after_same_rule`, `cost_usd`, `created_at`, `settled_at` | | as [`InitiativeRow`](#initiativerow). |
 | `tasks` | array of `{id, state, reason, retries, score, cost_usd}` | Every task in the initiative and how it ended. `retries` is how many retries its lineage took to reach it. `score` is the assess directive's 0-10 maintainability score for that task's own landing, or `null` if it never ran (see docs/ACTIONS.md, "Assessment"). `cost_usd` is that lineage's own total cost across every attempt, the same figure `TaskRow.cost_usd` carries for the task alone. |
 | `refused` | array of `{rule, count}` | How many attempts of the initiative's tasks each verification rule refused, by name. |
 | `rulings` | array of `{task_id, question, answer, citations}` | Decisions the supervisor made on the initiative's tasks. |
@@ -1419,6 +1420,7 @@ Every variant, with its own fields (beyond `type`/`text`/`ts`/`task`):
 | `job_finished` | `project`, `workflow`, `job_id`, `state`, `cost_usd` | A job reached a final state: `ok`, `failed`, `needs_human` or `dropped`. |
 | `provider_held` | `provider`, `reason`, `since` | The provider's agent login was refused (expired, revoked): every task on it waits, and none of its refusals counts as an attempt, until a probe the worker makes every 10 minutes answers or the operator logs in and runs `forge doctor`. Once per hold; `task` is the task whose attempt was refused. |
 | `provider_released` | `provider` | The held provider's login answered a probe again; its tasks run. |
+| `initiative_held` | `id`, `project`, `reason`, `queued`, `audience` | An initiative's budget was spent or its stop rule tripped (`reason`: "budget: $x of $y" or "stop rule: <rule> (streak n)", where an L1/L2 rule names the check and the tests it saw fail), and the worker stopped claiming its `queued` tasks. Once per hold; `audience` is always `person` (only a person decides to raise the budget or `--stop-after`, or to fix the rule), and `text` carries the remedy. `task` is the initiative's latest finished task, else its first queued one. |
 | `initiative_settled` | `id`, `state`, `cost_usd` | The last of an initiative's tasks reached a terminal state and its own record closed (see docs/PROJECTS.md, "One notification and one report"); `task` (every event's own field) is the task whose change completed it, not the initiative — `id` here is the initiative's. |
 
 ### What to re-read on which event

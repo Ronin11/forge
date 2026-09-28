@@ -35,7 +35,8 @@ pub(super) enum InitiativeCmd {
         #[arg(long)]
         budget: Option<f64>,
         /// Hold the initiative after this many of its tasks fail in a
-        /// row on the same L0 rule (default: 3)
+        /// row on the same rule: an L0 rule, or a check failing on the
+        /// same tests (default: 3)
         #[arg(long = "stop-after")]
         stop_after: Option<u32>,
     },
@@ -57,7 +58,8 @@ pub(super) enum InitiativeCmd {
         #[arg(long)]
         budget: Option<f64>,
         /// Hold the initiative after this many of its tasks fail in a
-        /// row on the same L0 rule
+        /// row on the same rule; raising it past a held initiative's
+        /// streak releases the hold
         #[arg(long = "stop-after")]
         stop_after: Option<u32>,
         /// One sentence saying what is true when the initiative is done
@@ -90,17 +92,22 @@ pub(super) enum InitiativeCmd {
     },
 }
 
+/// The state line's value: a held initiative is still open, and says why
+/// it is held ("open, held: stop rule: L1 test: a::b (streak 3)").
+fn state_line(state: &str, rule: Option<&str>, reason: Option<&str>) -> String {
+    match (state, reason.or(rule)) {
+        ("held", Some(why)) => format!("open, held: {why}"),
+        _ => state.to_string(),
+    }
+}
+
 fn print_initiative_row(r: &crate::view::InitiativeRow) {
     out!("id         {}", r.id);
     out!("project    {}", r.project);
     out!("outcome    {}", r.outcome);
     out!(
-        "state      {}{}",
-        r.state,
-        r.held_rule
-            .as_deref()
-            .map(|rule| format!(" ({rule})"))
-            .unwrap_or_default()
+        "state      {}",
+        state_line(&r.state, r.held_rule.as_deref(), r.held_reason.as_deref())
     );
     out!(
         "tasks      queued={} running={} succeeded={} failed={} unverified={} blocked={} withdrawn={} capped={}",
@@ -233,6 +240,10 @@ pub(super) fn initiative_set(
         bail!("budget must be positive");
     }
     let f = Forge::open(false, false)?;
+    let was_held = match f.store.initiative(id)? {
+        Some(ini) => crate::view::initiative_hold_reason(&f, &ini)?,
+        None => None,
+    };
     if !f.store.set_initiative(
         id,
         &crate::store::InitiativeUpdate {
@@ -246,6 +257,18 @@ pub(super) fn initiative_set(
     let ini = f.store.initiative(id)?.context("initiative vanished")?;
     let row = crate::view::initiative_row(&f, &ini)?;
     print_initiative_row(&row);
+    if let Some(before) = was_held {
+        match &row.held_reason {
+            None => out!(
+                "hold released ({before}): {} queued task(s) resume",
+                row.queued
+            ),
+            Some(now) => out!(
+                "still held: {now}; {}",
+                crate::report::initiative_remedy(id, now)
+            ),
+        }
+    }
     Ok(())
 }
 
@@ -301,12 +324,12 @@ pub(super) fn initiative_report(id: i64, json: bool) -> Result<()> {
         out!("proposal   task {} — {}", p.task_id, p.repetition);
     }
     out!(
-        "state      {}{}",
-        doc.state,
-        doc.held_rule
-            .as_deref()
-            .map(|rule| format!(" ({rule})"))
-            .unwrap_or_default()
+        "state      {}",
+        state_line(
+            &doc.state,
+            doc.held_rule.as_deref(),
+            doc.held_reason.as_deref()
+        )
     );
     out!(
         "cost       ${:.2}{}",

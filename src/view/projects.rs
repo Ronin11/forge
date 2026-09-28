@@ -137,20 +137,22 @@ pub fn project_rows(f: &Forge) -> Result<Vec<ProjectRow>> {
         .collect()
 }
 
-/// The L0 rule name(s) a failed task's `reason` blames, in the exact form
-/// `engine::l0_failure_reason` writes it ("L0 failed: has-commits",
-/// optionally followed by " (after N attempt(s))"). `None` for any other
-/// kind of failure: an agent failure, a budget cap, or a failing L1/L2
-/// check never sets this prefix.
 /// The L0 rules a failed task's reason names: "L0 failed: has-commits,
 /// changes-match-git (after 2 attempt(s))" names two. A task can fail
 /// several at once, and a streak on one of them must not be broken by a
 /// failure that names it among others (initiative 2's third has-commits
-/// failure also named changes-match-git and reset the count).
+/// failure also named changes-match-git and reset the count). Empty for
+/// any other kind of failure.
 fn l0_rules_of(reason: &str) -> Vec<String> {
     let Some(rest) = reason.strip_prefix("L0 failed: ") else {
         return Vec::new();
     };
+    names_of(rest)
+}
+
+/// The comma-separated check names after a "Lx failed: " prefix, without
+/// any trailing " (after N attempt(s))".
+fn names_of(rest: &str) -> Vec<String> {
     let rest = rest.split(" (after").next().unwrap_or(rest).trim();
     rest.split(',')
         .map(|r| r.trim().to_string())
@@ -158,17 +160,80 @@ fn l0_rules_of(reason: &str) -> Vec<String> {
         .collect()
 }
 
-/// The trailing run of failed tasks that all name one L0 rule, over
-/// terminal tasks in the order they finished: the rule and the run's
-/// length. Any terminal task that did not fail on an L0 rule ends the run.
-pub(crate) fn same_rule_streak(terminal: &[(TaskState, &str)]) -> Option<(String, i64)> {
+/// The rules a failed task's failure counts toward, for the stop rule: an
+/// L0 failure's rule names ("has-commits"), and for an L1 or L2 check
+/// failure ("L1 failed: test") the check's level and name keyed by the
+/// set of tests it saw fail, read from `verdict` (the checks of the
+/// task's last attempt that ran them): "L1 test: a::x, b::y". The failing
+/// tests are the ones the check recorded, else whatever its stored tail
+/// names. Three `test` failures on three different tests are three
+/// unrelated flakes, not one broken thing (initiative 56, 2026-09-28), so
+/// they are three rules; a check that names no tests is keyed by its name
+/// alone. Empty for any other kind of failure.
+pub(crate) fn failure_rules(reason: &str, verdict: &[crate::checks::CheckResult]) -> Vec<String> {
+    let l0 = l0_rules_of(reason);
+    if !l0.is_empty() {
+        return l0;
+    }
+    let Some((level, rest)) = ["L1", "L2"].into_iter().find_map(|l| {
+        reason
+            .strip_prefix(&format!("{l} failed: "))
+            .map(|r| (l, r))
+    }) else {
+        return Vec::new();
+    };
+    names_of(rest)
+        .into_iter()
+        .map(|name| {
+            let mut tests: Vec<String> = verdict
+                .iter()
+                .filter(|c| c.level == level && c.name == name && !c.ok)
+                .flat_map(|c| {
+                    if c.failing_tests.is_empty() {
+                        crate::checks::failing_tests(&c.tail)
+                    } else {
+                        c.failing_tests.clone()
+                    }
+                })
+                .collect();
+            tests.sort();
+            tests.dedup();
+            if tests.is_empty() {
+                format!("{level} {name}")
+            } else {
+                format!("{level} {name}: {}", tests.join(", "))
+            }
+        })
+        .collect()
+}
+
+/// The checks of `task`'s latest attempt that failed any check, the
+/// verdict `failure_rules` reads its failing tests from; empty when no
+/// attempt recorded one.
+fn last_failed_verdict(f: &Forge, task: i64) -> Result<Vec<crate::checks::CheckResult>> {
+    for a in f.store.attempts(task)?.iter().rev() {
+        let checks: Vec<crate::checks::CheckResult> =
+            serde_json::from_str(&a.verdict_json).unwrap_or_default();
+        if checks.iter().any(|c| !c.ok) {
+            return Ok(checks);
+        }
+    }
+    Ok(Vec::new())
+}
+
+/// The trailing run of failed tasks that all count toward one rule (see
+/// `failure_rules`), over terminal tasks in the order they finished, each
+/// with the rules its failure names: the rule and the run's length. Any
+/// terminal task whose failure names no rule (a landing, a withdrawal, an
+/// agent failure) ends the run.
+pub(crate) fn same_rule_streak(terminal: &[(TaskState, Vec<String>)]) -> Option<(String, i64)> {
     let mut rule: Option<String> = None;
     let mut len = 0i64;
-    for (state, reason) in terminal {
-        let rules = if *state == TaskState::Failed {
-            l0_rules_of(reason)
+    for (state, rules) in terminal {
+        let rules: &[String] = if *state == TaskState::Failed {
+            rules
         } else {
-            Vec::new()
+            &[]
         };
         if rules.is_empty() {
             rule = None;
@@ -271,10 +336,23 @@ fn initiative_hold_detail(
         })
         .collect();
     terminal.sort_by_key(|t| t.finished_at.unwrap_or(0));
-    let seq: Vec<(TaskState, &str)> = terminal
-        .iter()
-        .map(|t| (t.state, t.reason.as_str()))
-        .collect();
+    let mut seq: Vec<(TaskState, Vec<String>)> = Vec::with_capacity(terminal.len());
+    for t in &terminal {
+        let checked = ["L1 failed: ", "L2 failed: "]
+            .iter()
+            .any(|p| t.reason.starts_with(p));
+        let rules = if t.state == TaskState::Failed {
+            let verdict = if checked {
+                last_failed_verdict(f, t.id)?
+            } else {
+                Vec::new()
+            };
+            failure_rules(&t.reason, &verdict)
+        } else {
+            Vec::new()
+        };
+        seq.push((t.state, rules));
+    }
     Ok(same_rule_streak(&seq)
         .filter(|(_, len)| *len >= ini.stop_after_same_rule)
         .map(|(rule, len)| {
@@ -356,6 +434,9 @@ pub struct InitiativeRow {
     pub outcome: String,
     pub state: String,
     pub held_rule: Option<String>,
+    /// While held, why, in the words `forge doctor` uses ("stop rule:
+    /// L1 test: a::b (streak 3)" or "budget: $x of $y"); `None` otherwise.
+    pub held_reason: Option<String>,
     pub queued: i64,
     pub running: i64,
     pub succeeded: i64,
@@ -377,7 +458,7 @@ pub fn initiative_row(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
         .into_iter()
         .map(|(t, _)| t)
         .collect();
-    let hold = initiative_hold(f, ini)?;
+    let (hold, held_reason) = initiative_hold_detail(f, ini)?.unzip();
     let state = initiative_state(&latest, hold.as_deref()).to_string();
     let mut stats = crate::store::ProjectTaskStats::default();
     for t in &latest {
@@ -398,6 +479,7 @@ pub fn initiative_row(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
         outcome: ini.outcome.clone(),
         state,
         held_rule: hold,
+        held_reason,
         queued: stats.queued,
         running: stats.running,
         succeeded: stats.succeeded,
@@ -514,6 +596,8 @@ pub struct InitiativeDoc {
     pub outcome: String,
     pub state: String,
     pub held_rule: Option<String>,
+    /// While held, why (see `InitiativeRow::held_reason`).
+    pub held_reason: Option<String>,
     pub budget_usd: Option<f64>,
     pub stop_after_same_rule: i64,
     pub tasks: Vec<InitiativeTaskRow>,
@@ -535,7 +619,7 @@ pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
     let tasks = f.store.initiative_tasks(ini.id)?;
     let lineages = latest_per_lineage(f, &tasks)?;
     let latest: Vec<Task> = lineages.iter().map(|(t, _)| t.clone()).collect();
-    let hold = initiative_hold(f, ini)?;
+    let (hold, held_reason) = initiative_hold_detail(f, ini)?.unzip();
     let state = initiative_state(&latest, hold.as_deref()).to_string();
     let cost = f.store.initiative_cost(ini.id)?;
     let elapsed = tasks
@@ -614,6 +698,7 @@ pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
         outcome: ini.outcome.clone(),
         state,
         held_rule: hold,
+        held_reason,
         budget_usd: ini.budget_usd,
         stop_after_same_rule: ini.stop_after_same_rule,
         tasks: lineages

@@ -18,6 +18,9 @@ deploy)
 provider)
     notify-send --urgency=critical "forge: $2 $3" "$4"
     ;;
+initiative)
+    notify-send --urgency=critical "forge initiative $2 $3" "$4"
+    ;;
 *)
     task="$1"
     state="$2"

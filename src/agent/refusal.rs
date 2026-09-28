@@ -311,9 +311,15 @@ pub(super) async fn guarded_claude(l: Launch<'_>) -> Result<Outcome> {
     }
     let (sandbox, worktree, report, id) = (l.sandbox, l.worktree, l.report, l.task_id);
     let out = read_stderr(super::run_claude(l).await);
-    if dir.is_some_and(|_| sandbox.is_some_and(|sb| sb.write_back_login(worktree))) {
-        let text = "login    a refreshed token was written back to the host file";
-        report.emit(id, Event::Note { text });
+    if let Some(dir) = dir
+        && sandbox.is_some_and(|sb| sb.write_back_login(worktree))
+    {
+        let prev = dir.join(crate::login::PREV);
+        let text = format!(
+            "login    a refreshed token was written back to the host file; the login it replaced is kept as {} (0600, one copy), to restore by hand if this was wrong",
+            prev.display()
+        );
+        report.emit(id, Event::Note { text: &text });
     }
     out
 }
@@ -346,8 +352,8 @@ async fn refresh_on_host(l: &Launch<'_>, dir: &Path, window: i64) -> crate::logi
     let _lock = tokio::task::spawn_blocking(move || crate::login::lock(&owned))
         .await
         .ok();
-    for copy in crate::login::private_copies(l.worktree) {
-        let _ = crate::login::write_back_locked(dir, &copy);
+    if let Some(sb) = l.sandbox {
+        sb.write_back_siblings_locked(l.worktree);
     }
     let state = crate::login::host_state(dir);
     match state {

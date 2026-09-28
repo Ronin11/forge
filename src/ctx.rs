@@ -203,6 +203,7 @@ impl Forge {
             Execution::detect(
                 &agent::agent_bin(),
                 &home.sandbox,
+                paths.home.clone(),
                 extra_ro,
                 Vec::new(),
                 crate::egress::model_rules(&home.providers),
