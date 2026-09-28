@@ -690,6 +690,13 @@ INSERT INTO contract_steps (version, applied_at)
      UPDATE event_cursors SET cursor = '0:' || event_offset;
      UPDATE jobs SET trigger_ref = '0:' || trigger_ref
        WHERE trigger_kind = 'event' AND instr(trigger_ref, ':') = 0;",
+    // Retried jobs retain their schedule slot; only original firings deduplicate.
+    "-- contract
+DROP INDEX jobs_schedule_slot;
+CREATE UNIQUE INDEX jobs_schedule_slot ON jobs(project, workflow, trigger_ref)
+  WHERE trigger_kind = 'schedule' AND retry_count = 0;
+",
+
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

@@ -12,6 +12,10 @@
 //! taking the repository lock are `Env` faults, since a dead remote or a
 //! full disk stops the worker rather than failing the task.
 
+mod terminal;
+use terminal::finish;
+pub(crate) use terminal::{finish_fault, settle_ready_initiatives};
+
 /// Workflow state and completed operations needed to execute an operation step.
 struct RunOperationStep<'a> {
     f: &'a Forge,
@@ -1578,81 +1582,6 @@ async fn publish(
         f.report.emit(id, Event::PushSkipped);
     }
     Ok((compare, failed))
-}
-
-/// The end of the run on the record: the task's state and reason derived
-/// from `end`, its initiative settled if this was its last task, dependents
-/// released now that it landed, failed or went unverified, and the
-/// `TaskDone` event.
-async fn finish(
-    f: &Forge,
-    t: &mut Task,
-    end: &End,
-    compare: Option<String>,
-    wt: &Path,
-) -> Result<TaskState, Fault> {
-    let id = t.id;
-    let attempts = f.store.attempts(id).env()?;
-    let cost = f.store.task_cost(id).env()?;
-    t.state = end.task_state();
-    t.reason = end.reason(t, attempts.len());
-    t.question_to = end.question_to();
-    t.finished_at = Some(unix_now());
-    t.worker_pid = None;
-    f.store.update_task(t).env()?;
-    if let Some(iid) = t.initiative {
-        crate::view::maybe_settle_initiative(f, id, iid).env()?;
-    }
-    if t.state == TaskState::Succeeded && (!t.land || !t.landed_sha.is_empty()) {
-        crate::queue::settle_superseded(f, id).env()?;
-    }
-    // A filing task never lands: the work its dependents waited for now
-    // happens in the tasks it filed, so they follow the last of those
-    // instead (the same reroute a retry carries its own dependents
-    // through, see `queue::enqueue`).
-    if let End::Filed { last, .. } = end {
-        for d in f.store.reroute_dependents(id, *last).env()? {
-            f.report.emit(
-                d,
-                Event::Note {
-                    text: &format!("waits on task {last} now (task {id} filed its plan)"),
-                },
-            );
-        }
-    }
-    // A dependent waiting on this task, blocked with a stale reason
-    // because its after list has since been re-pointed here, is released
-    // or given a fresh reason now that this task itself has landed,
-    // failed, or gone unverified; a question or a review demotion
-    // (TaskState::Blocked) settles nothing for a dependent to react to.
-    if matches!(
-        t.state,
-        TaskState::Succeeded | TaskState::Failed | TaskState::Unverified
-    ) {
-        for d in f.store.release_dependents_of(id).env()? {
-            f.report.emit(
-                d,
-                Event::Note {
-                    text: "unblocked: its dependencies landed or were withdrawn",
-                },
-            );
-        }
-    }
-
-    f.report.emit(
-        id,
-        Event::TaskDone {
-            state: t.state.as_str(),
-            attempts: attempts.len(),
-            cost,
-            reason: &t.reason,
-            branch: &t.branch,
-            pushed: t.pushed,
-            compare: compare.as_deref(),
-            remove_cmd: &format!("rm -rf {}", wt.display()),
-        },
-    );
-    Ok(t.state)
 }
 
 /// The run's cursor over the resolved steps: where it is, what each

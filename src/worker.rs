@@ -148,6 +148,7 @@ pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
                 t.finished_at = Some(unix_now());
                 t.worker_pid = None;
                 f.store.update_task(&t)?;
+                engine::finish_fault(&f, &t)?;
             }
             Ok(TaskState::Failed)
         }
@@ -854,6 +855,7 @@ fn prepare_claim(f: &Forge) -> Result<Option<Vec<i64>>> {
     for t in f.store.release_dependents()? {
         eprintln!("task {t} unblocked: its dependencies landed or were withdrawn");
     }
+    engine::settle_ready_initiatives(f)?;
     for (t, d, why) in f.store.block_dependents()? {
         eprintln!("task {t} blocked: {why} (task {d})");
     }
