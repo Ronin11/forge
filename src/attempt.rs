@@ -263,9 +263,9 @@ pub async fn run_attempt(
             scratch: None,
         },
     };
-    f.allow_egress(&spec.dir, cfg, t.trust);
+    f.allow_egress(&spec.dir, cfg, t.trust, Some(&t.provider));
     if let Some(scratch) = &spec.scratch {
-        f.allow_egress(scratch, cfg, t.trust);
+        f.allow_egress(scratch, cfg, t.trust, Some(&t.provider));
     }
     let mut inputs = spec.inputs;
     let mut spec_prompt = spec.prompt;
@@ -526,7 +526,7 @@ pub async fn new_attempt(args: NewAttempt<'_>) -> Result<(Attempt, PathBuf), Fau
     let cfg = crate::config::load_at(Path::new(&t.repo), dir, &t.base_sha)
         .await
         .task()?;
-    f.allow_egress(dir, &cfg, t.trust);
+    f.allow_egress(dir, &cfg, t.trust, Some(&t.provider));
     let execution = f.execution_inputs(dir);
     inputs.executor = execution.executor;
     inputs.guarantees = execution.guarantees;

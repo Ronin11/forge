@@ -184,15 +184,13 @@ impl Execution {
         forge_home: PathBuf,
         ro: Vec<PathBuf>,
         rw: Vec<PathBuf>,
-        hosts: Vec<Rule>,
     ) -> anyhow::Result<Option<Self>> {
         if config::env("SANDBOX").as_deref() == Ok("0") {
             return Ok(None);
         }
         Ok(Some(Self {
             fallback: default_backend(),
-            bwrap: Sandbox::detect(agent, paths, forge_home, ro, rw, hosts)
-                .map_err(|e| format!("{e:#}")),
+            bwrap: Sandbox::detect(agent, paths, forge_home, ro, rw).map_err(|e| format!("{e:#}")),
             backends: Mutex::new(BTreeMap::new()),
             remotes: Mutex::new(BTreeMap::new()),
         }))
@@ -302,6 +300,11 @@ impl Execution {
     pub fn set_egress(&self, path: &Path, rules: &[Rule]) {
         if let Ok(sb) = &self.bwrap {
             sb.set_egress(path, rules);
+        }
+    }
+    pub fn set_provider_hosts(&self, path: &Path, rules: &[Rule]) {
+        if let Ok(sb) = &self.bwrap {
+            sb.set_provider_hosts(path, rules);
         }
     }
     pub fn set_cache_dir(&self, path: &Path, dir: PathBuf) {
