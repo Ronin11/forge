@@ -140,6 +140,20 @@ pub fn replace_atomic(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
     written
 }
 
+/// Whether `path` is itself a regular file: a symlink (which a sandbox can
+/// plant in a directory it writes) is not, whatever it points at.
+pub fn is_regular_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
+}
+
+/// Seed `dest`, a path the sandbox can write, with the bytes of the host
+/// file `from`. The bytes go to a fresh sibling that is renamed over `dest`:
+/// the rename replaces a planted symlink and never follows it, where
+/// `std::fs::copy` would open the symlink's target and truncate it.
+pub fn seed_copy(from: &Path, dest: &Path) -> std::io::Result<()> {
+    replace_atomic(dest, &std::fs::read(from)?)
+}
+
 /// An exclusive lock on the host login, released on drop. `flock` locks the
 /// open file, so it holds against another thread of this process as well as
 /// against another process.
@@ -172,6 +186,9 @@ pub fn write_back_locked(dir: &Path, private: &Path) -> std::io::Result<bool> {
         // Logged out (or never in): a stale copy does not undo that.
         return Ok(false);
     };
+    if !is_regular_file(private) {
+        return Ok(false);
+    }
     let Ok(bytes) = std::fs::read(private) else {
         return Ok(false);
     };
@@ -213,7 +230,7 @@ pub fn private_copies(worktree: &Path) -> Vec<PathBuf> {
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().ends_with("-provider"))
         .map(|e| e.path().join("claude").join(FILE))
-        .filter(|p| p.is_file())
+        .filter(|p| is_regular_file(p))
         .collect()
 }
 
@@ -229,7 +246,7 @@ pub fn seed(dir: &Path, worktree: &Path, private: &Path) {
     }
     let host = dir.join(FILE);
     if matches!(host_state(dir), Host::Usable(_)) {
-        let _ = std::fs::copy(&host, private);
+        let _ = seed_copy(&host, private);
     } else {
         let _ = std::fs::remove_file(private);
     }
@@ -380,6 +397,52 @@ mod tests {
         seed(&dir, &worktree, &private);
         assert!(!private.exists());
         assert_eq!(host_state(&dir), Host::Empty);
+    }
+
+    fn seed_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, String) {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("claude");
+        let worktree = root.path().join("work/task");
+        let private = root.path().join("work/task-provider/claude").join(FILE);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(private.parent().unwrap()).unwrap();
+        let far = crate::unix_now() * 1000 + 8 * 3600 * 1000;
+        let text = login("a", "r", far);
+        std::fs::write(dir.join(FILE), &text).unwrap();
+        (root, dir, worktree, private, text)
+    }
+
+    #[test]
+    fn seed_never_writes_through_a_private_symlink_to_the_host_login() {
+        let (_root, dir, worktree, private, text) = seed_fixture();
+        std::os::unix::fs::symlink(dir.join(FILE), &private).unwrap();
+        seed(&dir, &worktree, &private);
+        assert_eq!(std::fs::read_to_string(dir.join(FILE)).unwrap(), text);
+        assert!(is_regular_file(&private));
+        assert_eq!(std::fs::read_to_string(&private).unwrap(), text);
+    }
+
+    #[test]
+    fn seed_never_writes_through_a_private_symlink_to_an_unrelated_file() {
+        let (root, dir, worktree, private, text) = seed_fixture();
+        let victim = root.path().join("victim");
+        std::fs::write(&victim, "precious").unwrap();
+        std::os::unix::fs::symlink(&victim, &private).unwrap();
+        seed(&dir, &worktree, &private);
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
+        assert!(is_regular_file(&private));
+        assert_eq!(std::fs::read_to_string(&private).unwrap(), text);
+    }
+
+    #[test]
+    fn a_symlinked_private_copy_is_not_read_for_write_back() {
+        let (root, dir, _worktree, private, _text) = seed_fixture();
+        let later = root.path().join("later");
+        let far = crate::unix_now() * 1000 + 16 * 3600 * 1000;
+        std::fs::write(&later, login("x", "y", far)).unwrap();
+        std::os::unix::fs::symlink(&later, &private).unwrap();
+        assert!(!write_back(&dir, &private).unwrap());
     }
 
     #[test]
