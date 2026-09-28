@@ -282,11 +282,12 @@ fn adopt_running_binaries(home: &Path) -> Result<Vec<StepResult>> {
         sha
     };
     let mut steps = Vec::new();
+    let lock = release::lock(&root)?;
     match release::pointed_at(&root, "current") {
         Some(live) => steps.push(step("release", false, format!("current is already {live}"))),
         None => {
-            let made = release::install(&root, src, id)?;
-            release::flip(&root, id)?;
+            let made = release::install(&lock, &root, src, id)?;
+            release::flip(&lock, &root, id)?;
             let detail = format!(
                 "copied {} into {} and pointed {} at it{}",
                 src.display(),
