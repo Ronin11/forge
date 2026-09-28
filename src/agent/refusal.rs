@@ -4,6 +4,7 @@
 //! (docs/REVIEW-3.md #1.1.4).
 
 use super::*;
+use std::path::PathBuf;
 
 pub fn hold_text_only(out: &mut Outcome) {
     out.rate_limited = true;
@@ -303,32 +304,68 @@ fn uses_login(l: &Launch<'_>) -> bool {
 /// near-expiry one is refreshed on the host first; and whatever the attempt's
 /// sandbox refreshed is written back over the host file after it.
 pub(super) async fn guarded_claude(l: Launch<'_>) -> Result<Outcome> {
-    let dir = crate::login::config_dir().filter(|_| uses_login(&l));
+    let dir = crate::login::CLAUDE.config_dir().filter(|_| uses_login(&l));
     if let Some(dir) = &dir
         && let Some(why) = login_problem(&l, dir).await
     {
         return refuse_login(&l, &why);
     }
-    let (sandbox, worktree, report, id) = (l.sandbox, l.worktree, l.report, l.task_id);
+    let after = WriteBack::of(&l, &crate::login::CLAUDE);
     let out = read_stderr(super::run_claude(l).await);
-    if let Some(dir) = dir
-        && sandbox.is_some_and(|sb| sb.write_back_login(worktree))
-    {
-        let prev = dir.join(crate::login::PREV);
-        let text = format!(
-            "login    a refreshed token was written back to the host file; the login it replaced is kept as {} (0600, one copy), to restore by hand if this was wrong",
-            prev.display()
-        );
-        report.emit(id, Event::Note { text: &text });
+    if dir.is_some() {
+        after.run().await;
     }
     out
+}
+
+/// What writes back a launch's private login once it has run (see `login`):
+/// whatever the attempt's sandbox refreshed goes over the host file, and the
+/// task's log says so.
+pub(super) struct WriteBack<'a> {
+    shape: &'static crate::login::Shape,
+    sandbox: Option<&'a crate::executor::Execution>,
+    worktree: &'a Path,
+    report: &'a Reporter,
+    task_id: i64,
+}
+
+impl<'a> WriteBack<'a> {
+    pub(super) fn of(l: &Launch<'a>, shape: &'static crate::login::Shape) -> Self {
+        WriteBack {
+            shape,
+            sandbox: l.sandbox,
+            worktree: l.worktree,
+            report: l.report,
+            task_id: l.task_id,
+        }
+    }
+
+    pub(super) async fn run(self) {
+        let s = self.shape;
+        let Some(dir) = s.config_dir() else {
+            return;
+        };
+        let written = match self.sandbox {
+            Some(sb) => sb.write_back_login(s, self.worktree).await,
+            None => false,
+        };
+        if written {
+            let prev = dir.join(s.prev());
+            let text = format!(
+                "login    a refreshed {} token was written back to the host file; the login it replaced is kept as {} (0600, one copy), to restore by hand if this was wrong",
+                s.cli,
+                prev.display()
+            );
+            self.report.emit(self.task_id, Event::Note { text: &text });
+        }
+    }
 }
 
 /// Why the host login cannot start an attempt, after refreshing it if it is
 /// near expiry; `None` when it can (or there is no file to speak of).
 async fn login_problem(l: &Launch<'_>, dir: &Path) -> Option<String> {
     let window = crate::login::refresh_window_ms(l.timeout, l.check_timeout);
-    let state = match crate::login::host_state(dir) {
+    let state = match crate::login::CLAUDE.host_state(dir) {
         crate::login::Host::Usable(c) if c.near_expiry(crate::unix_now() * 1000, window) => {
             refresh_on_host(l, dir, window).await
         }
@@ -337,35 +374,42 @@ async fn login_problem(l: &Launch<'_>, dir: &Path) -> Option<String> {
     (state == crate::login::Host::Empty).then(|| {
         format!(
             "the agent login in {} has an empty token; run `claude login`",
-            dir.join(crate::login::FILE).display()
+            dir.join(crate::login::CLAUDE.file).display()
         )
     })
 }
 
-/// Refresh the login on the host, one launch at a time: hold the login's
-/// lock, take any later pair a sandbox holds (its refresh token is the live
-/// one; probing with the host's dead one would empty the file), and only if
-/// the host file is still near expiry, run a one-token probe through the
-/// attempts' own lean argv so the CLI refreshes it. The file as it stands.
+/// Refresh the login on the host, one launch at a time: under the probe's
+/// lock, which a seed waits on, take the login's own lock just long enough
+/// to take any later pair a sandbox holds (its refresh token is the live
+/// one; probing with the host's dead one would empty the file) and read the
+/// host file; and only if it is still near expiry, run a one-token probe
+/// through the attempts' own lean argv so the CLI refreshes it. The login's
+/// lock is never held across the probe, whose wait is up to two minutes
+/// (docs/REVIEW-4.md #1.10). The file as it stands.
 async fn refresh_on_host(l: &Launch<'_>, dir: &Path, window: i64) -> crate::login::Host {
-    let owned = dir.to_path_buf();
-    let _lock = tokio::task::spawn_blocking(move || crate::login::lock(&owned))
-        .await
-        .ok();
-    if let Some(sb) = l.sandbox {
-        sb.write_back_siblings_locked(l.worktree);
-    }
-    let state = crate::login::host_state(dir);
+    let _probing = crate::login::probe_lock(dir).await;
+    let state = {
+        let _lock = crate::login::lock(dir).await;
+        if let Some(sb) = l.sandbox {
+            sb.write_back_siblings_locked(l.worktree);
+        }
+        crate::login::CLAUDE.host_state(dir)
+    };
     match state {
         crate::login::Host::Usable(c) if c.near_expiry(crate::unix_now() * 1000, window) => {
             probe(l).await;
-            crate::login::host_state(dir)
+            crate::login::CLAUDE.host_state(dir)
         }
         s => s,
     }
 }
 
-/// `argv` as a one-token probe: no tools, one turn, no schema, nothing saved.
+/// `argv` as a one-token probe: no tools, one turn, no schema, nothing
+/// saved, and none of the repository's own settings — `user` in place of
+/// `project,local` (`claude_argv`'s default), since the probe now runs
+/// nowhere near a worktree and has none of its own to read
+/// (docs/REVIEW-4.md #1.4).
 fn probe_argv(mut argv: Vec<String>) -> Vec<String> {
     let mut drop_pair = |flag: &str, keep: Option<&str>| {
         if let Some(i) = argv.iter().position(|a| a == flag) {
@@ -381,21 +425,49 @@ fn probe_argv(mut argv: Vec<String>) -> Vec<String> {
     drop_pair("--tools", Some(""));
     drop_pair("--json-schema", None);
     drop_pair("--resume", None);
+    drop_pair("--setting-sources", Some("user"));
     argv.push("--no-session-persistence".to_string());
     argv
 }
 
+/// A directory made fresh for the login refresh probe, never a task's
+/// worktree: no `.claude/settings.json` or `CLAUDE.md`, not a git
+/// repository, nothing a hook could name (docs/REVIEW-4.md #1.4). Removed
+/// and recreated empty before every probe; `None` only when the kernel's
+/// own home cannot be found or made.
+fn probe_scratch_dir() -> Option<PathBuf> {
+    let dir = crate::ctx::Paths::compute_home().ok()?.join("probe");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Kill the process group `pid` leads: the probe is spawned with
+/// `process_group(0)`, so its own pid is also its pgid, and a hook the CLI
+/// ran dies with it rather than outliving the timeout.
+fn kill_group(pid: u32) {
+    // SAFETY: killpg(2) on the group this probe's own child leads.
+    unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+}
+
 async fn probe(l: &Launch<'_>) {
+    let Some(dir) = tokio::task::spawn_blocking(probe_scratch_dir)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return;
+    };
     let bin = crate::executor::agent_bin(l.sandbox, l.worktree, super::agent_bin_for(l.step));
     let argv = probe_argv(super::claude_argv(&bin, l));
     let extra = super::inputs::provider_env(l.provider);
     let Ok(mut child) = super::spawn_retrying_etxtbsy(|| {
-        let mut c =
-            tokio::process::Command::from(super::command_in(None, l.worktree, &argv, &extra));
+        let mut c = tokio::process::Command::from(super::command_in(None, &dir, &argv, &extra));
         c.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .kill_on_drop(true);
+            .kill_on_drop(true)
+            .process_group(0);
         c
     })
     .await
@@ -405,7 +477,14 @@ async fn probe(l: &Launch<'_>) {
     if let Some(mut stdin) = child.stdin.take() {
         let _ = tokio::io::AsyncWriteExt::write_all(&mut stdin, b"Reply with one word: ok").await;
     }
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(120), child.wait()).await;
+    let pid = child.id();
+    if tokio::time::timeout(std::time::Duration::from_secs(120), child.wait())
+        .await
+        .is_err()
+        && let Some(pid) = pid
+    {
+        kill_group(pid);
+    }
 }
 
 /// The refusal: no attempt is made and none is counted. It holds the

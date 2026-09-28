@@ -316,16 +316,36 @@ pub fn agent_env() -> Vec<(String, String)> {
         .collect()
 }
 
+/// The agent environment plus `extra_env`.
+fn env_with(extra_env: &[(String, String)]) -> Vec<(String, String)> {
+    let mut env = agent_env();
+    env.extend(extra_env.iter().cloned());
+    env
+}
+
+/// What must happen before `command_in` builds a command for the same
+/// arguments: a sandbox seeds its private logins, waiting on their locks
+/// without holding a thread (see `Sandbox::prepare`).
+pub async fn prepare_in(
+    sandbox: Option<&Execution>,
+    worktree: &Path,
+    extra_env: &[(String, String)],
+) {
+    if let Some(sb) = sandbox {
+        sb.prepare(worktree, &env_with(extra_env)).await;
+    }
+}
+
 /// A command for `argv` in the worktree, through the sandbox when there is
-/// one, with the agent environment plus `extra_env`.
+/// one, with the agent environment plus `extra_env`. `prepare_in` is
+/// awaited first.
 pub fn command_in(
     sandbox: Option<&Execution>,
     worktree: &Path,
     argv: &[String],
     extra_env: &[(String, String)],
 ) -> std::process::Command {
-    let mut env = agent_env();
-    env.extend(extra_env.iter().cloned());
+    let env = env_with(extra_env);
     match sandbox {
         Some(sb) => sb.command(worktree, argv, &env),
         None => crate::executor::Executor::command(
@@ -544,6 +564,7 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
         report,
         log,
     } = args;
+    prepare_in(sandbox, worktree, identity).await;
     let mut child = spawn_retrying_etxtbsy(|| {
         let mut c = Command::from(command_in(sandbox, worktree, argv, identity));
         c.stdin(Stdio::piped())
@@ -789,7 +810,10 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
                      (docs/JOBS.md, \"Steps\"); route this step's role to a claude provider instead"
                 );
             }
-            refusal::read_stderr(run_codex(l).await)
+            let after = refusal::WriteBack::of(&l, &crate::login::CODEX);
+            let out = refusal::read_stderr(run_codex(l).await);
+            after.run().await;
+            out
         }
         Runner::CopilotCli => {
             if l.no_tools {
@@ -798,7 +822,10 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
                      (docs/JOBS.md, \"Steps\"); route this step's role to a claude provider instead"
                 );
             }
-            refusal::read_stderr(run_copilot(l).await)
+            let after = refusal::WriteBack::of(&l, &crate::login::COPILOT);
+            let out = refusal::read_stderr(run_copilot(l).await);
+            after.run().await;
+            out
         }
         Runner::Chat => {
             if !l.no_tools {
@@ -1488,6 +1515,7 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
         watch,
         apply,
     } = args;
+    prepare_in(l.sandbox, l.worktree, extra_env).await;
     let mut child = spawn_retrying_etxtbsy(|| {
         let mut c = Command::from(command_in(l.sandbox, l.worktree, argv, extra_env));
         c.stdin(Stdio::null())

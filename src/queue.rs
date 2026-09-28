@@ -756,6 +756,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         per_day: per_day_cap,
         over_cap,
     } = trust_gate(f, args, trust, &workflow, initiative_id)?;
+    f.egress_gate(&cfg, trust).map_err(anyhow::Error::msg)?;
     let mut t = Task {
         repo: repo.display().to_string(),
         task: args.task.clone(),
@@ -1475,6 +1476,7 @@ mod tests {
             egress: config::TrustEgress::Declared,
             per_day: None,
             auto_land: true,
+            allow_unsandboxed: false,
         }
     }
 

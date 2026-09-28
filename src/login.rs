@@ -1,4 +1,4 @@
-//! The agent login belongs to the kernel, not to any one sandbox.
+//! The agent logins belong to the kernel, not to any one sandbox.
 //!
 //! The claude CLI keeps its OAuth pair in `<config dir>/.credentials.json`.
 //! Each sandbox gets a private copy seeded from that host file (see
@@ -14,7 +14,22 @@
 //! not taken on its say-so: only one the CLI could have produced from the
 //! seed is (see `Seed::could_have_produced`), judged against a record of the
 //! seed kept in FORGE_HOME, where no sandbox can write. The file a write-back
-//! replaces is kept once as `.credentials.json.forge-prev`.
+//! replaces is kept once as `<file>.forge-prev`.
+//!
+//! codex rotates too. Its `auth.json` holds a ChatGPT login (`tokens`: an
+//! access JWT that lives ten days, an id JWT, an `rt.1.` refresh token) and
+//! its refresh tokens are single use: the CLI (0.154) says 'your refresh token
+//! was already used' of a spent one. The refresh was not reproduced in a
+//! sandbox (2026-09-28): with no write-back, a sandbox that refreshed would
+//! have killed the operator's live codex login, the very outage. So codex's
+//! login gets the same lock, seed record, guarded write-back and doctor row
+//! as claude's, through its `Shape`; the host-side refresh before a launch
+//! stays claude's alone (codex's token outlives any attempt by days).
+//!
+//! copilot does not rotate: its login is a GitHub token under `copilotTokens`
+//! in `config.json` (or in the keychain, and then the file holds settings
+//! only), with no expiry and no refresh token. It is seeded under the same
+//! lock and never written back.
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -24,28 +39,25 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// The CLI's credentials file, in its config directory.
-pub const FILE: &str = ".credentials.json";
-
 /// Held while the host file is read, replaced or seeded from.
 const LOCK: &str = ".forge-credentials.lock";
+
+/// Held while a probe refreshes the host file (see `refusal::refresh_on_host`),
+/// so that a seed waits for the refreshed login rather than copying the one
+/// about to rotate. Always taken before `LOCK`, never while holding it.
+const PROBE_LOCK: &str = ".forge-refresh.lock";
 
 /// Unix seconds of the last write-back, for `forge doctor`.
 const MARK: &str = ".forge-writeback";
 
-/// The login a write-back replaced, kept for undoing an acceptance made in
-/// error by hand: one copy, the latest.
-pub const PREV: &str = ".credentials.json.forge-prev";
-
 /// Where a seed's record is kept, under FORGE_HOME.
 const SEEDS: &str = "login-seeds";
 
-/// The most a private pair may hold; the CLI's file is well under 4 KiB.
+/// The most a private login may hold; the CLIs' files are well under 8 KiB.
 const MAX_PRIVATE_BYTES: u64 = 64 * 1024;
 
-/// The furthest ahead a freshly rotated pair may expire. The CLI's tokens
-/// live hours; a day leaves room and no more.
-const MAX_LIFETIME_MS: i64 = 24 * 3600 * 1000;
+/// The expiry of a login that has none (a copilot token, an API key).
+pub const NEVER: i64 = i64::MAX;
 
 /// A token this close to expiring is refreshed on the host before a launch,
 /// at the least (see `refresh_window_ms`).
@@ -70,12 +82,105 @@ pub fn refresh_window_ms(timeout: std::time::Duration, check_timeout: std::time:
 /// How far back `forge doctor` looks for a write-back.
 pub const WRITE_BACK_WINDOW_SECS: i64 = 8 * 3600;
 
+/// One CLI's login, as far as the kernel handles it: where the file is, how
+/// to read its expiry and whether its tokens are there, and what of it a
+/// refresh rewrites (so what a seed's record keeps, and what a write-back may
+/// change).
+pub struct Shape {
+    /// The CLI, and the directory of a task's private state its login is
+    /// seeded into (`<worktree>-provider/<cli>`).
+    pub cli: &'static str,
+    /// Its config directory: this variable, else `home_dir` under `$HOME`.
+    env: &'static str,
+    home_dir: &'static str,
+    /// The login file in that directory.
+    pub file: &'static str,
+    /// The row `forge doctor` gives it.
+    pub row: &'static str,
+    /// How the operator logs in again.
+    pub login: &'static str,
+    /// Token presence and expiry.
+    creds: fn(&Value) -> Creds,
+    /// The rotating refresh token, as a JSON pointer; `None` for a login
+    /// that never rotates, which is never written back.
+    refresh: Option<&'static str>,
+    /// Every field a refresh rewrites, as JSON pointers.
+    rotating: &'static [&'static str],
+    /// Whether the rotating fields are shaped as the CLI writes them.
+    shaped: fn(&Value) -> bool,
+    /// The furthest ahead a freshly rotated login may expire.
+    max_lifetime_ms: i64,
+    /// The file holds the CLI's settings as well as its login: it is seeded
+    /// even with no token in it.
+    settings_too: bool,
+}
+
+pub const CLAUDE: Shape = Shape {
+    cli: "claude",
+    env: "CLAUDE_CONFIG_DIR",
+    home_dir: ".claude",
+    file: ".credentials.json",
+    row: "anthropic",
+    login: "claude login",
+    creds: claude_creds,
+    refresh: Some("/claudeAiOauth/refreshToken"),
+    rotating: &[
+        "/claudeAiOauth/accessToken",
+        "/claudeAiOauth/refreshToken",
+        "/claudeAiOauth/expiresAt",
+    ],
+    shaped: claude_shaped,
+    // The CLI's tokens live hours; a day leaves room and no more.
+    max_lifetime_ms: 24 * 3600 * 1000,
+    settings_too: false,
+};
+
+pub const CODEX: Shape = Shape {
+    cli: "codex",
+    env: "CODEX_HOME",
+    home_dir: ".codex",
+    file: "auth.json",
+    row: "codex-login",
+    login: "codex login",
+    creds: codex_creds,
+    refresh: Some("/tokens/refresh_token"),
+    rotating: &[
+        "/tokens/access_token",
+        "/tokens/id_token",
+        "/tokens/refresh_token",
+        "/last_refresh",
+    ],
+    shaped: codex_shaped,
+    // The access token lives ten days; one more leaves room and no more.
+    max_lifetime_ms: 11 * 24 * 3600 * 1000,
+    settings_too: false,
+};
+
+pub const COPILOT: Shape = Shape {
+    cli: "copilot",
+    env: "COPILOT_HOME",
+    home_dir: ".copilot",
+    file: "config.json",
+    row: "copilot-login",
+    login: "copilot login",
+    creds: copilot_creds,
+    refresh: None,
+    rotating: &[],
+    shaped: |_| false,
+    max_lifetime_ms: 0,
+    settings_too: true,
+};
+
+/// Every login the sandboxes are seeded with.
+pub const SHAPES: [&Shape; 3] = [&CLAUDE, &CODEX, &COPILOT];
+
 /// What a credentials file says, as far as the kernel cares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Creds {
-    /// Both tokens present and non-empty.
+    /// Every token the CLI needs is present and non-empty.
     pub usable: bool,
-    /// `expiresAt` in unix milliseconds; 0 when absent.
+    /// When the login expires, in unix milliseconds; 0 when unknown, `NEVER`
+    /// when it does not.
     pub expires_at_ms: i64,
 }
 
@@ -86,32 +191,205 @@ impl Creds {
         expires_at_ms: 0,
     };
 
-    /// Read a credentials file's text. Never fails: text that is not the
-    /// CLI's JSON is an unusable login that expires at 0.
-    pub fn parse(text: &str) -> Creds {
-        let Ok(v) = serde_json::from_str::<Value>(text) else {
-            return Creds::NONE;
-        };
-        let o = &v["claudeAiOauth"];
-        let token = |k: &str| o[k].as_str().is_some_and(|s| !s.trim().is_empty());
-        // Milliseconds, as the CLI writes them; a bare seconds stamp is
-        // read as such rather than as 1970.
-        let raw = o["expiresAt"].as_i64().unwrap_or(0).max(0);
-        Creds {
-            usable: token("accessToken") && token("refreshToken"),
-            expires_at_ms: if raw < 100_000_000_000 {
-                raw * 1000
-            } else {
-                raw
-            },
-        }
-    }
-
     /// Whether a launch should refresh this login on the host first, given
     /// its refresh window (`refresh_window_ms`).
     pub fn near_expiry(&self, now_ms: i64, window_ms: i64) -> bool {
         self.expires_at_ms < now_ms.saturating_add(window_ms)
     }
+}
+
+/// `text` as JSON, past any whole-line `//` comments (copilot heads its
+/// `config.json` with two).
+fn json(text: &str) -> Option<Value> {
+    let body: String = text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    serde_json::from_str(&body).ok()
+}
+
+fn present(v: &Value) -> bool {
+    v.as_str().is_some_and(|s| !s.trim().is_empty())
+}
+
+fn claude_creds(v: &Value) -> Creds {
+    let o = &v["claudeAiOauth"];
+    // Milliseconds, as the CLI writes them; a bare seconds stamp is read as
+    // such rather than as 1970.
+    let raw = o["expiresAt"].as_i64().unwrap_or(0).max(0);
+    Creds {
+        usable: present(&o["accessToken"]) && present(&o["refreshToken"]),
+        expires_at_ms: if raw < 100_000_000_000 {
+            raw * 1000
+        } else {
+            raw
+        },
+    }
+}
+
+/// A ChatGPT login expires with its access token (the JWT's `exp`); an API
+/// key alone never does.
+fn codex_creds(v: &Value) -> Creds {
+    let t = &v["tokens"];
+    if present(&t["access_token"]) && present(&t["refresh_token"]) {
+        let exp = t["access_token"].as_str().and_then(jwt_exp).unwrap_or(0);
+        return Creds {
+            usable: true,
+            expires_at_ms: exp.max(0).saturating_mul(1000),
+        };
+    }
+    if present(&v["OPENAI_API_KEY"]) {
+        return Creds {
+            usable: true,
+            expires_at_ms: NEVER,
+        };
+    }
+    Creds::NONE
+}
+
+/// A GitHub token per logged-in user; none of them expires.
+fn copilot_creds(v: &Value) -> Creds {
+    let any = v["copilotTokens"]
+        .as_object()
+        .is_some_and(|m| m.values().any(present));
+    if any {
+        Creds {
+            usable: true,
+            expires_at_ms: NEVER,
+        }
+    } else {
+        Creds::NONE
+    }
+}
+
+/// `s` from unpadded base64url; `None` for anything else.
+fn base64url(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for b in s.bytes() {
+        let v = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'-' => 62,
+            b'_' => 63,
+            _ => return None,
+        };
+        acc = (acc << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
+/// A JWT's claims: three non-empty base64url parts, the middle one a JSON
+/// object. The signature is not checked; nothing here trusts the claims but
+/// for the expiry the CLI itself reads.
+fn jwt_claims(s: &str) -> Option<Value> {
+    let parts: Vec<&str> = s.split('.').collect();
+    if s.len() > 16 * 1024 || parts.len() != 3 || parts.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+    base64url(parts[0])?;
+    base64url(parts[2])?;
+    let claims: Value = serde_json::from_slice(&base64url(parts[1])?).ok()?;
+    claims.is_object().then_some(claims)
+}
+
+/// A JWT's `exp`, unix seconds.
+fn jwt_exp(s: &str) -> Option<i64> {
+    jwt_claims(s)?["exp"].as_i64()
+}
+
+/// Which of the claude CLI's two OAuth tokens a string is checked against:
+/// they have distinct prefixes, so one can never pass as the other.
+#[derive(Clone, Copy)]
+enum TokenKind {
+    Access,
+    Refresh,
+}
+
+/// Whether `s`, after `prefix`, is at least 32 `[A-Za-z0-9_-]` characters,
+/// and `s` at most 4096 bytes in all. No `=`, `+`, `/`, `.`, `~`,
+/// whitespace or escape is ever part of the body.
+fn body_shaped(s: &str, prefix_len: usize) -> bool {
+    s.len() <= 4096
+        && s.len() >= prefix_len + 32
+        && s.as_bytes()[prefix_len..]
+            .iter()
+            .all(|&b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// A token as the claude CLI writes one: `sk-ant-oat` (access) or
+/// `sk-ant-ort` (refresh), two digits, a `-`, then the body.
+fn token_shaped(kind: TokenKind, v: &Value) -> bool {
+    let Some(s) = v.as_str() else {
+        return false;
+    };
+    let prefix = match kind {
+        TokenKind::Access => "sk-ant-oat",
+        TokenKind::Refresh => "sk-ant-ort",
+    };
+    let Some(rest) = s.strip_prefix(prefix) else {
+        return false;
+    };
+    let digits = rest.as_bytes();
+    if digits.len() < 3
+        || !digits[0].is_ascii_digit()
+        || !digits[1].is_ascii_digit()
+        || digits[2] != b'-'
+    {
+        return false;
+    }
+    body_shaped(s, prefix.len() + 3)
+}
+
+fn claude_shaped(v: &Value) -> bool {
+    let o = &v["claudeAiOauth"];
+    token_shaped(TokenKind::Access, &o["accessToken"])
+        && token_shaped(TokenKind::Refresh, &o["refreshToken"])
+}
+
+/// A refresh token as codex writes one: `rt.`, a version in digits, `.`,
+/// then the body.
+fn codex_refresh_shaped(v: &Value) -> bool {
+    let Some(s) = v.as_str() else {
+        return false;
+    };
+    let Some(rest) = s.strip_prefix("rt.") else {
+        return false;
+    };
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    (1..=3).contains(&digits)
+        && rest.as_bytes().get(digits) == Some(&b'.')
+        && body_shaped(s, 3 + digits + 1)
+}
+
+/// An RFC 3339 stamp, as codex writes `last_refresh`.
+fn stamp_shaped(v: &Value) -> bool {
+    v.as_str().is_some_and(|s| {
+        (20..=40).contains(&s.len())
+            && s.bytes()
+                .all(|b| b.is_ascii_digit() || b"-:T.Z+".contains(&b))
+    })
+}
+
+fn codex_shaped(v: &Value) -> bool {
+    let t = &v["tokens"];
+    let jwt = |x: &Value| {
+        x.as_str()
+            .and_then(jwt_claims)
+            .is_some_and(|c| c["exp"].is_i64())
+    };
+    jwt(&t["access_token"])
+        && jwt(&t["id_token"])
+        && codex_refresh_shaped(&t["refresh_token"])
+        && stamp_shaped(&v["last_refresh"])
 }
 
 /// The host's login as a launch sees it.
@@ -124,25 +402,159 @@ pub enum Host {
     Usable(Creds),
 }
 
-pub fn host_state(dir: &Path) -> Host {
-    match std::fs::read_to_string(dir.join(FILE)) {
-        Err(_) => Host::Missing,
-        Ok(t) => match Creds::parse(&t) {
-            c if c.usable => Host::Usable(c),
-            _ => Host::Empty,
-        },
+impl Shape {
+    /// Read a login file's text. Never fails: text that is not the CLI's
+    /// JSON is an unusable login that expires at 0.
+    pub fn parse(&self, text: &str) -> Creds {
+        json(text).map_or(Creds::NONE, |v| (self.creds)(&v))
+    }
+
+    pub fn host_state(&self, dir: &Path) -> Host {
+        match std::fs::read_to_string(dir.join(self.file)) {
+            Err(_) => Host::Missing,
+            Ok(t) => match self.parse(&t) {
+                c if c.usable => Host::Usable(c),
+                _ => Host::Empty,
+            },
+        }
+    }
+
+    /// The CLI's config directory: its variable when set and not empty,
+    /// else under `$HOME`.
+    pub fn config_dir(&self) -> Option<PathBuf> {
+        std::env::var_os(self.env)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(self.home_dir)))
+    }
+
+    /// The login a write-back replaced, kept for undoing an acceptance made
+    /// in error by hand: one copy, the latest.
+    pub fn prev(&self) -> String {
+        format!("{}.forge-prev", self.file)
+    }
+
+    /// Whether a login this shape describes can rotate, and so be written
+    /// back.
+    pub fn rotates(&self) -> bool {
+        self.refresh.is_some()
+    }
+
+    /// `text`'s login without the fields a token refresh rewrites.
+    fn unrotating_fields(&self, text: &str) -> Option<Value> {
+        let mut v = json(text)?;
+        for p in self.rotating {
+            let (parent, key) = p.rsplit_once('/')?;
+            if let Some(o) = v.pointer_mut(parent).and_then(Value::as_object_mut) {
+                o.remove(key);
+            }
+        }
+        Some(v)
+    }
+
+    /// The private logins of the tasks that share `worktree`'s parent: each
+    /// task's sandbox keeps its copy in a `<worktree>-provider` sibling.
+    pub fn private_copies(&self, worktree: &Path) -> Vec<PathBuf> {
+        let Some(parent) = worktree.parent() else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(parent) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with("-provider"))
+            .map(|e| e.path().join(self.cli).join(self.file))
+            .filter(|p| is_regular_file(p))
+            .collect()
+    }
+
+    /// `write_back` for a caller that holds the lock. `state` is FORGE_HOME,
+    /// where the seed of `private` was recorded.
+    pub fn write_back_locked(
+        &self,
+        dir: &Path,
+        state: &Path,
+        private: &Path,
+    ) -> std::io::Result<bool> {
+        if !self.rotates() {
+            return Ok(false);
+        }
+        let host = dir.join(self.file);
+        let Ok(host_text) = std::fs::read_to_string(&host) else {
+            // Logged out (or never in): a stale copy does not undo that.
+            return Ok(false);
+        };
+        let Some(text) = read_private(private) else {
+            return Ok(false);
+        };
+        let now = unix_ms();
+        let Some(seed) = Seed::load(state, private) else {
+            return Ok(false);
+        };
+        if !should_write_back(self.parse(&host_text), self.parse(&text), now)
+            || !seed.could_have_produced(self, &text, now)
+        {
+            return Ok(false);
+        }
+        replace_atomic(&dir.join(self.prev()), host_text.as_bytes())?;
+        replace_atomic(&host, text.as_bytes())?;
+        let _ = replace_atomic(&dir.join(MARK), crate::unix_now().to_string().as_bytes());
+        Ok(true)
+    }
+
+    /// Copy `private`'s login back over the host file in `dir` when it is a
+    /// later one the CLI could have made from its seed. Whether it did.
+    pub async fn write_back(
+        &self,
+        dir: &Path,
+        state: &Path,
+        private: &Path,
+    ) -> std::io::Result<bool> {
+        let _lock = lock(dir).await;
+        self.write_back_locked(dir, state, private)
+    }
+
+    /// Everything a launch does to the login before a sandbox starts, under
+    /// one lock: write back any later private login (this task's own, from
+    /// the attempt before, or another task's still running), then seed
+    /// `private` from the host file, recording in `state` (FORGE_HOME) what
+    /// was seeded. An unusable host file seeds nothing (unless it holds the
+    /// CLI's settings too), and a copy left from an earlier launch is removed
+    /// with it, so an attempt never starts on a dead login. A refresh
+    /// probe running on the host is waited out first (see `probe_lock`).
+    pub async fn seed(&self, dir: &Path, state: &Path, worktree: &Path, private: &Path) {
+        let _probe = probe_lock(dir).await;
+        let _lock = lock(dir).await;
+        for copy in self.private_copies(worktree) {
+            let _ = self.write_back_locked(dir, state, &copy);
+        }
+        let seeded = std::fs::read_to_string(dir.join(self.file))
+            .ok()
+            .filter(|t| self.settings_too || self.parse(t).usable);
+        // The record is made before the copy, so a copy that could rotate
+        // never exists without the record that judges it. One that cannot
+        // (no refresh token: an API key, copilot's) has no record, and is
+        // never written back.
+        let recorded = |text: &str| match Seed::of(self, text) {
+            Some(_) => Seed::record(self, state, private, text).is_ok(),
+            None => {
+                Seed::forget(state, private);
+                true
+            }
+        };
+        match seeded {
+            Some(text) if recorded(&text) && replace_atomic(private, text.as_bytes()).is_ok() => {}
+            _ => {
+                Seed::forget(state, private);
+                let _ = std::fs::remove_file(private);
+            }
+        }
     }
 }
 
-/// The claude CLI's config directory: `CLAUDE_CONFIG_DIR`, else `~/.claude`.
-pub fn config_dir() -> Option<PathBuf> {
-    std::env::var_os("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude")))
-}
-
-/// Whether a private copy's pair replaces the host file's: it is a whole
-/// login that expires later. An unusable host file takes any private pair
+/// Whether a private copy's login replaces the host file's: it is a whole
+/// login that expires later. An unusable host file takes any private login
 /// that has not already expired, and never one that has (an expired copy
 /// restored over an empty file would only hide that the login is gone).
 pub fn should_write_back(host: Creds, private: Creds, now_ms: i64) -> bool {
@@ -198,18 +610,45 @@ pub fn seed_copy(from: &Path, dest: &Path) -> std::io::Result<()> {
 /// against another process.
 pub struct Lock(#[allow(dead_code)] Option<std::fs::File>);
 
+/// How long a waiter sleeps between tries of a held lock.
+const LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(10);
+
 /// Wait for the lock on `dir`'s login. A directory that cannot be locked (it
-/// does not exist, so there is no login to race over) locks nothing.
-pub fn lock(dir: &Path) -> Lock {
+/// does not exist, so there is no login to race over) locks nothing. The
+/// wait never blocks the thread: it is reached from every launch on a tokio
+/// worker, and a worker parked in `flock` cannot drive the task that holds
+/// the lock (a refresh probe) to release it.
+pub async fn lock(dir: &Path) -> Lock {
+    lock_named(dir, LOCK).await
+}
+
+/// Wait for the lock a refresh probe on `dir`'s login runs under. Taken
+/// before `lock`, never while holding it.
+pub async fn probe_lock(dir: &Path) -> Lock {
+    lock_named(dir, PROBE_LOCK).await
+}
+
+async fn lock_named(dir: &Path, name: &str) -> Lock {
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(dir.join(LOCK))
+        .open(dir.join(name))
         .ok();
     if let Some(f) = &file {
-        // SAFETY: the descriptor is open for the life of `f`.
-        unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) };
+        loop {
+            // SAFETY: the descriptor is open for the life of `f`.
+            if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                break;
+            }
+            match std::io::Error::last_os_error().raw_os_error() {
+                Some(libc::EWOULDBLOCK) => tokio::time::sleep(LOCK_RETRY).await,
+                Some(libc::EINTR) => {}
+                // Not lockable at all (as a blocking flock would have
+                // failed): go on unlocked, as before.
+                _ => break,
+            }
+        }
     }
     Lock(file)
 }
@@ -223,8 +662,9 @@ fn unix_ms() -> i64 {
 struct Seed {
     /// SHA-256 of the seeded refresh token, hex.
     refresh_sha256: String,
-    /// Everything in the seeded file but the three fields a refresh changes
-    /// (`subscriptionType`, `scopes` and the rest).
+    /// Everything in the seeded file but the fields a refresh changes
+    /// (claude's `subscriptionType` and `scopes`, codex's `account_id` and
+    /// the rest).
     rest: Value,
 }
 
@@ -235,63 +675,12 @@ fn sha256_hex(text: &str) -> String {
         .collect()
 }
 
-/// `text`'s login without the fields a token refresh rewrites.
-fn unrotating_fields(text: &str) -> Option<Value> {
-    let mut v = serde_json::from_str::<Value>(text).ok()?;
-    let o = v.get_mut("claudeAiOauth")?.as_object_mut()?;
-    for k in ["accessToken", "refreshToken", "expiresAt"] {
-        o.remove(k);
-    }
-    Some(v)
-}
-
-/// Which of the CLI's two OAuth tokens a string is checked against: they
-/// have distinct prefixes, so one can never pass as the other.
-#[derive(Clone, Copy)]
-enum TokenKind {
-    Access,
-    Refresh,
-}
-
-/// A token as the claude CLI writes one: `sk-ant-oat` (access) or
-/// `sk-ant-ort` (refresh), two digits, a `-`, then a body of at least 32
-/// `[A-Za-z0-9_-]` characters, at most 4096 bytes in all. No `=`, `+`, `/`,
-/// `.`, `~`, whitespace or escape is ever part of one.
-fn token_shaped(kind: TokenKind, v: &Value) -> bool {
-    let Some(s) = v.as_str() else {
-        return false;
-    };
-    if s.len() > 4096
-        || !s
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
-        return false;
-    }
-    let prefix = match kind {
-        TokenKind::Access => "sk-ant-oat",
-        TokenKind::Refresh => "sk-ant-ort",
-    };
-    let Some(rest) = s.strip_prefix(prefix) else {
-        return false;
-    };
-    let digits = rest.as_bytes();
-    if digits.len() < 3
-        || !digits[0].is_ascii_digit()
-        || !digits[1].is_ascii_digit()
-        || digits[2] != b'-'
-    {
-        return false;
-    }
-    rest[3..].len() >= 32
-}
-
 impl Seed {
-    fn of(text: &str) -> Option<Seed> {
-        let v = serde_json::from_str::<Value>(text).ok()?;
+    fn of(shape: &Shape, text: &str) -> Option<Seed> {
+        let v = json(text)?;
         Some(Seed {
-            refresh_sha256: sha256_hex(v["claudeAiOauth"]["refreshToken"].as_str()?),
-            rest: unrotating_fields(text)?,
+            refresh_sha256: sha256_hex(v.pointer(shape.refresh?)?.as_str()?),
+            rest: shape.unrotating_fields(text)?,
         })
     }
 
@@ -313,8 +702,9 @@ impl Seed {
 
     /// Record the seed of `private` (the text of the host file it is a copy
     /// of), and forget the records of copies that are gone.
-    fn record(state: &Path, private: &Path, text: &str) -> std::io::Result<()> {
-        let seed = Seed::of(text).ok_or_else(|| std::io::Error::other("no login to record"))?;
+    fn record(shape: &Shape, state: &Path, private: &Path, text: &str) -> std::io::Result<()> {
+        let seed =
+            Seed::of(shape, text).ok_or_else(|| std::io::Error::other("no login to record"))?;
         let dir = state.join(SEEDS);
         std::fs::create_dir_all(&dir)?;
         if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -341,19 +731,23 @@ impl Seed {
         let _ = std::fs::remove_file(Seed::path(state, private));
     }
 
-    /// Whether `text` is a pair the CLI could have written into a copy seeded
-    /// with this: the refresh token rotated, the expiry at most a day ahead,
-    /// both tokens shaped as the CLI writes them, every other field as seeded.
-    fn could_have_produced(&self, text: &str, now_ms: i64) -> bool {
-        let Ok(v) = serde_json::from_str::<Value>(text) else {
+    /// Whether `text` is a login the CLI could have written into a copy
+    /// seeded with this: the refresh token rotated, the expiry within the
+    /// CLI's token lifetime, the rotated fields shaped as the CLI writes
+    /// them, every other field as seeded.
+    fn could_have_produced(&self, shape: &Shape, text: &str, now_ms: i64) -> bool {
+        let Some(v) = json(text) else {
             return false;
         };
-        let o = &v["claudeAiOauth"];
-        token_shaped(TokenKind::Access, &o["accessToken"])
-            && token_shaped(TokenKind::Refresh, &o["refreshToken"])
-            && sha256_hex(o["refreshToken"].as_str().unwrap_or_default()) != self.refresh_sha256
-            && Creds::parse(text).expires_at_ms <= now_ms + MAX_LIFETIME_MS
-            && unrotating_fields(text).is_some_and(|rest| rest == self.rest)
+        let Some(refresh) = shape.refresh.and_then(|p| v.pointer(p)?.as_str()) else {
+            return false;
+        };
+        (shape.shaped)(&v)
+            && sha256_hex(refresh) != self.refresh_sha256
+            && shape.parse(text).expires_at_ms <= now_ms.saturating_add(shape.max_lifetime_ms)
+            && shape
+                .unrotating_fields(text)
+                .is_some_and(|rest| rest == self.rest)
     }
 }
 
@@ -380,39 +774,6 @@ fn read_private(path: &Path) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-/// `write_back` for a caller that holds the lock. `state` is FORGE_HOME,
-/// where the seed of `private` was recorded.
-pub fn write_back_locked(dir: &Path, state: &Path, private: &Path) -> std::io::Result<bool> {
-    let host = dir.join(FILE);
-    let Ok(host_text) = std::fs::read_to_string(&host) else {
-        // Logged out (or never in): a stale copy does not undo that.
-        return Ok(false);
-    };
-    let Some(text) = read_private(private) else {
-        return Ok(false);
-    };
-    let now = unix_ms();
-    let Some(seed) = Seed::load(state, private) else {
-        return Ok(false);
-    };
-    if !should_write_back(Creds::parse(&host_text), Creds::parse(&text), now)
-        || !seed.could_have_produced(&text, now)
-    {
-        return Ok(false);
-    }
-    replace_atomic(&dir.join(PREV), host_text.as_bytes())?;
-    replace_atomic(&host, text.as_bytes())?;
-    let _ = replace_atomic(&dir.join(MARK), crate::unix_now().to_string().as_bytes());
-    Ok(true)
-}
-
-/// Copy `private`'s login back over the host file in `dir` when it is a
-/// later one the CLI could have made from its seed. Whether it did.
-pub fn write_back(dir: &Path, state: &Path, private: &Path) -> std::io::Result<bool> {
-    let _lock = lock(dir);
-    write_back_locked(dir, state, private)
-}
-
 /// When the kernel last wrote a login back to the host file (unix seconds).
 pub fn last_write_back(dir: &Path) -> Option<i64> {
     std::fs::read_to_string(dir.join(MARK))
@@ -422,469 +783,5 @@ pub fn last_write_back(dir: &Path) -> Option<i64> {
         .ok()
 }
 
-/// The private logins of the tasks that share `worktree`'s parent: each
-/// task's sandbox keeps its copy in a `<worktree>-provider` sibling.
-pub fn private_copies(worktree: &Path) -> Vec<PathBuf> {
-    let Some(parent) = worktree.parent() else {
-        return Vec::new();
-    };
-    let Ok(entries) = std::fs::read_dir(parent) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter(|e| e.file_name().to_string_lossy().ends_with("-provider"))
-        .map(|e| e.path().join("claude").join(FILE))
-        .filter(|p| is_regular_file(p))
-        .collect()
-}
-
-/// Everything a launch does to the login before a sandbox starts, under one
-/// lock: write back any later private pair (this task's own, from the attempt
-/// before, or another task's still running), then seed `private` from the host
-/// file, recording in `state` (FORGE_HOME) what was seeded. An unusable host
-/// file seeds nothing, and a copy left from an earlier
-/// launch is removed with it, so an attempt never starts on a dead pair.
-pub fn seed(dir: &Path, state: &Path, worktree: &Path, private: &Path) {
-    let _lock = lock(dir);
-    for copy in private_copies(worktree) {
-        let _ = write_back_locked(dir, state, &copy);
-    }
-    let seeded = match host_state(dir) {
-        Host::Usable(_) => std::fs::read_to_string(dir.join(FILE)).ok(),
-        _ => None,
-    };
-    // The record is made before the copy, so a copy never exists without the
-    // record that judges it.
-    match seeded {
-        Some(text)
-            if Seed::record(state, private, &text).is_ok()
-                && replace_atomic(private, text.as_bytes()).is_ok() => {}
-        _ => {
-            Seed::forget(state, private);
-            let _ = std::fs::remove_file(private);
-        }
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    /// An access token shaped as the CLI writes one, tagged so a test's
-    /// assertion can still find a distinguishing substring.
-    fn oat(tag: &str) -> String {
-        format!("sk-ant-oat01-{tag:x<32}")
-    }
-
-    /// A refresh token shaped as the CLI writes one, likewise tagged.
-    fn ort(tag: &str) -> String {
-        format!("sk-ant-ort01-{tag:x<32}")
-    }
-
-    fn login(access: &str, refresh: &str, expires_at: i64) -> String {
-        format!(
-            r#"{{"claudeAiOauth":{{"accessToken":"{access}","refreshToken":"{refresh}","expiresAt":{expires_at}}}}}"#
-        )
-    }
-
-    const NOW: i64 = 1_800_000_000_000;
-
-    #[test]
-    fn a_login_is_usable_only_with_both_tokens() {
-        assert!(Creds::parse(&login("a", "r", NOW)).usable);
-        assert!(!Creds::parse(&login("", "", 0)).usable);
-        assert!(!Creds::parse(&login("a", "", NOW)).usable);
-        assert!(!Creds::parse(&login("", "r", NOW)).usable);
-        assert!(!Creds::parse("").usable);
-        assert!(!Creds::parse("{}").usable);
-        assert!(!Creds::parse("not json").usable);
-    }
-
-    #[test]
-    fn expiry_reads_milliseconds_and_tolerates_seconds() {
-        assert_eq!(Creds::parse(&login("a", "r", NOW)).expires_at_ms, NOW);
-        assert_eq!(
-            Creds::parse(&login("a", "r", NOW / 1000)).expires_at_ms,
-            NOW
-        );
-        assert_eq!(Creds::parse(&login("", "", 0)).expires_at_ms, 0);
-    }
-
-    #[test]
-    fn near_expiry_is_within_thirty_minutes() {
-        let c = |ms| Creds::parse(&login("a", "r", ms));
-        let w = REFRESH_WINDOW_MS;
-        assert!(c(NOW + 29 * 60_000).near_expiry(NOW, w));
-        assert!(!c(NOW + 31 * 60_000).near_expiry(NOW, w));
-        assert!(c(NOW - 1).near_expiry(NOW, w));
-        let short = refresh_window_ms(Duration::from_secs(60), Duration::ZERO);
-        assert_eq!(short, REFRESH_WINDOW_MS);
-    }
-
-    #[test]
-    fn a_long_timeout_widens_the_refresh_window() {
-        // A two-hour attempt must not start on a token with 90 minutes left:
-        // it would expire under the attempt and every concurrent one.
-        let c = |ms| Creds::parse(&login("a", "r", ms));
-        let w = refresh_window_ms(Duration::from_secs(2 * 3600), Duration::from_secs(600));
-        assert_eq!(w, (120 + 10 + 5) * 60_000);
-        assert!(c(NOW + 90 * 60_000).near_expiry(NOW, w));
-        assert!(!c(NOW + 136 * 60_000).near_expiry(NOW, w));
-        assert!(!c(NOW + 90 * 60_000).near_expiry(NOW, REFRESH_WINDOW_MS));
-    }
-
-    #[test]
-    fn a_later_whole_private_login_is_written_back() {
-        let c = |ms| Creds::parse(&login("a", "r", ms));
-        assert!(should_write_back(c(NOW), c(NOW + 1), NOW));
-        assert!(
-            !should_write_back(c(NOW), c(NOW), NOW),
-            "equal is not later"
-        );
-        assert!(!should_write_back(c(NOW), c(NOW - 1), NOW));
-        let empty = Creds::parse(&login("", "", NOW + 9));
-        assert!(
-            !should_write_back(c(NOW), empty, NOW),
-            "an empty copy never wins"
-        );
-    }
-
-    #[test]
-    fn an_unusable_host_file_takes_only_an_unexpired_private_login() {
-        let c = |ms| Creds::parse(&login("a", "r", ms));
-        let cleared = Creds::parse(&login("", "", 0));
-        assert!(should_write_back(cleared, c(NOW + 60_000), NOW));
-        assert!(!should_write_back(cleared, c(NOW - 60_000), NOW));
-        assert!(!should_write_back(Creds::NONE, Creds::NONE, NOW));
-    }
-
-    #[test]
-    fn replace_atomic_swaps_the_file_and_leaves_no_sibling() {
-        let dir = tempfile::tempdir().unwrap();
-        let dest = dir.path().join(FILE);
-        std::fs::write(&dest, "old").unwrap();
-        replace_atomic(&dest, b"new").unwrap();
-        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "new");
-        let names: Vec<_> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(names, [FILE], "the temporary sibling is renamed away");
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&dest).unwrap().permissions().mode();
-        assert_eq!(mode & 0o077, 0, "the login is private to its owner");
-    }
-
-    #[test]
-    fn replace_atomic_into_a_missing_directory_fails_cleanly() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(replace_atomic(&dir.path().join("gone/x"), b"new").is_err());
-    }
-
-    fn state_of(root: &tempfile::TempDir) -> PathBuf {
-        root.path().join("forge-home")
-    }
-
-    /// A host login `text`, seeded into a private copy the way a launch does.
-    fn seeded(text: &str) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
-        let root = tempfile::tempdir().unwrap();
-        let dir = root.path().join("claude");
-        let worktree = root.path().join("work/task");
-        let private = root.path().join("work/task-provider/claude").join(FILE);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::create_dir_all(&worktree).unwrap();
-        std::fs::create_dir_all(private.parent().unwrap()).unwrap();
-        std::fs::write(dir.join(FILE), text).unwrap();
-        let state = state_of(&root);
-        seed(&dir, &state, &worktree, &private);
-        (root, dir, state, worktree, private)
-    }
-
-    fn far() -> i64 {
-        crate::unix_now() * 1000 + 8 * 3600 * 1000
-    }
-
-    #[test]
-    fn write_back_replaces_only_with_a_later_login() {
-        let (_root, dir, state, _wt, private) = seeded(&login("old-a", "old-r", far()));
-        assert_eq!(
-            std::fs::read_to_string(&private).unwrap(),
-            login("old-a", "old-r", far())
-        );
-        let host = dir.join(FILE);
-        std::fs::write(&private, login(&oat("new-a"), &ort("new-r"), far() + 1000)).unwrap();
-        assert!(write_back(&dir, &state, &private).unwrap());
-        assert!(std::fs::read_to_string(&host).unwrap().contains("new-r"));
-        assert!(last_write_back(&dir).is_some());
-        // The same pair again is not later: nothing to do.
-        assert!(!write_back(&dir, &state, &private).unwrap());
-        // An older one never goes back over a newer.
-        std::fs::write(&private, login("older-a", "older-r", far() - 1000)).unwrap();
-        assert!(!write_back(&dir, &state, &private).unwrap());
-        assert!(std::fs::read_to_string(&host).unwrap().contains("new-r"));
-    }
-
-    #[test]
-    fn an_accepted_rotation_keeps_the_login_it_replaced_once_and_privately() {
-        use std::os::unix::fs::PermissionsExt;
-        let seed_text = login("a0", "r0", far());
-        let (_root, dir, state, _wt, private) = seeded(&seed_text);
-        std::fs::write(&private, login(&oat("a1"), &ort("r1"), far() + 1000)).unwrap();
-        assert!(write_back(&dir, &state, &private).unwrap());
-        let prev = dir.join(PREV);
-        assert_eq!(std::fs::read_to_string(&prev).unwrap(), seed_text);
-        assert_eq!(
-            std::fs::metadata(&prev).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        std::fs::write(&private, login(&oat("a2"), &ort("r2"), far() + 2000)).unwrap();
-        assert!(write_back(&dir, &state, &private).unwrap());
-        assert!(
-            std::fs::read_to_string(&prev).unwrap().contains("r1"),
-            "one copy: the latest replaced"
-        );
-    }
-
-    /// The host file and its bytes, after `private` is offered as a
-    /// write-back; a rejection leaves both as seeded.
-    fn offered(seed_text: &str, forged: impl FnOnce(&Path)) -> (bool, String) {
-        let (_root, dir, state, _wt, private) = seeded(seed_text);
-        std::fs::remove_file(&private).unwrap();
-        forged(&private);
-        let took = write_back(&dir, &state, &private).unwrap();
-        assert_eq!(
-            dir.join(PREV).exists(),
-            took,
-            "a backup is made exactly when a pair is accepted"
-        );
-        (took, std::fs::read_to_string(dir.join(FILE)).unwrap())
-    }
-
-    #[test]
-    fn a_private_pair_that_did_not_rotate_the_refresh_token_is_rejected() {
-        let seed_text = login("a0", "r0", far());
-        let (took, host) = offered(&seed_text, |p| {
-            std::fs::write(p, login("other-access", "r0", far() + 1000)).unwrap();
-        });
-        assert!(!took);
-        assert_eq!(host, seed_text);
-    }
-
-    #[test]
-    fn a_private_pair_expiring_more_than_a_day_out_is_rejected() {
-        let seed_text = login("a0", "r0", far());
-        let day = 24 * 3600 * 1000;
-        let (took, host) = offered(&seed_text, |p| {
-            let at = crate::unix_now() * 1000 + day + 60_000;
-            std::fs::write(p, login("a1", "r1", at)).unwrap();
-        });
-        assert!(!took);
-        assert_eq!(host, seed_text);
-        let (took, _) = offered(&seed_text, |p| {
-            std::fs::write(p, login(&oat("a1"), &ort("r1"), far() + 1000)).unwrap();
-        });
-        assert!(took, "a pair within the day is taken");
-    }
-
-    #[test]
-    fn an_oversize_private_file_is_rejected() {
-        let seed_text = login("a0", "r0", far());
-        let (took, host) = offered(&seed_text, |p| {
-            let pad = " ".repeat(MAX_PRIVATE_BYTES as usize);
-            std::fs::write(p, format!("{}{pad}", login("a1", "r1", far() + 1000))).unwrap();
-        });
-        assert!(!took);
-        assert_eq!(host, seed_text);
-    }
-
-    #[test]
-    fn a_symlinked_private_file_is_rejected_even_when_it_holds_a_good_rotation() {
-        let seed_text = login("a0", "r0", far());
-        let (took, host) = offered(&seed_text, |p| {
-            let good = p.with_file_name("elsewhere.json");
-            std::fs::write(&good, login(&oat("a1"), &ort("r1"), far() + 1000)).unwrap();
-            std::os::unix::fs::symlink(&good, p).unwrap();
-        });
-        assert!(!took);
-        assert_eq!(host, seed_text);
-    }
-
-    #[test]
-    fn a_private_pair_with_changed_scopes_or_subscription_is_rejected() {
-        let access = oat("a1");
-        let with = |scopes: &str, sub: &str, refresh: &str, at: i64| {
-            format!(
-                r#"{{"claudeAiOauth":{{"accessToken":"{access}","refreshToken":"{refresh}","expiresAt":{at},"scopes":[{scopes}],"subscriptionType":"{sub}"}}}}"#
-            )
-        };
-        let seed_text = with(r#""user:inference""#, "pro", "r0", far());
-        let (took, host) = offered(&seed_text, |p| {
-            let widened = with(
-                r#""user:inference","user:admin""#,
-                "pro",
-                &ort("r1"),
-                far() + 1000,
-            );
-            std::fs::write(p, widened).unwrap();
-        });
-        assert!(!took, "changed scopes");
-        assert_eq!(host, seed_text);
-        let (took, _) = offered(&seed_text, |p| {
-            std::fs::write(
-                p,
-                with(r#""user:inference""#, "max", &ort("r1"), far() + 1000),
-            )
-            .unwrap();
-        });
-        assert!(!took, "changed subscriptionType");
-        let (took, host) = offered(&seed_text, |p| {
-            std::fs::write(
-                p,
-                with(r#""user:inference""#, "pro", &ort("r1"), far() + 1000),
-            )
-            .unwrap();
-        });
-        assert!(took, "the same fields with a rotated token are taken");
-        assert!(host.contains("r1"));
-    }
-
-    #[test]
-    fn a_private_pair_with_tokens_the_cli_would_not_write_is_rejected() {
-        let seed_text = login("a0", "r0", far());
-        let short_body = "x".repeat(31);
-        let eq_body = format!("{}=", "x".repeat(31));
-        let slash_body = format!("{}/{}", "x".repeat(15), "x".repeat(16));
-        let cases: [(String, String); 12] = [
-            ("a 1".into(), ort("r1")),
-            (oat("a1"), "r\\n1".into()),
-            (oat("a1"), "".into()),
-            ("".into(), ort("r1")),
-            // The demonstrated defect: both tokens equal to '='.
-            ("=".into(), "=".into()),
-            // No prefix at all, whatever the body looks like.
-            ("x".repeat(32), ort("r1")),
-            // A refresh-shaped token where the access token belongs.
-            (ort("swap"), ort("r1")),
-            // An access-shaped token where the refresh token belongs.
-            (oat("a1"), oat("swap")),
-            // A prefixed token with too short a body.
-            (format!("sk-ant-oat01-{short_body}"), ort("r1")),
-            (oat("a1"), format!("sk-ant-ort01-{short_body}")),
-            // A body containing '=' or '/'.
-            (format!("sk-ant-oat01-{eq_body}"), ort("r1")),
-            (format!("sk-ant-oat01-{slash_body}"), ort("r1")),
-        ];
-        for (access, refresh) in cases {
-            let (took, host) = offered(&seed_text, |p| {
-                std::fs::write(p, login(&access, &refresh, far() + 1000)).unwrap();
-            });
-            assert!(!took, "{access:?} {refresh:?}");
-            assert_eq!(host, seed_text);
-        }
-    }
-
-    #[test]
-    fn a_private_pair_with_no_recorded_seed_is_rejected() {
-        let (_root, dir, state, _wt, private) = seeded(&login("a0", "r0", far()));
-        std::fs::remove_dir_all(&state).unwrap();
-        std::fs::write(&private, login("a1", "r1", far() + 1000)).unwrap();
-        assert!(!write_back(&dir, &state, &private).unwrap());
-    }
-
-    #[test]
-    fn the_seed_record_holds_a_hash_of_the_refresh_token_never_the_token() {
-        let (_root, _dir, state, _wt, _private) = seeded(&login("a0", "r0-secret", far()));
-        for e in std::fs::read_dir(state.join(SEEDS)).unwrap().flatten() {
-            let text = std::fs::read_to_string(e.path()).unwrap();
-            assert!(
-                !text.contains("r0-secret") && !text.contains("a0\""),
-                "{text}"
-            );
-        }
-    }
-
-    #[test]
-    fn write_back_does_not_resurrect_a_logged_out_host() {
-        let (_root, dir, state, _wt, private) = seeded(&login("a0", "r0", far()));
-        std::fs::remove_file(dir.join(FILE)).unwrap();
-        std::fs::write(&private, login("a1", "r1", far())).unwrap();
-        assert!(!write_back(&dir, &state, &private).unwrap());
-        assert!(!dir.join(FILE).exists());
-    }
-
-    #[test]
-    fn seed_copies_a_usable_host_login_and_removes_a_stale_copy_of_an_empty_one() {
-        let text = login("a", "r", far());
-        let (root, dir, state, worktree, private) = seeded(&text);
-        assert_eq!(std::fs::read_to_string(&private).unwrap(), text);
-        assert!(state.join(SEEDS).is_dir());
-        // The host file is emptied and the private copy is expired: it must
-        // neither be restored over the empty file nor left to seed anything.
-        std::fs::write(dir.join(FILE), login("", "", 0)).unwrap();
-        std::fs::write(&private, login("a", "r", 1_000)).unwrap();
-        seed(&dir, &state_of(&root), &worktree, &private);
-        assert!(!private.exists());
-        assert_eq!(host_state(&dir), Host::Empty);
-        assert!(!Seed::path(&state, &private).exists(), "no record either");
-    }
-
-    #[test]
-    fn seed_never_writes_through_a_private_symlink_to_the_host_login() {
-        let text = login("a", "r", far());
-        let (_root, dir, state, worktree, private) = seeded(&text);
-        std::fs::remove_file(&private).unwrap();
-        std::os::unix::fs::symlink(dir.join(FILE), &private).unwrap();
-        seed(&dir, &state, &worktree, &private);
-        assert_eq!(std::fs::read_to_string(dir.join(FILE)).unwrap(), text);
-        assert!(is_regular_file(&private));
-        assert_eq!(std::fs::read_to_string(&private).unwrap(), text);
-    }
-
-    #[test]
-    fn seed_never_writes_through_a_private_symlink_to_an_unrelated_file() {
-        let text = login("a", "r", far());
-        let (root, dir, state, worktree, private) = seeded(&text);
-        let victim = root.path().join("victim");
-        std::fs::write(&victim, "precious").unwrap();
-        std::fs::remove_file(&private).unwrap();
-        std::os::unix::fs::symlink(&victim, &private).unwrap();
-        seed(&dir, &state, &worktree, &private);
-        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
-        assert!(is_regular_file(&private));
-        assert_eq!(std::fs::read_to_string(&private).unwrap(), text);
-    }
-
-    #[test]
-    fn seed_forgets_the_records_of_copies_that_are_gone() {
-        let (_root, dir, state, worktree, private) = seeded(&login("a", "r", far()));
-        let old = Seed::path(&state, &private);
-        assert!(old.exists());
-        std::fs::remove_dir_all(private.parent().unwrap().parent().unwrap()).unwrap();
-        let next = _root.path().join("work/next-provider/claude").join(FILE);
-        std::fs::create_dir_all(next.parent().unwrap()).unwrap();
-        seed(&dir, &state, &worktree, &next);
-        assert!(!old.exists());
-        assert!(Seed::path(&state, &next).exists());
-    }
-
-    #[test]
-    fn seed_first_writes_back_a_later_private_login_from_a_sibling_task() {
-        let (root, dir, state, worktree, private) = seeded(&login("a", "dead", far()));
-        // A sibling task seeded from the same host file, then rotated.
-        let other = root.path().join("work/other-provider/claude").join(FILE);
-        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
-        seed(&dir, &state, &worktree, &other);
-        std::fs::write(&other, login(&oat("b"), &ort("live"), far() + 5000)).unwrap();
-        std::fs::remove_file(&private).unwrap();
-        seed(&dir, &state, &worktree, &private);
-        assert!(
-            std::fs::read_to_string(dir.join(FILE))
-                .unwrap()
-                .contains("live")
-        );
-        assert!(std::fs::read_to_string(&private).unwrap().contains("live"));
-    }
-}
+mod tests;

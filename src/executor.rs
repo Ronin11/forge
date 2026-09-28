@@ -45,6 +45,24 @@ pub struct Guarantees {
     pub credentials_seeded: bool,
     pub checks_under_kernel_control: bool,
 }
+/// `Execution::guarantees_for` for a process that never resolved a sandbox
+/// (a `forge add`, which only files the task): `FORGE_SANDBOX=0` means
+/// every launch is on the host, and a declared bwrap without the binary
+/// guarantees nothing.
+pub fn guarantees_unresolved(cfg: &config::Execution) -> (Backend, Guarantees) {
+    if config::env("SANDBOX").as_deref() == Ok("0") {
+        return (Backend::Host, Backend::Host.guarantees());
+    }
+    let backend = cfg.declared.unwrap_or_else(default_backend);
+    let available = backend != Backend::Bwrap || crate::sandbox::resolve_binary("bwrap").is_ok();
+    let guarantees = if available {
+        backend.guarantees()
+    } else {
+        Guarantees::default()
+    };
+    (backend, guarantees)
+}
+
 pub trait Executor {
     fn guarantees(&self) -> Guarantees;
     fn command(
@@ -184,15 +202,13 @@ impl Execution {
         forge_home: PathBuf,
         ro: Vec<PathBuf>,
         rw: Vec<PathBuf>,
-        hosts: Vec<Rule>,
     ) -> anyhow::Result<Option<Self>> {
         if config::env("SANDBOX").as_deref() == Ok("0") {
             return Ok(None);
         }
         Ok(Some(Self {
             fallback: default_backend(),
-            bwrap: Sandbox::detect(agent, paths, forge_home, ro, rw, hosts)
-                .map_err(|e| format!("{e:#}")),
+            bwrap: Sandbox::detect(agent, paths, forge_home, ro, rw).map_err(|e| format!("{e:#}")),
             backends: Mutex::new(BTreeMap::new()),
             remotes: Mutex::new(BTreeMap::new()),
         }))
@@ -234,7 +250,10 @@ impl Execution {
             .unwrap_or(self.fallback)
     }
     pub fn guarantees(&self, path: &Path) -> Guarantees {
-        match self.backend(path) {
+        self.guarantees_of(self.backend(path))
+    }
+    fn guarantees_of(&self, backend: Backend) -> Guarantees {
+        match backend {
             Backend::Host => Host.guarantees(),
             Backend::Ssh => Backend::Ssh.guarantees(),
             Backend::Bwrap => self
@@ -243,6 +262,12 @@ impl Execution {
                 .map(Executor::guarantees)
                 .unwrap_or_default(),
         }
+    }
+    /// The backend a repository declaring `cfg` would run on, and what it
+    /// guarantees here, before any worktree exists.
+    pub fn guarantees_for(&self, cfg: &config::Execution) -> (Backend, Guarantees) {
+        let backend = cfg.declared.unwrap_or(self.fallback);
+        (backend, self.guarantees_of(backend))
     }
     pub fn command(&self, path: &Path, argv: &[String], env: &[(String, String)]) -> Command {
         let policy = self
@@ -275,6 +300,16 @@ impl Execution {
             }
         }
     }
+    /// What a launch in `path` with `env` does before its `command` is
+    /// built: a bwrap launch seeds its private logins (see
+    /// `Sandbox::prepare`); any other has nothing to prepare.
+    pub async fn prepare(&self, path: &Path, env: &[(String, String)]) {
+        if let Ok(sb) = &self.bwrap
+            && self.backend(path) == Backend::Bwrap
+        {
+            sb.prepare(path, env).await;
+        }
+    }
     /// Fails, naming the socket, when a bwrap launch in `path` would bind
     /// a proxy socket that is not there.
     pub fn check_socket(&self, path: &Path) -> anyhow::Result<()> {
@@ -286,9 +321,11 @@ impl Execution {
     /// After a launch in `path`: write the attempt's private login back over
     /// the host file if it refreshed it (see `login`). Only a bwrap launch
     /// has a private copy; whether a write-back happened.
-    pub fn write_back_login(&self, path: &Path) -> bool {
+    pub async fn write_back_login(&self, shape: &crate::login::Shape, path: &Path) -> bool {
         match &self.bwrap {
-            Ok(sb) if self.backend(path) == Backend::Bwrap => sb.write_back_login(path),
+            Ok(sb) if self.backend(path) == Backend::Bwrap => {
+                sb.write_back_login(shape, path).await
+            }
             _ => false,
         }
     }
@@ -302,6 +339,11 @@ impl Execution {
     pub fn set_egress(&self, path: &Path, rules: &[Rule]) {
         if let Ok(sb) = &self.bwrap {
             sb.set_egress(path, rules);
+        }
+    }
+    pub fn set_provider_hosts(&self, path: &Path, rules: &[Rule]) {
+        if let Ok(sb) = &self.bwrap {
+            sb.set_provider_hosts(path, rules);
         }
     }
     pub fn set_cache_dir(&self, path: &Path, dir: PathBuf) {
@@ -322,6 +364,25 @@ impl Execution {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn guarantees_for_follows_the_declared_backend_and_the_fallback() {
+        let execution = Execution {
+            bwrap: Err("bwrap not found".into()),
+            fallback: Backend::Host,
+            backends: Mutex::new(BTreeMap::new()),
+            remotes: Mutex::new(BTreeMap::new()),
+        };
+        let (backend, g) = execution.guarantees_for(&config::Execution::default());
+        assert_eq!(backend, Backend::Host);
+        assert!(!g.egress_bounded);
+        let declared = config::Execution {
+            declared: Some(Backend::Bwrap),
+            ..Default::default()
+        };
+        let (backend, g) = execution.guarantees_for(&declared);
+        assert_eq!(backend, Backend::Bwrap);
+        assert!(!g.egress_bounded && !g.worktree_private);
+    }
 
     #[tokio::test]
     async fn execution_config_defaults_and_rejects_unknown_backends() {
