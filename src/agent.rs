@@ -115,7 +115,7 @@ pub enum Runner {
     #[default]
     ClaudeCli,
     CodexCli,
-    /// GitHub Copilot CLI, `copilot -p`; see `run_copilot`.
+    /// GitHub Copilot CLI with piped prompts; see `run_copilot`.
     CopilotCli,
     Chat,
     /// TypeSafe's Jev: typed judgment, one HTTP call, never text; see

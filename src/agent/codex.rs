@@ -120,6 +120,17 @@ fn codex_common_argv(l: &Launch<'_>) -> Vec<String> {
     argv
 }
 
+/// Common phase arguments, with exec options before the resume subcommand.
+fn codex_phase_argv(bin: &str, l: &Launch<'_>, resume: Option<&str>) -> Vec<String> {
+    let mut argv = vec![bin.to_string(), "exec".to_string()];
+    argv.extend(codex_common_argv(l));
+    argv.extend(l.provider.extra_args.iter().cloned());
+    if let Some(id) = resume {
+        argv.extend(["resume".into(), id.to_string()]);
+    }
+    argv
+}
+
 /// A nudge's fixed prompt for a phase one that made no edit at all: told
 /// once, plainly, to do the work rather than end the turn with only a
 /// description of it.
@@ -262,13 +273,7 @@ pub(super) async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
     // Every `exec` option (--json, -C, the sandbox flag, -m, the provider's
     // own args) goes before the `resume` subcommand: codex rejects them
     // after it ("error: unexpected argument '-C' found", task 305).
-    let mut argv1: Vec<String> = vec![bin.clone(), "exec".to_string()];
-    argv1.extend(codex_common_argv(&l));
-    argv1.extend(l.provider.extra_args.iter().cloned());
-    if let Some(id) = l.resume {
-        argv1.push("resume".into());
-        argv1.push(id.to_string());
-    }
+    let mut argv1 = codex_phase_argv(&bin, &l, l.resume);
     argv1.push("-".into());
 
     let (exit1, timed_out1, mut stderr_text) = run_codex_phase(RunCodexPhase {
@@ -331,11 +336,7 @@ pub(super) async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
                 },
             );
 
-            let mut argv_n: Vec<String> = vec![bin.clone(), "exec".to_string()];
-            argv_n.extend(codex_common_argv(&l));
-            argv_n.extend(l.provider.extra_args.iter().cloned());
-            argv_n.push("resume".into());
-            argv_n.push(thread_id);
+            let mut argv_n = codex_phase_argv(&bin, &l, Some(&thread_id));
             argv_n.push("-".into());
 
             let (exit_n, timed_out_n, stderr_n) = run_codex_phase(RunCodexPhase {
@@ -377,11 +378,7 @@ pub(super) async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
             },
         );
 
-        let mut argv2: Vec<String> = vec![bin.clone(), "exec".to_string()];
-        argv2.extend(codex_common_argv(&l));
-        argv2.extend(l.provider.extra_args.iter().cloned());
-        argv2.push("resume".into());
-        argv2.push(thread_id);
+        let mut argv2 = codex_phase_argv(&bin, &l, Some(&thread_id));
         argv2.push("--output-schema".into());
         argv2.push(schema_path.display().to_string());
         argv2.push("-".into());
