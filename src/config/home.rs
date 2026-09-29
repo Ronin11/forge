@@ -582,6 +582,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = load_home(dir.path()).unwrap();
         assert_eq!(c.budget.per_task_usd, 2.0);
+        assert_eq!(c.limits.log_bytes, 64 << 20);
         assert!(c.sandbox.rw.iter().any(|p| p.ends_with(".npm")));
         assert!(
             !dir.path().join("config.toml").exists(),
@@ -589,11 +590,12 @@ mod tests {
         );
         std::fs::write(
             dir.path().join("config.toml"),
-            "[sandbox]\nro_paths = [\"/opt/tools\"]\nrw_paths = []\n",
+            "[limits]\nlog_bytes = 1048576\n[sandbox]\nro_paths = [\"/opt/tools\"]\nrw_paths = []\n",
         )
         .unwrap();
         let c = load_home(dir.path()).unwrap();
         assert_eq!(c.sandbox.ro, vec![PathBuf::from("/opt/tools")]);
+        assert_eq!(c.limits.log_bytes, 1 << 20);
         assert!(c.sandbox.rw.is_empty());
         assert_eq!(c.budget.per_day_usd, None);
         assert_eq!(c.budget.five_hour_max, 0.9);

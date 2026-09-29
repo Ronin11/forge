@@ -577,3 +577,28 @@ fn a_granted_rule_matches_as_granted_and_an_operator_rule_outranks_it() {
         Some(Matched::Exact)
     );
 }
+
+#[test]
+fn refused_file_is_bounded_and_must_be_regular() {
+    use std::io::Write;
+    use std::os::unix::fs::symlink;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(".git")).unwrap();
+    let path = refused_path(dir.path()).unwrap();
+    let first = "{\"host\":\"first.example\",\"port\":443,\"count\":1}\n";
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.write_all(first.as_bytes()).unwrap();
+    file.write_all(&vec![b' '; (256 << 10) - first.len()])
+        .unwrap();
+    file.write_all(b"\n{\"host\":\"past-cap.example\",\"port\":443,\"count\":1}\n")
+        .unwrap();
+    let got = read_refused(dir.path());
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].host, "first.example");
+    std::fs::remove_file(&path).unwrap();
+    symlink("/dev/zero", &path).unwrap();
+    assert!(read_refused(dir.path()).is_empty());
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(read_refused(dir.path()).is_empty());
+}

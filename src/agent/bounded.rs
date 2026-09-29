@@ -40,7 +40,17 @@ impl<R: AsyncBufRead + Unpin> BoundedLines<R> {
         if bytes.last() == Some(&b'\r') {
             bytes.pop();
         }
-        Ok(Some((String::from_utf8_lossy(&bytes).into_owned(), cut)))
+        let mut text = String::from_utf8_lossy(&bytes).into_owned();
+        // Invalid UTF-8 expands when replaced; the displayed prefix is bounded too.
+        if text.len() > LINE_BYTES {
+            let mut end = LINE_BYTES;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+            cut = true;
+        }
+        Ok(Some((text, cut)))
     }
 
     pub(super) async fn next_uncut(&mut self, log: &mut CappedLog) -> io::Result<Option<String>> {
