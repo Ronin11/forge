@@ -150,6 +150,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_redraw_uses_the_roles_renormalised_open_weights() {
+        let (_dir, mut f, original) = fixture();
+        let mut alternate = f.providers["openai"].clone();
+        alternate.name = "alternate".into();
+        f.providers.insert("alternate".into(), alternate);
+        std::fs::write(
+            f.paths.home.join("workflows/experiment.toml"),
+            "[factors.review]\nopenai = 0.5\nanthropic = 0.4\nalternate = 0.1\n",
+        )
+        .unwrap();
+        hold(&f, &original, "openai", unix_now() + 3600);
+        let open = BTreeMap::from([("anthropic".into(), 0.8), ("alternate".into(), 0.2)]);
+        for _ in 0..32 {
+            let mut t = original.clone();
+            t.id = f.store.insert_task(&t).unwrap();
+            let expected = crate::experiment::draw_level(t.id, "review", &open).unwrap();
+            assert!(
+                before_attempt(&f, &mut t, "review", true)
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .unwrap()
+                    .is_none()
+            );
+            let saved = f.store.task(t.id).unwrap().unwrap();
+            assert_eq!(saved.explore["review"], expected);
+            assert_eq!(saved.explore["code"], "openai");
+            assert_eq!(saved.state, TaskState::Running);
+            assert!(saved.explore[&redraw::note_key("review")].contains(&expected));
+        }
+    }
+
+    #[tokio::test]
     async fn no_wait_keeps_the_original_arm_and_requeues() {
         let (_dir, f, mut t) = fixture();
         hold(&f, &t, "openai", unix_now() + 3600);
