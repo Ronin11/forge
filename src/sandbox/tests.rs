@@ -743,6 +743,17 @@ fn relay_missing_executable_stops_before_launching_agent() {
 }
 
 #[test]
+fn resource_limit_scope_probe_cannot_notify_the_worker_service() {
+    let mut cmd = std::process::Command::new("systemd-run");
+    cmd.env("NOTIFY_SOCKET", "/run/worker-notify.sock");
+    ResourceLimits::default().scope_args(&mut cmd);
+    assert!(
+        cmd.get_envs()
+            .any(|(key, value)| key == "NOTIFY_SOCKET" && value.is_none())
+    );
+}
+
+#[test]
 fn resource_limits_bound_every_tmpfs_and_wrap_the_launch() {
     let root = tempfile::tempdir().unwrap();
     let mut sandbox = Sandbox::with_bwrap("/usr/bin/bwrap".into(), root.path().join("home"));

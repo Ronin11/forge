@@ -47,6 +47,9 @@ pub enum Phase {
 
 impl ResourceLimits {
     fn scope_args(self, cmd: &mut Command) {
+        // A scope launcher (including the availability probe) must not
+        // report its status to the worker's Type=notify service socket.
+        cmd.env_remove("NOTIFY_SOCKET");
         cmd.args(["--user", "--scope", "--quiet"])
             .arg(format!("--property=MemoryMax={}", self.memory_max))
             .arg(format!("--property=TasksMax={}", self.tasks_max))
