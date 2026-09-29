@@ -68,7 +68,10 @@ fn every_outcome_is_totaled_with_its_task_count_and_cost() {
     let o = e.forge("ok.sh", &["audit"]);
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("dangling tips:"), "{out}");
-    assert!(out.contains(&format!("task {dangling}: L1 failed: test")), "{out}");
+    assert!(
+        out.contains(&format!("task {dangling}: L1 failed: test")),
+        "{out}"
+    );
 }
 
 #[test]
@@ -135,7 +138,10 @@ fn doctor_warns_on_a_dangling_tip_and_names_it() {
         .expect("a dangling row");
     assert_eq!(row["status"], "warn", "{row}");
     assert!(
-        row["detail"].as_str().unwrap().contains(&format!("task {id}")),
+        row["detail"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("task {id}")),
         "{row}"
     );
 }

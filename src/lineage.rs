@@ -161,8 +161,10 @@ pub struct Report {
 
 /// Totals every lineage into its outcome bucket and lists the dangling tips.
 pub fn report(lineages: &[Lineage]) -> Report {
-    let mut outcomes: BTreeMap<Outcome, Totals> =
-        Outcome::ALL.into_iter().map(|o| (o, Totals::default())).collect();
+    let mut outcomes: BTreeMap<Outcome, Totals> = Outcome::ALL
+        .into_iter()
+        .map(|o| (o, Totals::default()))
+        .collect();
     let mut dangling = Vec::new();
     for l in lineages {
         let t = outcomes.entry(l.outcome).or_default();
@@ -323,7 +325,8 @@ mod tests {
     #[test]
     fn report_totals_every_outcome_and_lists_dangling_tips() {
         let landed = lineage_of(&[row(1, None, "succeeded", "")]).unwrap();
-        let dangling = lineage_of(&[row(2, None, "failed", "operation stamp failed: boom")]).unwrap();
+        let dangling =
+            lineage_of(&[row(2, None, "failed", "operation stamp failed: boom")]).unwrap();
         let r = report(&[landed, dangling]);
         assert_eq!(r.outcomes.len(), 6, "every outcome present, even at zero");
         assert_eq!(r.outcomes[&Outcome::Landed].tasks, 1);
