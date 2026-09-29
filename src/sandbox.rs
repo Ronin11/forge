@@ -83,6 +83,9 @@ pub struct Sandbox {
     dependency_cache: Option<PathBuf>,
     /// The forge binary, bound in so the wrapper can run its egress relay.
     relay_exe: PathBuf,
+    /// Whether a launch starts the egress relay when a route exists. Off
+    /// only for the test constructor, whose relay binary does not exist.
+    relay: bool,
     /// The proxies this process runs, one per distinct policy.
     proxies: Arc<Proxies>,
     /// A repository's declared egress, by the worktree its attempts run in
@@ -411,6 +414,7 @@ impl Sandbox {
             overlay,
             dependency_cache: paths.dependency_cache.clone(),
             relay_exe,
+            relay: true,
             proxies: Arc::new(Proxies::default()),
             declared: Mutex::new(BTreeMap::new()),
             provider_hosts: Mutex::new(BTreeMap::new()),
@@ -570,6 +574,7 @@ impl Sandbox {
             overlay: true,
             dependency_cache: None,
             relay_exe: PathBuf::from("/nonexistent/forge"),
+            relay: false,
             proxies: Arc::new(Proxies::default()),
             declared: Mutex::new(BTreeMap::new()),
             provider_hosts: Mutex::new(BTreeMap::new()),
@@ -847,7 +852,7 @@ impl Sandbox {
         }
         cmd.arg("--chdir").arg(worktree).arg("--");
         let script = self.wrapper_script(
-            socket.is_some(),
+            socket.is_some() && self.relay,
             egress::refused_path(worktree).as_deref(),
             phase,
         );

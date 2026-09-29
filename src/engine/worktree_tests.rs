@@ -135,3 +135,88 @@ async fn landed_unverified_branch_starts_at_base() {
 async fn automatic_refile_inherits_code_without_joining_retry_lineage() {
     checkout_case(false, false, true).await;
 }
+
+#[tokio::test]
+async fn branch_reuse_start_clears_staged_and_unrecorded_namespace_files() {
+    let home = tempfile::tempdir().unwrap();
+    let f = Forge::open_with(
+        Paths::for_home(home.path().to_path_buf()).unwrap(),
+        Store::open(&home.path().join("forge.db")).unwrap(),
+    )
+    .unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(
+        repo.path().join("forge.toml"),
+        "[checks]\n[verify]\nnamespace = [\"tests/acceptance/\"]\n",
+    )
+    .unwrap();
+    let base = git::init_commit_all(repo.path(), "base").await.unwrap();
+    let branch = git::current_branch(repo.path()).await.unwrap();
+    let cfg = config::load_working(repo.path()).await.unwrap();
+    let prior = home.path().join("prior");
+    git::clone_task(repo.path(), &branch, &prior, "prior", None, None)
+        .await
+        .unwrap();
+    std::fs::write(prior.join("answer.txt"), "42\n").unwrap();
+    let tip = git::commit_all(&prior, "implementation")
+        .await
+        .unwrap()
+        .unwrap();
+    let mut parent = Task {
+        repo: repo.path().display().to_string(),
+        worktree: prior.display().to_string(),
+        branch: "prior".into(),
+        base_sha: base,
+        state: TaskState::Failed,
+        ..Default::default()
+    };
+    parent.id = f.store.insert_task(&parent).unwrap();
+    f.store.update_task(&parent).unwrap();
+    let mut child = Task {
+        repo: parent.repo.clone(),
+        base_branch: branch,
+        retry_of: Some(parent.id),
+        task: "retry".into(),
+        ..Default::default()
+    };
+    child.id = f.store.insert_task(&child).unwrap();
+    prepare_worktree(&f, &mut child, repo.path(), &cfg, &None)
+        .await
+        .ok()
+        .unwrap();
+    let dir = Path::new(&child.worktree);
+    assert_eq!(git::head(dir).await.unwrap(), tip);
+    // An interrupted verification on the reused checkout can leave both a
+    // staged overlay and unrecorded generated files, even without a manifest.
+    std::fs::create_dir_all(dir.join("tests/acceptance")).unwrap();
+    std::fs::write(dir.join("tests/acceptance/staged.sh"), "false").unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["add", "tests/acceptance/staged.sh"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(dir.join("tests/acceptance/generated.sh"), "false").unwrap();
+    prepare_worktree(&f, &mut child, repo.path(), &cfg, &None)
+        .await
+        .ok()
+        .unwrap();
+    let dir = Path::new(&child.worktree);
+    assert!(!dir.join("tests/acceptance").exists());
+    assert!(git::dirty_paths(dir).await.unwrap().is_empty());
+    assert_eq!(git::head(dir).await.unwrap(), tip);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("answer.txt")).unwrap(),
+        "42\n"
+    );
+    std::fs::write(dir.join("unrelated.txt"), "keep me").unwrap();
+    assert!(
+        prepare_worktree(&f, &mut child, repo.path(), &cfg, &None)
+            .await
+            .is_err()
+    );
+    assert!(Path::new(&child.worktree).join("unrelated.txt").exists());
+}
