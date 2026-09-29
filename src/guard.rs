@@ -163,7 +163,7 @@ pub async fn install_for_project(
     let mut steps = Vec::new();
     for r in store.project_repos(project)? {
         let repo = Path::new(&r.repo);
-        let Some(remote) = crate::init::origin_remote(repo).await else {
+        let Some(remote) = crate::init::origin_remote(repo) else {
             continue;
         };
         let base_branch = config::load_working(repo)

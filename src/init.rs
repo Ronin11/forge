@@ -516,9 +516,9 @@ pub const MIRROR_HOOK: &str = include_str!("../deploy/post-update.mirror");
 
 /// The remote a registered repository pushes to (`[defaults] remote`,
 /// `origin` when its config cannot be read), or `None` for `push = false`.
-pub(crate) async fn origin_remote(repo: &Path) -> Option<String> {
-    match config::load_working(repo).await {
-        Ok(cfg) => cfg.push_remote,
+pub(crate) fn origin_remote(repo: &Path) -> Option<String> {
+    match config::load_working_push_remote(repo) {
+        Ok(remote) => remote,
         Err(_) => Some("origin".to_string()),
     }
 }
@@ -562,7 +562,7 @@ async fn install_mirrors(home: &Path, mirror: &str) -> Result<Vec<StepResult>> {
     for p in store.list_projects()? {
         for r in store.project_repos(&p.name)? {
             let repo = Path::new(&r.repo);
-            let Some(remote) = origin_remote(repo).await else {
+            let Some(remote) = origin_remote(repo) else {
                 continue;
             };
             let Some(url) = git::remote_url(repo, &remote).await else {

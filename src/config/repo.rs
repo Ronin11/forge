@@ -270,6 +270,18 @@ pub async fn load_working(repo: &Path) -> Result<Config> {
     parse(repo, &text, &path.display().to_string(), config_path).await
 }
 
+/// The configured push remote, without querying Git. Callers resolve its
+/// destinations separately; `push = false` disables remote installation checks.
+pub fn load_working_push_remote(dir: &Path) -> Result<Option<String>> {
+    let (path, _, text) = read_working(dir)?;
+    let raw: Raw = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    Ok(raw
+        .defaults
+        .push
+        .unwrap_or(true)
+        .then(|| raw.defaults.remote.unwrap_or_else(|| "origin".to_string())))
+}
+
 /// Just the `[checks]` table of the config in the working tree at `dir`,
 /// which need not be a git repository: `load_working` asks git for the
 /// base branch and the push remote, and a job's scratch tree, an archive,

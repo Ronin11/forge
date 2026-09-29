@@ -443,3 +443,70 @@ fn assert_push_destinations_guarded(rewrite: bool) {
     let doc = text(&e.forge("ok.sh", &["doctor"]));
     assert!(doc.contains("no landing guard: guarded"), "{doc}");
 }
+
+#[test]
+fn doctor_checks_the_configured_remote_and_respects_disabled_pushes() {
+    for nested_config in [false, true] {
+        let e = Env::new();
+        let production = e.repo.parent().unwrap().join("production.git");
+        git(&e.repo, &["init", "--bare", production.to_str().unwrap()]);
+        git(
+            &e.repo,
+            &["remote", "add", "production", production.to_str().unwrap()],
+        );
+        let config = if nested_config {
+            std::fs::create_dir(e.repo.join(".forge")).unwrap();
+            let path = e.repo.join(".forge/forge.toml");
+            std::fs::rename(e.repo.join("forge.toml"), &path).unwrap();
+            path
+        } else {
+            e.repo.join("forge.toml")
+        };
+        let original = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(
+            &config,
+            format!("{original}\n[defaults]\nremote = \"production\"\n"),
+        )
+        .unwrap();
+        let o = e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "guarded",
+                "--purpose",
+                "Protect production.",
+                "--repo",
+                e.repo.to_str().unwrap(),
+            ],
+        );
+        assert!(o.status.success(), "{}", text(&o));
+        install_by_hand(&e);
+        let doc = text(&e.forge("ok.sh", &["doctor"]));
+        assert!(doc.contains("no landing guard: guarded"), "{doc}");
+        let o = e.forge("ok.sh", &["project", "guard", "guarded"]);
+        assert!(o.status.success(), "{}", text(&o));
+        let doc = text(&e.forge("ok.sh", &["doctor"]));
+        assert!(!doc.contains("no landing guard: guarded"), "{doc}");
+        let o = push(&e.repo, &["production", "main"]);
+        assert!(!o.status.success(), "{}", text(&o));
+        assert!(text(&o).contains("forge adopt"), "{}", text(&o));
+
+        std::fs::remove_file(production.join("hooks/pre-receive")).unwrap();
+        let doc = text(&e.forge("ok.sh", &["doctor"]));
+        assert!(doc.contains("no landing guard: guarded"), "{doc}");
+        let o = push(&e.repo, &["production", "main"]);
+        assert!(o.status.success(), "{}", text(&o));
+
+        std::fs::write(
+            &config,
+            format!("{original}\n[defaults]\nremote = \"production\"\npush = false\n"),
+        )
+        .unwrap();
+        let doc = text(&e.forge("ok.sh", &["doctor"]));
+        assert!(!doc.contains("no landing guard: guarded"), "{doc}");
+        let o = e.forge("ok.sh", &["project", "guard", "guarded"]);
+        assert!(o.status.success(), "{}", text(&o));
+        assert!(!production.join("hooks/pre-receive").exists());
+    }
+}
