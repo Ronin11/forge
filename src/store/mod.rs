@@ -772,7 +772,7 @@ impl Store {
         {
             return Ok(0);
         }
-        let c = self.lock();
+        let mut c = self.lock();
         let mut applied = 0;
         for (i, sql) in MIGRATIONS.iter().enumerate() {
             let v = i as i64 + 1;
@@ -788,24 +788,33 @@ impl Store {
             if done {
                 continue;
             }
-            c.execute_batch("BEGIN")?;
-            let r = c.execute_batch(sql).and_then(|()| {
-                c.retry_execute(
-                    "INSERT INTO contract_steps (version, applied_at) VALUES (?1, ?2)",
-                    params![v, crate::unix_now()],
-                )
-                .map(|_| ())
-            });
-            match r {
-                Ok(()) => c.execute_batch("COMMIT")?,
-                Err(e) => {
-                    c.execute_batch("ROLLBACK").ok();
-                    bail!(
-                        "contract step {v} (`{}`) failed: {e}",
-                        migrations::first_line(sql)
-                    );
-                }
+            // Another process may have applied this step since the fast-path
+            // read. Serialize writers and recheck before running any contract SQL.
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let done = tx
+                .query_row("SELECT 1 FROM contract_steps WHERE version=?1", [v], |_| {
+                    Ok(())
+                })
+                .optional()?
+                .is_some();
+            if done {
+                continue;
             }
+            tx.execute_batch(sql)
+                .and_then(|()| {
+                    tx.execute(
+                        "INSERT INTO contract_steps (version, applied_at) VALUES (?1, ?2)",
+                        params![v, crate::unix_now()],
+                    )
+                    .map(|_| ())
+                })
+                .with_context(|| {
+                    format!(
+                        "contract step {v} (`{}`) failed",
+                        migrations::first_line(sql)
+                    )
+                })?;
+            tx.commit()?;
             applied += 1;
         }
         Ok(applied)
@@ -1059,6 +1068,36 @@ mod tests {
         assert!(applied > 0, "expected pending contract steps to run");
         // Nothing pending now: one SELECT per step, no write.
         assert_eq!(s.apply_contracts("new", |_, _| true).unwrap(), 0);
+    }
+
+    #[test]
+    fn concurrent_contract_callers_apply_each_step_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let store = Store::open(&path).unwrap();
+        store
+            .lock()
+            .execute_batch("DELETE FROM contract_steps")
+            .unwrap();
+        let expected = MIGRATIONS
+            .iter()
+            .filter(|sql| migrations::is_contract(sql))
+            .count();
+        assert!(expected > 0);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let store = Store::open(&path).unwrap();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.apply_contracts("new", |_, _| false).unwrap()
+                })
+            })
+            .collect();
+        let applied: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
+        assert_eq!(applied, expected);
+        assert_eq!(store.apply_contracts("new", |_, _| false).unwrap(), 0);
     }
 
     #[test]

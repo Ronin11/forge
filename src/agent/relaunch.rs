@@ -115,7 +115,7 @@ pub(crate) fn launches(counter: &std::path::Path) -> u32 {
 mod tests {
     use super::*;
     use crate::agent::{
-        Launch, Outcome, Provider, Runner, Watch, inputs::RunJsonPhase, run_json_phase,
+        CappedLog, Launch, Outcome, Provider, Runner, Watch, inputs::RunJsonPhase, run_json_phase,
     };
     use crate::config::EarlyEnding;
     use serde_json::Value;
@@ -216,7 +216,8 @@ mod tests {
         .iter()
         .map(|a| a.to_string())
         .collect();
-        let mut log = tempfile::NamedTempFile::new().unwrap();
+        let log_file = tempfile::NamedTempFile::new().unwrap();
+        let mut log = CappedLog::new(log_file.reopen().unwrap(), 64 << 20);
         let mut out = Outcome::default();
         let mut watch = Watch::new(early_ending());
         let mut seen = 0;
@@ -230,7 +231,7 @@ mod tests {
             stdin: "",
             extra_env: &[],
             start: &Instant::now(),
-            log: log.as_file_mut(),
+            log: &mut log,
             out: &mut out,
             watch: &mut watch,
             apply: &mut apply,
@@ -241,7 +242,7 @@ mod tests {
         assert!(stderr.trim().is_empty(), "{stderr}");
         assert_eq!(seen, 1, "the surviving launch's frame was read once");
         assert_eq!(launches(&counter), 3, "two failed launches, then the run");
-        let text = std::fs::read_to_string(log.path()).unwrap();
+        let text = std::fs::read_to_string(log_file.path()).unwrap();
         assert_eq!(text.matches("forge_relaunch").count(), 2, "{text}");
     }
 }
