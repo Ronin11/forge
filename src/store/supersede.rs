@@ -30,11 +30,9 @@ impl Store {
     pub fn reopen_blocked_if_ready(&self, id: i64, after: &[i64]) -> Result<bool> {
         let c = self.lock();
         let reason: Option<String> = c
-            .retry_query_row(
-                "SELECT reason FROM tasks WHERE id=?1",
-                params![id],
-                |r| r.get(0),
-            )
+            .retry_query_row("SELECT reason FROM tasks WHERE id=?1", params![id], |r| {
+                r.get(0)
+            })
             .optional()?;
         if !reason.is_some_and(|r| r.starts_with("waits on task")) {
             return Ok(false);
