@@ -217,6 +217,12 @@ retry <id> --provider <name>`), a project's `[roles]` pin, the operator's
 `[roles]` table, or a `[measure] explore` draw outside the factor's arms
 is deliberate routing, and it waits for its provider.
 
+`forge run` applies the same re-draw before each directive attempt, including
+later roles such as review. When every eligible arm is held, it prints the
+wait and stays in the foreground until the earliest reset, retaining its
+place instead of joining the worker queue. `forge run --no-wait` preserves
+the previous behavior: a held provider requeues the task without re-drawing.
+
 The exploration policy respects a held window by construction: nothing
 over-samples an arm. The audit of the draw since task 800 (review:
 anthropic 36, anthropic-opus 5, openai 15; code: anthropic 36,

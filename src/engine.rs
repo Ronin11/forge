@@ -33,6 +33,7 @@ pub(crate) use outcome::resume_done;
 use outcome::{End, Run, l0_failure_reason, save_cursor};
 mod land;
 use land::{TryLand, publish, try_land};
+mod provider_hold;
 mod step;
 use step::{RunDirectiveStep, RunOperationStep, StepFlow, run_directive_step, run_operation_step};
 
@@ -65,7 +66,7 @@ fn block_on_egress(f: &Forge, mut t: Task, reason: String) -> Result<TaskState, 
     Ok(TaskState::Blocked)
 }
 
-pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
+pub async fn run_task(f: Arc<Forge>, id: i64, wait: bool) -> Result<TaskState, Fault> {
     let mut t = f
         .store
         .task(id)
@@ -178,6 +179,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         repo: &repo,
                         wt: &wt,
                         remote_url: &remote_url,
+                        wait,
                     })
                     .await?
                 }

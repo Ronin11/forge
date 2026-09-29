@@ -185,15 +185,14 @@ fn without_resume_on_failure_a_failed_check_starts_a_fresh_session() {
 }
 
 #[test]
-fn a_run_the_provider_refuses_does_not_count_and_waits_for_the_window() {
+fn a_no_wait_run_the_provider_refuses_requeues_without_counting_the_attempt() {
     let e = Env::new();
     // --retries 0: one attempt allowed, and the refused run must not be it.
-    let o = e.run("ratelimit-hit.sh", &["--retries", "0"]);
+    let o = e.run("ratelimit-hit.sh", &["--retries", "0", "--no-wait"]);
     // The refusal's own window holds the provider (`window_hold`, read
     // right after the refund): the run ends by handing the task back to
-    // the queue with the hold as its reason, rather than sleeping out the
-    // window inline (`run_directive_step` never waits in the attempt; see
-    // docs/REVIEW-3.md item 9).
+    // the queue with the hold as its reason because --no-wait opts out
+    // of the default foreground wait.
     assert!(
         !o.status.success(),
         "{}",
@@ -383,13 +382,21 @@ fn the_fresh_arm_hands_off_past_the_context_threshold_without_a_turn_cap() {
 #[test]
 fn a_requeue_during_review_resumes_at_review_and_the_code_step_runs_once() {
     let e = Env::new();
-    let o = run_wf(
-        &e,
-        "ok.sh",
-        &[("FORGE_CLAUDE_BIN_REVIEW", "reviewer-window.sh")],
-        "reviewed",
-        "write 42 to answer.txt",
-    );
+    let o = e
+        .with_role("ok.sh", "REVIEW", "reviewer-window.sh")
+        .args([
+            "run",
+            "--no-wait",
+            "--no-land",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--workflow",
+            "reviewed",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
     assert!(
         !o.status.success(),
         "{}",
@@ -432,6 +439,43 @@ fn a_requeue_during_review_resumes_at_review_and_the_code_step_runs_once() {
         )
         .unwrap();
     assert!(setups <= 1, "setup ran {setups} times");
+}
+
+#[test]
+fn direct_runs_wait_for_refused_code_and_review_without_requeuing() {
+    for role in ["code", "review"] {
+        let e = Env::new();
+        let o = if role == "code" {
+            e.run("ratelimit-hit.sh", &["--retries", "0"])
+        } else {
+            run_wf(
+                &e,
+                "ok.sh",
+                &[("FORGE_CLAUDE_BIN_REVIEW", "reviewer-window.sh")],
+                "reviewed",
+                "write 42 to answer.txt",
+            )
+        };
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(o.status.success(), "{role}: {err}");
+        assert!(err.contains("waiting in foreground"), "{role}: {err}");
+        assert!(!err.contains("requeued:"), "{role}: {err}");
+        assert_eq!(e.task(1).0, "succeeded");
+        let attempts = e.attempts(1);
+        assert_eq!(attempts.len(), if role == "code" { 2 } else { 3 });
+        let (refusals, resets, next_start): (i64, i64, i64) = e
+            .db()
+            .query_row(
+                "SELECT COUNT(*), MAX(rl_five_hour_resets),
+                    (SELECT started_at FROM attempts WHERE task_id=1 ORDER BY id DESC LIMIT 1)
+                 FROM attempts WHERE task_id=1 AND reason='rate limited by the provider'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(refusals, 1);
+        assert!(next_start >= resets, "{role}: {next_start} < {resets}");
+    }
 }
 
 #[test]

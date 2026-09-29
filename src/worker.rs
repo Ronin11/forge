@@ -113,7 +113,12 @@ pub fn worker_status(paths: &Paths) -> Option<WorkerStatus> {
 /// Run one claimed task to its end. `Err` means the worker environment is
 /// broken; the task has already been requeued.
 pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
-    match engine::run_task(f.clone(), id).await {
+    drive_with_wait(f, id, false).await
+}
+
+/// Direct runs can retain their foreground slot while provider arms are held.
+pub async fn drive_with_wait(f: Arc<Forge>, id: i64, wait: bool) -> Result<TaskState> {
+    match engine::run_task(f.clone(), id, wait).await {
         Ok(TaskState::Blocked) => {
             // A question addressed to someone other than the operator
             // (an intake interview's contact, say) is not the
