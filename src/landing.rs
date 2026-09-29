@@ -1254,6 +1254,7 @@ async fn land_integrated(
             f.report.emit(
                 id,
                 crate::report::Event::TaskDone {
+                    audience: "none",
                     state: t.state.as_str(),
                     attempts: f.store.attempts(id)?.len(),
                     cost: f.store.task_cost(id)?,

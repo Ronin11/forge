@@ -22,11 +22,6 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
         "Existing module awaiting a focused split",
     ),
     (
-        "src/worker.rs",
-        1917,
-        "Existing module awaiting a focused split",
-    ),
-    (
         "tests/e2e/deploy.rs",
         2060,
         "Existing integration coverage awaiting a focused split",

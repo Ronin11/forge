@@ -357,9 +357,9 @@ pub struct LineageRow {
 /// `release_dependents_of`: for each `(id, after_json)` candidate — always
 /// a task currently `blocked` with a reason starting "waits on task" —
 /// walk its after list and either release it to `queued` with its reason
-/// cleared (every dependency landed or was withdrawn: never a defect in
-/// the work, see `TaskState::Withdrawn`), give it a fresh reason naming
-/// the first dependency that ended badly (failed, unverified, or
+/// cleared (every dependency succeeded and landed when required), give
+/// it a fresh reason naming the first dependency that ended badly
+/// (failed, withdrawn, unverified, or
 /// succeeded without landing), or leave it alone (a dependency still
 /// queued, running, or itself blocked has not resolved yet). Returns the
 /// ids released to `queued`.
@@ -388,13 +388,16 @@ fn release_or_reblock(c: &Connection, candidates: Vec<(i64, String)>) -> Result<
                 all_resolved = false;
                 continue;
             };
-            let ok =
-                state == "withdrawn" || (state == "succeeded" && (!land || !landed_sha.is_empty()));
+            let ok = state == "succeeded" && (!land || !landed_sha.is_empty());
             if ok {
                 continue;
             }
             all_resolved = false;
-            if blocker.is_none() && matches!(state.as_str(), "failed" | "unverified" | "succeeded")
+            if blocker.is_none()
+                && matches!(
+                    state.as_str(),
+                    "failed" | "unverified" | "withdrawn" | "succeeded"
+                )
             {
                 blocker = Some((d, state, reason));
             }

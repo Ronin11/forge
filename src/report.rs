@@ -72,6 +72,7 @@ pub enum Event<'a> {
     },
     PushSkipped,
     TaskDone {
+        audience: &'a str,
         state: &'a str,
         attempts: usize,
         #[serde(rename = "cost_usd")]
@@ -172,6 +173,10 @@ pub enum Event<'a> {
     /// the plugins carry it to: always "person", since raising the stop
     /// rule or the budget, or fixing the rule, is a decision only a
     /// person makes.
+    NotificationDigest {
+        day: i64,
+        text: &'a str,
+    },
     InitiativeHeld {
         id: i64,
         project: &'a str,
@@ -210,6 +215,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "provider_held",
     "provider_released",
     "initiative_held",
+    "notification_digest",
 ];
 
 impl Event<'_> {
@@ -340,6 +346,7 @@ impl Event<'_> {
                 money(Some(*cost_usd))
             ),
             Event::DiskHeld { reason, .. } => reason.to_string(),
+            Event::NotificationDigest { text, .. } => text.to_string(),
             Event::ProviderHeld { reason, .. } => format!("held {reason}"),
             Event::ProviderReleased { provider } => {
                 format!("released {provider}: its login answered")
@@ -658,6 +665,7 @@ fn render(ev: Event) -> Vec<String> {
             pushed,
             compare,
             remove_cmd,
+            ..
         } => {
             let mut v = vec![
                 String::new(),
@@ -710,7 +718,7 @@ fn render(ev: Event) -> Vec<String> {
         Event::DiskHeld { .. } | Event::ProviderHeld { .. } | Event::ProviderReleased { .. } => {
             vec![summary]
         }
-        Event::InitiativeHeld { .. } => vec![summary],
+        Event::InitiativeHeld { .. } | Event::NotificationDigest { .. } => vec![summary],
     }
 }
 
@@ -856,6 +864,7 @@ mod tests {
 
         assert_eq!(
             to_json(&Event::TaskDone {
+                audience: "none",
                 state: "success",
                 attempts: 2,
                 cost: 1.5,
@@ -866,7 +875,7 @@ mod tests {
                 remove_cmd: "rm -rf x",
             }),
             json!({
-                "type": "task_done", "state": "success", "attempts": 2, "cost_usd": 1.5,
+                "type": "task_done", "audience": "none", "state": "success", "attempts": 2, "cost_usd": 1.5,
                 "reason": "", "branch": "feat", "pushed": true, "compare": "http://x",
                 "text": "success",
             })
@@ -1064,6 +1073,7 @@ mod tests {
         // And the name the list carries is the one an event serializes under.
         assert_eq!(
             to_json(&Event::TaskDone {
+                audience: "none",
                 state: "succeeded",
                 attempts: 1,
                 cost: 0.0,

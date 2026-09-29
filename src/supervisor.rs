@@ -890,7 +890,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         }
         "superseded" => {
             let by = superseding_task(f, &t, &r.citations).context("no superseding task")?;
-            f.store.insert_decision_by(crate::store::InsertDecisionBy {
+            let decision = f.store.insert_decision_by(crate::store::InsertDecisionBy {
                 task_id: id,
                 repo: &t.repo,
                 question: &q.question,
@@ -899,6 +899,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
                 citations: &cited,
                 answered_for: t.question_to.as_deref(),
             })?;
+            f.store.set_decision_retry(decision, by)?;
             let mut t = t.clone();
             t.state = TaskState::Failed;
             t.reason = format!("superseded by task {by} (supervisor): {}", r.reason);
