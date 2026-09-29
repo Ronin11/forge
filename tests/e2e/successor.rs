@@ -80,6 +80,8 @@ fn open_gate(e: &Env, id: i64) {
 #[test]
 fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains() {
     let e = Env::new();
+    std::fs::create_dir_all(&e.home).unwrap();
+    std::fs::write(e.home.join("config.toml"), "[worker]\nslots = 2\n").unwrap();
     let root = e.home.join("bin");
     let fakes = e.home.join("fakebin");
     std::fs::create_dir_all(&fakes).unwrap();
@@ -112,7 +114,7 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
     )
     .env("PATH", &path)
     .env("SUCC_CALLS_LOG", &calls)
-    .args(["work", "--jobs", "2", "--poll", "1"]);
+    .args(["work", "--jobs", "1", "--poll", "1"]);
     let mut old = Worker::spawn(&mut cmd);
     let _reap = Reap(e.home.clone());
     assert!(
@@ -210,6 +212,8 @@ fn running_by_worker(e: &Env) -> Vec<(i64, i64)> {
 #[test]
 fn a_successor_beside_a_predecessor_holding_two_attempts_claims_at_most_jobs_minus_two() {
     let e = Env::new();
+    std::fs::create_dir_all(&e.home).unwrap();
+    std::fs::write(e.home.join("config.toml"), "[worker]\nslots = 3\n").unwrap();
     let root = e.home.join("bin");
     let fakes = e.home.join("fakebin");
     std::fs::create_dir_all(&fakes).unwrap();
@@ -431,6 +435,8 @@ fn a_successor_takes_the_unit_over_and_honours_a_stop_job_that_arrives_while_it_
 #[test]
 fn a_successor_that_stops_cleanly_after_taking_over_does_not_return_the_claim() {
     let e = Env::new();
+    std::fs::create_dir_all(&e.home).unwrap();
+    std::fs::write(e.home.join("config.toml"), "[worker]\nslots = 2\n").unwrap();
     let root = e.home.join("bin");
     for id in ["old", "new"] {
         let dir = root.join("releases").join(id);
@@ -665,6 +671,8 @@ fn deploy_self_only_stages_for_a_successor_capable_worker_and_restarts_an_older_
 #[test]
 fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_ones() {
     let e = Env::new();
+    std::fs::create_dir_all(&e.home).unwrap();
+    std::fs::write(e.home.join("config.toml"), "[worker]\nslots = 2\n").unwrap();
     let root = e.home.join("bin");
     let run = e.home.join("run");
     std::fs::create_dir_all(&run).unwrap();

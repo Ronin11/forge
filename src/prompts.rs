@@ -703,6 +703,7 @@ mod tests {
 
     fn test_cfg() -> config::Config {
         config::Config {
+            build_env: Default::default(),
             execution: Default::default(),
             checks: BTreeMap::new(),
             fixable: BTreeMap::new(),

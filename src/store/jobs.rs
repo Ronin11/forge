@@ -646,6 +646,7 @@ impl Store {
     /// one only once its `due_at` is at or before now (docs/JOBS.md,
     /// "Delayed jobs") — the wait is this one condition on a row, never an
     /// in-memory timer, so it survives a worker restart.
+    #[cfg(test)]
     pub fn claim_next_job(&self) -> Result<Option<Job>> {
         let id: Option<i64> = self
             .lock()

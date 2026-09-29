@@ -23,6 +23,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinSet;
 
+pub(crate) mod capacity;
+mod claim;
 mod holds;
 mod schedule;
 pub(crate) use holds::held_initiatives;
@@ -762,7 +764,7 @@ fn free_slots(f: &Forge, pid: i64, jobs: usize) -> usize {
 }
 
 pub struct WorkOpts {
-    pub jobs: usize,
+    pub jobs: Option<usize>,
     /// Seconds between queue polls when idle; `None` exits when idle.
     pub poll: Option<u64>,
     pub max_tasks: Option<u32>,
@@ -906,8 +908,8 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut plugins = opts
         .poll
         .map(|_| crate::plugins::Supervisor::start(f.clone()));
-    let jobs = opts.jobs.max(1);
-    let mut slots = jobs;
+    let mut capacity = capacity::Claims::default();
+    let mut slots = capacity::slots(&f, &opts);
     let mut running: JoinSet<WorkResult> = JoinSet::new();
     let mut ids: Vec<i64> = Vec::new();
     let mut job_ids: Vec<i64> = Vec::new();
@@ -943,7 +945,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
             run_ticks(&f, &mut refusals, superseded, stopping).await?;
 
             // Fill free slots, re-reading what the other workers hold.
-            slots = free_slots(&f, pid, jobs);
+            slots = free_slots(&f, pid, capacity::refresh(&f, &opts, &mut capacity)?);
             while !stopping
                 && !superseded
                 && env_error.is_none()
@@ -958,7 +960,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 for line in new_holds(&f, &held, &mut announced_holds) {
                     eprintln!("{line}");
                 }
-                if let Some(t) = f.store.claim_next(pid, &held, |t| {
+                if let Some(t) = claim::task(&f, &opts, pid, &held, |t| {
                     provider_is_held(&f, t) || intake_is_held(&f, t)
                 })? {
                     hold_until = None;
@@ -972,7 +974,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     ids.push(t.id);
                     let fc = f.clone();
                     running.spawn(async move { WorkResult::Task(t.id, drive(fc, t.id).await) });
-                } else if let Some(j) = f.store.claim_next_job()? {
+                } else if let Some(j) = claim::job(&f, &opts)? {
                     // A job carries no provider or initiative hold (it runs
                     // no directive step yet), so it is claimed only once
                     // every queued task has already been tried this pass.
