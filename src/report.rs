@@ -206,6 +206,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "project_created",
     "job_started",
     "job_finished",
+    "disk_held",
     "provider_held",
     "provider_released",
     "initiative_held",
