@@ -13,7 +13,7 @@
 use crate::ctx::{Forge, Paths};
 use crate::plugins::Supervisor;
 use crate::release;
-use crate::worker::{WorkOpts, pid_alive};
+use crate::worker::{WorkOpts, pid_alive, worker_alive};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::os::unix::process::CommandExt;
@@ -66,9 +66,14 @@ pub struct Succession {
     jobs: usize,
     poll: Option<u64>,
     max_tasks: Option<u32>,
-    child: Option<(Child, String)>,
+    /// The spawned successor, the release it runs, and its `workers` row.
+    child: Option<(Child, String, i64)>,
     /// Staged releases whose successor died: not started again.
     failed: HashSet<String>,
+    /// Set once a reaped successor had already taken the unit over: this
+    /// worker claims no more, ever again, whatever `live_workers` says
+    /// once its row is closed (REVIEW-4 E2-3).
+    drained: bool,
 }
 
 impl Succession {
@@ -106,79 +111,111 @@ impl Succession {
             max_tasks: opts.max_tasks,
             child: None,
             failed: HashSet::new(),
+            drained: false,
         })
     }
 
-    /// Whether a newer version is live, so this worker claims no more.
-    /// Starts the successor when a newer release is staged. The plugins stay
+    /// Whether this worker claims no more: a newer version is live, or it
+    /// once was and drained (`self.drained`, REVIEW-4 E2-3) — a spawned
+    /// successor that took the unit over stays the only one that ever
+    /// claims again, even after it is gone and its row has dropped out of
+    /// `live_workers`. Starts a successor when a newer release is staged
+    /// and this worker is not stopping (REVIEW-4 E2-4). The plugins stay
     /// here until the successor has claimed, and come back here when it
-    /// exits without (or after) claiming while this worker still does.
+    /// exits without (or after) claiming while this worker still does —
+    /// checked every tick, drained or not.
     pub async fn superseded(
         &mut self,
         f: &Arc<Forge>,
         plugins: &mut Option<Supervisor>,
+        stopping: bool,
     ) -> Result<bool> {
         if !self.daemon {
             return Ok(false);
         }
-        if let Some((child, id)) = &mut self.child
+        let root = release::root(&f.paths.home);
+        if let Some((child, id, row)) = &mut self.child
             && let Ok(Some(status)) = child.try_wait()
         {
-            eprintln!("successor {} exited ({status})", child.id());
-            let root = release::root(&f.paths.home);
-            if release::pointed_at(&root, "current").as_deref() != Some(id.as_str()) {
-                mark_failed(&root, id);
+            let pid = i64::from(child.id());
+            if reaped_child(&f.store, &root, *row, id, pid, status) {
+                self.drained = true;
             }
             self.failed.insert(std::mem::take(id));
             self.child = None;
         }
-        let live = f.store.live_workers(pid_alive)?;
+        let live = f.store.live_workers(worker_alive)?;
         // After `live` is read: a successor that died since is seen dead here,
         // and one that dies after is still in `live`, so it is not started
         // again on this tick and is settled on a later one.
         if self.child.is_none() {
-            settle_started(&release::root(&f.paths.home), &self.version);
-            acknowledge_staged(&release::root(&f.paths.home), &self.version);
+            settle_started(&root, &self.version);
+            acknowledge_staged(&root, &self.version);
         }
         let newer: Vec<_> = live
             .iter()
             .filter(|w| w.id > self.id && w.version != self.version)
             .collect();
-        let claimant = read_capability(&release::root(&f.paths.home))
-            .filter(|pid| newer.iter().any(|w| w.pid == *pid));
+        let claimant = read_capability(&root).filter(|pid| newer.iter().any(|w| w.pid == *pid));
         crate::plugins::handoff::settle(f, plugins, claimant).await;
-        if !newer.is_empty() {
+        if self.drained || !newer.is_empty() {
             return Ok(true);
         }
         // Not superseded: every live worker runs this version (or is this
         // one), so any pending contract step is due. One SELECT once it is
         // all applied; the actual work runs on the first pass after the
         // last older-version worker is gone.
-        match f.store.apply_contracts(&self.version, pid_alive) {
+        match f.store.apply_contracts(&self.version, worker_alive) {
             Ok(0) => {}
             Ok(n) => eprintln!("applied {n} contract migration step(s)"),
             Err(e) => eprintln!("contract migration failed: {e:#}"),
         }
-        if let Some(next) = self.staged_successor(&f.paths, &live) {
-            match self.spawn(&f.paths, &next) {
-                Ok(child) => {
-                    write_started(&release::root(&f.paths.home), i64::from(child.id()), &next);
-                    f.store.register_worker(i64::from(child.id()), &next)?;
-                    eprintln!(
-                        "release {next} staged: successor pid {} started; this worker drains",
-                        child.id()
-                    );
-                    self.child = Some((child, next));
-                    return Ok(true);
-                }
-                Err(e) => {
-                    eprintln!("release {next} staged but its worker did not start: {e:#}");
-                    mark_failed(&release::root(&f.paths.home), &next);
-                    self.failed.insert(next);
-                }
-            }
+        if should_start_successor(stopping) {
+            return self.start_staged(&f.store, &f.paths);
         }
         Ok(false)
+    }
+
+    /// Start a worker on the staged release, if one is due. Two workers of
+    /// one release (a hand-started `forge work` beside the unit) would each
+    /// start one from a `live` read before the plugin handoff's await
+    /// (REVIEW-4 E2-6), so the check, the spawn and the registration all
+    /// happen under `SUCCESSOR_LOCK`, with the live set read again inside
+    /// it: whoever comes second sees the first one's successor registered.
+    /// A worker that finds the lock held skips this tick.
+    fn start_staged(&mut self, store: &crate::store::Store, paths: &Paths) -> Result<bool> {
+        let root = release::root(&paths.home);
+        let Some(_lock) = successor_lock(&root) else {
+            return Ok(false);
+        };
+        let live = store.live_workers(worker_alive)?;
+        if live
+            .iter()
+            .any(|w| w.id > self.id && w.version != self.version)
+        {
+            return Ok(true);
+        }
+        let Some(next) = self.staged_successor(paths, &live) else {
+            return Ok(false);
+        };
+        match self.spawn(paths, &next) {
+            Ok(child) => {
+                write_started(&root, i64::from(child.id()), &next);
+                let row = store.register_worker(i64::from(child.id()), &next)?;
+                eprintln!(
+                    "release {next} staged: successor pid {} started; this worker drains",
+                    child.id()
+                );
+                self.child = Some((child, next, row));
+                Ok(true)
+            }
+            Err(e) => {
+                eprintln!("release {next} staged but its worker did not start: {e:#}");
+                mark_failed(&root, &next);
+                self.failed.insert(next);
+                Ok(false)
+            }
+        }
     }
 
     /// The staged release to start a worker on: not this one, not one that
@@ -242,7 +279,7 @@ impl Succession {
             return Ok(());
         }
         let mut result = Ok(());
-        if let Some((child, id)) = &mut self.child {
+        if let Some((child, id, _row)) = &mut self.child {
             let root = release::root(&f.paths.home);
             let want = i64::from(child.id());
             let start = std::time::Instant::now();
@@ -278,9 +315,45 @@ impl Succession {
 /// file.
 pub fn capable(home: &std::path::Path, store: &crate::store::Store) -> bool {
     store
-        .live_workers(pid_alive)
+        .live_workers(worker_alive)
         .is_ok_and(|live| !live.is_empty())
         || read_capability(&release::root(home)).is_some_and(pid_alive)
+}
+
+/// Whether a stopping worker may still start a successor: never (REVIEW-4
+/// E2-4). A worker that is draining or exiting starts nothing new.
+fn should_start_successor(stopping: bool) -> bool {
+    !stopping
+}
+
+/// Whether the successor `pid` had already taken the unit over — named
+/// itself in the capability file — before it exited: `read_capability`
+/// still names it, since nothing removes that file on exit.
+fn claims_after_exit(root: &std::path::Path, pid: i64) -> bool {
+    read_capability(root) == Some(pid)
+}
+
+/// A spawned successor's exit: logs it, closes its `workers` row so a pid
+/// later reused for another process is not mistaken for it (REVIEW-4
+/// E2-2), and marks the release failed only when it never took the unit
+/// over. Returns whether it had (`claims_after_exit`): `superseded` then
+/// keeps this worker permanently superseded (REVIEW-4 E2-3), so a clean
+/// drain of the successor does not hand the claim back.
+fn reaped_child(
+    store: &crate::store::Store,
+    root: &std::path::Path,
+    row: i64,
+    release: &str,
+    pid: i64,
+    status: std::process::ExitStatus,
+) -> bool {
+    eprintln!("successor {pid} exited ({status})");
+    let took_over = claims_after_exit(root, pid);
+    if !took_over {
+        mark_failed(root, release);
+    }
+    let _ = store.stop_worker(row);
+    took_over
 }
 
 /// A worker running the release `staged` names has answered the request:
@@ -298,6 +371,26 @@ fn acknowledge_staged(root: &std::path::Path, version: &str) {
         Ok(false) => {}
         Err(e) => eprintln!("could not remove staged for release {version}: {e:#}"),
     }
+}
+
+/// `FORGE_HOME/bin/<SUCCESSOR_LOCK>`, beside `staged`: held by a worker
+/// from its check for a staged release through the successor's spawn and
+/// registration, so two workers of one release start one successor.
+const SUCCESSOR_LOCK: &str = ".successor.lock";
+
+/// The successor lock if nobody holds it; released when dropped, or when
+/// the process dies.
+fn successor_lock(root: &std::path::Path) -> Option<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    std::fs::create_dir_all(root).ok()?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(root.join(SUCCESSOR_LOCK))
+        .ok()?;
+    // SAFETY: flock on a descriptor this function owns.
+    (unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0).then_some(file)
 }
 
 /// The release recorded in `staged-failed`, if any.
@@ -731,6 +824,133 @@ mod tests {
             down.describe("forge-web"),
             "forge-web: did not become active within 4 tries"
         );
+    }
+
+    #[test]
+    fn a_stopping_worker_starts_no_successor() {
+        assert!(should_start_successor(false));
+        assert!(!should_start_successor(true));
+    }
+
+    #[test]
+    fn claims_after_exit_reads_back_the_capability_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_capability(dir.path(), 4242);
+        assert!(claims_after_exit(dir.path(), 4242));
+        assert!(
+            !claims_after_exit(dir.path(), 4243),
+            "names a different pid"
+        );
+        assert!(
+            !claims_after_exit(&dir.path().join("never-written"), 4242),
+            "no capability file at all"
+        );
+    }
+
+    #[test]
+    fn reaped_child_closes_its_row_and_fails_the_release_only_when_it_never_claimed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(&dir.path().join("t.db")).unwrap();
+        let root = dir.path().join("home/bin");
+        let status = std::process::Command::new("true").status().unwrap();
+
+        // Never wrote itself into the capability file: never took over.
+        let row = store.register_worker(4242, "new").unwrap();
+        assert!(!reaped_child(&store, &root, row, "new", 4242, status));
+        assert_eq!(failed_release(&root).as_deref(), Some("new"));
+        assert!(
+            store.live_workers(|_, _| true).unwrap().is_empty(),
+            "the reaped row must close"
+        );
+
+        // Named itself before it exited: took over, and is not a failure.
+        let row = store.register_worker(4243, "next").unwrap();
+        write_capability(&root, 4243);
+        assert!(reaped_child(&store, &root, row, "next", 4243, status));
+        assert_eq!(
+            failed_release(&root).as_deref(),
+            Some("new"),
+            "the earlier failure is untouched"
+        );
+        assert!(store.live_workers(|_, _| true).unwrap().is_empty());
+    }
+
+    fn worker_of(store: &crate::store::Store, pid: i64, version: &str) -> Succession {
+        Succession {
+            daemon: true,
+            version: version.into(),
+            id: store.register_worker(pid, version).unwrap(),
+            jobs: 1,
+            poll: Some(1),
+            max_tasks: None,
+            child: None,
+            failed: HashSet::new(),
+            drained: false,
+        }
+    }
+
+    #[test]
+    fn two_workers_of_one_release_start_one_successor() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(&dir.path().join("t.db")).unwrap();
+        let home = dir.path().join("home");
+        let paths = Paths {
+            worktrees: home.join("worktrees"),
+            logs: home.join("logs"),
+            home: home.clone(),
+        };
+        let root = release::root(&home);
+        let bin = release::release_dir(&root, "new").join("forge");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink("releases/new", root.join("staged")).unwrap();
+
+        // The unit's worker and a hand-started one, same release; the
+        // second is its own `Succession` with its own row.
+        let mut unit = worker_of(&store, i64::from(std::process::id()), "old");
+        let mut hand = worker_of(&store, 1, "old");
+        // Both read `live` before either spawned: the stale view each
+        // `superseded` held across the plugin handoff's await.
+        let stale = store.live_workers(worker_alive).unwrap();
+        assert!(unit.staged_successor(&paths, &stale).is_some());
+        assert!(hand.staged_successor(&paths, &stale).is_some());
+
+        // Held by another worker: this tick starts nothing.
+        let held = successor_lock(&root).unwrap();
+        assert!(!unit.start_staged(&store, &paths).unwrap());
+        assert!(unit.child.is_none());
+        drop(held);
+
+        // Another test thread's fork can hold a copy of the lock's
+        // descriptor until its exec, so a tick may find it briefly held:
+        // retry the tick rather than read that as the answer.
+        let tick = |w: &mut Succession| {
+            for _ in 0..200 {
+                if w.start_staged(&store, &paths).unwrap() {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            false
+        };
+        assert!(tick(&mut unit));
+        let started = tick(&mut hand);
+        assert!(hand.child.is_none(), "the second worker must not spawn");
+        assert!(started, "the first one's successor supersedes it too");
+
+        let successors: Vec<_> = store
+            .live_workers(|_, _| true)
+            .unwrap()
+            .into_iter()
+            .filter(|w| w.version == "new")
+            .collect();
+        assert_eq!(successors.len(), 1, "exactly one successor: {successors:?}");
+        if let Some((mut child, _, _)) = unit.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
