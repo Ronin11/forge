@@ -233,6 +233,22 @@ use. `per_task_usd` stops a task's retries; `per_day_usd` stops the worker
 claiming once the rolling 24-hour spend reaches it. `--budget` overrides
 the task cap for one task.
 
+Before each task or job claim, the worker checks free space on `FORGE_HOME`.
+`[worker] min_free_gb` in `config.toml` defaults to 50 GiB (0 disables the
+hold). Below it, claims pause, doctor reports FAIL, and one operator event
+per hold names the free space and the bytes `forge gc --caches` can reclaim.
+That command deletes `target/`, `node_modules/.cache`, and `.godot/` from
+non-running task and job worktrees; `--dry-run` reports without deleting.
+Finished tasks also discard these caches immediately, retaining their source
+worktrees. Doctor reports total worktree disk usage and the ten largest.
+
+A repository may opt into `[sandbox] shared_target = true` in its trusted
+`forge.toml` (off by default). Agents and checks then receive
+`CARGO_TARGET_DIR=FORGE_HOME/cache/<repository-key>/target`, where the key is
+the existing stable hash of the repository path. This kernel-selected
+directory is bound read-write in the sandbox and survives task cleanup.
+Cargo's own target-directory lock serializes concurrent builds.
+
 The same file's `[sandbox]` section lists what the sandbox exposes beyond
 the attempt's own holes. `ro_paths` (default `~/.local/share/mise`) are
 toolchains bound read-only, since `$HOME` is otherwise empty in there and

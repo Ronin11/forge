@@ -716,6 +716,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
         },
     );
     let scratch = scratch_dir(f, job_id);
+    let _cache_cleanup = crate::disk::JobCaches(scratch.clone());
     git::fresh_archive(repo, landed_sha, &scratch).await?;
     let repo_checks = config::load_working_checks(&scratch).unwrap_or_default();
     let build_env = config::load_working_build_env(&scratch)?;

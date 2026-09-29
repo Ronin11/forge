@@ -71,6 +71,10 @@ impl Store {
         )?;
         let decision = tx.last_insert_rowid();
         tx.commit()?;
+        drop(c);
+        if let Some(task) = self.task(args.task_id)? {
+            crate::disk::task_caches(&task.worktree)?;
+        }
         Ok(decision)
     }
 }

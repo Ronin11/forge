@@ -13,6 +13,7 @@ mod contracts;
 mod deploy;
 mod deploy_errors;
 mod deploy_lock;
+mod disk;
 mod drafts;
 mod economist;
 mod envelope_recovery;

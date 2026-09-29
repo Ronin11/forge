@@ -75,6 +75,16 @@ pub fn caches(worktree: &Path, dry_run: bool) -> Result<u64> {
     Ok(bytes)
 }
 
+/// Cleanup after a job executor returns, including early errors and skips.
+pub struct JobCaches(pub PathBuf);
+impl Drop for JobCaches {
+    fn drop(&mut self) {
+        if let Err(error) = caches(&self.0, false) {
+            eprintln!("job cache cleanup {}: {error:#}", self.0.display());
+        }
+    }
+}
+
 pub fn task_caches(worktree: &str) -> Result<u64> {
     if worktree.is_empty() {
         return Ok(0);
@@ -83,6 +93,7 @@ pub fn task_caches(worktree: &str) -> Result<u64> {
     for sibling in [
         crate::attempt::tests_clone_dir(worktree),
         crate::attempt::scratch_dir(worktree),
+        PathBuf::from(format!("{worktree}-op")),
     ] {
         bytes += caches(&sibling, false)?;
     }
@@ -104,6 +115,7 @@ pub fn sweep(store: &Store, root: &Path, dry_run: bool) -> Result<u64> {
                 PathBuf::from(&tree),
                 crate::attempt::tests_clone_dir(&tree),
                 crate::attempt::scratch_dir(&tree),
+                PathBuf::from(format!("{tree}-op")),
             ];
             if state == "running" {
                 running.extend(paths);
@@ -235,5 +247,129 @@ mod tests {
         std::fs::create_dir(external.path().join(".cache")).unwrap();
         caches(dir.path(), false).unwrap();
         assert!(external.path().join(".cache").exists());
+    }
+}
+
+#[cfg(test)]
+mod store_tests {
+    use super::*;
+    use crate::{
+        ctx::Paths,
+        store::{Task, TaskState},
+    };
+
+    fn fixture() -> (tempfile::TempDir, Forge) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            home: dir.path().to_path_buf(),
+            worktrees: dir.path().join("worktrees"),
+            logs: dir.path().join("logs"),
+        };
+        std::fs::create_dir_all(&paths.worktrees).unwrap();
+        std::fs::create_dir_all(&paths.logs).unwrap();
+        let store = Store::open(&paths.home.join("forge.db")).unwrap();
+        (dir, Forge::open_with(paths, store).unwrap())
+    }
+
+    #[test]
+    fn sweep_skips_running_tasks_and_includes_queued_and_terminal_trees() {
+        let (_dir, f) = fixture();
+        for (index, state) in [TaskState::Running, TaskState::Queued, TaskState::Failed]
+            .into_iter()
+            .enumerate()
+        {
+            let tree = f.paths.worktrees.join(index.to_string());
+            let mut task = Task {
+                worktree: tree.to_string_lossy().into_owned(),
+                state,
+                ..Default::default()
+            };
+            task.id = f.store.insert_task(&task).unwrap();
+            f.store.update_task(&task).unwrap();
+            std::fs::create_dir_all(tree.join("target")).unwrap();
+            std::fs::write(tree.join("target/data"), vec![0; 8192]).unwrap();
+            std::fs::write(tree.join("source"), "keep").unwrap();
+        }
+        let estimate = sweep(&f.store, &f.paths.worktrees, true).unwrap();
+        assert!(estimate >= 16384);
+        assert!(f.paths.worktrees.join("1/target/data").exists());
+        assert_eq!(
+            sweep(&f.store, &f.paths.worktrees, false).unwrap(),
+            estimate
+        );
+        assert!(f.paths.worktrees.join("0/target/data").exists());
+        for id in [1, 2] {
+            assert!(!f.paths.worktrees.join(format!("{id}/target")).exists());
+            assert!(f.paths.worktrees.join(format!("{id}/source")).exists());
+        }
+    }
+
+    #[test]
+    fn sweep_includes_finished_jobs_but_preserves_running_jobs() {
+        use crate::store::{Job, JobState};
+        let (_dir, f) = fixture();
+        for state in [JobState::Running, JobState::Failed] {
+            let id = f
+                .store
+                .create_job(&Job {
+                    state,
+                    ..Default::default()
+                })
+                .unwrap();
+            let target = f.paths.worktrees.join(format!("job-{id}/target"));
+            std::fs::create_dir_all(&target).unwrap();
+            std::fs::write(target.join("data"), vec![1; 8192]).unwrap();
+        }
+        assert!(sweep(&f.store, &f.paths.worktrees, false).unwrap() >= 8192);
+        assert!(f.paths.worktrees.join("job-1/target/data").exists());
+        assert!(!f.paths.worktrees.join("job-2/target").exists());
+    }
+
+    #[test]
+    fn terminal_states_remove_caches_immediately() {
+        let (_dir, f) = fixture();
+        for state in [
+            TaskState::Succeeded,
+            TaskState::Failed,
+            TaskState::Unverified,
+            TaskState::Blocked,
+            TaskState::Withdrawn,
+            TaskState::Capped,
+        ] {
+            let tree = f.paths.worktrees.join(state.as_str());
+            std::fs::create_dir_all(tree.join("target")).unwrap();
+            let mut task = Task {
+                worktree: tree.to_string_lossy().into_owned(),
+                state: TaskState::Running,
+                ..Default::default()
+            };
+            task.id = f.store.insert_task(&task).unwrap();
+            task.state = state;
+            f.store.update_task(&task).unwrap();
+            assert!(!tree.join("target").exists(), "{}", state.as_str());
+        }
+    }
+
+    #[test]
+    fn disk_hold_announces_once_until_space_recovers() {
+        let (_dir, mut f) = fixture();
+        f.worker.min_free_gb = u64::MAX;
+        assert!(check_claim(&f).unwrap());
+        assert!(check_claim(&f).unwrap());
+        let events = f.paths.home.join("events.jsonl");
+        let count = || {
+            std::fs::read_to_string(&events)
+                .unwrap()
+                .matches("disk_held")
+                .count()
+        };
+        assert_eq!(count(), 1);
+        let text = std::fs::read_to_string(&events).unwrap();
+        assert!(text.contains("forge gc --caches would free"));
+        f.worker.min_free_gb = 0;
+        assert!(!check_claim(&f).unwrap());
+        f.worker.min_free_gb = u64::MAX;
+        assert!(check_claim(&f).unwrap());
+        assert_eq!(count(), 2);
     }
 }

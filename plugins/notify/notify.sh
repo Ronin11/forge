@@ -70,6 +70,10 @@ while IFS= read -r line; do
             sed -n 's/.*"reason":"\(.*\)","state":.*/\1/p' | sed 's/\\n.*//')
         printf '%s' "$line" |
             sh "$FORGE_PLUGIN_DIR/command" "$task" "$state" "$reason" || true
+    elif [ "$type" = disk_held ]; then
+        reason=$(printf '%s\n' "$line" | json_str reason)
+        printf '%s' "$line" |
+            sh "$FORGE_PLUGIN_DIR/command" disk held "$reason" || true
     elif [ "$type" = provider_held ]; then
         # Once per hold, however many attempts the refused login met.
         provider=$(printf '%s\n' "$line" | json_str provider)

@@ -830,6 +830,13 @@ impl Store {
                 out.push((t, d, why));
             }
         }
+        drop(stmt);
+        drop(c);
+        for (id, _, _) in &out {
+            if let Some(task) = self.task(*id)? {
+                crate::disk::task_caches(&task.worktree)?;
+            }
+        }
         Ok(out)
     }
 
