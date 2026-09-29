@@ -4,7 +4,7 @@
 
 use super::input;
 use crate::ctx::Forge;
-use crate::store::{Job, JobEffect, JobState, Task, TaskState};
+use crate::store::{Job, JobEffect, JobState, Task, TaskState, Trust};
 use crate::workflows;
 use crate::{checks, unix_now};
 use anyhow::Result;
@@ -152,6 +152,7 @@ pub(super) fn ask(
 /// the job it retries, so the next failure's `decide_on_failure` can tell
 /// when the budget is spent.
 pub(super) async fn retry_job(f: &Forge, job: &Job, input_text: &str) -> Result<i64> {
+    let trust = f.store.job_trust(job.id)?.unwrap_or(Trust::Public);
     let retry = Job {
         id: 0,
         project: job.project.clone(),
@@ -171,6 +172,8 @@ pub(super) async fn retry_job(f: &Forge, job: &Job, input_text: &str) -> Result<
         retry_count: job.retry_count + 1,
     };
     let retry_id = f.store.create_job(&retry)?;
+    // Persist the original authority before publication makes the retry claimable.
+    f.store.set_job_trust(retry_id, trust)?;
     input::publish(f, retry_id, input_text, None)?;
     Ok(retry_id)
 }
@@ -178,6 +181,64 @@ pub(super) async fn retry_job(f: &Forge, job: &Job, input_text: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn retries_preserve_trust_before_claim_and_default_missing_trust_to_public() {
+        use crate::ctx::Paths;
+        use crate::store::{Project, Store};
+
+        for trust in [
+            Some(Trust::Operator),
+            Some(Trust::Contact),
+            Some(Trust::Public),
+            None,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = Paths {
+                home: dir.path().into(),
+                worktrees: dir.path().join("worktrees"),
+                logs: dir.path().join("logs"),
+            };
+            let db = dir.path().join("forge.db");
+            let store = Store::open(&db).unwrap();
+            store
+                .create_project(&Project {
+                    name: "retry".into(),
+                    ..Default::default()
+                })
+                .unwrap();
+            let f = Forge::open_with(paths, store).unwrap();
+            let mut job = Job {
+                project: "retry".into(),
+                state: JobState::Failed,
+                trigger_kind: "schedule".into(),
+                trigger_ref: "nightly".into(),
+                ..Default::default()
+            };
+            job.id = f.store.create_job(&job).unwrap();
+            if let Some(trust) = trust {
+                f.store.set_job_trust(job.id, trust).unwrap();
+            }
+            let worker = Store::open(&db).unwrap();
+            for count in 1..=2 {
+                let id = retry_job(&f, &job, "{}").await.unwrap();
+                assert_eq!(
+                    worker.job_trust(id).unwrap(),
+                    Some(trust.unwrap_or(Trust::Public))
+                );
+                job = worker.claim_next_job().unwrap().unwrap();
+                assert_eq!(job.id, id);
+                assert_eq!(job.retry_count, count);
+                assert_eq!(job.trigger_kind, "schedule");
+                assert_eq!(job.trigger_ref, "nightly");
+                assert_eq!(
+                    std::fs::read_to_string(super::super::input_dir(&f, id).join("input.json"))
+                        .unwrap(),
+                    "{}"
+                );
+            }
+        }
+    }
 
     fn test_job(trigger_kind: &str, trigger_ref: &str, retry_count: i64) -> Job {
         Job {
