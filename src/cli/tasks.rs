@@ -79,24 +79,6 @@ async fn answer(id: i64, text: String, by: String, project: Option<String>) -> R
             "task {id} was adopted: no agent answers or edits it; fix the branch by hand and run forge retry {id}"
         );
     }
-    if let Some(t) = f.store.task(id)?
-        && t.state == TaskState::Blocked
-        && t.proposal_json.is_some()
-    {
-        return match crate::concierge::answer_proposal(&f, id, &text, &by).await? {
-            crate::concierge::ProposalAnswered::Initiative { initiative, tasks } => {
-                out!(
-                    "answered task {id}: filed initiative {initiative} ({} task(s))",
-                    tasks.len()
-                );
-                Ok(())
-            }
-            crate::concierge::ProposalAnswered::Declined => {
-                out!("answered task {id}: proposal declined");
-                Ok(())
-            }
-        };
-    }
     let scope = project.as_deref().map(|p| (p, by.as_str()));
     let (_, n) = crate::queue::answer(&f, id, &text, &by, "", scope).await?;
     if n.id == id {
