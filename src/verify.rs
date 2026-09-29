@@ -1680,6 +1680,7 @@ mod tests {
 
     fn test_cfg() -> Config {
         Config {
+            build_env: Default::default(),
             execution: Default::default(),
             checks: std::collections::BTreeMap::new(),
             fixable: std::collections::BTreeMap::new(),

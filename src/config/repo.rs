@@ -42,6 +42,8 @@ struct RepoEnvironmentRaw {
 /// an attempt cannot widen its own allowlist.
 #[derive(Deserialize, Default)]
 struct RepoSandboxRaw {
+    #[serde(default)]
+    env: BTreeMap<String, String>,
     /// `host`, `host:port`, `*.suffix` or `*.suffix:port`; see `egress::Rule`.
     #[serde(default)]
     egress: Vec<String>,
@@ -125,6 +127,7 @@ impl Execution {
 }
 
 pub struct Config {
+    pub build_env: BTreeMap<String, String>,
     pub execution: Execution,
     pub checks: BTreeMap<String, Vec<String>>,
     /// `[checks.fixable]`: for a check named here, the command that fixes
@@ -185,6 +188,7 @@ pub fn is_protected(protected: &[String], path: &str) -> bool {
 async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result<Config> {
     let raw: Raw = toml::from_str(text).with_context(|| format!("parsing {what}"))?;
     raw.execution.validate()?;
+    crate::config::capacity::validate_env(&raw.sandbox.env)?;
     for (name, argv) in &raw.checks.checks {
         if argv.is_empty() {
             bail!("check `{name}` has an empty command");
@@ -218,6 +222,7 @@ async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result
         None
     };
     Ok(Config {
+        build_env: raw.sandbox.env,
         execution: raw.execution,
         checks: raw.checks.checks,
         fixable: raw.checks.fixable,
@@ -292,6 +297,7 @@ pub fn load_working_execution(dir: &Path) -> Result<Execution> {
     let (_, _, text) = read_working(dir)?;
     let raw: Raw = toml::from_str(&text)?;
     raw.execution.validate()?;
+    crate::config::capacity::validate_env(&raw.sandbox.env)?;
     Ok(raw.execution)
 }
 
@@ -492,4 +498,12 @@ mod tests {
             assert!(err.contains("egress"), "{err}");
         }
     }
+}
+
+/// Build tuning in an archived tree, without asking it for Git metadata.
+pub fn load_working_build_env(dir: &Path) -> Result<BTreeMap<String, String>> {
+    let (path, _, text) = read_working(dir)?;
+    let raw: Raw = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    super::capacity::validate_env(&raw.sandbox.env)?;
+    Ok(raw.sandbox.env)
 }

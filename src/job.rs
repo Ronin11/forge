@@ -688,6 +688,8 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
     let scratch = scratch_dir(f, job_id);
     git::fresh_archive(repo, landed_sha, &scratch).await?;
     let repo_checks = config::load_working_checks(&scratch).unwrap_or_default();
+    let build_env = config::load_working_build_env(&scratch)?;
+    crate::agent::build_env::configure_env(&scratch, &f.build_env, &build_env);
 
     let idir = recovery::prepare_run(f, job_id, input_text)?;
 

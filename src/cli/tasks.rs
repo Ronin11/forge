@@ -398,11 +398,11 @@ async fn dispatch_work(cmd: Cmd) -> Result<()> {
             once,
             max_tasks,
         } => {
-            let f = Arc::new(Forge::open(true, jobs > 1)?);
+            let f = Arc::new(Forge::open(true, jobs.is_none_or(|n| n > 1))?);
             worker::work(
                 f,
                 worker::WorkOpts {
-                    jobs,
+                    jobs: jobs.map(|n| n as usize),
                     poll: (!once).then_some(poll),
                     max_tasks,
                 },

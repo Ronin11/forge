@@ -17,6 +17,8 @@ struct HomeRaw {
     #[serde(default)]
     budget: BudgetRaw,
     #[serde(default)]
+    worker: crate::config::capacity::Settings,
+    #[serde(default)]
     sandbox: SandboxRaw,
     #[serde(default)]
     supervisor: SupervisorRaw,
@@ -64,6 +66,7 @@ struct EnvironmentRaw {
 /// `[projects.<name>]` in the operator's config.
 #[derive(Deserialize, Default)]
 struct ProjectHomeRaw {
+    slots: Option<usize>,
     /// Injected as environment for that project's jobs (`forge job start`),
     /// never into a prompt (see docs/JOBS.md, "Security posture").
     #[serde(default)]
@@ -115,6 +118,8 @@ pub struct Supervisor {
 
 #[derive(Deserialize, Default)]
 struct SandboxRaw {
+    #[serde(default)]
+    env: BTreeMap<String, String>,
     ro_paths: Option<Vec<String>>,
     rw_paths: Option<Vec<String>>,
     dependency_cache: Option<String>,
@@ -136,6 +141,8 @@ pub struct SandboxPaths {
 }
 
 pub struct HomeConfig {
+    pub worker: crate::config::capacity::Settings,
+    pub build_env: BTreeMap<String, String>,
     pub budget: Budget,
     pub sandbox: SandboxPaths,
     pub supervisor: Supervisor,
@@ -475,6 +482,14 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => HomeRaw::default(),
         Err(e) => return Err(e).context(format!("reading {}", path.display())),
     };
+    let mut worker = raw.worker;
+    worker.projects = raw
+        .projects
+        .iter()
+        .filter_map(|(name, p)| p.slots.map(|n| (name.clone(), n)))
+        .collect();
+    worker.validate()?;
+    crate::config::capacity::validate_env(&raw.sandbox.env)?;
     let ro = raw
         .sandbox
         .ro_paths
@@ -496,6 +511,8 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
     let roles = build_roles(raw.roles, &providers)?;
     let explore = build_explore(raw.measure.explore, &providers)?;
     Ok(HomeConfig {
+        worker,
+        build_env: raw.sandbox.env,
         budget,
         sandbox: SandboxPaths {
             ro: ro.iter().map(|p| expand(p)).collect(),
