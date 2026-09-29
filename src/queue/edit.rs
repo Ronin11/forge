@@ -165,10 +165,11 @@ fn apply_workflow(
 /// task naming each field's old and new value (text by length and
 /// content hash), retry-linked to the task, so `forge decisions` shows
 /// it beside an operator's answer. State is otherwise untouched, except
-/// that a blocked task whose `--after` now names only tasks that are
-/// queued, running or landed moves back to `queued`
-/// (`Store::reopen_blocked_if_ready`) instead of staying blocked until
-/// retried by hand. Returns the changes as recorded.
+/// that a task blocked waiting on a prerequisite whose `--after` now
+/// names only tasks that are queued, running or landed moves back to
+/// `queued` (`Store::reopen_blocked_if_ready`) instead of staying
+/// blocked until retried by hand; a task blocked for any other reason
+/// keeps its state. Returns the changes as recorded.
 pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String>> {
     if edit.is_empty() {
         bail!(

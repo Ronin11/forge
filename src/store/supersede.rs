@@ -18,14 +18,27 @@ impl Store {
         )?)
     }
 
-    /// A blocked task's `--after` was just replaced with `after`: move it
-    /// back to `queued` when none of the new prerequisites are still
-    /// blocked, failed, unverified, withdrawn or missing — a dependency
-    /// that is queued, running, or succeeded (and landed, unless told not
-    /// to) is no reason to stay blocked. Otherwise leaves it blocked, as
-    /// before this existed. Returns whether it was reopened.
+    /// A blocked task's `--after` was just replaced with `after`: applies
+    /// only to a task blocked waiting on a prerequisite (`reason` starts
+    /// with "waits on task"). Such a task moves back to `queued` when none
+    /// of the new prerequisites are still blocked, failed, unverified,
+    /// withdrawn or missing — a dependency that is queued, running, or
+    /// succeeded (and landed, unless told not to) is no reason to stay
+    /// blocked. A task blocked for any other reason (needs input, review
+    /// demotion, needs workflow, a job question, adoption, ...) is left
+    /// untouched. Returns whether it was reopened.
     pub fn reopen_blocked_if_ready(&self, id: i64, after: &[i64]) -> Result<bool> {
         let c = self.lock();
+        let reason: Option<String> = c
+            .retry_query_row(
+                "SELECT reason FROM tasks WHERE id=?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if !reason.is_some_and(|r| r.starts_with("waits on task")) {
+            return Ok(false);
+        }
         for &d in after {
             let row: Option<(String, bool, String)> = c
                 .retry_query_row(
@@ -46,7 +59,8 @@ impl Store {
             }
         }
         let n = c.retry_execute(
-            "UPDATE tasks SET state='queued', reason='', finished_at=NULL WHERE id=?1 AND state='blocked'",
+            "UPDATE tasks SET state='queued', reason='', finished_at=NULL
+             WHERE id=?1 AND state='blocked' AND reason LIKE 'waits on task%'",
             params![id],
         )?;
         Ok(n == 1)
@@ -166,5 +180,29 @@ mod tests {
         let reopened = s.task(blocked).unwrap().unwrap();
         assert_eq!(reopened.state, TaskState::Queued);
         assert_eq!(reopened.reason, "");
+    }
+
+    #[test]
+    fn reopen_blocked_if_ready_leaves_a_task_blocked_for_an_unrelated_reason_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        let dep_running = task(&s);
+        assert!(s.claim(dep_running, 1).unwrap());
+        let blocked = task(&s);
+        s.update_task(&Task {
+            id: blocked,
+            state: TaskState::Blocked,
+            reason: "needs input: which port?".into(),
+            ..s.task(blocked).unwrap().unwrap()
+        })
+        .unwrap();
+
+        assert!(
+            !s.reopen_blocked_if_ready(blocked, &[dep_running]).unwrap(),
+            "a task blocked for a reason other than a prerequisite must not reopen"
+        );
+        let still = s.task(blocked).unwrap().unwrap();
+        assert_eq!(still.state, TaskState::Blocked);
+        assert_eq!(still.reason, "needs input: which port?");
     }
 }
