@@ -8,7 +8,7 @@
 use super::{RunState, Supervisor, read_run_state};
 use crate::ctx::Forge;
 use crate::store::Store;
-use crate::worker::pid_alive;
+use crate::worker::{pid_alive, worker_alive};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -81,7 +81,9 @@ pub async fn settle(f: &Arc<Forge>, plugins: &mut Option<Supervisor>, successor:
 /// what its record says. A plugin between restarts has a supervisor and is
 /// not listed; one handed to a live successor is that worker's to run.
 pub fn unattended(home: &Path, store: &Store) -> Vec<String> {
-    let claiming = store.live_workers(pid_alive).is_ok_and(|w| !w.is_empty());
+    let claiming = store
+        .live_workers(worker_alive)
+        .is_ok_and(|w| !w.is_empty());
     let Ok(enabled) = store.enabled_plugins() else {
         return Vec::new();
     };

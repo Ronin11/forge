@@ -110,7 +110,7 @@ async fn wait_live(f: &Forge, sha: &str, wait: Duration) -> Option<i64> {
     loop {
         let worker = f
             .store
-            .live_workers(crate::worker::pid_alive)
+            .live_workers(crate::worker::worker_alive)
             .ok()
             .and_then(|live| live.into_iter().find(|w| w.version == sha));
         if let Some(w) = worker

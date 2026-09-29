@@ -64,11 +64,18 @@ who holds the pointer: **the store and every running binary agree.**
   including while every slot is busy. A different, runnable release with
   no live worker starts `releases/<id>/forge work` with the same
   arguments and `FORGE_HOME`, in its own process group, and records it in
-  `workers` (pid, version, registration order). A worker with a newer
-  live worker of another version in that table claims nothing, stops its
-  plugins once that worker has claimed (not before), finishes its tasks
-  and jobs and exits; if the successor dies before that, it claims again,
-  restarts its plugins and does not restart the same release. The
+  `workers` (pid, version, registration order, and the registering
+  process's start identity, so a pid the table still calls live because
+  nothing closed the row is not mistaken for a worker that pid was
+  reused from). A worker with a newer live worker of another version in
+  that table claims nothing, stops its plugins once that worker has
+  claimed (not before), finishes its tasks and jobs and exits; a worker
+  that is stopping starts no successor at all. If the successor dies
+  before it ever named itself in the capability file, the row closes and
+  the predecessor claims again and restarts its plugins; once it has
+  named itself there, this predecessor never claims again, drain or
+  crash alike — a stop job that lets the successor exit 0 must not hand
+  the claim back while `TimeoutStopSec` still ticks (2026-09-27). The
   successor flips `current` to its release (when a deploy has not already)
   and restarts the units the self deploy target declares (its `units`
   arg, the one `deploy-self` reads; `forge-web` when it declares none),
