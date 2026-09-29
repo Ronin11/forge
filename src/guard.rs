@@ -51,9 +51,11 @@ pub fn ensure_token(home: &Path) -> Result<String> {
 
 /// Whether `bare`'s pre-receive hook is exactly the guard's reviewed text
 /// (`deploy/pre-receive.guard`), the way `forge doctor` checks it: a
-/// different or missing hook is reported as the guard being absent, even
+/// different, missing, or non-executable hook is reported as absent, even
 /// if some other hook happens to sit there.
 pub fn installed(bare: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
     // Use Git's effective hook path, as installation does, including
     // absolute and repository-relative core.hooksPath settings.
     let Ok(output) = std::process::Command::new("git")
@@ -68,10 +70,13 @@ pub fn installed(bare: &Path) -> bool {
         return false;
     }
     let path = String::from_utf8_lossy(&output.stdout);
-    std::fs::read_to_string(bare.join(path.trim()))
-        .ok()
-        .as_deref()
-        == Some(HOOK)
+    let hook = bare.join(path.trim());
+    let Ok(metadata) = std::fs::metadata(&hook) else {
+        return false;
+    };
+    metadata.is_file()
+        && metadata.permissions().mode() & 0o111 != 0
+        && std::fs::read_to_string(hook).ok().as_deref() == Some(HOOK)
 }
 
 /// Install `HOOK` as `bare`'s pre-receive hook (honoring its
@@ -237,6 +242,8 @@ mod tests {
 
     #[test]
     fn installed_is_false_until_the_hook_matches() {
+        use std::os::unix::fs::PermissionsExt;
+
         let dir = tempfile::tempdir().unwrap();
         let bare = dir.path().join("origin.git");
         assert!(
@@ -250,6 +257,17 @@ mod tests {
         );
         assert!(!installed(&bare));
         std::fs::write(bare.join("hooks/pre-receive"), HOOK).unwrap();
+        std::fs::set_permissions(
+            bare.join("hooks/pre-receive"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        assert!(!installed(&bare));
+        std::fs::set_permissions(
+            bare.join("hooks/pre-receive"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
         assert!(installed(&bare));
         std::fs::write(bare.join("hooks/pre-receive"), "#!/bin/sh\nexit 0\n").unwrap();
         assert!(!installed(&bare));

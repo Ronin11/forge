@@ -231,6 +231,16 @@ fn assert_guard_landing(origin: &str, absolute_hooks: Option<bool>) {
         e.repo.to_str().unwrap()
     );
 
+    // Git ignores a hook without execute permissions. Doctor must warn,
+    // including with custom hook paths, and reinstalling must repair it.
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let doc = text(&e.forge("ok.sh", &["doctor"]));
+    assert!(doc.contains("no landing guard: guarded"), "{doc}");
+    let o = e.forge("ok.sh", &["project", "guard", "guarded"]);
+    assert!(o.status.success(), "{}", text(&o));
+    let doc = text(&e.forge("ok.sh", &["doctor"]));
+    assert!(!doc.contains("no landing guard: guarded"), "{doc}");
+
     // A plain hand push is still rejected once the guard is live: a new
     // commit, so the push actually asks to move the ref rather than
     // finding it already up to date.
