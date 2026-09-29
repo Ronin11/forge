@@ -311,6 +311,11 @@ pub struct Task {
     /// The adopted branch, commit and adopter; `None` unless `origin` is
     /// `Adopted`. Set once at insert.
     pub adoption: Option<Adoption>,
+    /// 0 (lowest) to 7 (highest), 2 ("normal") by default; see
+    /// `store::priority`. Among otherwise-claimable tasks, higher claims
+    /// first (`Store::queued_unblocked`). A retry or a refile inherits
+    /// the task it re-queues' own value (`queue::retry_request`).
+    pub priority: i64,
 }
 
 /// `Store::set_task_fields`: only a field that is `Some` replaces the
@@ -331,6 +336,8 @@ pub struct TaskUpdate {
     pub checks: Option<Vec<String>>,
     /// The task's own `--provider` (`Task::provider`), routing every role.
     pub provider: Option<String>,
+    /// See `store::priority`.
+    pub priority: Option<i64>,
 }
 
 /// One task in a lineage: parent is what it retries.
@@ -512,8 +519,8 @@ pub(super) fn insert_task_row(conn: &Connection, t: &Task) -> Result<i64> {
     conn.retry_execute(
         "INSERT INTO tasks (repo, task, title, base_branch, model, provider, max_turns, max_attempts, timeout_secs, checks_json,
                             state, reason, question_to, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm, explore_json,
-                            project, initiative, shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json, trust, origin, adoption_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40)",
+                            project, initiative, shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json, trust, origin, adoption_json, priority)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41)",
         params![
             t.repo,
             t.task,
@@ -555,6 +562,7 @@ pub(super) fn insert_task_row(conn: &Connection, t: &Task) -> Result<i64> {
             t.trust.as_str(),
             t.origin.as_str(),
             super::adoption::to_column(t.adoption.as_ref())?,
+            t.priority,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -665,37 +673,12 @@ impl Store {
             .optional()?)
     }
 
-    /// Queued tasks whose dependencies have all landed (or succeeded
-    /// without landing, when they were told not to) and whose initiative
-    /// is not in `held`, oldest first: what `claim_next` considers.
-    pub fn queued_unblocked(&self, held: &[i64]) -> Result<Vec<Task>> {
-        let ids: Vec<i64> = {
-            let c = self.lock();
-            let mut stmt = c.prepare(
-                "SELECT t.id FROM tasks t WHERE t.state='queued' AND t.origin='agent' AND NOT EXISTS (
-                   SELECT 1 FROM json_each(t.after_json) j LEFT JOIN tasks d ON d.id = j.value
-                   WHERE d.id IS NULL OR d.state != 'succeeded' OR (d.land = 1 AND d.landed_sha = '')
-                 ) ORDER BY t.id",
-            )?;
-            stmt.query_map([], |r| r.get(0))?
-                .collect::<rusqlite::Result<_>>()?
-        };
-        let mut out = Vec::new();
-        for id in ids {
-            let Some(t) = self.task(id)? else { continue };
-            if !t.initiative.is_some_and(|i| held.contains(&i)) {
-                out.push(t);
-            }
-        }
-        Ok(out)
-    }
-
-    /// Atomically take the oldest queued task for this worker, skipping
-    /// any whose initiative is in `held` (the caller has already found
-    /// those initiatives are holding new claims, see
-    /// `view::initiative_hold`) or for which `provider_held` says the
-    /// provider it would run under is at its rate-window cap: the oldest
-    /// queued, unheld task whose dependencies have all landed.
+    /// Atomically take the highest-priority queued task for this worker
+    /// (ties broken oldest first; see `store::priority` and
+    /// `queued_unblocked`), skipping any whose initiative is in `held`
+    /// (the caller has already found those initiatives are holding new
+    /// claims, see `view::initiative_hold`) or for which `provider_held`
+    /// says the provider it would run under is at its rate-window cap.
     pub fn claim_next(
         &self,
         pid: i64,
@@ -765,7 +748,8 @@ impl Store {
                 shape_tdd = COALESCE(?12, shape_tdd),
                 after_json = COALESCE(?13, after_json),
                 checks_json = COALESCE(?14, checks_json),
-                provider = COALESCE(?15, provider)
+                provider = COALESCE(?15, provider),
+                priority = COALESCE(?16, priority)
              WHERE id=?1 AND state IN ('queued', 'blocked')",
             params![
                 id,
@@ -783,6 +767,7 @@ impl Store {
                 after_json,
                 checks_json,
                 d.provider,
+                d.priority,
             ],
         )?;
         Ok(n == 1)
@@ -1422,6 +1407,7 @@ mod tests {
                         after: Some(vec![3, 4]),
                         checks: Some(vec!["true".into()]),
                         provider: None,
+                        priority: Some(7),
                     }
                 )
                 .unwrap()
@@ -1444,6 +1430,7 @@ mod tests {
         assert!(got.shape_tdd);
         assert_eq!(got.after, vec![3, 4]);
         assert_eq!(got.checks, vec!["true".to_string()]);
+        assert_eq!(got.priority, 7);
 
         // A blocked task takes the change too.
         store

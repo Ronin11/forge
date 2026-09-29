@@ -265,7 +265,7 @@ pub(super) fn log(args: LogArgs, json: bool) -> Result<()> {
             .collect::<String>()
             .replace('\n', " ");
         out!(
-            "{:<5} {:<11} {:<8} {:<7} {:<3} {:<8} {:<20} {:<18} {}{}{}{}{}",
+            "{:<5} {:<11} {:<8} {:<7} {:<3} {:<8} {:<20} {:<18} {}{}{}{}{}{}",
             s.id,
             s.state,
             s.trust,
@@ -275,6 +275,11 @@ pub(super) fn log(args: LogArgs, json: bool) -> Result<()> {
             render::utc(s.created_at),
             repo_name,
             task_short,
+            if s.priority != crate::store::PRIORITY_DEFAULT {
+                format!(" (priority {})", s.priority)
+            } else {
+                String::new()
+            },
             if s.origin == "adopted" {
                 " (manual)"
             } else {
@@ -357,6 +362,13 @@ fn print_origin(t: &crate::store::Task) {
     }
 }
 
+/// Only away from the default (2): see `store::priority`.
+fn print_priority(t: &crate::store::Task) {
+    if t.priority != crate::store::PRIORITY_DEFAULT {
+        out!("priority   {}", t.priority);
+    }
+}
+
 pub(super) fn show(id: i64, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let Some(t) = f.store.task(id)? else {
@@ -382,6 +394,7 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
     print_resume(&f, &t)?;
     print_origin(&t);
     out!("trust      {}", t.trust.as_str());
+    print_priority(&t);
     if let Some(to) = &task.to {
         out!(
             "asked      {to}, {}",

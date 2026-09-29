@@ -140,6 +140,8 @@ pub fn validate_initiative_file(f: &Forge, parsed: &[FileTask]) -> Result<()> {
 /// pattern proposal answered yes; see docs/INTAKE.md, "The escalator"),
 /// whose paragraphs are generated rather than read from disk. Returns the
 /// new tasks' ids, in order.
+// Reason: one parameter per default a paragraph may override.
+#[allow(clippy::too_many_arguments)]
 pub async fn file_initiative_paragraphs(
     f: &Forge,
     project: &str,
@@ -148,6 +150,7 @@ pub async fn file_initiative_paragraphs(
     default_repo: Option<&str>,
     provider: Option<&str>,
     workflow: Option<&str>,
+    priority: Option<i64>,
 ) -> Result<Vec<i64>> {
     let mut ids: Vec<i64> = Vec::new();
     for p in paragraphs {
@@ -175,6 +178,7 @@ pub async fn file_initiative_paragraphs(
             after,
             project: Some(project.to_string()),
             initiative: Some(initiative),
+            priority,
             ..Default::default()
         };
         let t = enqueue(f, &req, None).await?;
