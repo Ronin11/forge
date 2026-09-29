@@ -3036,6 +3036,45 @@ fn a_wrong_state_and_an_extra_effect_are_each_named() {
     );
 }
 
+#[test]
+fn docs_sync_runs_for_a_landed_task_and_skips_unsuccessful_events() {
+    let e = Env::new();
+    let fixture = include_str!("../../src/builtins/examples/fixtures/docs-sync.json");
+    let original: serde_json::Value = serde_json::from_str(fixture).unwrap();
+    assert_eq!(original["input"]["state"], "succeeded");
+    commit_files(
+        &e,
+        &[
+            (
+                ".forge/workflows/docs-sync.toml",
+                include_str!("../../src/builtins/examples/docs-sync.toml"),
+            ),
+            (".forge/fixtures/docs-sync/01.json", fixture),
+        ],
+    );
+    for state in ["succeeded", "failed", "cancelled", "ok"] {
+        let mut fx = original.clone();
+        fx["input"]["state"] = state.into();
+        if state != "succeeded" {
+            fx["expect"]["state"] = "skipped".into();
+            fx["outputs"] = serde_json::json!({});
+        }
+        std::fs::write(
+            e.repo.join(".forge/fixtures/docs-sync/01.json"),
+            serde_json::to_vec(&fx).unwrap(),
+        )
+        .unwrap();
+        let o = job_test(&e, &e.repo, &["docs-sync", e.repo.to_str().unwrap()]);
+        assert!(
+            o.status.success(),
+            "state {state}: {}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(String::from_utf8_lossy(&o.stdout).contains("pass  docs-sync/01"));
+    }
+}
+
 const CLASSIFY_WORKFLOW: &str = r#"name = "classify"
 kind = "run"
 description = "a directive judges the input and an operation logs what it said"

@@ -1,0 +1,16 @@
+{
+  "input": {
+    "type": "task_done",
+    "task": 1,
+    "state": "succeeded",
+    "branch": "forge/1-update-job-events",
+    "reason": "Documented the task_done event state"
+  },
+  "expect": { "state": "ok", "effects": [] },
+  "outputs": {
+    "name-docs-to-update": {
+      "files": ["docs/JOBS.md"],
+      "summary": "Keep the task_done event documentation aligned with the landed change"
+    }
+  }
+}
