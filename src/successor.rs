@@ -170,29 +170,52 @@ impl Succession {
             Ok(n) => eprintln!("applied {n} contract migration step(s)"),
             Err(e) => eprintln!("contract migration failed: {e:#}"),
         }
-        let next = should_start_successor(stopping)
-            .then(|| self.staged_successor(&f.paths, &live))
-            .flatten();
-        if let Some(next) = next {
-            match self.spawn(&f.paths, &next) {
-                Ok(child) => {
-                    write_started(&root, i64::from(child.id()), &next);
-                    let row = f.store.register_worker(i64::from(child.id()), &next)?;
-                    eprintln!(
-                        "release {next} staged: successor pid {} started; this worker drains",
-                        child.id()
-                    );
-                    self.child = Some((child, next, row));
-                    return Ok(true);
-                }
-                Err(e) => {
-                    eprintln!("release {next} staged but its worker did not start: {e:#}");
-                    mark_failed(&root, &next);
-                    self.failed.insert(next);
-                }
-            }
+        if should_start_successor(stopping) {
+            return self.start_staged(&f.store, &f.paths);
         }
         Ok(false)
+    }
+
+    /// Start a worker on the staged release, if one is due. Two workers of
+    /// one release (a hand-started `forge work` beside the unit) would each
+    /// start one from a `live` read before the plugin handoff's await
+    /// (REVIEW-4 E2-6), so the check, the spawn and the registration all
+    /// happen under `SUCCESSOR_LOCK`, with the live set read again inside
+    /// it: whoever comes second sees the first one's successor registered.
+    /// A worker that finds the lock held skips this tick.
+    fn start_staged(&mut self, store: &crate::store::Store, paths: &Paths) -> Result<bool> {
+        let root = release::root(&paths.home);
+        let Some(_lock) = successor_lock(&root) else {
+            return Ok(false);
+        };
+        let live = store.live_workers(worker_alive)?;
+        if live
+            .iter()
+            .any(|w| w.id > self.id && w.version != self.version)
+        {
+            return Ok(true);
+        }
+        let Some(next) = self.staged_successor(paths, &live) else {
+            return Ok(false);
+        };
+        match self.spawn(paths, &next) {
+            Ok(child) => {
+                write_started(&root, i64::from(child.id()), &next);
+                let row = store.register_worker(i64::from(child.id()), &next)?;
+                eprintln!(
+                    "release {next} staged: successor pid {} started; this worker drains",
+                    child.id()
+                );
+                self.child = Some((child, next, row));
+                Ok(true)
+            }
+            Err(e) => {
+                eprintln!("release {next} staged but its worker did not start: {e:#}");
+                mark_failed(&root, &next);
+                self.failed.insert(next);
+                Ok(false)
+            }
+        }
     }
 
     /// The staged release to start a worker on: not this one, not one that
@@ -348,6 +371,26 @@ fn acknowledge_staged(root: &std::path::Path, version: &str) {
         Ok(false) => {}
         Err(e) => eprintln!("could not remove staged for release {version}: {e:#}"),
     }
+}
+
+/// `FORGE_HOME/bin/<SUCCESSOR_LOCK>`, beside `staged`: held by a worker
+/// from its check for a staged release through the successor's spawn and
+/// registration, so two workers of one release start one successor.
+const SUCCESSOR_LOCK: &str = ".successor.lock";
+
+/// The successor lock if nobody holds it; released when dropped, or when
+/// the process dies.
+fn successor_lock(root: &std::path::Path) -> Option<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    std::fs::create_dir_all(root).ok()?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(root.join(SUCCESSOR_LOCK))
+        .ok()?;
+    // SAFETY: flock on a descriptor this function owns.
+    (unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0).then_some(file)
 }
 
 /// The release recorded in `staged-failed`, if any.
@@ -830,6 +873,72 @@ mod tests {
             "the earlier failure is untouched"
         );
         assert!(store.live_workers(|_, _| true).unwrap().is_empty());
+    }
+
+    fn worker_of(store: &crate::store::Store, pid: i64, version: &str) -> Succession {
+        Succession {
+            daemon: true,
+            version: version.into(),
+            id: store.register_worker(pid, version).unwrap(),
+            jobs: 1,
+            poll: Some(1),
+            max_tasks: None,
+            child: None,
+            failed: HashSet::new(),
+            drained: false,
+        }
+    }
+
+    #[test]
+    fn two_workers_of_one_release_start_one_successor() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(&dir.path().join("t.db")).unwrap();
+        let home = dir.path().join("home");
+        let paths = Paths {
+            worktrees: home.join("worktrees"),
+            logs: home.join("logs"),
+            home: home.clone(),
+        };
+        let root = release::root(&home);
+        let bin = release::release_dir(&root, "new").join("forge");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink("releases/new", root.join("staged")).unwrap();
+
+        // The unit's worker and a hand-started one, same release; the
+        // second is its own `Succession` with its own row.
+        let mut unit = worker_of(&store, i64::from(std::process::id()), "old");
+        let mut hand = worker_of(&store, 1, "old");
+        // Both read `live` before either spawned: the stale view each
+        // `superseded` held across the plugin handoff's await.
+        let stale = store.live_workers(worker_alive).unwrap();
+        assert!(unit.staged_successor(&paths, &stale).is_some());
+        assert!(hand.staged_successor(&paths, &stale).is_some());
+
+        // Held by another worker: this tick starts nothing.
+        let held = successor_lock(&root).unwrap();
+        assert!(!unit.start_staged(&store, &paths).unwrap());
+        assert!(unit.child.is_none());
+        drop(held);
+
+        assert!(unit.start_staged(&store, &paths).unwrap());
+        let started = hand.start_staged(&store, &paths).unwrap();
+        assert!(hand.child.is_none(), "the second worker must not spawn");
+        assert!(started, "the first one's successor supersedes it too");
+
+        let successors: Vec<_> = store
+            .live_workers(|_, _| true)
+            .unwrap()
+            .into_iter()
+            .filter(|w| w.version == "new")
+            .collect();
+        assert_eq!(successors.len(), 1, "exactly one successor: {successors:?}");
+        if let Some((mut child, _, _)) = unit.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
