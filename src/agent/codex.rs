@@ -100,6 +100,8 @@ fn codex_common_argv(l: &Launch<'_>) -> Vec<String> {
     let mut argv = vec![
         "--skip-git-repo-check".to_string(),
         "--json".to_string(),
+        "-c".to_string(),
+        "mcp_servers={}".to_string(),
         "-C".to_string(),
         l.worktree.display().to_string(),
     ];
@@ -236,6 +238,10 @@ pub(super) async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
 
     let mut extra_env = crate::git::identity(&l.worktree.join(".git")).await;
     extra_env.extend(inputs::provider_env(l.provider));
+    extra_env.push((
+        "FORGE_CODEX_CONFIG".into(),
+        inputs::codex_config(l.provider, l.model)?,
+    ));
 
     let mut log =
         File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;

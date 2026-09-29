@@ -71,6 +71,29 @@ pub(super) fn provider_env(provider: &Provider) -> Vec<(String, String)> {
     env
 }
 
+/// Build Codex settings solely from the resolved Forge provider, never its
+/// operator config. CLI arguments still select local providers and overrides.
+pub(super) fn codex_config(provider: &Provider, model: &str) -> Result<String> {
+    let mut config = toml::Table::new();
+    if !model.is_empty() {
+        config.insert("model".into(), model.into());
+    }
+    if let Some(url) = &provider.base_url {
+        config.insert("model_provider".into(), provider.name.clone().into());
+        let mut entry = toml::Table::new();
+        entry.insert("name".into(), provider.name.clone().into());
+        entry.insert("base_url".into(), url.clone().into());
+        entry.insert("wire_api".into(), "responses".into());
+        if provider.api_key_env.is_some() {
+            entry.insert("env_key".into(), "OPENAI_API_KEY".into());
+        }
+        let mut providers = toml::Table::new();
+        providers.insert(provider.name.clone(), entry.into());
+        config.insert("model_providers".into(), providers.into());
+    }
+    Ok(toml::to_string(&config)?)
+}
+
 /// Write the strict codex schema to `path`, a file the sandbox can write, by
 /// renaming a fresh sibling over it so a planted symlink is replaced, never
 /// followed.
@@ -128,6 +151,30 @@ pub fn strict_schema(schema: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_config_contains_only_the_resolved_model_and_provider() {
+        let provider = Provider {
+            name: "quoted.\"provider".into(),
+            base_url: Some("https://model.example/v1".into()),
+            api_key_env: Some("MODEL_TOKEN".into()),
+            env: vec![("SECRET".into(), "operator-secret".into())],
+            ..Provider::default()
+        };
+        let text = codex_config(&provider, "chosen-model").unwrap();
+        assert!(!text.contains("operator-secret"));
+        let config: toml::Table = toml::from_str(&text).unwrap();
+        assert_eq!(config.len(), 3);
+        assert_eq!(config["model"].as_str(), Some("chosen-model"));
+        assert_eq!(
+            config["model_provider"].as_str(),
+            Some(provider.name.as_str())
+        );
+        let entry = &config["model_providers"][&provider.name];
+        assert_eq!(entry["base_url"].as_str(), provider.base_url.as_deref());
+        assert_eq!(entry["env_key"].as_str(), Some("OPENAI_API_KEY"));
+        assert!(codex_config(&Provider::default(), "").unwrap().is_empty());
+    }
 
     #[test]
     fn the_codex_schema_file_replaces_a_planted_symlink_and_never_writes_through_it() {
