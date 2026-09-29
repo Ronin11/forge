@@ -453,6 +453,9 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
     t.journal_arm = arm;
     t.explore = explore;
     record_over_trust_cap(f, &t, over_cap)?;
+    if t.state == TaskState::Blocked {
+        crate::audience::emit_ended(f, &t)?;
+    }
     f.report.emit(
         t.id,
         Event::TaskQueued {

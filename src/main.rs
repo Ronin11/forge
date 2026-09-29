@@ -10,6 +10,7 @@ mod agent;
 mod argument_policy_tests;
 mod assess;
 mod attempt;
+mod audience;
 mod audit;
 mod binary;
 mod chat;

@@ -4,6 +4,9 @@
 cat >/dev/null
 
 case "$1" in
+digest)
+    notify-send --urgency=low "forge daily" "$3"
+    ;;
 deploy)
     project="$2"
     target="$3"

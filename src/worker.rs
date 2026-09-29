@@ -16,7 +16,7 @@ use crate::store::{Direction, JobState, Message, Task, TaskState};
 use crate::unix_now;
 use crate::workflows;
 use crate::{config, git};
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
@@ -120,6 +120,7 @@ pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
 pub async fn drive_with_wait(f: Arc<Forge>, id: i64, wait: bool) -> Result<TaskState> {
     match engine::run_task(f.clone(), id, wait).await {
         Ok(TaskState::Blocked) => {
+            let ended = f.store.task(id)?.context("ended task missing")?;
             // A question addressed to someone other than the operator
             // (an intake interview's contact, say) is not the
             // supervisor's to rule on: leave it for the channel plugin,
@@ -166,10 +167,13 @@ pub async fn drive_with_wait(f: Arc<Forge>, id: i64, wait: bool) -> Result<TaskS
                     },
                 );
             }
+            crate::audience::emit_recovered(&f, &ended).await?;
             Ok(TaskState::Blocked)
         }
         Ok(TaskState::Failed) => {
+            let ended = f.store.task(id)?.context("ended task missing")?;
             on_failed(&f, id).await;
+            crate::audience::emit_recovered(&f, &ended).await?;
             Ok(TaskState::Failed)
         }
         Ok(state) => Ok(state),
@@ -188,7 +192,9 @@ pub async fn drive_with_wait(f: Arc<Forge>, id: i64, wait: bool) -> Result<TaskS
                 f.store.update_task(&t)?;
                 engine::finish_fault(&f, &t)?;
             }
+            let ended = f.store.task(id)?.context("ended task missing")?;
             on_failed(&f, id).await;
+            crate::audience::emit_recovered(&f, &ended).await?;
             Ok(TaskState::Failed)
         }
         Err(Fault::Env(e)) => {
@@ -866,6 +872,9 @@ fn prepare_claim(f: &Forge) -> Result<Option<Vec<i64>>> {
     engine::settle_ready_initiatives(f)?;
     for (t, d, why) in f.store.block_dependents()? {
         eprintln!("task {t} blocked: {why} (task {d})");
+        if let Some(task) = f.store.task(t)? {
+            crate::audience::emit_ended(f, &task)?;
+        }
     }
     Ok(Some(held_initiatives(f)?))
 }
@@ -1636,6 +1645,7 @@ mod tests {
         f.report.emit(
             t.id,
             Event::TaskDone {
+                audience: "none",
                 state,
                 attempts: 1,
                 cost: 0.0,

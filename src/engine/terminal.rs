@@ -31,8 +31,6 @@ pub(super) fn settle_terminal(
     wt: &Path,
 ) -> Result<(), Fault> {
     let id = t.id;
-    let attempts = f.store.attempts(id).env()?;
-    let cost = f.store.task_cost(id).env()?;
     if let Some(iid) = t.initiative {
         crate::view::maybe_settle_initiative(f, id, iid).env()?;
     }
@@ -72,19 +70,10 @@ pub(super) fn settle_terminal(
         }
     }
 
-    f.report.emit(
-        id,
-        Event::TaskDone {
-            state: t.state.as_str(),
-            attempts: attempts.len(),
-            cost,
-            reason: &t.reason,
-            branch: &t.branch,
-            pushed: t.pushed,
-            compare,
-            remove_cmd: &format!("rm -rf {}", wt.display()),
-        },
-    );
+    // The worker emits blocked/failed only after demotion and retry rules.
+    if !matches!(t.state, TaskState::Blocked | TaskState::Failed) {
+        crate::audience::emit(f, t, compare, wt).env()?;
+    }
     Ok(())
 }
 

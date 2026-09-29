@@ -1085,6 +1085,10 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
         },
     );
 
+    if !dry_run && workflow == "doctor-daily" && state == JobState::Ok {
+        crate::audience::daily_digest(f)?;
+    }
+
     if let Some((action, job_row)) = on_failure {
         flow::apply_on_failure(
             f,
