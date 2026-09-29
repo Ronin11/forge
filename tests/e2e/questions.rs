@@ -136,9 +136,13 @@ fn a_demotion_with_a_reproduction_files_a_follow_up_that_lands() {
         .unwrap();
     assert!(o.status.success());
     assert_eq!(e.task(2).0, "succeeded");
+    let branch: String = e
+        .db()
+        .query_row("SELECT branch FROM tasks WHERE id=2", [], |r| r.get(0))
+        .unwrap();
     // addfile only adds extra.txt: the answer must come from the unlanded parent.
     assert_eq!(
-        origin_file(&e, "main", "answer.txt").as_deref(),
+        origin_file(&e, &branch, "answer.txt").as_deref(),
         Some("42\n")
     );
     let prompt = e.log_text(2, 1);

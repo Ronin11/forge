@@ -269,15 +269,5 @@ async fn branch_source(parent: &Task) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn base_choice_preserves_unlanded_work_and_verified_retry_recovery() {
-        assert!(reusable_branch(false, true));
-        assert!(reusable_branch(true, true));
-        // Even an already landed verified branch must retain setup recovery.
-        assert!(reusable_branch(true, false));
-        assert!(!reusable_branch(false, false));
-    }
-}
+#[path = "worktree_tests.rs"]
+mod tests;
