@@ -339,5 +339,4 @@ pub async fn act(f: &Forge, id: i64) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "tests.rs"]
 mod tests;

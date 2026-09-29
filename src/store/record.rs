@@ -179,6 +179,18 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// How many decisions of each `mechanic-*` kind were recorded at or
+    /// after `since` (`0` for all time): what `forge stats --mechanic`
+    /// counts (docs/WORKFLOWS.md, "Mechanic").
+    pub fn mechanic_kind_counts(&self, since: i64) -> Result<Vec<(String, i64)>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT kind, COUNT(*) AS n FROM decisions WHERE kind LIKE 'mechanic-%' AND created_at >= ?1 GROUP BY kind ORDER BY kind",
+        )?;
+        let rows = stmt.query_map(params![since], |r| Ok((r.get("kind")?, r.get("n")?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Every plugin recorded as enabled.
     pub fn enabled_plugins(&self) -> Result<std::collections::BTreeSet<String>> {
         let c = self.lock();
@@ -329,6 +341,60 @@ mod tests {
         })
         .unwrap();
         assert_eq!(s.supervisor_answers_in_lineage(b).unwrap(), 1);
+    }
+
+    #[test]
+    fn mechanic_kind_counts_groups_by_kind_and_ignores_other_decisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        let t = Task {
+            repo: "r".into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 2,
+            timeout_secs: 1,
+            ..Default::default()
+        };
+        let a = s.insert_task(&t).unwrap();
+        let b = s.insert_task(&t).unwrap();
+        let insert = |kind: &str| {
+            let d = s
+                .insert_decision_by(InsertDecisionBy {
+                    task_id: a,
+                    repo: "r",
+                    question: "q",
+                    answer: "a",
+                    answered_by: "mechanic",
+                    citations: "",
+                    answered_for: None,
+                })
+                .unwrap();
+            s.set_decision_kind(d, kind).unwrap();
+        };
+        insert("mechanic-load-flake");
+        insert("mechanic-load-flake");
+        insert("mechanic-ratchet");
+        s.insert_decision_by(InsertDecisionBy {
+            task_id: b,
+            repo: "r",
+            question: "q",
+            answer: "a",
+            answered_by: "supervisor",
+            citations: "",
+            answered_for: None,
+        })
+        .unwrap();
+        assert_eq!(
+            s.mechanic_kind_counts(0).unwrap(),
+            vec![
+                ("mechanic-load-flake".to_string(), 2),
+                ("mechanic-ratchet".to_string(), 1),
+            ]
+        );
+        let far_future = crate::unix_now() + 1_000_000;
+        assert!(s.mechanic_kind_counts(far_future).unwrap().is_empty());
     }
 
     #[test]

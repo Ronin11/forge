@@ -343,7 +343,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   factors.rs        forge stats --factors: factor levels, the main-effects fit, size classes
   stats_tests.rs    stats.rs's #[cfg(test)] mod, split out to keep stats.rs under the line bound
   daily.rs          StatsDoc.daily: landings and spend per UTC day, the /stats chart's kernel query
-src/supervisor.rs   the rung between a blocked task and the human
+src/supervisor.rs   the rung between a blocked task and the human; mechanic.rs: the same rung for a task that ends failed
 src/tools.rs        what an attempt ran, read back from its stream
 src/release.rs      releases as directories under FORGE_HOME/bin, the atomic current/previous pointers
 src/upgrade.rs      forge upgrade: verify, backup, unpack a release, flip current, migrate, restart

@@ -198,10 +198,10 @@ pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
 }
 
 /// The kernel's follow-up rule for a task that just ended `Failed`
-/// (`src/mechanic.rs`): a retry, a guided refile, or an operator decision.
-/// Its own failure is a note, never the task's.
+/// (`src/supervisor/mechanic.rs`): a retry, a guided refile, or an
+/// operator decision. Its own failure is a note, never the task's.
 async fn on_failed(f: &Forge, id: i64) {
-    if let Err(e) = crate::mechanic::act(f, id).await {
+    if let Err(e) = crate::supervisor::mechanic::act(f, id).await {
         f.report.emit(
             id,
             Event::Note {

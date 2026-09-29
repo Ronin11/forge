@@ -10,6 +10,7 @@ pub struct StatsOptions {
     pub by_step: bool,
     pub factors: bool,
     pub questions: bool,
+    pub mechanic: bool,
     pub days: Option<i64>,
     pub project: Option<String>,
     pub initiative: Option<i64>,
@@ -206,6 +207,7 @@ pub(super) async fn stats(args: StatsOptions) -> Result<()> {
         by_step,
         factors,
         questions,
+        mechanic,
         days,
         project,
         initiative,
@@ -220,6 +222,9 @@ pub(super) async fn stats(args: StatsOptions) -> Result<()> {
     }
     if questions {
         return questions_stats(&f, days, json);
+    }
+    if mechanic {
+        return mechanic_stats(&f, days, json);
     }
     let scope = crate::store::StatsFilter {
         project,
@@ -382,6 +387,25 @@ pub(super) async fn stats(args: StatsOptions) -> Result<()> {
                 j.skipped
             );
         }
+    }
+    Ok(())
+}
+
+/// `forge stats --mechanic [--days N] [--json]`: how many times each
+/// mechanic kind acted (docs/WORKFLOWS.md, "Mechanic").
+fn mechanic_stats(f: &Forge, days: Option<i64>, json: bool) -> Result<()> {
+    let since = days.map_or(0, |d| crate::unix_now() - d * 86_400);
+    let counts = f.store.mechanic_kind_counts(since)?;
+    if json {
+        out!("{}", serde_json::to_string_pretty(&counts)?);
+        return Ok(());
+    }
+    out!("{:<28} {:>6}", "KIND", "COUNT");
+    for (kind, n) in &counts {
+        out!("{:<28} {:>6}", kind, n);
+    }
+    if counts.is_empty() {
+        out!("(none)");
     }
     Ok(())
 }
