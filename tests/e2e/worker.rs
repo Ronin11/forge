@@ -1230,6 +1230,7 @@ fn resource_limits_configured_tmpfs_fails_with_enospc() {
     if e.sandbox_disabled() {
         return;
     }
+    std::fs::create_dir_all(&e.home).unwrap();
     std::fs::write(
         e.home.join("config.toml"),
         "[sandbox]\ntmp_bytes = 1048576\n",
