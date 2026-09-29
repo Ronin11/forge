@@ -158,3 +158,156 @@ fn reask_reproduction(
     *feedback = Some(ask);
     Ok(true)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::{Fixture, check, verdict};
+    use super::*;
+
+    #[tokio::test]
+    async fn namespace_failure_refunds_persists_rewinds_and_resets_the_coder() {
+        let mut x = Fixture::new();
+        let repo = PathBuf::from(&x.t.worktree);
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("code"), "base").unwrap();
+        x.t.base_sha = git::init_commit_all(&repo, "base").await.unwrap();
+        std::fs::write(repo.join("code"), "attempt").unwrap();
+        git::commit_all(&repo, "attempt").await.unwrap();
+        let a = x.attempt(AttemptState::ChecksFailed);
+        let mut v = verdict();
+        v.checks.push(check("tests/acceptance/check.ts:3:1 error"));
+        let flow = rewind_tests(&mut x.args(), &a, &v).await.ok().unwrap();
+        assert!(matches!(flow, Some(StepFlow::Again)));
+        assert_eq!(x.run.used_at(2), 0);
+        assert_eq!(x.run.used_at(1), 1);
+        assert!(x.f.store.refunded_attempts(x.t.id).unwrap().contains(&a.id));
+        assert_eq!(x.run.idx, 0);
+        assert!(x.run.done.is_empty());
+        assert!(x.run.owed[&1].contains("tests/acceptance/check.ts"));
+        assert_eq!(git::head(&repo).await.unwrap(), x.t.base_sha);
+    }
+
+    #[tokio::test]
+    async fn exhausted_tests_fail_without_refunding_or_rewinding() {
+        let mut x = Fixture::new();
+        x.run.used.insert(1, x.t.max_attempts);
+        let a = x.attempt(AttemptState::ChecksFailed);
+        let mut v = verdict();
+        v.checks.push(check("tests/acceptance/check.ts:3:1 error"));
+        let flow = rewind_tests(&mut x.args(), &a, &v).await.ok().unwrap();
+        assert!(
+            matches!(flow, Some(StepFlow::End(End::Failed { counted: true, pushes: false, reason })) if reason.contains("after 2 tests attempt(s)"))
+        );
+        assert_eq!(x.run.idx, 1);
+        assert_eq!(x.run.used_at(2), 1);
+        assert!(x.f.store.refunded_attempts(x.t.id).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unrelated_failures_and_tests_own_failures_do_not_rewind() {
+        let mut x = Fixture::new();
+        let mut a = x.attempt(AttemptState::ChecksFailed);
+        let mut v = verdict();
+        for (state, contract, tail) in [
+            (
+                AttemptState::AgentFailed,
+                Contract::Code,
+                "tests/acceptance/a.ts:3 error",
+            ),
+            (
+                AttemptState::ChecksFailed,
+                Contract::Tests,
+                "tests/acceptance/a.ts:3 error",
+            ),
+            (
+                AttemptState::ChecksFailed,
+                Contract::Code,
+                "src/a.ts:3 error",
+            ),
+        ] {
+            a.state = state;
+            x.resolved.steps[1].action.contract = contract;
+            v.checks = vec![check(tail)];
+            assert!(
+                rewind_tests(&mut x.args(), &a, &v)
+                    .await
+                    .ok()
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(x.run.idx, 1);
+            assert_eq!(x.run.used_at(2), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn refusals_preserve_session_and_feedback_and_stop_at_the_limit() {
+        let mut x = Fixture::new();
+        let a = x.attempt(AttemptState::AgentFailed);
+        let ts = x.t.clone();
+        let v = verdict();
+        let outcome = crate::agent::Outcome {
+            rate_limited: true,
+            ..Default::default()
+        };
+        let mut state = AttemptLoop {
+            feedback: Some("fix this".into()),
+            resume: Some(Resume {
+                session: "session".into(),
+                start_sha: "base".into(),
+                fresh_from: None,
+            }),
+            ..Default::default()
+        };
+        for _ in 0..REFUSAL_LIMIT {
+            x.run.used.insert(2, 1);
+            let flow = retry_after_attempt(&mut x.args(), &mut state, &ts, &a, &v, &outcome)
+                .await
+                .ok()
+                .unwrap();
+            assert!(matches!(flow, Some(AttemptFlow::Continue)));
+            assert_eq!(x.run.used_at(2), 0);
+            assert_eq!(state.feedback.as_deref(), Some("fix this"));
+            assert_eq!(state.resume.as_ref().unwrap().session, "session");
+        }
+        x.run.used.insert(2, 1);
+        let flow = retry_after_attempt(&mut x.args(), &mut state, &ts, &a, &v, &outcome)
+            .await
+            .ok()
+            .unwrap();
+        assert!(matches!(
+            flow,
+            Some(AttemptFlow::Exit(StepFlow::End(End::Failed {
+                counted: false,
+                pushes: false,
+                ..
+            })))
+        ));
+        // The existing limit check occurs before the final refund.
+        assert_eq!(x.run.used_at(2), 1);
+    }
+
+    #[tokio::test]
+    async fn unverified_refusal_falls_through_and_resets_the_streak() {
+        let mut x = Fixture::new();
+        let a = x.attempt(AttemptState::Unverified);
+        let ts = x.t.clone();
+        let mut state = AttemptLoop {
+            consecutive_refusals: 4,
+            ..Default::default()
+        };
+        let outcome = crate::agent::Outcome {
+            rate_limited: true,
+            ..Default::default()
+        };
+        assert!(
+            retry_after_attempt(&mut x.args(), &mut state, &ts, &a, &verdict(), &outcome)
+                .await
+                .ok()
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(state.consecutive_refusals, 0);
+        assert_eq!(x.run.used_at(2), 1);
+    }
+}

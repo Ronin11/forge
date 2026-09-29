@@ -88,3 +88,37 @@ pub(super) async fn record_success(
     }
     Ok(None)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::{Fixture, verdict};
+    use super::*;
+
+    #[tokio::test]
+    async fn plan_product_is_persisted_and_an_absent_envelope_clears_it() {
+        let mut x = Fixture::new();
+        x.resolved.steps[1].action.contract = Contract::Plan;
+        let mut v = verdict();
+        v.envelope = Some(crate::envelope::Envelope {
+            summary: "new plan".into(),
+            ..Default::default()
+        });
+        for expected in ["new plan", ""] {
+            let flow = record_success(
+                &x.f,
+                &mut x.t,
+                &x.resolved.steps[1],
+                x.dir.path(),
+                &None,
+                &v,
+            )
+            .await
+            .ok()
+            .unwrap();
+            assert!(flow.is_none());
+            assert_eq!(x.t.plan, expected);
+            assert_eq!(x.f.store.task(x.t.id).unwrap().unwrap().plan, expected);
+            v.envelope = None;
+        }
+    }
+}

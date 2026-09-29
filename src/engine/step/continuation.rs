@@ -89,3 +89,56 @@ pub(super) fn after_failure(
     }
     (resume, feedback, capped_committed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::{Fixture, verdict};
+    use super::*;
+
+    #[test]
+    fn clean_committed_cap_keeps_session_and_marks_salvageable_work() {
+        let x = Fixture::new();
+        let a = x.attempt(AttemptState::AgentFailed);
+        let mut v = verdict();
+        v.commits = 1;
+        let outcome = crate::agent::Outcome {
+            max_turns_hit: true,
+            session_id: Some("session".into()),
+            ..Default::default()
+        };
+        let (resume, feedback, committed) = after_failure(&x.f, &x.t, &x.t, &a, &v, &outcome);
+        assert!(committed);
+        let resume = resume.unwrap();
+        assert_eq!(resume.session, "session");
+        assert_eq!(resume.start_sha, a.start_sha);
+        assert!(
+            feedback
+                .unwrap()
+                .contains("Continue exactly where you left off")
+        );
+        v.dirty = true;
+        assert!(!after_failure(&x.f, &x.t, &x.t, &a, &v, &outcome).2);
+    }
+
+    #[test]
+    fn failed_checks_resume_only_when_requested_and_keep_verification_feedback() {
+        let mut x = Fixture::new();
+        let a = x.attempt(AttemptState::ChecksFailed);
+        let mut v = verdict();
+        v.envelope = Some(crate::envelope::Envelope::default());
+        let outcome = crate::agent::Outcome {
+            session_id: Some("session".into()),
+            ..Default::default()
+        };
+        for requested in [false, true] {
+            x.t.resume_on_failure = requested;
+            let (resume, feedback, committed) = after_failure(&x.f, &x.t, &x.t, &a, &v, &outcome);
+            assert_eq!(resume.is_some(), requested);
+            assert_eq!(
+                feedback,
+                Some(verify::feedback(&v, &outcome, x.t.max_turns))
+            );
+            assert!(!committed);
+        }
+    }
+}

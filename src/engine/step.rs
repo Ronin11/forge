@@ -412,3 +412,6 @@ fn nudge_placeholder_question(
 fn fresh_arm(t: &Task) -> bool {
     t.explore.get("continuation").map(String::as_str) == Some("fresh")
 }
+
+#[cfg(test)]
+mod test_support;

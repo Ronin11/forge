@@ -240,3 +240,155 @@ async fn settle_attempt(
     }
     Ok(AttemptFlow::Continue)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::{Fixture, question, verdict};
+    use super::*;
+
+    #[tokio::test]
+    async fn spent_budget_does_not_start_an_attempt() {
+        let mut x = Fixture::new();
+        x.run.used.insert(2, x.t.max_attempts);
+        let mut state = AttemptLoop::default();
+        assert!(
+            run_attempt_loop(&mut x.args(), &mut state)
+                .await
+                .ok()
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(x.attempt_no, 1);
+        assert_eq!(state.last, AttemptState::Running);
+        assert!(x.f.store.attempts(x.t.id).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn held_provider_returns_feedback_without_spending_an_attempt() {
+        let mut x = Fixture::new();
+        let provider = x.f.effective_provider(&x.t, "code").unwrap().name.clone();
+        rusqlite::Connection::open(x.f.paths.home.join("forge.db")).unwrap().execute(
+            "INSERT INTO attempts (task_id, attempt_no, state, started_at, finished_at, provider, rl_five_hour, rl_five_hour_resets) VALUES (?1, 1, 'agent_failed', ?2, ?2, ?3, 1.0, ?4)",
+            rusqlite::params![x.t.id, unix_now(), provider, unix_now() + 3600],
+        ).unwrap();
+        // A pending nudge can enter the loop even after the ordinary budget.
+        x.run.used.insert(2, x.t.max_attempts);
+        let mut state = AttemptLoop {
+            feedback: Some("owed feedback".into()),
+            nudge_pending: true,
+            ..Default::default()
+        };
+        let flow = run_attempt_loop(&mut x.args(), &mut state)
+            .await
+            .ok()
+            .unwrap();
+        assert!(matches!(flow, Some(StepFlow::Requeue(_))));
+        assert_eq!(x.run.owed[&2], "owed feedback");
+        assert_eq!(x.run.used_at(2), 2);
+        assert_eq!(x.attempt_no, 1);
+        assert!(!state.nudge_pending);
+    }
+
+    #[tokio::test]
+    async fn placeholder_question_gets_only_one_session_nudge() {
+        let mut x = Fixture::new();
+        let a = x.attempt(AttemptState::NeedsInput);
+        let ts = x.t.clone();
+        let mut v = verdict();
+        v.envelope = Some(question("?"));
+        let outcome = crate::agent::Outcome {
+            session_id: Some("session".into()),
+            ..Default::default()
+        };
+        let mut state = AttemptLoop::default();
+        let flow = settle_attempt(&mut x.args(), &mut state, &ts, &a, &v, &outcome)
+            .await
+            .ok()
+            .unwrap();
+        assert!(matches!(flow, AttemptFlow::Continue));
+        assert!(state.nudged && state.nudge_pending);
+        assert_eq!(state.resume.as_ref().unwrap().session, "session");
+        assert!(
+            state
+                .feedback
+                .as_ref()
+                .unwrap()
+                .contains("no open question")
+        );
+        state.nudge_pending = false;
+        let flow = settle_attempt(&mut x.args(), &mut state, &ts, &a, &v, &outcome)
+            .await
+            .ok()
+            .unwrap();
+        assert!(matches!(flow, AttemptFlow::Stop));
+        assert!(!state.nudge_pending);
+    }
+
+    #[tokio::test]
+    async fn real_interview_question_records_the_brief_and_stops() {
+        let mut x = Fixture::new();
+        x.resolved.steps[1].action.name = "interview".into();
+        let a = x.attempt(AttemptState::NeedsInput);
+        let ts = x.t.clone();
+        let mut v = verdict();
+        v.envelope = Some(question("Which database should we use?"));
+        let mut state = AttemptLoop::default();
+        let flow = settle_attempt(&mut x.args(), &mut state, &ts, &a, &v, &Default::default())
+            .await
+            .ok()
+            .unwrap();
+        assert!(matches!(flow, AttemptFlow::Stop));
+        assert!(!state.nudged);
+        assert_eq!(x.f.store.task(x.t.id).unwrap().unwrap().plan, "the plan");
+    }
+
+    #[tokio::test]
+    async fn success_stops_and_marks_the_step_for_advancement() {
+        let mut x = Fixture::new();
+        let a = x.attempt(AttemptState::Succeeded);
+        let ts = x.t.clone();
+        let mut state = AttemptLoop::default();
+        assert!(matches!(
+            settle_attempt(
+                &mut x.args(),
+                &mut state,
+                &ts,
+                &a,
+                &verdict(),
+                &Default::default()
+            )
+            .await
+            .ok()
+            .unwrap(),
+            AttemptFlow::Stop
+        ));
+        assert!(state.step_ok);
+    }
+
+    #[test]
+    fn verification_records_known_fix_before_the_attempt_verdict() {
+        let x = Fixture::new();
+        let a = x.attempt(AttemptState::Succeeded);
+        let mut v = verdict();
+        v.known_fix = Some(verify::KnownFix {
+            checks: vec!["fmt".into()],
+            commit: Some("1234567890".into()),
+            diff_stat: "one file".into(),
+            ok: true,
+        });
+        record_verification(&x.f, x.t.id, 2, &Timer::now(), &a, &v)
+            .ok()
+            .unwrap();
+        let ops = x.f.store.ops(x.t.id).unwrap();
+        assert_eq!(
+            ops.iter().map(|o| o.name.as_str()).collect::<Vec<_>>(),
+            ["known-fix", "verify"]
+        );
+        assert_eq!(ops[0].detail, "fmt fixed as 12345678: one file");
+        assert_eq!(ops[1].detail, a.reason);
+        assert!(
+            ops.iter()
+                .all(|o| o.kernel && o.ok && o.seq == 2 && o.attempt_id == Some(a.id))
+        );
+    }
+}
