@@ -166,6 +166,13 @@ confirms. Its text is the `prompt` of `actions/chat.toml`, so it is
 versioned like every other prompt and an operator's own `chat.toml` in the
 catalog shadows it.
 
+`name-docs-to-update` is a job directive used by the `docs-sync` example
+in `src/builtins/examples/docs-sync.toml`. It reads a `task_done` event
+and returns documentation file names and a summary of suggested updates,
+without editing files. The example runs only when the event's task state
+is `succeeded`; its fixture uses that same state. The fixture's expected
+job state is `ok`, which is distinct from the input task state.
+
 A plan can also become an initiative's tasks instead of one task's code.
 `forge initiative from-plan <task id> [--outcome <text>]` reads a
 finished task's recorded plan (`t.plan`), creates an initiative in the
