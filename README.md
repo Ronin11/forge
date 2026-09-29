@@ -235,7 +235,9 @@ the task cap for one task.
 
 Before each task or job claim, the worker checks free space on `FORGE_HOME`.
 `[worker] min_free_gb` in `config.toml` defaults to 50 GiB (0 disables the
-hold). Below it, claims pause, doctor reports FAIL, and one operator event
+hold). `FORGE_MIN_FREE_GB` overrides that threshold for a process; the e2e
+harness sets it to 0 so small temporary filesystems can run fixture tasks.
+Below the threshold, claims pause, doctor reports FAIL, and one operator event
 per hold names the free space and the bytes `forge gc --caches` can reclaim.
 That command deletes `target/`, `node_modules/.cache`, and `.godot/` from
 non-running task and job worktrees; `--dry-run` reports without deleting.

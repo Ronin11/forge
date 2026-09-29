@@ -86,20 +86,65 @@ fn low_disk_holds_worker_claims_and_doctor_reports_failure() {
     let mut text = std::fs::read_to_string(&config).unwrap();
     text.push_str("\n[worker]\nmin_free_gb = 999999999\n");
     std::fs::write(config, text).unwrap();
-    let out = e.forge("ok.sh", &["work", "--once"]);
+    let out = e
+        .cmd("ok.sh")
+        .env_remove("FORGE_MIN_FREE_GB")
+        .env_remove("FORGE2_MIN_FREE_GB")
+        .args(["work", "--once"])
+        .output()
+        .unwrap();
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(e.task(id).0, "queued");
-    let out = e.forge("ok.sh", &["doctor", "--json"]);
+    let out = e
+        .cmd("ok.sh")
+        .env_remove("FORGE_MIN_FREE_GB")
+        .env_remove("FORGE2_MIN_FREE_GB")
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
     let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(
         rows.as_array()
             .unwrap()
             .iter()
             .any(|r| r["name"] == "disk" && r["status"] == "fail")
+    );
+    // The process override must apply to both doctor and worker claims,
+    // even when the home config requests a larger reserve.
+    let out = e.forge("ok.sh", &["doctor", "--json"]);
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["name"] == "disk" && r["status"] == "ok")
+    );
+    let out = e.forge("ok.sh", &["work", "--once"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(e.task(id).0, "succeeded");
+}
+
+#[test]
+fn invalid_disk_reserve_override_is_reported() {
+    let e = Env::new();
+    let out = e
+        .cmd("ok.sh")
+        .env("FORGE_MIN_FREE_GB", "-1")
+        .args(["work", "--once"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("FORGE_MIN_FREE_GB must be a non-negative integer")
     );
 }
 

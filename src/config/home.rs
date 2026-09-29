@@ -499,6 +499,11 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
         Err(e) => return Err(e).context(format!("reading {}", path.display())),
     };
     let mut worker = raw.worker;
+    if let Ok(value) = super::env("MIN_FREE_GB") {
+        worker.min_free_gb = value
+            .parse()
+            .context("FORGE_MIN_FREE_GB must be a non-negative integer")?;
+    }
     worker.projects = raw
         .projects
         .iter()
