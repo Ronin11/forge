@@ -32,3 +32,7 @@ namespace = ["tests/hidden/"]
 # the checks need the crate registry.
 [sandbox]
 egress = ["index.crates.io", "static.crates.io"]
+# One build cache for every attempt and check on this repository
+# (FORGE_HOME/cache/<project>/target) instead of a target/ per worktree:
+# on 2026-09-28 per-worktree caches filled a 1.9 TB disk.
+shared_target = true
