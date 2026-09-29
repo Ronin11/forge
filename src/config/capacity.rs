@@ -1,9 +1,9 @@
 //! Operator capacity settings and allowlisted build tuning.
 use anyhow::{Result, ensure};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Settings {
     pub slots: usize,
@@ -11,7 +11,6 @@ pub struct Settings {
     /// the machine budget, preserving existing single-project workers.
     pub project_slots: Option<usize>,
     pub max_load: Option<f64>,
-    #[serde(skip)]
     pub projects: BTreeMap<String, usize>,
 }
 

@@ -50,6 +50,7 @@ pub fn load_holds(settings: &crate::config::capacity::Settings, load: Option<f64
 #[derive(Default)]
 pub struct Claims {
     load_held: bool,
+    published: String,
 }
 
 pub fn refresh(f: &Forge, opts: &super::WorkOpts, state: &mut Claims) -> Result<usize> {
@@ -69,7 +70,54 @@ pub fn refresh(f: &Forge, opts: &super::WorkOpts, state: &mut Claims) -> Result<
         );
     }
     state.load_held = held;
+    publish(f, total, held, state)?;
     Ok(if held { 0 } else { total })
+}
+
+/// Last accepted settings of the claiming worker, including a CLI override.
+/// Doctor can still report them when a later config edit was rejected.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Snapshot {
+    pub pid: i64,
+    pub start: String,
+    pub slots: usize,
+    pub settings: crate::config::capacity::Settings,
+    pub build_env: BTreeMap<String, String>,
+    pub load_held: bool,
+}
+
+fn publish(f: &Forge, total: usize, held: bool, state: &mut Claims) -> Result<()> {
+    let pid = i64::from(std::process::id());
+    if f.store
+        .live_workers(super::worker_alive)?
+        .last()
+        .is_some_and(|w| w.pid != pid)
+    {
+        return Ok(());
+    }
+    let record = Snapshot {
+        pid,
+        start: crate::store::start_of(pid).unwrap_or_default(),
+        slots: total,
+        settings: f.worker.clone(),
+        build_env: f.build_env.clone(),
+        load_held: held,
+    };
+    let text = serde_json::to_string(&record)?;
+    if state.published != text {
+        let path = f.paths.home.join("worker.capacity.json");
+        let temp = f.paths.home.join(format!("worker.capacity.{pid}.tmp"));
+        std::fs::write(&temp, &text)?;
+        std::fs::rename(temp, path)?;
+        state.published = text;
+    }
+    Ok(())
+}
+
+pub fn snapshot(paths: &crate::ctx::Paths) -> Option<Snapshot> {
+    let text = std::fs::read_to_string(paths.home.join("worker.capacity.json")).ok()?;
+    let record: Snapshot = serde_json::from_str(&text).ok()?;
+    super::worker_alive(record.pid, &record.start).then_some(record)
 }
 
 #[cfg(test)]

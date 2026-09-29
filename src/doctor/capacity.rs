@@ -36,16 +36,17 @@ fn env_text(env: &BTreeMap<String, String>) -> String {
 }
 
 fn details(paths: &Paths, store: &Store) -> anyhow::Result<String> {
-    let home = config::load_home(&paths.home)?;
-    let live = store.live_workers(worker::worker_alive)?;
-    let total = live
-        .last()
-        .map(|w| w.slots)
-        .filter(|n| *n > 0)
-        .unwrap_or(home.worker.slots);
+    let (settings, build_env, total, held) = match worker::capacity::snapshot(paths) {
+        Some(s) => (s.settings, s.build_env, s.slots, Some(s.load_held)),
+        None => {
+            let home = config::load_home(&paths.home)?;
+            let slots = home.worker.slots;
+            (home.worker, home.build_env, slots, None)
+        }
+    };
     let used = worker::capacity::used(store)?;
     let mut projects = used.clone();
-    for name in home.worker.projects.keys() {
+    for name in settings.projects.keys() {
         projects.entry(name.clone()).or_default();
     }
     for p in store.list_projects()? {
@@ -53,11 +54,11 @@ fn details(paths: &Paths, store: &Store) -> anyhow::Result<String> {
     }
     let mut parts = vec![format!("{} of {total} slots", used.values().sum::<usize>())];
     for (name, n) in projects {
-        let cap = home.worker.project_cap(&name, total);
+        let cap = settings.project_cap(&name, total);
         parts.push(format!("project {name}: {n} of {cap}"));
         for repo in store.project_repos(&name)? {
             if let Ok(env) = config::load_working_build_env(std::path::Path::new(&repo.repo)) {
-                let env = config::capacity::merge_env(&home.build_env, &env);
+                let env = config::capacity::merge_env(&build_env, &env);
                 parts.push(format!(
                     "{name} build env ({}): {}",
                     repo.repo,
@@ -66,12 +67,12 @@ fn details(paths: &Paths, store: &Store) -> anyhow::Result<String> {
             }
         }
     }
-    parts.push(format!("default build env: {}", env_text(&home.build_env)));
+    parts.push(format!("default build env: {}", env_text(&build_env)));
     let load = worker::capacity::load_per_core();
-    parts.push(match (home.worker.max_load, load) {
+    parts.push(match (settings.max_load, load) {
         (Some(cap), Some(load)) => format!(
             "load {load:.2}/core, cap {cap:.2}: {}",
-            if worker::capacity::load_holds(&home.worker, Some(load)) {
+            if held.unwrap_or_else(|| worker::capacity::load_holds(&settings, Some(load))) {
                 "holding claims"
             } else {
                 "claims allowed"

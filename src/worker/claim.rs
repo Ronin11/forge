@@ -15,6 +15,9 @@ pub fn task(
     held: &[i64],
     blocked: impl Fn(&Task) -> bool,
 ) -> Result<Option<Task>> {
+    if capacity::load_holds(&f.worker, capacity::load_per_core()) {
+        return Ok(None);
+    }
     for t in f.store.queued_unblocked(held)? {
         if blocked(&t) {
             continue;
@@ -45,6 +48,9 @@ pub fn task(
 }
 
 pub fn job(f: &Forge, opts: &WorkOpts) -> Result<Option<Job>> {
+    if capacity::load_holds(&f.worker, capacity::load_per_core()) {
+        return Ok(None);
+    }
     let id = {
         let mut conn = f.store.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -73,5 +79,96 @@ pub fn job(f: &Forge, opts: &WorkOpts) -> Result<Option<Job>> {
     match id {
         Some(id) => f.store.job(id),
         None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{JobState, Project, TaskState};
+    use std::collections::BTreeMap;
+
+    fn enqueue(f: &Forge, project: &str) -> i64 {
+        if f.store.project(project).unwrap().is_none() {
+            f.store
+                .create_project(&Project {
+                    name: project.into(),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        let mut t = crate::worker::tests::task_on("code");
+        t.project = Some(project.into());
+        f.store.insert_task(&t).unwrap()
+    }
+
+    fn opts() -> WorkOpts {
+        WorkOpts {
+            jobs: None,
+            poll: None,
+            max_tasks: None,
+        }
+    }
+
+    #[test]
+    fn capacity_claim_skips_a_full_project_and_counts_jobs() {
+        let (_dir, mut f) = crate::worker::tests::fixture();
+        f.worker.slots = 3;
+        f.worker.project_slots = Some(1);
+        let heavy = enqueue(&f, "heavy");
+        let waiting = enqueue(&f, "heavy");
+        let light = enqueue(&f, "light");
+        let pid = i64::from(std::process::id());
+        assert_eq!(
+            task(&f, &opts(), pid, &[], |_| false).unwrap().unwrap().id,
+            heavy
+        );
+        assert_eq!(
+            task(&f, &opts(), pid, &[], |_| false).unwrap().unwrap().id,
+            light
+        );
+        assert!(task(&f, &opts(), pid, &[], |_| false).unwrap().is_none());
+        assert_eq!(
+            f.store.task(waiting).unwrap().unwrap().state,
+            TaskState::Queued
+        );
+        let id = f
+            .store
+            .create_job(&Job {
+                project: "heavy".into(),
+                state: JobState::Queued,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(job(&f, &opts()).unwrap().is_none());
+        f.worker.projects = BTreeMap::from([("heavy".into(), 2)]);
+        assert_eq!(job(&f, &opts()).unwrap().unwrap().id, id);
+        // All three machine slots are now occupied, by two tasks and a job.
+        f.worker.projects.insert("heavy".into(), 3);
+        assert!(task(&f, &opts(), pid, &[], |_| false).unwrap().is_none());
+    }
+
+    #[test]
+    fn capacity_claim_is_atomic_across_competing_workers() {
+        let (_dir, f) = crate::worker::tests::fixture();
+        enqueue(&f, "heavy");
+        enqueue(&f, "light");
+        let other = f.reopen().unwrap();
+        let gate = std::sync::Barrier::new(2);
+        let claim = |f: &Forge| {
+            gate.wait();
+            usize::from(
+                task(f, &opts(), i64::from(std::process::id()), &[], |_| false)
+                    .unwrap()
+                    .is_some(),
+            )
+        };
+        let counts = std::thread::scope(|scope| {
+            let a = scope.spawn(|| claim(&f));
+            let b = scope.spawn(|| claim(&other));
+            a.join().unwrap() + b.join().unwrap()
+        });
+        assert_eq!(counts, 1);
+        assert_eq!(capacity::used(&f.store).unwrap().values().sum::<usize>(), 1);
     }
 }

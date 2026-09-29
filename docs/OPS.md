@@ -5,6 +5,65 @@ and what to do when it does not, plus how a release is built and installed.
 docs/CHECKS.md covers the standing checks (doctor, drift); `backup-daily`
 below is the job that guards the data.*
 
+## Worker capacity and per-attempt builds
+
+Set capacity in `FORGE_HOME/config.toml`, so changing it does not require
+editing the unit or draining a worker:
+
+```toml
+[worker]
+slots = 8
+project_slots = 2 # default cap for projects without their own slots setting
+max_load = 1.5   # optional: one-minute load average per online CPU
+
+[projects.forge]
+slots = 2
+
+[projects.game]
+slots = 4
+
+[sandbox.env]
+CARGO_BUILD_JOBS = "2"
+RUST_TEST_THREADS = "4"
+```
+
+The default machine capacity is one slot. An omitted `project_slots` allows
+an uncapped project to fill the machine budget. All slot counts must be
+positive. `forge work --jobs N` overrides the machine count for that process;
+remove an old `--jobs 4` from the service's `ExecStart` once to use configuration.
+A successor reads the current config and does not inherit that override.
+SIGHUP or the config watcher reloads settings before the next claim. Reducing
+capacity does not kill running work; claims wait until usage falls below both
+limits. Invalid config edits leave the last valid settings in force.
+
+Tasks and jobs consume the same budget. A project at its cap is skipped so
+another project can run. Claims and capacity accounting share a database
+transaction, including during the predecessor/successor handoff (task 938).
+This changes capacity only, preserving existing task ordering.
+
+An optional positive `max_load` pauses claims while the one-minute load
+average divided by online CPU count is above the limit. This is load average,
+not CPU utilization. Each continuous hold logs once. A missing load sample
+allows claims; omitting the setting disables load awareness.
+
+Build tuning is separate from slots: every configured worktree launch,
+including agents, setup, verification checks, and job operations, receives
+its merged environment through the shared agent command environment. The
+repository can declare the same `[sandbox.env]` table in `forge.toml` (or
+`.forge/forge.toml`); repository values win for their own keys. Task settings
+come from the trusted base, not edits in the attempt, and active attempts
+keep their original operator configuration when the worker reloads.
+Only `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS`, `MAKEFLAGS`, `NODE_OPTIONS`,
+`GOMAXPROCS`, and `npm_config_jobs` are accepted. Unknown keys are rejected;
+this table is for build tuning, not credentials or secrets. Values are passed
+literally, without shell expansion.
+
+`forge doctor` adds machine usage, per-project usage/caps, merged build tuning,
+and load-cap status to its worker row. Slots limit simultaneous attempts;
+build tuning limits parallelism inside each attempt. For example, two Forge
+slots with `CARGO_BUILD_JOBS = "2"` can coexist with game work without adding
+another unrestricted workspace compile.
+
 ## When the event log cannot be written
 
 `FORGE_HOME/events.jsonl` (the record `forge job show` and every client's
@@ -62,8 +121,8 @@ who holds the pointer: **the store and every running binary agree.**
   compares `bin/staged` with the release it runs (`FORGE_RELEASE`, else the
   `releases/<id>` its executable sits in, else `current`) on every pass,
   including while every slot is busy. A different, runnable release with
-  no live worker starts `releases/<id>/forge work` with the same
-  arguments and `FORGE_HOME`, in its own process group, and records it in
+  no live worker starts `releases/<id>/forge work` with the same poll and
+  task-count arguments and `FORGE_HOME`, but no inherited `--jobs` override, in its own process group, and records it in
   `workers` (pid, version, registration order, and the registering
   process's start identity, so a pid the table still calls live because
   nothing closed the row is not mistaken for a worker that pid was
@@ -153,8 +212,8 @@ who holds the pointer: **the store and every running binary agree.**
   exceeds M. It FAILs when `staged` names a release that is not `current`
   and no worker runs it or is starting on it: remove `staged`, or start
   the worker so a successor takes it over.
-- **Slots are one budget per machine.** Each worker records its `--jobs`
-  in the `workers` table, and a successor claims `jobs` less the attempts
+- **Slots are one budget per machine.** Each worker records its effective slot count
+  in the `workers` table, and a successor claims that count less the attempts
   the other live workers still run, re-read every pass, so a draining
   predecessor's attempts are not added to the successor's full count.
 
