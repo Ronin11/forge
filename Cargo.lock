@@ -737,6 +737,7 @@ dependencies = [
  "forge-test",
  "jsonschema",
  "libc",
+ "percent-encoding",
  "reqwest",
  "rusqlite",
  "serde",

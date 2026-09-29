@@ -1109,7 +1109,13 @@ pub async fn remote_url(repo: &Path, remote: &str) -> Option<String> {
 /// never the process cwd or the integrator's separate Git directory.
 pub fn local_remote_path(repo: &Path, url: &str) -> Option<PathBuf> {
     let path = if let Some(path) = url.strip_prefix("file://") {
-        PathBuf::from(path)
+        // Git's file transport ignores the authority (including localhost)
+        // and percent-decodes the path. It does not contact that host.
+        use std::os::unix::ffi::OsStringExt;
+        let path = &path[path.find('/')?..];
+        PathBuf::from(std::ffi::OsString::from_vec(
+            percent_encoding::percent_decode_str(path).collect(),
+        ))
     } else {
         // A colon before any slash denotes a URL scheme or scp-style remote.
         if url.split('/').next()?.contains(':') || url.is_empty() {
@@ -1132,7 +1138,10 @@ pub async fn is_bare(dir: &Path) -> bool {
 /// The bare repository a remote URL names on this machine, if it is one:
 /// a network URL (or a missing path) is somebody else's to hook.
 pub async fn local_bare(url: &str) -> Option<PathBuf> {
-    let path = PathBuf::from(url.strip_prefix("file://").unwrap_or(url));
+    if !url.starts_with("file://") && !Path::new(url).is_absolute() {
+        return None;
+    }
+    let path = local_remote_path(Path::new("/"), url)?;
     if !path.is_absolute() || !path.is_dir() {
         return None;
     }

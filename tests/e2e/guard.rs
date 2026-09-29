@@ -138,25 +138,32 @@ fn deleting_the_base_branch_is_rejected_too() {
 
 #[test]
 fn forge_project_guard_installs_the_hook_and_the_integrators_landing_succeeds() {
-    assert_guard_landing(false, None);
+    assert_guard_landing("absolute", None);
 }
 
 #[test]
 fn a_relative_origin_is_guarded_and_reported_and_accepts_integrator_landings() {
-    assert_guard_landing(true, None);
+    assert_guard_landing("relative", None);
 }
 
 #[test]
 fn a_relative_hooks_path_guard_is_reported_and_accepts_integrator_landings() {
-    assert_guard_landing(false, Some(false));
+    assert_guard_landing("absolute", Some(false));
 }
 
 #[test]
 fn an_absolute_hooks_path_guard_is_reported_and_accepts_integrator_landings() {
-    assert_guard_landing(false, Some(true));
+    assert_guard_landing("absolute", Some(true));
 }
 
-fn assert_guard_landing(relative: bool, absolute_hooks: Option<bool>) {
+#[test]
+fn file_url_origins_are_guarded_and_accept_integrator_landings() {
+    for authority in ["", "localhost", "otherhost"] {
+        assert_guard_landing(authority, None);
+    }
+}
+
+fn assert_guard_landing(origin: &str, absolute_hooks: Option<bool>) {
     let e = Env::new();
     let hooks = if let Some(absolute) = absolute_hooks {
         let path = e.origin.join("custom hooks");
@@ -173,9 +180,22 @@ fn assert_guard_landing(relative: bool, absolute_hooks: Option<bool>) {
     } else {
         e.origin.join("hooks")
     };
-    if relative {
-        git(&e.repo, &["remote", "set-url", "origin", "../origin.git"]);
-    }
+    let url = match origin {
+        "absolute" => e.origin.display().to_string(),
+        "relative" => "../origin.git".to_string(),
+        authority => {
+            // Git must decode this path, including spaces and a literal percent.
+            let alias = e.origin.with_file_name("origin with % space.git");
+            std::os::unix::fs::symlink(&e.origin, &alias).unwrap();
+            let path = alias
+                .to_str()
+                .unwrap()
+                .replace('%', "%25")
+                .replace(' ', "%20");
+            format!("file://{authority}{path}")
+        }
+    };
+    git(&e.repo, &["remote", "set-url", "origin", &url]);
     git(&e.repo, &["push", "-q", "origin", "main"]);
     let o = e.forge(
         "ok.sh",
