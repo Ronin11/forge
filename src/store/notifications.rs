@@ -38,6 +38,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_answered_job_question_counts_without_creating_a_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("db")).unwrap();
+        let mut question = Task {
+            task: "job question".into(),
+            state: TaskState::Blocked,
+            ..Default::default()
+        };
+        question.id = s.insert_task(&question).unwrap();
+        s.update_task(&question).unwrap();
+        let start = crate::unix_now();
+        s.answer_blocked_question(
+            InsertDecisionBy {
+                task_id: question.id,
+                repo: "",
+                question: "resend the report?",
+                answer: "skip this report",
+                answered_by: "operator",
+                citations: "",
+                answered_for: None,
+            },
+            "skip this report",
+        )
+        .unwrap();
+        assert_eq!(
+            s.task(question.id).unwrap().unwrap().state,
+            TaskState::Succeeded
+        );
+        assert!(s.live_descendants(question.id).unwrap().is_empty());
+        assert_eq!(
+            s.notification_digest(start, crate::unix_now() + 1).unwrap(),
+            "yesterday: 0 demotions followed up, 0 failures retried, 1 questions answered, 0 blocks superseded"
+        );
+    }
+
+    #[test]
     fn digest_counts_completed_actions_once_in_the_previous_day() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(&dir.path().join("db")).unwrap();

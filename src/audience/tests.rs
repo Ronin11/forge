@@ -64,6 +64,28 @@ fn a_demotion_is_handled_only_after_its_followup_is_filed() {
 }
 
 #[test]
+fn an_ended_demotion_followup_does_not_reopen_the_original_notification() {
+    let (_dir, s) = fixture();
+    let original = task(&s, TaskState::Blocked, None);
+    let mut followup = task(&s, TaskState::Queued, Some(original.id));
+    decision(&s, &original, "demotion-as-task", Some(followup.id));
+
+    for state in [TaskState::Succeeded, TaskState::Failed, TaskState::Blocked] {
+        followup.state = state;
+        s.update_task(&followup).unwrap();
+        assert_eq!(classify(&s, &original).unwrap(), "none");
+        assert_eq!(
+            classify(&s, &followup).unwrap(),
+            if state == TaskState::Succeeded {
+                "none"
+            } else {
+                "person"
+            }
+        );
+    }
+}
+
+#[test]
 fn failures_with_retries_or_refiles_are_handled_and_other_failures_ask() {
     let (_dir, s) = fixture();
     let t = task(&s, TaskState::Failed, None);
