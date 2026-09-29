@@ -176,11 +176,6 @@ async fn execute(f: &Forge, session: i64, summary: &str, call: &ToolCall) -> Res
         "answer_question" => {
             let id = int(a, "task")?;
             let text = opt_str(a, "answer").context("no answer")?;
-            let old = f.store.task(id)?.ok_or_else(|| anyhow!("no task {id}"))?;
-            if old.state == TaskState::Blocked && old.proposal_json.is_some() {
-                crate::concierge::answer_proposal(f, id, text, "operator").await?;
-                return Ok(format!("answered task {id}'s proposal"));
-            }
             let (_, n) = queue::answer(f, id, text, "operator", &cite, None).await?;
             Ok(if n.id == id {
                 format!("answered task {id}: {}", n.reason)

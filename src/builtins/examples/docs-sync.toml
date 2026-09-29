@@ -1,0 +1,16 @@
+# Suggest documentation updates after a task lands.
+# Cost: one bounded directive per successful task; no repository writes.
+# Change first: tailor name-docs-to-update to your documentation layout.
+name = "docs-sync"
+kind = "run"
+description = "Name documentation updates needed after a successful landing"
+steps = [
+  { action = "name-docs-to-update", role = "summarise", judgment = "A script cannot decide which documentation the landed change makes stale" },
+]
+
+[trigger]
+on = "event"
+type = "task_done"
+
+[skip_if]
+not_ok = ["sh", "-c", 'test "$FORGE_INPUT_STATE" != "succeeded"']

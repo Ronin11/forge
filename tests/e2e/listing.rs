@@ -271,6 +271,135 @@ fn a_portal_token_answers_only_its_own_projects_blocked_question() {
     assert!(task_text.contains("alice's answer"), "{task_text}");
 }
 
+fn create_portal_proposals(e: &Env) -> (Vec<String>, Vec<i64>) {
+    let repo = e.repo.to_str().unwrap();
+    let mut projects = Vec::new();
+    let mut ids = Vec::new();
+    for project in ["projA", "projB"] {
+        assert!(
+            e.forge(
+                "ok.sh",
+                &["project", "new", project, "--purpose", "p", "--repo", repo]
+            )
+            .status
+            .success()
+        );
+        let minted = e.forge("ok.sh", &["project", "portal", project]);
+        assert!(minted.status.success());
+        let url = String::from_utf8(minted.stdout).unwrap();
+        let token = url.trim().strip_prefix("/p/").unwrap();
+        let resolved = e.forge("ok.sh", &["project", "resolve-token", token, "--json"]);
+        assert!(resolved.status.success());
+        let resolved: serde_json::Value = serde_json::from_slice(&resolved.stdout).unwrap();
+        assert_eq!(resolved["project"], project);
+        projects.push(resolved["project"].as_str().unwrap().to_string());
+        assert!(
+            e.forge(
+                "ok.sh",
+                &["add", repo, "Automate quotes", "--project", project]
+            )
+            .status
+            .success()
+        );
+        let id: i64 = e
+            .db()
+            .query_row("SELECT MAX(id) FROM tasks", [], |r| r.get(0))
+            .unwrap();
+        // A concierge proposal is a blocked placeholder without an agent attempt.
+        let proposal = serde_json::json!({"task_ids": [id], "repetition": "Repeated quotes", "outcome": "Automate quotes"});
+        e.db().execute("UPDATE tasks SET state='blocked', reason='needs input: Automate quotes?', question_to='customer', proposal_json=?1 WHERE id=?2", rusqlite::params![proposal.to_string(), id]).unwrap();
+        ids.push(id);
+    }
+    (projects, ids)
+}
+
+#[test]
+fn portal_tokens_scope_proposal_answers_before_any_write() {
+    let e = Env::new();
+    let (projects, ids) = create_portal_proposals(&e);
+    for (caller, target) in [(0, 1), (1, 0)] {
+        let before = e.task(ids[target]);
+        let denied = e.forge(
+            "ok.sh",
+            &[
+                "answer",
+                &ids[target].to_string(),
+                "yes",
+                "--by",
+                "customer",
+                "--project",
+                &projects[caller],
+            ],
+        );
+        assert!(!denied.status.success());
+        let err = String::from_utf8_lossy(&denied.stderr);
+        assert!(
+            err.contains(&projects[target]) && err.contains(&projects[caller]),
+            "{err}"
+        );
+        assert_eq!(e.task(ids[target]), before);
+    }
+    // Matching project still cannot answer another recipient's or a bare question.
+    for recipient in [Some("alice"), None] {
+        e.db()
+            .execute(
+                "UPDATE tasks SET question_to=?1 WHERE id=?2",
+                rusqlite::params![recipient, ids[1]],
+            )
+            .unwrap();
+        let denied = e.forge(
+            "ok.sh",
+            &[
+                "answer",
+                &ids[1].to_string(),
+                "yes",
+                "--by",
+                "customer",
+                "--project",
+                &projects[1],
+            ],
+        );
+        assert!(!denied.status.success());
+        assert!(String::from_utf8_lossy(&denied.stderr).contains("addressed to"));
+        assert_eq!(e.task(ids[1]).0, "blocked");
+    }
+    for table in ["decisions", "initiatives"] {
+        let count: i64 = e
+            .db()
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "refused answers must not write {table}");
+    }
+    e.db()
+        .execute(
+            "UPDATE tasks SET question_to='customer' WHERE id=?1",
+            [ids[1]],
+        )
+        .unwrap();
+    for i in 0..2 {
+        let accepted = e.forge(
+            "ok.sh",
+            &[
+                "answer",
+                &ids[i].to_string(),
+                "yes",
+                "--by",
+                "customer",
+                "--project",
+                &projects[i],
+            ],
+        );
+        assert!(
+            accepted.status.success(),
+            "{}",
+            String::from_utf8_lossy(&accepted.stderr)
+        );
+        assert_eq!(e.task(ids[i]).0, "succeeded");
+        let project: String = e.db().query_row("SELECT i.project FROM initiatives i JOIN tasks t ON t.proposal_initiative=i.id WHERE t.id=?1", [ids[i]], |r| r.get(0)).unwrap();
+        assert_eq!(project, projects[i]);
+    }
+}
+
 #[test]
 fn forge_task_set_changes_a_queued_tasks_limits_and_refuses_a_running_one() {
     let e = Env::new();

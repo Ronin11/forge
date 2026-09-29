@@ -212,8 +212,8 @@ async fn run_codex_phase(args: RunCodexPhase<'_>) -> Result<(Option<i32>, bool, 
     .await
 }
 
-async fn codex_environment(l: &Launch<'_>) -> Result<Vec<(String, String)>> {
-    let mut extra_env = crate::git::identity(&l.worktree.join(".git")).await;
+fn codex_environment(l: &Launch<'_>) -> Result<Vec<(String, String)>> {
+    let mut extra_env = l.identity.clone();
     extra_env.extend(inputs::provider_env(l.provider));
     extra_env.push((
         "FORGE_CODEX_CONFIG".into(),
@@ -247,7 +247,7 @@ pub(super) async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
         .join(format!("forge-{}-schema.json", l.step));
     inputs::write_codex_schema(&schema_path, l.schema)?;
 
-    let extra_env = codex_environment(&l).await?;
+    let extra_env = codex_environment(&l)?;
 
     let mut log =
         File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
@@ -628,6 +628,7 @@ mod tests {
         let out = run_codex(Launch {
             task_id: 1,
             worktree: dir,
+            identity: crate::git::identity(dir).await,
             prompt: "do the task",
             system: "",
             model: "fake-model",

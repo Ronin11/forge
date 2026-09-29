@@ -280,6 +280,7 @@ mod tests {
             ..Provider::default()
         };
         let out = run_codex(Launch {
+            identity: Vec::new(),
             task_id: 1,
             worktree: repo.path(),
             prompt: &prompt,
