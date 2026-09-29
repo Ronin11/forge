@@ -60,6 +60,8 @@ file is added or removed here without a matching change on disk.
 
 - **SYSTEM.md** — a generated map of the kernel's own modules and how they
   call each other.
+- **audits/** — landed-work audits: each landed task checked against its own
+  text, with a verdict and file:line evidence.
 
 ## History
 
