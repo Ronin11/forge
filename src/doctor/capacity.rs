@@ -105,3 +105,43 @@ fn active_environments(paths: &Paths, store: &Store) -> anyhow::Result<Vec<Strin
         })
         .collect())
 }
+
+/// Disk health and sizes supplement the retained-worktree lifecycle row.
+pub(super) fn disk(paths: &Paths, store: &Store) -> Vec<Check> {
+    let mut rows = super::check_worktrees(store);
+    let sizes = crate::disk::worktrees(&paths.worktrees);
+    for row in &mut rows {
+        row.detail.push_str(&format!("; {sizes}"));
+    }
+    rows.push(check_disk(paths));
+    rows
+}
+
+fn check_disk(paths: &Paths) -> Check {
+    let result = (|| -> anyhow::Result<_> {
+        let settings = config::load_home(&paths.home)?.worker;
+        let free = crate::disk::free_bytes(&paths.home)?;
+        Ok((free, settings.min_free_gb))
+    })();
+    match result {
+        Ok((free, min)) => check(
+            "disk",
+            if crate::disk::holds(free, min) {
+                Status::Fail
+            } else {
+                Status::Ok
+            },
+            format!(
+                "{}: {free} bytes free; minimum {min} GiB",
+                paths.home.display()
+            ),
+            "forge gc --caches",
+        ),
+        Err(e) => check(
+            "disk",
+            Status::Fail,
+            format!("{e:#}"),
+            "check FORGE_HOME filesystem",
+        ),
+    }
+}
