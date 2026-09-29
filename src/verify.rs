@@ -1846,7 +1846,12 @@ mod tests {
             scratch: None,
             plan_rows: true,
         };
-        let v = verify_directive(Contract::Code, &s, &wrong_changes_outcome())
+        let outcome = Outcome {
+            exit_code: Some(0),
+            got_result: true,
+            ..wrong_changes_outcome()
+        };
+        let v = verify_directive(Contract::Code, &s, &outcome)
             .await
             .unwrap();
         let row = v
