@@ -23,6 +23,7 @@ macro_rules! out {
     }};
 }
 
+mod audit_cmd;
 mod chat;
 mod demo;
 mod deploy;
@@ -504,6 +505,21 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Every task lineage with activity since the time (default 24h): a
+    /// lineage is a root (no `retry_of`) and every task that retries it,
+    /// directly or through other retries, down to its tip. Each outcome
+    /// (landed, in progress, withdrawn, unverified, question, dangling)
+    /// gets its task count and summed attempt cost; dangling tips (failed,
+    /// or blocked with no open question for a person) are named with
+    /// their reasons.
+    Audit {
+        /// How far back to look, as a duration (`24h`, `7d`, `90m`, ...); default 24h
+        #[arg(long)]
+        since: Option<String>,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
     /// Measure a provider against what the record already knows (no routing
     /// changes; see docs/EXECUTION.md, "Measuring the judgment tier")
     Eval {
@@ -755,6 +771,7 @@ pub async fn main() -> Result<()> {
         | Cmd::Economist { .. }
         | Cmd::Experiment { .. } => jobs::dispatch(cmd).await,
         Cmd::Chat(..) => chat::dispatch(cmd).await,
+        Cmd::Audit { .. } => audit_cmd::dispatch(cmd).await,
         Cmd::Workflows { .. } | Cmd::Providers { .. } => workflows::dispatch(cmd).await,
         Cmd::Plugin { .. } | Cmd::Deploy(..) | Cmd::Provision(..) => deploy::dispatch(cmd).await,
         Cmd::Gc { .. }

@@ -346,17 +346,6 @@ pub struct TaskUpdate {
     pub priority: Option<i64>,
 }
 
-/// One task in a lineage: parent is what it retries.
-#[derive(Debug, Clone)]
-pub struct LineageRow {
-    pub id: i64,
-    pub parent: Option<i64>,
-    pub state: String,
-    pub reason: String,
-    pub workflow: String,
-    pub cost: f64,
-}
-
 /// The shared decision behind `release_dependents` and
 /// `release_dependents_of`: for each `(id, after_json)` candidate — always
 /// a task currently `blocked` with a reason starting "waits on task" —
@@ -918,38 +907,6 @@ impl Store {
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
         release_or_reblock(&c, candidates)
-    }
-
-    /// The first task in `id`'s chain of retries: itself when it retries nothing.
-    pub fn root_of(&self, id: i64) -> Result<i64> {
-        // Retries always point at an already-existing task, so ids only
-        // shrink walking up the chain: the root is the smallest one.
-        Ok(lineage_ids(&self.lock(), id)?.into_iter().min().unwrap())
-    }
-
-    /// Every task in `id`'s lineage, root first: the root and everything
-    /// that retries it, directly or through other retries.
-    pub fn lineage(&self, id: i64) -> Result<Vec<LineageRow>> {
-        let root = self.root_of(id)?;
-        let c = self.lock();
-        let mut stmt = c.prepare(
-            "WITH RECURSIVE down(id) AS (
-               SELECT ?1 UNION ALL SELECT t.id FROM down JOIN tasks t ON t.retry_of = down.id)
-             SELECT t.id, t.retry_of, t.state, t.reason, t.workflow,
-                    COALESCE((SELECT SUM(cost_usd) FROM attempts a WHERE a.task_id = t.id), 0) AS cost
-             FROM down JOIN tasks t ON t.id = down.id ORDER BY t.id",
-        )?;
-        let rows = stmt.query_map(params![root], |r| {
-            Ok(LineageRow {
-                id: r.get("id")?,
-                parent: r.get("retry_of")?,
-                state: r.get("state")?,
-                reason: r.get("reason")?,
-                workflow: r.get("workflow")?,
-                cost: r.get("cost")?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Every task that retries `id` directly.

@@ -24,6 +24,7 @@ mod initiative_holds;
 mod job_resolutions;
 mod job_runs;
 mod jobs;
+mod lineage;
 mod messages;
 mod migrations;
 mod notifications;
@@ -50,6 +51,7 @@ pub use deploys::{Assessment, Deploy, DeployTarget, FinishDeploy};
 pub use factors::{FactorLevelStat, ROLES};
 pub use job_resolutions::JobResolution;
 pub use jobs::{Job, JobEffect, JobStat, JobState, JobStep, PerDayRefused};
+pub use lineage::LineageRow;
 pub use messages::{Direction, InsertMessage, Message, MessageFilter};
 pub use owners::{Caller, Owner, start_of};
 pub use priority::{PRIORITY_DEFAULT, PRIORITY_MAX, PRIORITY_MIN, parse_priority};
@@ -67,8 +69,8 @@ pub use stats::{
     TaskTtl, WorkflowStat,
 };
 pub use tasks::{
-    LineageRow, REQUEUE_ABORT, REQUEUE_ORPHAN, REQUEUE_REASONS, RoleRouting, Routed, Task,
-    TaskState, TaskUpdate, Trust,
+    REQUEUE_ABORT, REQUEUE_ORPHAN, REQUEUE_REASONS, RoleRouting, Routed, Task, TaskState,
+    TaskUpdate, Trust,
 };
 pub use workers::WorkerRow;
 

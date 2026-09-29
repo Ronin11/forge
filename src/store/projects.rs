@@ -205,6 +205,15 @@ fn initiative_from_row(r: &Row) -> rusqlite::Result<Initiative> {
     })
 }
 
+/// Whether `e` is a SQLite UNIQUE constraint violation, the shape
+/// `create_project` raises when two processes race to seed the same
+/// repository's default project.
+fn unique_name_violation(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<rusqlite::Error>().is_some_and(|e| {
+        e.sqlite_error_code() == Some(rusqlite::ffi::ErrorCode::ConstraintViolation)
+    })
+}
+
 impl Store {
     /// Register a new project. Fails if the name is already taken.
     pub fn create_project(&self, p: &Project) -> Result<()> {
@@ -439,22 +448,38 @@ impl Store {
         if let Some(name) = self.default_project_for_repo(repo)? {
             return Ok(Some(name));
         }
-        let ambiguous: i64 = self.lock().retry_query_row(
+        let seen: i64 = self.lock().retry_query_row(
             "SELECT COUNT(*) FROM project_repos WHERE repo=?1",
             params![repo],
             |r| r.get(0),
         )?;
-        if ambiguous > 0 {
-            return Ok(None);
+        if seen > 0 {
+            // Another process registered this repo between our check
+            // above and here. That registration might be the single one
+            // a racing `ensure_default_project` call just made (not
+            // ambiguous, just late to see it) or a second, genuinely
+            // ambiguous one; `default_project_for_repo` already tells
+            // the two apart, so defer to it rather than treating any
+            // row appearing here as ambiguity.
+            return self.default_project_for_repo(repo);
         }
         let name = project_name_for_repo(repo);
-        if self.project(&name)?.is_none() {
-            self.create_project(&Project {
+        if self.project(&name)?.is_none()
+            && let Err(e) = self.create_project(&Project {
                 name: name.clone(),
                 purpose: format!("Repository {repo}."),
                 created_at: crate::unix_now(),
                 ..Default::default()
-            })?;
+            })
+        {
+            // Another process may have raced us to create the same
+            // default project name between the check above and this
+            // insert (two concurrent `forge adopt`/`forge add` calls for
+            // the same repository, say); that is fine as long as the
+            // project exists now, not a real failure.
+            if !unique_name_violation(&e) || self.project(&name)?.is_none() {
+                return Err(e);
+            }
         }
         self.register_repo(&name, repo, None)?;
         Ok(Some(name))
@@ -730,6 +755,39 @@ mod tests {
             s.ensure_default_project(&repo).unwrap(),
             Some("myrepo".to_string())
         );
+        assert_eq!(s.list_projects().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn two_processes_racing_ensure_default_project_for_the_same_repo_both_succeed() {
+        // Two concurrent `forge adopt`/`forge add` calls for a repo
+        // neither has seen before (separate processes, so separate
+        // connections) can both find no project yet and both try to
+        // create the same default-named project; the later one must not
+        // fail just because the earlier one won the insert.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        Store::open(&path).unwrap();
+        let repo = dir.path().join("raced").display().to_string();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let path = path.clone();
+                let repo = repo.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let s = Store::open(&path).unwrap();
+                    barrier.wait();
+                    s.ensure_default_project(&repo)
+                })
+            })
+            .collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap().unwrap(), Some("raced".to_string()));
+        }
+
+        let s = Store::open(&path).unwrap();
         assert_eq!(s.list_projects().unwrap().len(), 1);
     }
 
