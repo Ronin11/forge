@@ -26,8 +26,7 @@ pub(super) async fn resolve(
     }
     if crate::git::count_commits(s.worktree, s.start_sha).await? == 0 {
         let reason = match failure {
-            Some(Failure::StructuredOutput) => Failure::StructuredOutput.reason(),
-            Some(f) => format!("{}; envelope missing or unparseable", f.reason()),
+            Some(f) => f.reason(),
             None => "envelope missing or unparseable; no commits in this attempt".into(),
         };
         return Ok((Some(reason), false));
