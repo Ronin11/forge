@@ -680,6 +680,9 @@ fn overlay_note(dirty: &[String], namespace: &[String]) -> String {
 /// again, so its own commit is `before` for that second call and must
 /// still pass this row.
 async fn candidate_unchanged(wt: &Path, before: &str) -> Result<CheckResult> {
+    // The checks just ran sandboxed in `wt` and could have written
+    // anything into `.git`; strip it before the host git calls below.
+    crate::git::restore_metadata(wt)?;
     let after = crate::git::head(wt).await?;
     let dirty = crate::git::dirty_tracked_paths(wt).await?;
     let moved = after != before;
