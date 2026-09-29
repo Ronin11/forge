@@ -832,7 +832,11 @@ ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 2 CHECK (priority
     "
 ALTER TABLE tasks ADD COLUMN deploy_id INTEGER REFERENCES deploys(id);
 ",
-
+    // `forge add --supersedes`: the earlier failed or blocked task this
+    // one replaces (src/store/supersede.rs). Additive, like `retry_of`.
+    "
+ALTER TABLE tasks ADD COLUMN supersedes INTEGER;
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

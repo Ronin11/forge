@@ -356,6 +356,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   deploys.rs        deploys, deploy_targets, assessments
   descendants.rs    the live tasks below and beside a task in its retry lineage, and the `withdraw --abort` decision a worker reads
   lineage.rs        task_ids_since/roots_since: which lineage roots had activity in a window, for forge audit and doctor's dangling row
+  supersede.rs      tasks.supersedes: the newest task that superseded one, and the check that reopens a blocked task once its re-pointed `--after` is past blocking
   projects.rs       projects, project_repos, backlog, initiatives, portal_tokens
   record.rs         decisions, task_refs, plugins
   chat.rs           chat_sessions and chat_turns: every turn of Ask Forge, its tool calls and cost

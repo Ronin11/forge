@@ -672,13 +672,34 @@ fn refuse(f: &Forge, t: &mut Task, reason: &str) -> Result<Adopted> {
     })
 }
 
-/// `forge retry` of an adopted task: adopt the same branch again (its
-/// current commit, if it moved since) or the same commit, as a new task
-/// that retries it. Never an agent run.
-pub async fn retry(f: &Forge, old: &Task, by: &str) -> Result<Adopted> {
+/// The `AdoptRequest` a retry of `old` files: the same branch (its current
+/// commit, if it moved since) or the same commit, verified again. Its
+/// `allow_protected` inherits the original adoption's own flag; the
+/// operator's own `--allow-protected` on the retry (`allow_protected`,
+/// here) only ever raises it, never lowers what the original already
+/// allowed.
+pub fn retry_request(old: &Task, by: &str, allow_protected: bool) -> Result<AdoptRequest> {
     let Some(a) = &old.adoption else {
         bail!("task {} was not adopted", old.id);
     };
+    Ok(AdoptRequest {
+        repo: PathBuf::from(&old.repo),
+        rev: a.source().to_string(),
+        title: old.title.clone(),
+        no_land: !old.land,
+        project: old.project.clone(),
+        allow_protected: old.allow_protected || allow_protected,
+        by: by.to_string(),
+        retry_of: Some(old.id),
+    })
+}
+
+/// `forge retry` of an adopted task: adopt the same branch again (its
+/// current commit, if it moved since) or the same commit, as a new task
+/// that retries it. Never an agent run. `allow_protected` is the
+/// operator's own `--allow-protected` on this retry, for an original
+/// adoption that lacked it.
+pub async fn retry(f: &Forge, old: &Task, by: &str, allow_protected: bool) -> Result<Adopted> {
     if matches!(old.state, TaskState::Queued | TaskState::Running) {
         bail!(
             "task {} is {}; only a finished adoption is retried",
@@ -686,16 +707,7 @@ pub async fn retry(f: &Forge, old: &Task, by: &str) -> Result<Adopted> {
             old.state.as_str()
         );
     }
-    let req = AdoptRequest {
-        repo: PathBuf::from(&old.repo),
-        rev: a.source().to_string(),
-        title: old.title.clone(),
-        no_land: !old.land,
-        project: old.project.clone(),
-        allow_protected: old.allow_protected,
-        by: by.to_string(),
-        retry_of: Some(old.id),
-    };
+    let req = retry_request(old, by, allow_protected)?;
     adopt(f, &req).await
 }
 
@@ -723,6 +735,19 @@ pub async fn render(f: &Forge, adopted: &Adopted) -> Result<String> {
             .map(|a| a.describe())
             .unwrap_or_default()
     )];
+    if let Some(retry_of) = t.retry_of
+        && t.allow_protected
+    {
+        let old_allowed = f
+            .store
+            .task(retry_of)?
+            .is_some_and(|old| old.allow_protected);
+        lines.push(if old_allowed {
+            format!("protected carrying --allow-protected from task {retry_of}")
+        } else {
+            format!("protected --allow-protected added; task {retry_of} did not have it")
+        });
+    }
     let checks = f
         .store
         .attempts(id)?
@@ -803,5 +828,52 @@ mod tests {
         let protected = s(&["forge.toml", "tests/boundary.rs"]);
         let changed = s(&["src/physics.rs", "tests/park.rs"]);
         assert!(protected_hits(&protected, &changed, false).is_empty());
+    }
+
+    fn adopted_task(id: i64, allow_protected: bool) -> Task {
+        Task {
+            id,
+            repo: "/r".into(),
+            allow_protected,
+            adoption: Some(crate::store::Adoption {
+                branch: "hand".into(),
+                commit: "deadbeef".into(),
+                by: "op".into(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn retry_request_inherits_allow_protected_from_the_task_it_retries() {
+        let old = adopted_task(1386, true);
+        let req = retry_request(&old, "op", false).unwrap();
+        assert!(req.allow_protected);
+        assert_eq!(req.retry_of, Some(1386));
+    }
+
+    #[test]
+    fn retry_request_stays_false_when_neither_the_original_nor_the_flag_allow_it() {
+        let old = adopted_task(1, false);
+        let req = retry_request(&old, "op", false).unwrap();
+        assert!(!req.allow_protected);
+    }
+
+    #[test]
+    fn retry_request_raises_allow_protected_with_the_flag_when_the_original_lacked_it() {
+        let old = adopted_task(1, false);
+        let req = retry_request(&old, "op", true).unwrap();
+        assert!(req.allow_protected);
+    }
+
+    #[test]
+    fn retry_request_fails_a_task_that_was_never_adopted() {
+        let old = Task {
+            id: 1,
+            repo: "/r".into(),
+            adoption: None,
+            ..Default::default()
+        };
+        assert!(retry_request(&old, "op", false).is_err());
     }
 }

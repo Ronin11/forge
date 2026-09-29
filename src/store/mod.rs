@@ -37,6 +37,7 @@ mod run_cursor;
 mod schedule;
 use retry::RetryConnection;
 mod stats;
+mod supersede;
 mod tasks;
 mod webhooks;
 mod workers;
@@ -272,6 +273,7 @@ const TASK_COLUMNS: &[&str] = &[
     "origin",
     "adoption_json",
     "priority",
+    "supersedes",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -376,6 +378,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         )?,
         adoption: adoption::from_column(&r.get::<_, String>("adoption_json")?),
         priority: r.get("priority")?,
+        supersedes: r.get("supersedes")?,
     })
 }
 
@@ -439,7 +442,7 @@ impl Store {
     /// Blocked tasks: the demand signal for workflows and the questions
     /// waiting on the operator.
     /// The blocked tasks `forge requests` lists, oldest first, less any
-    /// already retried. `grep` is a case-insensitive substring of what the
+    /// already retried or superseded. `grep` is a case-insensitive substring of what the
     /// request shows: the task's reason (the question, as `view::
     /// request_kind` reads it) or, on its last attempt's envelope, the
     /// `needs_input` question, what it tried, and its options.
@@ -456,7 +459,7 @@ impl Store {
                                  AND (json_extract(a.envelope_json, '$.needs_input.question') LIKE '%' || ?2 || '%'
                                       OR json_extract(a.envelope_json, '$.needs_input.tried') LIKE '%' || ?2 || '%'
                                       OR json_extract(a.envelope_json, '$.needs_input.options') LIKE '%' || ?2 || '%')))
-               AND NOT EXISTS (SELECT 1 FROM tasks n WHERE n.retry_of = t.id) ORDER BY t.id",
+               AND NOT EXISTS (SELECT 1 FROM tasks n WHERE n.retry_of = t.id OR n.supersedes = t.id) ORDER BY t.id",
             TASK_COLUMNS.join(", ")
         ))?;
         let rows = stmt.query_map(params![repo, grep], task_from_row)?;
