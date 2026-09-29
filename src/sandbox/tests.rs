@@ -646,6 +646,32 @@ async fn check_phase_never_seeds_or_binds_agent_state() {
 
 #[test]
 fn relay_detect_strips_deleted_suffix() {
+    // Other tests change provider binary overrides to temporary executables.
+    // Detect reads those overrides, so run it with a private environment rather
+    // than racing their cleanup or changing the parent test process's state.
+    const CHILD: &str = "FORGE_TEST_RELAY_DETECT_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let home = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "sandbox::tests::relay_detect_strips_deleted_suffix",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("HOME", home.path())
+            .env("PATH", "/usr/bin:/bin")
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated detection failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        return;
+    }
     if resolve_binary("bwrap").is_err() {
         return;
     }
