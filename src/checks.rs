@@ -24,6 +24,10 @@ pub struct RunOneCapped<'a> {
     /// on the row. `None` skips the capture; nothing is written and
     /// `CheckResult::log_path` stays empty.
     pub full_log_dir: Option<&'a Path>,
+    /// The egress policy of this one command, when the caller has one of
+    /// its own (a job step's declared hosts). A backend that cannot bound
+    /// the network is refused before the command is launched.
+    pub egress: Option<&'a crate::egress::Policy>,
 }
 
 use crate::executor::Execution;
@@ -152,6 +156,7 @@ pub async fn run_one(
         env,
         cap_bytes: TAIL_BYTES,
         full_log_dir: None,
+        egress: None,
     })
     .await
 }
@@ -194,18 +199,49 @@ pub async fn run_one_capped(args: RunOneCapped<'_>) -> CheckResult {
     }
 }
 
+/// Refuse unenforceable policies before constructing a child with its secrets.
+async fn launch(args: &RunOneCapped<'_>) -> Result<tokio::process::Child, String> {
+    let RunOneCapped {
+        sandbox,
+        cwd,
+        argv,
+        env,
+        egress,
+        ..
+    } = *args;
+    if egress.is_some() && !sandbox.is_some_and(|s| s.guarantees(cwd).egress_bounded) {
+        return Err("declared secrets or egress require a network-isolating executor".into());
+    }
+    crate::agent::prepare_in(sandbox, cwd, env, crate::sandbox::Phase::Check).await;
+    let mut std_cmd = crate::agent::command_under(
+        sandbox,
+        cwd,
+        argv,
+        env,
+        egress,
+        crate::sandbox::Phase::Check,
+    );
+    // Unsandboxed checks get their own process group so a backgrounded
+    // child can be killed with them; bwrap's --new-session does the same.
+    std_cmd.process_group(0);
+    Command::from(std_cmd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())
+}
+
 /// One launch of `run_one_capped`, without the bwrap relaunch.
 async fn run_one_capped_once(args: &RunOneCapped<'_>) -> CheckResult {
     let RunOneCapped {
         level,
         name,
-        argv,
-        cwd,
-        sandbox,
         timeout,
-        env,
         cap_bytes,
         full_log_dir,
+        ..
     } = *args;
     let start = Instant::now();
     let mut r = CheckResult {
@@ -213,20 +249,7 @@ async fn run_one_capped_once(args: &RunOneCapped<'_>) -> CheckResult {
         name: name.to_string(),
         ..Default::default()
     };
-    // All repository checks, operations and landing verification share this
-    // launch path and must never prepare or mount the agent's credentials.
-    crate::agent::prepare_in(sandbox, cwd, env, crate::sandbox::Phase::Check).await;
-    let mut std_cmd =
-        crate::agent::command_in(sandbox, cwd, argv, env, crate::sandbox::Phase::Check);
-    // Unsandboxed checks get their own process group so a backgrounded
-    // child can be killed with them; bwrap's --new-session does the same.
-    std_cmd.process_group(0);
-    let child = Command::from(std_cmd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn();
+    let child = launch(args).await;
     let mut child = match child {
         Ok(c) => c,
         Err(e) => {
@@ -342,6 +365,7 @@ mod tests {
             env: &[],
             cap_bytes: TAIL_BYTES,
             full_log_dir: None,
+            egress: None,
         })
         .await;
         (r, crate::agent::launches(&counter))
@@ -484,6 +508,7 @@ mod tests {
             env: &[],
             cap_bytes,
             full_log_dir: Some(logs.path()),
+            egress: None,
         })
         .await;
         assert_eq!(r.exit, Some(1));

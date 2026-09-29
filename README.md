@@ -313,6 +313,7 @@ src/render.rs       text rendering for documents: first sentence, path-like toke
 src/report.rs       typed events; the stderr printer is one consumer
 src/executor.rs     executor contract, backend selection, and guarantees
 src/sandbox.rs      bubblewrap
+src/job/secrets.rs      [secrets] names, a run step's declared secrets and egress hosts, and the redaction of their values
 src/login.rs        the agent login: a refreshed token written back over the host file, an empty one never seeded
 src/login_hold.rs   a provider whose agent login was refused, held until a probe answers; the worker's ten-minute probe and doctor's
 src/successor.rs     the successor worker: a staged release starts forge work on it, the old worker drains

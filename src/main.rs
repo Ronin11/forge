@@ -52,6 +52,8 @@ mod reload;
 mod render;
 mod report;
 mod sandbox;
+#[path = "job/secrets.rs"]
+mod secrets;
 mod store;
 mod successor;
 mod supervisor;

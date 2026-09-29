@@ -52,6 +52,10 @@ struct HomeRaw {
     /// the store: today just a project's secrets (see `ProjectHomeRaw`).
     #[serde(default)]
     projects: BTreeMap<String, ProjectHomeRaw>,
+    /// `[secrets]`: name to environment variable the worker already has
+    /// (see `crate::secrets`), never a value.
+    #[serde(default)]
+    secrets: BTreeMap<String, crate::secrets::Entry>,
     /// `[environment]`: what the kernel grants a repository automatically
     /// when an attempt fails on a missing tool (see `environment`).
     #[serde(default)]
@@ -167,6 +171,8 @@ pub struct HomeConfig {
     /// A project's secrets, by project name (see `ProjectHomeRaw`); a
     /// project the operator declared none for is absent, not empty.
     pub project_secrets: BTreeMap<String, BTreeMap<String, String>>,
+    /// `[secrets]`: name to environment variable (`crate::secrets`).
+    pub secrets: BTreeMap<String, String>,
     /// `[environment]`: the hosts and host cache paths granted automatically.
     pub environment: crate::environment::Policy,
 }
@@ -463,6 +469,13 @@ auto_land = false
 #
 # [projects.equitizr.secrets]
 # SIGNAL_TOKEN = \"...\"
+
+# A named secret a run workflow's operation step may declare, resolved to an
+# environment variable the worker process already has (never a value here).
+# Granted only to operator-trust jobs, and only to the step that names it.
+#
+# [secrets]
+# cloudflare_token = { env = \"CLOUDFLARE_API_TOKEN\" }
 ";
 
 /// Write the operator's config the first time `home` is used, so there is a
@@ -564,6 +577,7 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
             .into_iter()
             .map(|(name, p)| (name, p.secrets))
             .collect(),
+        secrets: crate::secrets::build(raw.secrets)?,
         environment: crate::environment::Policy::build(
             raw.environment.hosts,
             raw.environment
