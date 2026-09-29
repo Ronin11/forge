@@ -817,6 +817,7 @@ async fn l1_l2(
             checks.push(r);
         }
     }
+    crate::git::clear_namespace(s.worktree, &s.cfg.namespace).await?;
     remove_overlay(&placed, &s.cfg.namespace, s.worktree);
     let candidate_row = candidate_unchanged(s.worktree, &candidate_before).await?;
     emit_check(s.report, s.task_id, &candidate_row);
@@ -909,12 +910,12 @@ async fn try_known_fix(s: &Subject<'_>, checks: &[CheckResult]) -> Result<Option
 /// `changed` is the branch's whole change, for the rules that guard the
 /// product; `changed_now` is this step's, for the directive's own write
 /// scope: a scoped step after an unscoped one is judged on what it did.
-fn scope_rows(
+async fn scope_rows(
     s: &Subject<'_>,
     changed: &[String],
     changed_now: &[String],
     dirty: &[String],
-) -> Vec<CheckResult> {
+) -> Result<Vec<CheckResult>> {
     let mut rows = Vec::new();
     if !s.cfg.protected.is_empty() && !s.allow_protected {
         let hit: Vec<&str> = changed
@@ -950,7 +951,8 @@ fn scope_rows(
         ));
     }
     if !s.cfg.namespace.is_empty() {
-        let hit: Vec<&str> = changed
+        let touched = crate::git::committed_paths(s.worktree, s.base_sha).await?;
+        let hit: Vec<&str> = touched
             .iter()
             .chain(dirty.iter())
             .map(String::as_str)
@@ -959,10 +961,10 @@ fn scope_rows(
         rows.push(l0(
             Rule::NamespaceUntouched,
             hit.is_empty(),
-            format!("files created under the verification namespace: {}. That namespace is reserved for the tests that judge this work.", hit.join(", ")),
+            format!("commits or working tree touch the verification namespace: {}. That namespace is reserved for the tests that judge this work.", hit.join(", ")),
         ));
     }
-    rows
+    Ok(rows)
 }
 
 /// The verdict on what an operation changed. There is no agent and no
@@ -992,7 +994,8 @@ pub async fn verify_operation(s: Subject<'_>) -> Result<Verdict> {
     ));
     v.checks
         .push(no_stray_files(s.worktree, s.start_sha).await?);
-    v.checks.extend(scope_rows(&s, changed, changed, dirty));
+    v.checks
+        .extend(scope_rows(&s, changed, changed, dirty).await?);
     emit_rows(s.report, s.task_id, &v.checks);
     if v.checks.iter().all(|c| c.ok) {
         l1_l2(&s, None, &mut v.checks).await?;
@@ -1037,7 +1040,8 @@ pub async fn verify_integration(s: &Subject<'_>) -> Result<Verdict> {
         !touched,
         format!("the merged tree modifies {}", s.cfg.config_path),
     ));
-    v.checks.extend(scope_rows(s, changed, changed, dirty));
+    v.checks
+        .extend(scope_rows(s, changed, changed, dirty).await?);
     emit_rows(s.report, s.task_id, &v.checks);
     if v.checks.iter().all(|c| c.ok) {
         l1_l2(s, None, &mut v.checks).await?;
@@ -1089,12 +1093,8 @@ pub async fn verify_directive(
         question = common.question;
         match contract {
             Contract::Code => {
-                v.checks.extend(scope_rows(
-                    s,
-                    &facts.changed,
-                    &facts.changed_now,
-                    &facts.dirty,
-                ));
+                v.checks
+                    .extend(scope_rows(s, &facts.changed, &facts.changed_now, &facts.dirty).await?);
                 emit_rows(s.report, s.task_id, &v.checks);
                 // A question does not excuse the checks: when the tree is
                 // clean and the attempt committed (every L0 row above
@@ -1809,6 +1809,8 @@ mod tests {
         assert_eq!(v.state, AttemptState::ChecksFailed);
         assert_eq!(v.reason, "L0 failed: protected-paths");
     }
+
+    mod namespace;
 
     #[tokio::test]
     async fn l1_l2_fails_candidate_unchanged_when_a_check_commits() {

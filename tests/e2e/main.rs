@@ -38,6 +38,7 @@ mod landing_assess;
 mod landing_concurrency;
 mod landing_effects;
 mod landing_fetch;
+mod landing_overlay;
 mod landing_rewind;
 mod listing;
 mod login;
