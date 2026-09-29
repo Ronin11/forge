@@ -80,44 +80,18 @@ fn apply_priority(old: i64, p: i64, changes: &mut Vec<String>, up: &mut crate::s
     up.priority = Some(p);
 }
 
-/// Apply `edit` to task `id` in place: the task must be queued or blocked
-/// (a running attempt might still finish; a finished task is done), and
-/// every new value is held to what `enqueue` holds it to: a positive
-/// budget, non-empty text, a workflow that exists, resolves, fits the
-/// repository and is allowed at the task's trust level, dependencies that
-/// exist, will land and do not wait on this task, and checks that leave
-/// something to verify the work. The change is a decision row on the
-/// task naming each field's old and new value (text by length and
-/// content hash), retry-linked to the task, so `forge decisions` shows
-/// it beside an operator's answer. State is otherwise untouched, except
-/// that a blocked task whose `--after` now names only tasks that are
-/// queued, running or landed moves back to `queued`
-/// (`Store::reopen_blocked_if_ready`) instead of staying blocked until
-/// retried by hand. Returns the changes as recorded.
-pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String>> {
-    if edit.is_empty() {
-        bail!(
-            "nothing to set: pass --budget, --max-turns, --timeout-secs, --retries, --text, --text-file, --workflow, --after/--no-after, --check/--no-checks, --provider or --priority"
-        );
-    }
-    if let Some(b) = edit.budget
-        && (!b.is_finite() || b <= 0.0)
-    {
-        bail!("budget must be a positive finite number");
-    }
-    let Some(old) = f.store.task(id)? else {
-        bail!("no task {id}");
-    };
-    if !matches!(old.state, TaskState::Queued | TaskState::Blocked) {
-        bail!(
-            "task {id} is {}; only a queued or blocked task's spec is set (a running attempt might still finish, and a finished task is done)",
-            old.state.as_str()
-        );
-    }
-    let mut changes = Vec::new();
-    let mut up = crate::store::TaskUpdate::default();
+/// `--budget`, `--max-turns`, `--timeout-secs`, `--retries` and `--text`:
+/// none needs the repository or workflow, so they apply directly against
+/// `old`'s stored values.
+fn apply_scalars(
+    f: &Forge,
+    old: &Task,
+    edit: &TaskEdit,
+    changes: &mut Vec<String>,
+    up: &mut crate::store::TaskUpdate,
+) -> Result<()> {
     if let Some(b) = edit.budget {
-        let over = budget_edit_over_trust_cap(f, &old, b, edit.allow_over_trust_cap)?;
+        let over = budget_edit_over_trust_cap(f, old, b, edit.allow_over_trust_cap)?;
         changes.push(format!(
             "budget {} → ${b:.2}{over}",
             old.budget_usd
@@ -155,6 +129,69 @@ pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String
             .count() as i64;
         up.task = Some((text.clone(), text.chars().count() as i64, path_tokens));
     }
+    Ok(())
+}
+
+/// `--workflow`: it must exist, resolve, fit the repository and be
+/// allowed at the task's trust level, the same as at `enqueue`.
+fn apply_workflow(
+    f: &Forge,
+    old: &Task,
+    cfg: &config::Config,
+    name: &str,
+    changes: &mut Vec<String>,
+    up: &mut crate::store::TaskUpdate,
+) -> Result<()> {
+    let (wf, resolved) = workflow_fits(f, cfg, name)?;
+    let policy = match old.trust {
+        crate::store::Trust::Operator => &f.trust.operator,
+        crate::store::Trust::Contact => &f.trust.contact,
+        crate::store::Trust::Public => &f.trust.public,
+    };
+    workflow_allowed(old.trust, policy, name)?;
+    changes.push(format!("workflow {} → {name}", old.workflow));
+    up.tdd = Some(resolved.steps.iter().any(|s| s.action.name == "tests"));
+    up.workflow = Some((name.to_string(), wf.hash.clone(), wf.text.clone()));
+    Ok(())
+}
+
+/// Apply `edit` to task `id` in place: the task must be queued or blocked
+/// (a running attempt might still finish; a finished task is done), and
+/// every new value is held to what `enqueue` holds it to: a positive
+/// budget, non-empty text, a workflow that exists, resolves, fits the
+/// repository and is allowed at the task's trust level, dependencies that
+/// exist, will land and do not wait on this task, and checks that leave
+/// something to verify the work. The change is a decision row on the
+/// task naming each field's old and new value (text by length and
+/// content hash), retry-linked to the task, so `forge decisions` shows
+/// it beside an operator's answer. State is otherwise untouched, except
+/// that a blocked task whose `--after` now names only tasks that are
+/// queued, running or landed moves back to `queued`
+/// (`Store::reopen_blocked_if_ready`) instead of staying blocked until
+/// retried by hand. Returns the changes as recorded.
+pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String>> {
+    if edit.is_empty() {
+        bail!(
+            "nothing to set: pass --budget, --max-turns, --timeout-secs, --retries, --text, --text-file, --workflow, --after/--no-after, --check/--no-checks, --provider or --priority"
+        );
+    }
+    if let Some(b) = edit.budget
+        && (!b.is_finite() || b <= 0.0)
+    {
+        bail!("budget must be a positive finite number");
+    }
+    let Some(old) = f.store.task(id)? else {
+        bail!("no task {id}");
+    };
+    if !matches!(old.state, TaskState::Queued | TaskState::Blocked) {
+        bail!(
+            "task {id} is {}; only a queued or blocked task's spec is set (a running attempt might still finish, and a finished task is done)",
+            old.state.as_str()
+        );
+    }
+    let mut changes = Vec::new();
+    let mut up = crate::store::TaskUpdate::default();
+    apply_scalars(f, &old, edit, &mut changes, &mut up)?;
     if let Some(name) = &edit.provider {
         apply_provider(f, &old, name, &mut changes, &mut up)?;
     }
@@ -164,16 +201,7 @@ pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String
     let repo = PathBuf::from(&old.repo);
     let cfg = config::load_working(&repo).await?;
     if let Some(name) = &edit.workflow {
-        let (wf, resolved) = workflow_fits(f, &cfg, name)?;
-        let policy = match old.trust {
-            crate::store::Trust::Operator => &f.trust.operator,
-            crate::store::Trust::Contact => &f.trust.contact,
-            crate::store::Trust::Public => &f.trust.public,
-        };
-        workflow_allowed(old.trust, policy, name)?;
-        changes.push(format!("workflow {} → {name}", old.workflow));
-        up.tdd = Some(resolved.steps.iter().any(|s| s.action.name == "tests"));
-        up.workflow = Some((name.clone(), wf.hash.clone(), wf.text.clone()));
+        apply_workflow(f, &old, &cfg, name, &mut changes, &mut up)?;
     }
     if let Some(after) = &edit.after {
         let deps = after_fits(f, id, after).await?;

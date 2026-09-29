@@ -632,95 +632,7 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
     }
     out!("text       {}", task.text);
     for a in &doc.attempts {
-        out!();
-        out!(
-            "attempt {} [{}]  {}{}  {}  {} turns  {} tools  {:.1}s  {}  {} commit(s)  {} file(s){}",
-            a.attempt_no,
-            a.step,
-            a.state,
-            if a.reason.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", a.reason)
-            },
-            if a.timed_out {
-                "TIMED OUT".to_string()
-            } else {
-                format!(
-                    "exit {}",
-                    a.agent_exit.map_or("-".into(), |v| v.to_string())
-                )
-            },
-            a.num_turns,
-            a.tool_calls,
-            a.agent_ms as f64 / 1000.0,
-            a.cost_usd.map_or("-".into(), |c| format!("${c:.4}")),
-            a.commits,
-            a.files_changed,
-            if a.dirty { "  DIRTY" } else { "" }
-        );
-        out!("  log     {}", a.log_path);
-        out!("  agent   runner={} provider={}", a.runner, a.provider);
-        if let Ok(o) = serde_json::from_value::<audit::Outputs>(a.outputs.clone())
-            && let Some(t) = o.tools
-        {
-            out!("  ran     {}", t.line());
-        }
-        if let Ok(checks) =
-            serde_json::from_value::<Vec<crate::checks::CheckResult>>(a.verdict.clone())
-        {
-            for c in checks {
-                out!(
-                    "  {} {} {} ({:.1}s){}",
-                    if c.ok { "✓" } else { "✗" },
-                    c.level,
-                    c.name,
-                    c.ms as f64 / 1000.0,
-                    if c.failing_tests.is_empty() {
-                        String::new()
-                    } else {
-                        format!("  failing: {}", c.failing_tests.join(", "))
-                    }
-                );
-            }
-        }
-        let envelope: Option<crate::envelope::Envelope> = if a.envelope.is_null() {
-            None
-        } else {
-            serde_json::from_value(a.envelope.clone()).ok()
-        };
-        if let Some(e) = envelope {
-            out!(
-                "  reported {} change(s), {} check(s) run, {} claim(s)",
-                e.changes.len(),
-                e.checks_run.len(),
-                e.claims.len()
-            );
-            for c in &e.claims {
-                out!("    claim   {} [{}]", c.claim, c.evidence);
-            }
-            print_question(&e);
-        }
-        if a.rate_limits.five_hour.is_some() || a.rate_limits.seven_day.is_some() {
-            out!(
-                "  usage   5h {} · 7d {}",
-                a.rate_limits
-                    .five_hour
-                    .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
-                a.rate_limits
-                    .seven_day
-                    .map_or("-".into(), |u| format!("{:.0}%", u * 100.0))
-            );
-        }
-        if !a.result_text.is_empty() {
-            let first: String = a
-                .result_text
-                .lines()
-                .take(3)
-                .collect::<Vec<_>>()
-                .join(" / ");
-            out!("  result  {}", first.chars().take(200).collect::<String>());
-        }
+        print_attempt(a);
     }
     for dgn in &doc.diagnosis {
         out!();
@@ -728,4 +640,98 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
         out!("action     {}", dgn.action);
     }
     Ok(())
+}
+
+/// One attempt's block in `forge show`: its summary line, then whatever
+/// it recorded (tools run, check verdicts, the envelope it reported, rate
+/// limits, the first lines of its result text).
+fn print_attempt(a: &crate::view::TraceAttempt) {
+    out!();
+    out!(
+        "attempt {} [{}]  {}{}  {}  {} turns  {} tools  {:.1}s  {}  {} commit(s)  {} file(s){}",
+        a.attempt_no,
+        a.step,
+        a.state,
+        if a.reason.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", a.reason)
+        },
+        if a.timed_out {
+            "TIMED OUT".to_string()
+        } else {
+            format!(
+                "exit {}",
+                a.agent_exit.map_or("-".into(), |v| v.to_string())
+            )
+        },
+        a.num_turns,
+        a.tool_calls,
+        a.agent_ms as f64 / 1000.0,
+        a.cost_usd.map_or("-".into(), |c| format!("${c:.4}")),
+        a.commits,
+        a.files_changed,
+        if a.dirty { "  DIRTY" } else { "" }
+    );
+    out!("  log     {}", a.log_path);
+    out!("  agent   runner={} provider={}", a.runner, a.provider);
+    if let Ok(o) = serde_json::from_value::<audit::Outputs>(a.outputs.clone())
+        && let Some(t) = o.tools
+    {
+        out!("  ran     {}", t.line());
+    }
+    if let Ok(checks) = serde_json::from_value::<Vec<crate::checks::CheckResult>>(a.verdict.clone())
+    {
+        for c in checks {
+            out!(
+                "  {} {} {} ({:.1}s){}",
+                if c.ok { "✓" } else { "✗" },
+                c.level,
+                c.name,
+                c.ms as f64 / 1000.0,
+                if c.failing_tests.is_empty() {
+                    String::new()
+                } else {
+                    format!("  failing: {}", c.failing_tests.join(", "))
+                }
+            );
+        }
+    }
+    let envelope: Option<crate::envelope::Envelope> = if a.envelope.is_null() {
+        None
+    } else {
+        serde_json::from_value(a.envelope.clone()).ok()
+    };
+    if let Some(e) = envelope {
+        out!(
+            "  reported {} change(s), {} check(s) run, {} claim(s)",
+            e.changes.len(),
+            e.checks_run.len(),
+            e.claims.len()
+        );
+        for c in &e.claims {
+            out!("    claim   {} [{}]", c.claim, c.evidence);
+        }
+        print_question(&e);
+    }
+    if a.rate_limits.five_hour.is_some() || a.rate_limits.seven_day.is_some() {
+        out!(
+            "  usage   5h {} · 7d {}",
+            a.rate_limits
+                .five_hour
+                .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
+            a.rate_limits
+                .seven_day
+                .map_or("-".into(), |u| format!("{:.0}%", u * 100.0))
+        );
+    }
+    if !a.result_text.is_empty() {
+        let first: String = a
+            .result_text
+            .lines()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" / ");
+        out!("  result  {}", first.chars().take(200).collect::<String>());
+    }
 }
