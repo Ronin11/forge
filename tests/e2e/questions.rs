@@ -130,12 +130,27 @@ fn a_demotion_with_a_reproduction_files_a_follow_up_that_lands() {
     assert_eq!(kind, "demotion-as-task");
 
     let o = e
-        .with_role("ok.sh", "REVIEW", "reviewer-ok.sh")
+        .with_role("addfile.sh", "REVIEW", "reviewer-ok.sh")
         .args(["work", "--once"])
         .output()
         .unwrap();
     assert!(o.status.success());
     assert_eq!(e.task(2).0, "succeeded");
+    // addfile only adds extra.txt: the answer must come from the unlanded parent.
+    assert_eq!(
+        origin_file(&e, "main", "answer.txt").as_deref(),
+        Some("42\n")
+    );
+    let prompt = e.log_text(2, 1);
+    assert!(
+        prompt.contains("Predecessor task 1 branch forge/1-write-42"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("Files: answer.txt"), "{prompt}");
+    assert!(
+        prompt.contains("Commit subjects:") && prompt.contains("answer"),
+        "{prompt}"
+    );
     let (state, reason, _) = e.task(1);
     assert_eq!(state, "withdrawn");
     assert_eq!(reason, "superseded by 2");
