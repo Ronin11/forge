@@ -213,6 +213,8 @@ async fn run_one_capped_once(args: &RunOneCapped<'_>) -> CheckResult {
         name: name.to_string(),
         ..Default::default()
     };
+    // All repository checks, operations and landing verification share this
+    // launch path and must never prepare or mount the agent's credentials.
     crate::agent::prepare_in(sandbox, cwd, env, crate::sandbox::Phase::Check).await;
     let mut std_cmd =
         crate::agent::command_in(sandbox, cwd, argv, env, crate::sandbox::Phase::Check);

@@ -337,7 +337,7 @@ pub fn agent_env(phase: Phase) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The agent environment plus `extra_env`.
+/// The phase's inherited environment plus explicitly supplied `extra_env`.
 fn env_with(extra_env: &[(String, String)], phase: Phase) -> Vec<(String, String)> {
     let mut env = agent_env(phase);
     env.extend(extra_env.iter().cloned());
@@ -1020,6 +1020,42 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn check_environment_excludes_provider_variables_but_accepts_explicit_values() {
+        for key in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BASE_URL",
+            "CODEX_HOME",
+            "CODEX_API_KEY",
+            "CODEX_OTHER",
+            "COPILOT_HOME",
+            "COPILOT_GITHUB_TOKEN",
+            "COPILOT_OTHER",
+            "CLAUDE_CONFIG_DIR",
+        ] {
+            assert!(inherited_env_allowed(key, Phase::Agent), "{key}");
+            assert!(!inherited_env_allowed(key, Phase::Check), "{key}");
+        }
+        for phase in [Phase::Agent, Phase::Check] {
+            assert!(inherited_env_allowed("PATH", phase));
+            assert!(inherited_env_allowed("LC_ALL", phase));
+            assert!(!inherited_env_allowed("UNRELATED_SECRET", phase));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let argv = vec!["/usr/bin/env".into()];
+        let extra = vec![("ANTHROPIC_API_KEY".into(), "explicit-check-key".into())];
+        let output = command_in(None, dir.path(), &argv, &extra, Phase::Check)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line == "ANTHROPIC_API_KEY=explicit-check-key")
+        );
+    }
+
     #[test]
     fn strict_schema_requires_every_key_of_every_object_and_keeps_the_rest() {
         let strict = inputs::strict_schema(crate::envelope::SCHEMA).unwrap();
