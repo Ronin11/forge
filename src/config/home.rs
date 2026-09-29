@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 #[derive(Deserialize, Default)]
 struct HomeRaw {
     #[serde(default)]
+    limits: Limits,
+    #[serde(default)]
     budget: BudgetRaw,
     #[serde(default)]
     worker: crate::config::capacity::Settings,
@@ -141,6 +143,7 @@ pub struct SandboxPaths {
 }
 
 pub struct HomeConfig {
+    pub limits: Limits,
     pub worker: crate::config::capacity::Settings,
     pub build_env: BTreeMap<String, String>,
     pub budget: Budget,
@@ -511,6 +514,7 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
     let roles = build_roles(raw.roles, &providers)?;
     let explore = build_explore(raw.measure.explore, &providers)?;
     Ok(HomeConfig {
+        limits: raw.limits,
         worker,
         build_env: raw.sandbox.env,
         budget,
@@ -717,5 +721,20 @@ mod tests {
         assert_eq!(c.early_ending.edits_without_commit, 4);
         assert_eq!(c.early_ending.repeats, 3);
         assert_eq!(c.early_ending.signals_to_end, 0);
+    }
+}
+
+/// Host-side attempt log limit configured under `[limits]`.
+#[derive(Deserialize)]
+#[serde(default)]
+pub struct Limits {
+    pub log_bytes: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            log_bytes: 64 << 20,
+        }
     }
 }

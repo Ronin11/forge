@@ -8,7 +8,7 @@ pub(super) struct RunCodexPhase<'a> {
     pub(super) argv: &'a [String],
     pub(super) extra_env: &'a [(String, String)],
     pub(super) start: &'a Instant,
-    pub(super) log: &'a mut File,
+    pub(super) log: &'a mut CappedLog,
     pub(super) out: &'a mut Outcome,
     pub(super) watch: &'a mut Watch,
 }
@@ -26,7 +26,7 @@ pub(super) struct AgentRun<'a> {
     pub(super) early_ending: crate::config::EarlyEnding,
     pub(super) task_id: i64,
     pub(super) report: &'a Reporter,
-    pub(super) log: &'a mut File,
+    pub(super) log: &'a mut CappedLog,
 }
 
 /// A JSON-streaming agent phase and the parser that folds frames into its outcome.
@@ -35,7 +35,7 @@ pub(super) struct RunJsonPhase<'a> {
     pub(super) argv: &'a [String],
     pub(super) extra_env: &'a [(String, String)],
     pub(super) start: &'a Instant,
-    pub(super) log: &'a mut File,
+    pub(super) log: &'a mut CappedLog,
     pub(super) out: &'a mut Outcome,
     pub(super) watch: &'a mut Watch,
     pub(super) apply:
@@ -48,7 +48,7 @@ pub(super) struct RunCopilotPhase<'a> {
     pub(super) argv: &'a [String],
     pub(super) extra_env: &'a [(String, String)],
     pub(super) start: &'a Instant,
-    pub(super) log: &'a mut File,
+    pub(super) log: &'a mut CappedLog,
     pub(super) out: &'a mut Outcome,
     pub(super) watch: &'a mut Watch,
     pub(super) tally: &'a mut CopilotTally,
