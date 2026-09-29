@@ -923,8 +923,20 @@ mod tests {
         assert!(unit.child.is_none());
         drop(held);
 
-        assert!(unit.start_staged(&store, &paths).unwrap());
-        let started = hand.start_staged(&store, &paths).unwrap();
+        // Another test thread's fork can hold a copy of the lock's
+        // descriptor until its exec, so a tick may find it briefly held:
+        // retry the tick rather than read that as the answer.
+        let tick = |w: &mut Succession| {
+            for _ in 0..200 {
+                if w.start_staged(&store, &paths).unwrap() {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            false
+        };
+        assert!(tick(&mut unit));
+        let started = tick(&mut hand);
         assert!(hand.child.is_none(), "the second worker must not spawn");
         assert!(started, "the first one's successor supersedes it too");
 
