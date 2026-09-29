@@ -1,7 +1,7 @@
 /// Every Git constructor is inventoried. All general-purpose helpers must
 /// immediately harden their invocation, regardless of who supplies the path.
-/// Only mirror metadata inspection is exempt: its sole production caller
-/// receives bare origins from the registered project repositories (see the
+/// Only hook metadata inspection is exempt: its production callers
+/// receive bare origins from the registered project repositories (see the
 /// caller guard below). Kernel-only pushes retain their separate path guard.
 const CALL_SITES: &[&str] = &[
     // Kernel-owned.
@@ -141,7 +141,7 @@ fn caller_named_git_sites_are_hardened_or_have_a_trusted_caller() {
         }
     }
 
-    // These exceptions must keep their single caller in mirror installation.
+    // These exceptions are restricted to mirror and guard installation.
     // Scan every production source, so adding a caller requires a new audit.
     fn callers(dir: &Path, found: &mut Vec<String>) {
         for entry in std::fs::read_dir(dir).unwrap() {
@@ -181,6 +181,17 @@ fn caller_named_git_sites_are_hardened_or_have_a_trusted_caller() {
             .to_string(),
         "init.rs:git::config_set(bare, \"forge.mirror\", mirror).await?;".to_string(),
     ];
+    expected.extend([
+        "guard.rs:let hooks = git::hooks_dir(bare).await?;".to_string(),
+        "guard.rs:if git::config_get(bare, \"receive.advertisePushOptions\")".to_string(),
+        "guard.rs:git::config_set(bare, \"receive.advertisePushOptions\", \"true\").await?;".to_string(),
+        "guard.rs:if git::config_get(bare, \"forge.home\").await.as_deref() != Some(&home.display().to_string()) {".to_string(),
+        "guard.rs:git::config_set(bare, \"forge.home\", &home.display().to_string()).await?;".to_string(),
+        "guard.rs:if git::config_get(bare, \"forge.repo\").await.as_deref() != Some(repo) {".to_string(),
+        "guard.rs:git::config_set(bare, \"forge.repo\", repo).await?;".to_string(),
+        "guard.rs:if git::config_get(bare, \"forge.base-branch\").await.as_deref() != Some(base_branch) {".to_string(),
+        "guard.rs:git::config_set(bare, \"forge.base-branch\", base_branch).await?;".to_string(),
+    ]);
     expected.sort();
     assert_eq!(found, expected);
     let init = include_str!("../init.rs");
@@ -191,7 +202,7 @@ fn caller_named_git_sites_are_hardened_or_have_a_trusted_caller() {
     assert!(init.contains("for r in store.project_repos(&p.name)?"));
     assert!(init.contains("let repo = Path::new(&r.repo)"));
     assert!(init.contains("let Some(url) = git::remote_url(repo, &remote).await"));
-    assert!(init.contains("if let Some(bare) = local_bare(&url).await"));
+    assert!(init.contains("if let Some(bare) = git::local_bare(&url).await"));
 }
 
 #[tokio::test]

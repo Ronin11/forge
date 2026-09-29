@@ -182,10 +182,7 @@ pub fn bare_origin_sync(repo: &Path) -> Option<PathBuf> {
     if url.is_empty() {
         return None;
     }
-    let path = PathBuf::from(url.strip_prefix("file://").unwrap_or(&url));
-    if !path.is_absolute() || !path.is_dir() {
-        return None;
-    }
+    let path = git::local_remote_path(repo, &url)?;
     let bare = std::process::Command::new("git")
         .arg("-C")
         .arg(&path)

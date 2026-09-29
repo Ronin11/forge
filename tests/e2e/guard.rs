@@ -138,7 +138,19 @@ fn deleting_the_base_branch_is_rejected_too() {
 
 #[test]
 fn forge_project_guard_installs_the_hook_and_the_integrators_landing_succeeds() {
+    assert_guard_landing(false);
+}
+
+#[test]
+fn a_relative_origin_is_guarded_and_reported_and_accepts_integrator_landings() {
+    assert_guard_landing(true);
+}
+
+fn assert_guard_landing(relative: bool) {
     let e = Env::new();
+    if relative {
+        git(&e.repo, &["remote", "set-url", "origin", "../origin.git"]);
+    }
     git(&e.repo, &["push", "-q", "origin", "main"]);
     let o = e.forge(
         "ok.sh",
@@ -154,8 +166,13 @@ fn forge_project_guard_installs_the_hook_and_the_integrators_landing_succeeds() 
     );
     assert!(o.status.success(), "{}", text(&o));
 
+    let doc = text(&e.forge("ok.sh", &["doctor"]));
+    assert!(doc.contains("no landing guard: guarded"), "{doc}");
+
     let o = e.forge("ok.sh", &["project", "guard", "guarded"]);
     assert!(o.status.success(), "{}", text(&o));
+    let doc = text(&e.forge("ok.sh", &["doctor"]));
+    assert!(!doc.contains("no landing guard: guarded"), "{doc}");
     let hook = e.origin.join("hooks/pre-receive");
     assert_eq!(std::fs::read_to_string(&hook).unwrap(), HOOK);
     let mode = std::fs::metadata(&hook).unwrap().permissions().mode();

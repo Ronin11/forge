@@ -1094,11 +1094,27 @@ pub async fn dirty_tracked_paths(wt: &Path) -> Result<Vec<String>> {
 }
 
 pub async fn remote_url(repo: &Path, remote: &str) -> Option<String> {
-    Git::new(repo)
+    let url = Git::new(repo)
         .hardened()
         .line(&["remote", "get-url", remote])
         .await
-        .ok()
+        .ok()?;
+    Some(local_remote_path(repo, &url).map_or(url, |p| p.to_string_lossy().into_owned()))
+}
+
+/// Resolve local remote paths relative to the repository that owns the remote,
+/// never the process cwd or the integrator's separate Git directory.
+pub fn local_remote_path(repo: &Path, url: &str) -> Option<PathBuf> {
+    let path = if let Some(path) = url.strip_prefix("file://") {
+        PathBuf::from(path)
+    } else {
+        // A colon before any slash denotes a URL scheme or scp-style remote.
+        if url.split('/').next()?.contains(':') || url.is_empty() {
+            return None;
+        }
+        repo.join(url)
+    };
+    path.canonicalize().ok()
 }
 
 /// Whether `dir` is a bare repository.
@@ -1241,7 +1257,7 @@ pub async fn push_base_sha(
     args.push(url.to_string());
     args.push(format!("{sha}:refs/heads/{branch}"));
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    Git::new(&kernel).line(&refs).await?;
+    Git::new(&kernel).hardened().line(&refs).await?;
     Ok(())
 }
 
