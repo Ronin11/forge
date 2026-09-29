@@ -37,11 +37,17 @@ release="$root/releases/$sha"
 mkdir -p "$root/releases"
 
 # One self-deploy at a time: two landings finishing together must not
-# build into the same cache or flip the same pointers.
-exec 9>"$root/.deploy-self.lock"
-if ! flock -w 600 9; then
-  echo "deploy-self: another self-deploy held $root/.deploy-self.lock for ten minutes" >&2
-  exit 1
+# build into the same cache or flip the same pointers. `forge deploy`
+# already holds this same lock around the whole of this run (guard::
+# take_lock, so its own older-than-live check races no one for it) and
+# says so with FORGE_DEPLOY_LOCK_HELD=1; taking it again here, from a
+# child process, would wait on the parent that is waiting on us.
+if [ "${FORGE_DEPLOY_LOCK_HELD:-}" != 1 ]; then
+  exec 9>"$root/.deploy-self.lock"
+  if ! flock -w 600 9; then
+    echo "deploy-self: another self-deploy held $root/.deploy-self.lock for ten minutes" >&2
+    exit 1
+  fi
 fi
 
 # What this run writes, to put back on failure, and only if it is still what

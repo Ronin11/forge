@@ -444,7 +444,8 @@ only when an event says it changed. See docs/CLIENT.md for the full
 contract: every verb a client may call, every JSON document's fields,
 every event type, and which listing to re-read on which event.
 
-The worker runs as a user service: `deploy/forge-worker.service`, with
+The worker runs as a user service: `forge init` writes it
+(`init::worker_unit` is the only source, not a checked-in file), with
 a stop timeout long enough to drain a running attempt. After a rebuild,
 `systemctl --user restart forge-worker`; `forge doctor` warns when the
 running worker's binary has been rebuilt underneath it. A deploy target

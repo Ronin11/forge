@@ -1016,8 +1016,8 @@ fn deploy_self_under_a_worker_that_never_takes_over_fails_staged_but_never_live(
     );
 
     // Staged back to what current names, so no worker retries it.
-    assert_eq!(s.link("current"), "releases/old");
-    assert_eq!(s.link("staged"), "releases/old");
+    assert_eq!(s.link("current"), format!("releases/{}", s.old));
+    assert_eq!(s.link("staged"), format!("releases/{}", s.old));
 
     let rows = s.deploy_rows();
     assert_eq!(rows.len(), 1, "{rows:?}");
