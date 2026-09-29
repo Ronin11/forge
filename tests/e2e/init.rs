@@ -132,8 +132,21 @@ fn forge_init_home_overrides_the_default_resolution() {
     assert!(!e.home.exists(), "the default home must not be touched");
 }
 
+/// Answers `is-enabled` from `INIT_ENABLED` (`yes` = enabled, otherwise
+/// not), `show` from `INIT_SHOW`, and succeeds at everything else. Rejects
+/// a path argument to `is-enabled` (a `/` in `$3`) the way a real systemd
+/// does ("Invalid argument"), so a regression back to asking by unit file
+/// path fails these tests instead of hiding behind a lenient fake.
 const FAKE_SYSTEMCTL: &str = r#"#!/bin/bash
 echo "systemctl $*" >> "$INIT_CALLS_LOG"
+case "$2" in
+  is-enabled)
+    case "$3" in
+      */*) echo "Invalid argument" >&2; exit 1 ;;
+    esac
+    [ "$INIT_ENABLED" = yes ] && exit 0 || exit 1 ;;
+  show) printf '%s\n' "$INIT_SHOW" ;;
+esac
 exit 0
 "#;
 
@@ -200,7 +213,10 @@ fn forge_init_enables_units_when_a_systemd_session_is_reachable() {
     assert_eq!(
         calls,
         [
+            "systemctl --user show forge-worker.service -p MainPID -p Environment",
             "systemctl --user daemon-reload",
+            "systemctl --user is-enabled forge-worker.service",
+            "systemctl --user is-enabled forge-web.service",
             &enable,
             "loginctl enable-linger"
         ],
@@ -505,4 +521,180 @@ fn forge_init_is_the_only_source_of_the_worker_unit() {
     assert!(unit.contains("NotifyAccess=all"), "{unit}");
     assert!(unit.contains("StartLimitIntervalSec="), "{unit}");
     assert!(unit.contains("StartLimitBurst="), "{unit}");
+}
+
+/// A reachable fake session: returns the `init` command, the calls log and
+/// the unit directory. `enabled` is what the fake `is-enabled` answers;
+/// `show` is what its `show` prints.
+struct Session {
+    calls_log: std::path::PathBuf,
+    unit_dir: std::path::PathBuf,
+    run_dir: std::path::PathBuf,
+    runtime_dir: std::path::PathBuf,
+    fakebin: std::path::PathBuf,
+}
+
+impl Session {
+    fn new(e: &Env) -> Session {
+        let root = e._dir.path();
+        let s = Session {
+            calls_log: root.join("init-calls.log"),
+            unit_dir: e.xdg_config.join("systemd/user"),
+            run_dir: root.join("run"),
+            runtime_dir: root.join("runtime"),
+            fakebin: root.join("fakebin"),
+        };
+        std::fs::create_dir_all(s.run_dir.join("systemd/system")).unwrap();
+        std::fs::create_dir_all(&s.runtime_dir).unwrap();
+        std::fs::create_dir_all(&s.fakebin).unwrap();
+        write_fake(&s.fakebin.join("systemctl"), FAKE_SYSTEMCTL);
+        write_fake(&s.fakebin.join("loginctl"), FAKE_LOGINCTL);
+        s
+    }
+
+    /// `forge init` with `shell_path` after the fakes; returns stdout.
+    fn init(&self, e: &Env, enabled: &str, show: &str, shell_path: &str, extra: &[&str]) -> String {
+        let _ = std::fs::remove_file(&self.calls_log);
+        let o = e
+            .cmd("ok.sh")
+            .env("PATH", format!("{}:{shell_path}", self.fakebin.display()))
+            .env("FORGE_TEST_SYSTEMD_RUN_DIR", &self.run_dir)
+            .env("XDG_RUNTIME_DIR", &self.runtime_dir)
+            .env("INIT_CALLS_LOG", &self.calls_log)
+            .env("INIT_ENABLED", enabled)
+            .env("INIT_SHOW", show)
+            .arg("init")
+            .args(extra)
+            .output()
+            .expect("forge init");
+        let out = String::from_utf8_lossy(&o.stdout).to_string();
+        assert!(o.status.success(), "{out}");
+        out
+    }
+
+    fn calls(&self) -> Vec<String> {
+        std::fs::read_to_string(&self.calls_log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The PATH a unit's `Environment="PATH=..."` line declares, unquoted.
+    fn unit_path(&self, unit: &str) -> String {
+        let text = std::fs::read_to_string(self.unit_dir.join(unit)).unwrap();
+        let line = text
+            .lines()
+            .find(|l| l.starts_with("Environment=\"PATH="))
+            .unwrap();
+        line["Environment=\"PATH=".len()..]
+            .strip_suffix('"')
+            .unwrap()
+            .to_string()
+    }
+}
+
+#[test]
+fn forge_init_asks_systemd_and_enables_only_what_is_not_enabled() {
+    let e = Env::new();
+    let s = Session::new(&e);
+    let shell = "/usr/bin:/bin";
+    // The first run had no session: files exist, nothing is enabled.
+    s.init(&e, "no", "", shell, &[]);
+    let worker = s.unit_dir.join("forge-worker.service");
+    let web = s.unit_dir.join("forge-web.service");
+
+    // Unchanged files, but systemd says neither is enabled: enable both,
+    // never "already installed and enabled".
+    let out = s.init(&e, "no", "", shell, &[]);
+    assert!(!out.contains("already installed and enabled"), "{out}");
+    let enable = format!(
+        "systemctl --user enable --now {} {}",
+        worker.display(),
+        web.display()
+    );
+    assert!(s.calls().contains(&enable), "{:?}", s.calls());
+    assert!(s.calls().contains(&"loginctl enable-linger".to_string()));
+    assert!(!s.calls().iter().any(|c| c.contains("daemon-reload")));
+
+    // Unchanged and enabled: asked, nothing enabled, reported as such.
+    let out = s.init(&e, "yes", "", shell, &[]);
+    assert!(out.contains("already installed and enabled"), "{out}");
+    assert!(
+        out.contains("already initialized; nothing changed"),
+        "{out}"
+    );
+    let calls = s.calls();
+    assert_eq!(
+        calls,
+        [
+            "systemctl --user is-enabled forge-worker.service",
+            "systemctl --user is-enabled forge-web.service",
+        ]
+    );
+}
+
+#[test]
+fn forge_init_says_a_changed_unit_needs_a_restart_and_names_the_live_path() {
+    let e = Env::new();
+    let s = Session::new(&e);
+    s.init(&e, "yes", "", "/usr/bin:/bin", &[]);
+
+    // The worker is running with an older PATH; this run changes the unit.
+    let show = "MainPID=0\nEnvironment=FORGE_HOME=/h PATH=/old/live:/usr/bin";
+    let out = s.init(&e, "yes", show, "/opt/new:/usr/bin:/bin", &[]);
+    assert!(out.contains("restart forge-worker to apply"), "{out}");
+    assert!(
+        out.contains("the running worker's PATH is /old/live:/usr/bin"),
+        "{out}"
+    );
+    assert!(!out.contains("installed and enabled"), "{out}");
+    assert!(
+        s.calls().iter().all(|c| !c.contains("enable --now")),
+        "{:?}",
+        s.calls()
+    );
+
+    // No change, no restart advice.
+    let out = s.init(&e, "yes", show, "/opt/new:/usr/bin:/bin", &[]);
+    assert!(!out.contains("restart forge-worker"), "{out}");
+}
+
+#[test]
+fn forge_init_keeps_the_units_existing_path_entries_unless_reset_path() {
+    let e = Env::new();
+    let s = Session::new(&e);
+    s.init(&e, "yes", "", "/opt/agents:/usr/bin:/bin", &[]);
+    for unit in ["forge-worker.service", "forge-web.service"] {
+        assert!(s.unit_path(unit).contains("/opt/agents"));
+    }
+
+    // A narrower shell: the agents directory stays, after the new entries.
+    s.init(&e, "yes", "", "/usr/bin:/bin", &[]);
+    for unit in ["forge-worker.service", "forge-web.service"] {
+        let value = s.unit_path(unit);
+        let dirs: Vec<&str> = value.split(':').collect();
+        assert_eq!(
+            &dirs[dirs.len() - 3..],
+            ["/usr/bin", "/bin", "/opt/agents"],
+            "{value}"
+        );
+        assert!(
+            dirs.iter().position(|d| *d == "/usr/bin")
+                < dirs.iter().position(|d| *d == "/opt/agents"),
+            "{value}"
+        );
+    }
+
+    // Stable on a re-run from the same narrow shell.
+    let before = s.unit_path("forge-worker.service");
+    s.init(&e, "yes", "", "/usr/bin:/bin", &[]);
+    assert_eq!(s.unit_path("forge-worker.service"), before);
+
+    // --reset-path writes the shell's PATH alone.
+    s.init(&e, "yes", "", "/usr/bin:/bin", &["--reset-path"]);
+    for unit in ["forge-worker.service", "forge-web.service"] {
+        let value = s.unit_path(unit);
+        assert!(!value.contains("/opt/agents"), "{value}");
+    }
 }

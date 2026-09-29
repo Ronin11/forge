@@ -358,6 +358,12 @@ enum Cmd {
         /// stored as the bare repository's `forge.mirror`)
         #[arg(long, value_name = "REMOTE")]
         mirror: Option<String>,
+        /// Write the units' PATH from this shell alone. Without it, the
+        /// entries the units' existing PATH has and this shell's lacks are
+        /// kept after the new ones, so a re-run from a narrower environment
+        /// (ssh, cron) never drops a directory the worker needs.
+        #[arg(long)]
+        reset_path: bool,
     },
     /// A newcomer's first run: a scratch repository under FORGE_HOME/demo,
     /// one small task run to completion, and where to look afterward.

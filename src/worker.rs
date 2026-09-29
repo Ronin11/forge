@@ -784,8 +784,14 @@ impl Shutdown {
 
 /// Tasks and jobs a dead worker left running go back in the queue, at startup
 /// (`just_started`: a row under this very pid is a previous incarnation's) and
-/// on every claim-loop pass. Writes are guarded on the owner listed.
+/// on every claim-loop pass. Writes are guarded on the owner listed. At
+/// startup only, every private provider-state copy is offered as a
+/// write-back once (docs/REVIEW-4.md #1.9): a launch this worker's dead
+/// predecessor aborted mid-flight never reached its own.
 fn recover_orphans(f: &Forge, just_started: bool) -> Result<()> {
+    if just_started {
+        crate::login::write_back_all_private_copies(&f.paths.home, &f.paths.worktrees);
+    }
     let caller = crate::store::Caller::this_process(just_started);
     for (id, owner) in f.store.orphans(&caller, pid_alive)? {
         if f.store.requeue(id, &owner, crate::store::REQUEUE_ORPHAN)? {
