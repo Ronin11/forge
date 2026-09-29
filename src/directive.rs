@@ -96,6 +96,8 @@ pub enum Failure {
     /// Forge ended the run itself on signs it was going nowhere.
     EndedEarly(String),
     TimedOut,
+    /// Work finished without the final structured report.
+    StructuredOutput,
     /// The CLI's result frame reported an error, with its own subtype
     /// (`error_max_turns`, `error_during_execution`, ...) and the exit.
     Error {
@@ -117,6 +119,10 @@ pub fn failure(a: &Outcome) -> Option<Failure> {
         Some(Failure::EndedEarly(why.clone()))
     } else if a.timed_out {
         Some(Failure::TimedOut)
+    } else if a.terminal_reason.as_deref() == Some("structured_output_retry_exhausted")
+        || a.subtype.as_deref() == Some("error_max_structured_output_retries")
+    {
+        Some(Failure::StructuredOutput)
     } else if a.got_result && a.is_error {
         Some(Failure::Error {
             subtype: a.subtype.clone(),
@@ -149,6 +155,9 @@ impl Failure {
             Failure::LoginRefused => "the provider refused the agent login".into(),
             Failure::EndedEarly(why) => format!("stopped early: {why}"),
             Failure::TimedOut => "agent timed out".into(),
+            Failure::StructuredOutput => {
+                "structured_output_retry_exhausted: envelope missing".into()
+            }
             Failure::Error {
                 exit: Some(code), ..
             } if *code != 0 => exit_text(Some(*code)),
@@ -176,7 +185,10 @@ impl Failure {
                 "agent result {:?}",
                 subtype.as_deref().unwrap_or("error")
             )),
-            Failure::TimedOut | Failure::Exit(_) | Failure::NoResult => quote(self.reason()),
+            Failure::TimedOut
+            | Failure::StructuredOutput
+            | Failure::Exit(_)
+            | Failure::NoResult => quote(self.reason()),
         }
     }
 }

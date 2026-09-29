@@ -178,7 +178,7 @@ pub fn probe_login(provider: &Provider, dir: &Path) -> Probe {
     let extra = super::inputs::provider_env(provider);
     let mut spawned = Err(std::io::Error::other("never spawned"));
     for _ in 0..20 {
-        let mut cmd = super::command_in(None, dir, &argv, &extra);
+        let mut cmd = super::command_in(None, dir, &argv, &extra, crate::sandbox::Phase::Agent);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -490,7 +490,13 @@ async fn probe(l: &Launch<'_>) {
     let argv = probe_argv(super::claude_argv(&bin, l));
     let extra = super::inputs::provider_env(l.provider);
     let Ok(mut child) = super::spawn_retrying_etxtbsy(|| {
-        let mut c = tokio::process::Command::from(super::command_in(None, &dir, &argv, &extra));
+        let mut c = tokio::process::Command::from(super::command_in(
+            None,
+            &dir,
+            &argv,
+            &extra,
+            crate::sandbox::Phase::Agent,
+        ));
         c.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

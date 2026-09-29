@@ -274,11 +274,21 @@ fn acceptance_checks_are_hidden_unless_shown() {
 #[test]
 fn a_retry_that_changes_nothing_reports_nothing_and_passes() {
     let e = Env::new();
-    assert!(e.run("commitdie.sh", &["--retries", "1"]).status.success());
+    // Missing reports now recover through verification. Require a retry
+    // with no new commits to exercise reporting the earlier attempt's work.
+    let unchanged = "test \"$FORGE_START_SHA\" = \"$(git rev-parse HEAD)\"";
+    assert!(
+        e.run("commitdie.sh", &["--retries", "1", "--check", unchanged])
+            .status
+            .success()
+    );
     let a = e.attempts(1);
     assert_eq!(a.len(), 2);
-    assert_eq!(a[0].1, "agent_failed");
+    assert_eq!(a[0].1, "checks_failed");
+    assert_eq!(check(&a[0].4, "L1", "answer"), Some(true));
+    assert_eq!(check(&a[0].4, "L2", "task-check-1"), Some(false));
     assert_eq!(a[1].1, "succeeded");
+    assert_eq!(check(&a[1].4, "L2", "task-check-1"), Some(true));
     assert_eq!(
         check(&a[1].4, "note", "changes-from-git"),
         Some(true),
@@ -327,12 +337,12 @@ fn a_suite_exit_that_names_only_a_visible_test_is_refused_and_the_step_goes_on()
 }
 
 #[test]
-fn no_structured_result_fails_l0() {
+fn no_structured_result_with_commits_is_verified() {
     let e = Env::new();
-    assert!(!e.run("noenvelope.sh", &["--retries", "0"]).status.success());
+    assert!(e.run("noenvelope.sh", &["--retries", "0"]).status.success());
     let a = e.attempts(1);
-    assert_eq!(a[0].2, "L0 failed: result-structured");
-    assert_eq!(check(&a[0].4, "L1", "answer"), None);
+    assert_eq!(a[0].1, "succeeded");
+    assert_eq!(check(&a[0].4, "L1", "answer"), Some(true));
 }
 
 #[test]

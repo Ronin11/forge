@@ -238,6 +238,10 @@ pub(crate) async fn run_operation(
     };
     if let Some(dir) = &scratch {
         let _ = std::fs::remove_dir_all(dir);
+    } else {
+        // Read-only and failed operations can also poison metadata. Reset
+        // it before any later step runs host Git against this worktree.
+        git::restore_metadata(&wt).task()?;
     }
     crate::verify::remove_overlay(&placed, &cfg.namespace, &wt);
     let detail = if r.ok {

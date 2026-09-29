@@ -36,6 +36,7 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod recovery;
 pub mod review;
 
 /// Overlay refs for a human: a pinned forge-verify commit reads as
@@ -680,6 +681,9 @@ fn overlay_note(dirty: &[String], namespace: &[String]) -> String {
 /// again, so its own commit is `before` for that second call and must
 /// still pass this row.
 async fn candidate_unchanged(wt: &Path, before: &str) -> Result<CheckResult> {
+    // The checks just ran sandboxed in `wt` and could have written
+    // anything into `.git`; strip it before the host git calls below.
+    crate::git::restore_metadata(wt)?;
     let after = crate::git::head(wt).await?;
     let dirty = crate::git::dirty_tracked_paths(wt).await?;
     let moved = after != before;
@@ -736,6 +740,8 @@ async fn l1_l2(
     for name in names {
         let argv = &s.cfg.checks[name];
         let r = run_one_recorded(s, "L1", name, argv, s.worktree, timeout, &facts).await;
+        // Checks can replace Git metadata even when they fail.
+        crate::git::restore_metadata(s.worktree)?;
         s.report.emit(
             s.task_id,
             Event::Check {
@@ -793,6 +799,7 @@ async fn l1_l2(
             let name = format!("task-check-{}", i + 1);
             let argv = vec!["bash".to_string(), "-c".to_string(), cmd.clone()];
             let mut r = run_one_recorded(s, "L2", &name, &argv, s.worktree, timeout, &facts).await;
+            crate::git::restore_metadata(s.worktree)?;
             if !r.ok {
                 r.tail = format!("$ {cmd}\n{}", r.tail);
             }
@@ -853,6 +860,9 @@ async fn try_known_fix(s: &Subject<'_>, checks: &[CheckResult]) -> Result<Option
     for name in &failing {
         let argv = &s.cfg.fixable[*name];
         let r = run_one("fix", name, argv, s.worktree, s.sandbox, timeout, &facts).await;
+        // A fix command is untrusted just like a check. In particular,
+        // commit_all below must never read a config redirected by commondir.
+        crate::git::restore_metadata(s.worktree)?;
         ok &= r.ok;
         s.report.emit(
             s.task_id,
@@ -1057,12 +1067,12 @@ pub async fn verify_directive(
             .flatten();
         return Ok(verdict);
     }
-    let agent_reason = crate::directive::agent_failure(agent);
     let notes = match contract {
         Contract::Review => review::capture_notes(s).await?,
         _ => Vec::new(),
     };
-    let common = common_l0(s, agent).await?;
+    let mut common = common_l0(s, agent).await?;
+    let (agent_reason, recovered) = recovery::resolve(s, agent, &mut common).await?;
     let mut v = Verdict::open(&common.facts);
     let mut question: Option<(Kind, String)> = None;
     if agent_reason.is_none() {
@@ -1180,6 +1190,13 @@ pub async fn verify_directive(
         question.as_ref().map(|(k, q)| (*k, q.as_str())),
         contract.verifies_work(),
     );
+    if recovered {
+        if v.state == AttemptState::Succeeded {
+            v.envelope.as_mut().unwrap().summary = "envelope missing; verified by checks".into();
+        } else {
+            v.envelope = None;
+        }
+    }
     Ok(v)
 }
 

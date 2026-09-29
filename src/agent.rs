@@ -12,9 +12,10 @@ mod jev;
 pub mod refusal;
 mod relaunch;
 mod usage_limit;
+use crate::sandbox::Phase;
 use chat::run_chat;
 pub(super) use chat::truncated_first_line;
-use claude::{claude_argv, run_claude};
+use claude::{apply_claude_result, claude_argv, run_claude};
 use codex::{apply_codex_event, run_codex};
 use copilot::{CopilotTally, apply_copilot_event, run_copilot};
 use inputs::{AgentRun, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
@@ -85,6 +86,8 @@ pub struct Outcome {
     /// result frame ever arrived. A directive job step quotes this in its
     /// failure tail instead of the bare exit code.
     pub subtype: Option<String>,
+    /// The CLI’s terminal diagnosis, including exhausted structured-output retries.
+    pub terminal_reason: Option<String>,
     /// Everything the agent wrote to stderr across the run. A directive job
     /// step's failure tail quotes the last lines of this.
     pub stderr_text: String,
@@ -307,25 +310,25 @@ fn path_with_bin_dir(path: &str) -> String {
     }
 }
 
-/// The environment the agent and the checks see, sandboxed or not. This is
-/// the one list; the sandbox overrides HOME on top of it.
-pub fn agent_env() -> Vec<(String, String)> {
+/// Which inherited variables a launch may receive. Explicit check
+/// configuration is appended separately, after this filter.
+fn inherited_env_allowed(key: &str, phase: Phase) -> bool {
+    matches!(
+        key,
+        "PATH" | "HOME" | "LANG" | "TERM" | "FAKE_SLEEP" | "FAKE_SLEEP_SECS"
+    ) || key.starts_with("LC_")
+        || (phase == Phase::Agent
+            && (key == "CLAUDE_CONFIG_DIR"
+                || ["ANTHROPIC_", "CODEX_", "COPILOT_"]
+                    .iter()
+                    .any(|prefix| key.starts_with(prefix))))
+}
+
+/// The inherited environment for this phase, sandboxed or not. The
+/// sandbox overrides HOME on top of it.
+pub fn agent_env(phase: Phase) -> Vec<(String, String)> {
     std::env::vars()
-        .filter(|(k, _)| {
-            matches!(
-                k.as_str(),
-                "PATH"
-                    | "HOME"
-                    | "LANG"
-                    | "TERM"
-                    | "CLAUDE_CONFIG_DIR"
-                    | "CODEX_HOME"
-                    | "FAKE_SLEEP"
-                    | "FAKE_SLEEP_SECS"
-            ) || ["LC_", "ANTHROPIC_", "CODEX_", "COPILOT_"]
-                .iter()
-                .any(|p| k.starts_with(p))
-        })
+        .filter(|(key, _)| inherited_env_allowed(key, phase))
         .map(|(k, v)| {
             if k == "PATH" {
                 (k, path_with_bin_dir(&v))
@@ -336,9 +339,9 @@ pub fn agent_env() -> Vec<(String, String)> {
         .collect()
 }
 
-/// The agent environment plus `extra_env`.
-fn env_with(extra_env: &[(String, String)]) -> Vec<(String, String)> {
-    let mut env = agent_env();
+/// The phase's inherited environment plus explicitly supplied `extra_env`.
+fn env_with(extra_env: &[(String, String)], phase: Phase) -> Vec<(String, String)> {
+    let mut env = agent_env(phase);
     env.extend(extra_env.iter().cloned());
     env
 }
@@ -350,9 +353,11 @@ pub async fn prepare_in(
     sandbox: Option<&Execution>,
     worktree: &Path,
     extra_env: &[(String, String)],
+    phase: Phase,
 ) {
     if let Some(sb) = sandbox {
-        sb.prepare(worktree, &env_with(extra_env)).await;
+        sb.prepare(worktree, &env_with(extra_env, phase), phase)
+            .await;
     }
 }
 
@@ -364,16 +369,18 @@ pub fn command_in(
     worktree: &Path,
     argv: &[String],
     extra_env: &[(String, String)],
+    phase: Phase,
 ) -> std::process::Command {
-    let env = env_with(extra_env);
+    let env = env_with(extra_env, phase);
     match sandbox {
-        Some(sb) => sb.command(worktree, argv, &env),
+        Some(sb) => sb.command(worktree, argv, &env, phase),
         None => crate::executor::Executor::command(
             &crate::executor::Host,
             worktree,
             argv,
             &env,
             &crate::egress::Policy::new([]),
+            phase,
         ),
     }
 }
@@ -584,9 +591,9 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
         report,
         log,
     } = args;
-    prepare_in(sandbox, worktree, identity).await;
+    prepare_in(sandbox, worktree, identity, Phase::Agent).await;
     let mut child = spawn_retrying_etxtbsy(|| {
-        let mut c = Command::from(command_in(sandbox, worktree, argv, identity));
+        let mut c = Command::from(command_in(sandbox, worktree, argv, identity, Phase::Agent));
         c.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -678,26 +685,7 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
                     }
                 }
                 Some("result") => {
-                    out.got_result = true;
-                    out.is_error = v["is_error"].as_bool().unwrap_or(false);
-                    if let Some(id) = v["session_id"].as_str() {
-                        out.session_id = Some(id.to_string());
-                    }
-                    out.subtype = v["subtype"].as_str().map(str::to_string);
-                    out.max_turns_hit = v["subtype"].as_str() == Some("error_max_turns");
-                    refusal::read_claude_error(&mut out, &v);
-                    out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
-                    out.cost_usd = v["total_cost_usd"].as_f64();
-                    out.input_tokens = v["usage"]["input_tokens"].as_i64();
-                    out.output_tokens = v["usage"]["output_tokens"].as_i64();
-                    out.cache_read_input_tokens = v["usage"]["cache_read_input_tokens"].as_i64();
-                    out.cache_creation_input_tokens =
-                        v["usage"]["cache_creation_input_tokens"].as_i64();
-                    out.result_text = v["result"].as_str().unwrap_or("").to_string();
-                    out.structured = match &v["structured_output"] {
-                        Value::Null => None,
-                        other => Some(other.to_string()),
-                    };
+                    apply_claude_result(&mut out, &v);
                 }
                 Some("rate_limit_event") => {
                     let w = &v["rate_limit_info"]["unifiedWindows"];
@@ -919,9 +907,15 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
         watch,
         apply,
     } = args;
-    prepare_in(l.sandbox, l.worktree, extra_env).await;
+    prepare_in(l.sandbox, l.worktree, extra_env, Phase::Agent).await;
     let mut child = spawn_retrying_etxtbsy(|| {
-        let mut c = Command::from(command_in(l.sandbox, l.worktree, argv, extra_env));
+        let mut c = Command::from(command_in(
+            l.sandbox,
+            l.worktree,
+            argv,
+            extra_env,
+            Phase::Agent,
+        ));
         c.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1009,6 +1003,42 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn check_environment_excludes_provider_variables_but_accepts_explicit_values() {
+        for key in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BASE_URL",
+            "CODEX_HOME",
+            "CODEX_API_KEY",
+            "CODEX_OTHER",
+            "COPILOT_HOME",
+            "COPILOT_GITHUB_TOKEN",
+            "COPILOT_OTHER",
+            "CLAUDE_CONFIG_DIR",
+        ] {
+            assert!(inherited_env_allowed(key, Phase::Agent), "{key}");
+            assert!(!inherited_env_allowed(key, Phase::Check), "{key}");
+        }
+        for phase in [Phase::Agent, Phase::Check] {
+            assert!(inherited_env_allowed("PATH", phase));
+            assert!(inherited_env_allowed("LC_ALL", phase));
+            assert!(!inherited_env_allowed("UNRELATED_SECRET", phase));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let argv = vec!["/usr/bin/env".into()];
+        let extra = vec![("ANTHROPIC_API_KEY".into(), "explicit-check-key".into())];
+        let output = command_in(None, dir.path(), &argv, &extra, Phase::Check)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line == "ANTHROPIC_API_KEY=explicit-check-key")
+        );
+    }
+
     #[test]
     fn strict_schema_requires_every_key_of_every_object_and_keeps_the_rest() {
         let strict = inputs::strict_schema(crate::envelope::SCHEMA).unwrap();

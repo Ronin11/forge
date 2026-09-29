@@ -32,7 +32,7 @@ fn prepare(sb: &Sandbox, worktree: &Path, env: &[(String, String)]) {
         .enable_all()
         .build()
         .unwrap()
-        .block_on(sb.prepare(worktree, env));
+        .block_on(sb.prepare(worktree, env, Phase::Agent));
 }
 
 fn assert_no_secret(dir: &Path) {
@@ -98,7 +98,12 @@ fn claude_wrapper_writes_only_the_kernel_seed_in_the_private_home() {
     sb.home = root.path().join("private-home");
     std::fs::create_dir_all(&sb.home).unwrap();
     let status = Command::new("/bin/sh")
-        .args(["-c", &sb.wrapper_script(false, None), "sh", "/bin/true"])
+        .args([
+            "-c",
+            &sb.wrapper_script(false, None, Phase::Agent),
+            "sh",
+            "/bin/true",
+        ])
         .status()
         .unwrap();
     assert!(status.success());
@@ -138,6 +143,7 @@ fn operator_config_secrets_are_absent_from_the_sandbox_home() {
             &["/bin/sh".into(), "-c".into(), script],
             &[],
             &Policy::new([]),
+            Phase::Agent,
         )
         .output()
         .unwrap();

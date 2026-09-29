@@ -588,8 +588,8 @@ async fn stop_child(child: &mut Child, group: &mut GroupGuard) {
 /// `FORGE_HOME` (and, for one release, `FORGE2_HOME` too — the name
 /// docs/PLUGINS.md promised before the rename, kept alongside the new one
 /// so a plugin written against the old name still works), `FORGE_PLUGIN_DIR`,
-/// `FORGE_PLUGIN_NAME`, `FORGE_PLUGIN_STATE`, plus the pass-through list every agent and check
-/// gets (`agent::agent_env`).
+/// `FORGE_PLUGIN_NAME`, `FORGE_PLUGIN_STATE`, plus the agent pass-through list
+/// (`agent::agent_env`).
 fn spawn_plugin(
     plugin: &Plugin,
     home: &Path,
@@ -608,7 +608,7 @@ fn spawn_plugin(
     cmd.args(&plugin.manifest.run[1..])
         .current_dir(&plugin.dir)
         .env_clear()
-        .envs(crate::agent::agent_env())
+        .envs(crate::agent::agent_env(crate::sandbox::Phase::Agent))
         .env("FORGE_BIN", bin)
         .env("FORGE_HOME", home)
         .env("FORGE2_HOME", home)

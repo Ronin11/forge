@@ -271,6 +271,37 @@ async fn dirty_tracked_paths_excludes_untracked_but_keeps_modified_and_staged() 
     assert_eq!(tracked_only, vec!["tracked.txt"]);
 }
 
+#[test]
+fn restore_metadata_removes_commondir_redirects_and_resets_config() {
+    let dir = init_repo();
+    let git_dir = dir.path().join(".git");
+    std::fs::write(git_dir.join("commondir"), "/tmp/evil\n").unwrap();
+    std::fs::write(git_dir.join("gitdir"), "/tmp/evil/worktrees/x\n").unwrap();
+    std::fs::write(
+        git_dir.join("config"),
+        "[filter \"x\"]\n\tclean = touch /tmp/should-not-run\n",
+    )
+    .unwrap();
+    std::fs::write(git_dir.join("hooks").join("pre-commit"), "#!/bin/sh\n").unwrap();
+    std::fs::write(git_dir.join("info").join("exclude"), "planted\n").unwrap();
+
+    restore_metadata(dir.path()).unwrap();
+
+    assert!(!git_dir.join("commondir").exists());
+    assert!(!git_dir.join("gitdir").exists());
+    let config = std::fs::read_to_string(git_dir.join("config")).unwrap();
+    assert!(!config.contains("filter"), "{config}");
+    assert_eq!(std::fs::read_dir(git_dir.join("hooks")).unwrap().count(), 0);
+    assert_eq!(std::fs::read_dir(git_dir.join("info")).unwrap().count(), 0);
+}
+
+#[test]
+fn restore_metadata_refuses_a_git_that_is_not_a_plain_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink("/tmp", dir.path().join(".git")).unwrap();
+    assert!(restore_metadata(dir.path()).is_err());
+}
+
 #[tokio::test]
 async fn identity_falls_back_to_the_constant_when_unset() {
     let dir = init_repo();

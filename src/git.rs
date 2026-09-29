@@ -213,6 +213,37 @@ pub async fn clone_task(
 // Deliberately a complete config, not a patch to metadata supplied by an agent.
 const KERNEL_CONFIG: &str = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n\thooksPath = /dev/null\n";
 
+/// Strips whatever a sandboxed launch or check may have written into
+/// `<dir>/.git` before the first host git command touches that directory
+/// unsandboxed: `config` back to a fresh, trusted one (never a patch to
+/// what a check left), `hooks/` and `info/` emptied, and `commondir` and
+/// `gitdir` removed outright rather than inspected, since either would
+/// make git honor an object store, refs and config the sandbox planted
+/// instead of this directory's own. `dir/.git` must already be a plain
+/// directory; a symlink or gitfile in its place is a deeper compromise
+/// this refuses to follow.
+pub fn restore_metadata(dir: &Path) -> Result<()> {
+    let git_dir = dir.join(".git");
+    let meta = std::fs::symlink_metadata(&git_dir)
+        .with_context(|| format!("no .git in {}", dir.display()))?;
+    if !meta.is_dir() {
+        bail!("{} is not a plain directory", git_dir.display());
+    }
+    for redirect in ["commondir", "gitdir"] {
+        let _ = std::fs::remove_file(git_dir.join(redirect));
+    }
+    std::fs::write(
+        git_dir.join("config"),
+        KERNEL_CONFIG.replace("bare = true", "bare = false"),
+    )?;
+    for sub in ["hooks", "info"] {
+        let d = git_dir.join(sub);
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d)?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn kernel_repository(home: &Path, repo: &Path) -> Result<PathBuf> {
     let key = crate::job::sha256_hex(repo.to_string_lossy().as_bytes());
     let dir = home.join("repositories").join(format!("{key}.git"));
