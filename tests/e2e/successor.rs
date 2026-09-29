@@ -43,6 +43,22 @@ fn running_pid(e: &Env, id: i64) -> Option<i64> {
         .flatten()
 }
 
+/// Populates `root/releases/{old,new}` with copies of this suite's own
+/// `forge` binaries, and points `current` at `old`.
+fn stage_old_and_new_releases(root: &std::path::Path) {
+    for id in ["old", "new"] {
+        let dir = root.join("releases").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let built = std::path::Path::new(env!("CARGO_BIN_EXE_forge"))
+            .parent()
+            .unwrap();
+        for bin in ["forge", "forge-repomap"] {
+            std::fs::copy(built.join(bin), dir.join(bin)).unwrap();
+        }
+    }
+    std::os::unix::fs::symlink("releases/old", root.join("current")).unwrap();
+}
+
 /// Lets task `id`'s `gated-ok.sh` attempt finish: writes the gate file
 /// into its worktree once the clone is there.
 fn open_gate(e: &Env, id: i64) {
@@ -79,17 +95,7 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
         std::os::unix::fs::PermissionsExt::from_mode(0o755),
     )
     .unwrap();
-    for id in ["old", "new"] {
-        let dir = root.join("releases").join(id);
-        std::fs::create_dir_all(&dir).unwrap();
-        let built = std::path::Path::new(env!("CARGO_BIN_EXE_forge"))
-            .parent()
-            .unwrap();
-        for bin in ["forge", "forge-repomap"] {
-            std::fs::copy(built.join(bin), dir.join(bin)).unwrap();
-        }
-    }
-    std::os::unix::fs::symlink("releases/old", root.join("current")).unwrap();
+    stage_old_and_new_releases(&root);
     let path = format!(
         "{}:{}",
         fakes.display(),
