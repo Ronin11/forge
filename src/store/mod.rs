@@ -399,7 +399,7 @@ impl Store {
         if fresh == 0 {
             // A brand-new database is shared with no older worker, so its
             // contract steps run now.
-            store.apply_contracts(env!("CARGO_PKG_VERSION"), |_| false)?;
+            store.apply_contracts(env!("CARGO_PKG_VERSION"), |_, _| false)?;
         }
         Ok(store)
     }
@@ -750,7 +750,11 @@ impl Store {
     /// applied, but only when every live worker runs `version`: none on an
     /// older one shares the store. A dead pid does not count. Each step
     /// records its own `applied_at`. Returns how many were applied.
-    pub fn apply_contracts(&self, version: &str, alive: impl Fn(i64) -> bool) -> Result<usize> {
+    pub fn apply_contracts(
+        &self,
+        version: &str,
+        alive: impl Fn(i64, &str) -> bool,
+    ) -> Result<usize> {
         if self
             .live_workers(alive)?
             .iter()
@@ -1037,14 +1041,14 @@ mod tests {
         s.register_worker(11, "new").unwrap();
         // Both versions are live: an older worker still shares the store,
         // so the step stays pending.
-        assert_eq!(s.apply_contracts("new", |_| true).unwrap(), 0);
+        assert_eq!(s.apply_contracts("new", |_, _| true).unwrap(), 0);
         // The older worker exits: only "new" is left live, so the pending
         // steps run.
         s.stop_worker(old).unwrap();
-        let applied = s.apply_contracts("new", |_| true).unwrap();
+        let applied = s.apply_contracts("new", |_, _| true).unwrap();
         assert!(applied > 0, "expected pending contract steps to run");
         // Nothing pending now: one SELECT per step, no write.
-        assert_eq!(s.apply_contracts("new", |_| true).unwrap(), 0);
+        assert_eq!(s.apply_contracts("new", |_, _| true).unwrap(), 0);
     }
 
     #[test]

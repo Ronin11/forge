@@ -90,3 +90,6 @@ documentation.
   maintained.
 - **research/** — four external reports on verification and merge queues,
   and a synthesis of what they mean for Forge.
+- **audits/** — landed-work audits: for each week's landed tasks, a
+  verdict per task (done, partial, missing, superseded) with file:line
+  evidence and the follow-up each gap needs.

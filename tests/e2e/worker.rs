@@ -632,6 +632,73 @@ fn a_sigterm_drains_the_running_attempt_and_exits_cleanly() {
     assert_eq!(e.attempts(id)[0].1, "succeeded");
 }
 
+/// REVIEW-4 E2-4: `staged` names a runnable release the whole time, but a
+/// worker told to stop must never start a successor on it.
+#[test]
+fn a_stopping_worker_starts_no_successor_on_a_staged_release() {
+    let e = Env::new();
+    let root = e.home.join("bin");
+    for id in ["old", "new"] {
+        let dir = root.join("releases").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let built = std::path::Path::new(env!("CARGO_BIN_EXE_forge"))
+            .parent()
+            .unwrap();
+        for bin in ["forge", "forge-repomap"] {
+            std::fs::copy(built.join(bin), dir.join(bin)).unwrap();
+        }
+    }
+    std::os::unix::fs::symlink("releases/old", root.join("current")).unwrap();
+    let fakes = e.home.join("fakebin");
+    std::fs::create_dir_all(&fakes).unwrap();
+    let systemctl = fakes.join("systemctl");
+    std::fs::write(
+        &systemctl,
+        "#!/bin/bash\nif [ \"$2\" = is-active ]; then echo active; fi\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &systemctl,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let path = format!(
+        "{}:{}",
+        fakes.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let id = e.add(&["--retries", "0"]);
+    let mut cmd = std::process::Command::new(root.join("releases/old/forge"));
+    cmd.envs(
+        e.cmd("slow-ok.sh")
+            .get_envs()
+            .filter_map(|(k, v)| Some((k, v?))),
+    )
+    .env("PATH", &path)
+    .args(["work", "--jobs", "1", "--poll", "1"]);
+    let mut worker = Worker::spawn(&mut cmd);
+    let _reap = crate::successor::Reap(e.home.clone());
+    assert!(
+        wait_until(|| e.task(id).0 == "running", Duration::from_secs(20)),
+        "the worker never claimed the task"
+    );
+
+    std::os::unix::fs::symlink("releases/new", root.join("staged")).unwrap();
+    worker.signal(libc::SIGTERM);
+    // A few poll intervals for a (wrongly) started successor to register.
+    std::thread::sleep(Duration::from_secs(3));
+    let registered: i64 = e
+        .db()
+        .query_row("SELECT COUNT(*) FROM workers", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        registered, 1,
+        "a stopping worker must not start a successor"
+    );
+    assert!(worker.wait().success());
+}
+
 #[test]
 fn gc_removes_only_what_is_published_and_clean() {
     let e = Env::new();
