@@ -120,6 +120,11 @@ pub struct TaskArgs {
     /// Run only after this task has landed (repeatable); blocked if it ends otherwise
     #[arg(long = "after")]
     after: Vec<i64>,
+    /// Claim order: 0 (lowest) to 7 (highest), or low, normal, high,
+    /// urgent (default: normal). Among claimable tasks, higher claims
+    /// first.
+    #[arg(long, value_parser = crate::store::parse_priority)]
+    priority: Option<i64>,
     /// Show the agents the journal of earlier attempts, overriding the
     /// operator's control-arm fraction for this task
     #[arg(long, conflicts_with = "no_journal")]
@@ -358,6 +363,12 @@ enum Cmd {
         /// stored as the bare repository's `forge.mirror`)
         #[arg(long, value_name = "REMOTE")]
         mirror: Option<String>,
+        /// Write the units' PATH from this shell alone. Without it, the
+        /// entries the units' existing PATH has and this shell's lacks are
+        /// kept after the new ones, so a re-run from a narrower environment
+        /// (ssh, cron) never drops a directory the worker needs.
+        #[arg(long)]
+        reset_path: bool,
     },
     /// A newcomer's first run: a scratch repository under FORGE_HOME/demo,
     /// one small task run to completion, and where to look afterward.
@@ -757,6 +768,7 @@ impl From<&TaskArgs> for crate::queue::TaskRequest {
             show_checks: a.show_checks,
             no_land: a.no_land,
             after: a.after.clone(),
+            priority: a.priority,
             journal_choice: if a.journal {
                 Some(true)
             } else if a.no_journal {

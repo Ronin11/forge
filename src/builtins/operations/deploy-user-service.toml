@@ -41,6 +41,12 @@ run_remote() {
     ssh "$host" "$1"
   fi
 }
+# An operation's environment is cleared; `systemctl --user` needs this to
+# find the user manager (only matters for host=local; ssh carries the
+# remote's own environment).
+if [ "$host" = "local" ]; then
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+fi
 if [ "$host" = "local" ]; then
   mkdir -p "$dest"
   rsync -a --delete "${exclude_args[@]}" "$src"/ "$dest"/

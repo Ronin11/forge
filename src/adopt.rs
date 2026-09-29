@@ -185,6 +185,16 @@ pub async fn adopt(f: &Forge, req: &AdoptRequest) -> Result<Adopted> {
     } else {
         src.branch.clone()
     };
+    // A retry of an adopted task (`forge retry`, via `adopt::retry`)
+    // inherits its predecessor's priority, same as an agent-run retry
+    // (`queue::retry_request`); a fresh `forge adopt` gets the default.
+    let priority = match req.retry_of {
+        Some(old) => f
+            .store
+            .task(old)?
+            .map_or(crate::store::PRIORITY_DEFAULT, |t| t.priority),
+        None => crate::store::PRIORITY_DEFAULT,
+    };
     let mut t = Task {
         repo: repo_str,
         task: format!(
@@ -212,6 +222,7 @@ pub async fn adopt(f: &Forge, req: &AdoptRequest) -> Result<Adopted> {
             commit: src.commit.clone(),
             by: req.by.clone(),
         }),
+        priority,
         ..Default::default()
     };
     t.id = f.store.insert_task(&t)?;

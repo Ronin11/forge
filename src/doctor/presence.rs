@@ -44,7 +44,7 @@ fn parse_state(text: &str) -> Option<PresenceState> {
 /// (`render::utc`) because a client viewing it may be anywhere; this row
 /// only ever means something on the desktop presence.sh runs on, the same
 /// machine `forge doctor` is being read on, so its own local zone (via
-/// libc, the same way `agent::local_time_on` reads it) is the useful one.
+/// libc, the same way `agent::usage_limit::local_time_on` reads it) is the useful one.
 fn local_hhmm(epoch: i64) -> String {
     // SAFETY: localtime_r writes only into the tm this call owns.
     unsafe {

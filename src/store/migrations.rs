@@ -815,6 +815,19 @@ CREATE INDEX chat_turns_at ON chat_turns(at);
 ALTER TABLE tasks ADD COLUMN origin TEXT NOT NULL DEFAULT 'agent';
 ALTER TABLE tasks ADD COLUMN adoption_json TEXT NOT NULL DEFAULT '';
 ",
+    // The registering process's start identity (`store::start_of`), the
+    // same field `worker_start` records for a claimed row: a reused pid
+    // does not count as the worker that registered here (REVIEW-4 E2-2).
+    "
+ALTER TABLE workers ADD COLUMN start TEXT NOT NULL DEFAULT '';
+",
+    // Task priority (see `store::priority`): 0 (lowest) to 7 (highest),
+    // 2 ("normal") by default and for every existing row. Among
+    // otherwise-claimable tasks, the claim order is priority descending,
+    // then id ascending (`Store::queued_unblocked`).
+    "
+ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 2 CHECK (priority BETWEEN 0 AND 7);
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs
@@ -826,6 +839,19 @@ pub const CONTRACT_MARKER: &str = "-- contract";
 pub fn is_contract(sql: &str) -> bool {
     sql.trim_start().starts_with(CONTRACT_MARKER)
 }
+
+/// The step's first non-blank line, for an error that names which SQL a
+/// failing step is (`ALTER TABLE workers ADD COLUMN slots ...`) and not
+/// only what SQLite said about it.
+pub fn first_line(sql: &str) -> &str {
+    sql.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+}
+
+#[cfg(test)]
+mod lock;
 
 #[cfg(test)]
 mod tests {

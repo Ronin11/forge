@@ -43,6 +43,40 @@ fn running_pid(e: &Env, id: i64) -> Option<i64> {
         .flatten()
 }
 
+/// Populates `root/releases/{old,new}` with copies of this suite's own
+/// `forge` binaries, and points `current` at `old`.
+fn stage_old_and_new_releases(root: &std::path::Path) {
+    for id in ["old", "new"] {
+        let dir = root.join("releases").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let built = std::path::Path::new(env!("CARGO_BIN_EXE_forge"))
+            .parent()
+            .unwrap();
+        for bin in ["forge", "forge-repomap"] {
+            std::fs::copy(built.join(bin), dir.join(bin)).unwrap();
+        }
+    }
+    std::os::unix::fs::symlink("releases/old", root.join("current")).unwrap();
+}
+
+/// Lets task `id`'s `gated-ok.sh` attempt finish: writes the gate file
+/// into its worktree once the clone is there.
+fn open_gate(e: &Env, id: i64) {
+    let git = || -> Option<std::path::PathBuf> {
+        let wt: String = e
+            .db()
+            .query_row("SELECT worktree FROM tasks WHERE id=?1", [id], |r| r.get(0))
+            .ok()?;
+        let git = std::path::Path::new(&wt).join(".git");
+        (!wt.is_empty() && git.is_dir()).then_some(git)
+    };
+    assert!(
+        wait_until(|| git().is_some(), Duration::from_secs(120)),
+        "task {id} never had a worktree to open the gate in"
+    );
+    std::fs::write(git().unwrap().join("gate-open"), "").unwrap();
+}
+
 #[test]
 fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains() {
     let e = Env::new();
@@ -61,17 +95,7 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
         std::os::unix::fs::PermissionsExt::from_mode(0o755),
     )
     .unwrap();
-    for id in ["old", "new"] {
-        let dir = root.join("releases").join(id);
-        std::fs::create_dir_all(&dir).unwrap();
-        let built = std::path::Path::new(env!("CARGO_BIN_EXE_forge"))
-            .parent()
-            .unwrap();
-        for bin in ["forge", "forge-repomap"] {
-            std::fs::copy(built.join(bin), dir.join(bin)).unwrap();
-        }
-    }
-    std::os::unix::fs::symlink("releases/old", root.join("current")).unwrap();
+    stage_old_and_new_releases(&root);
     let path = format!(
         "{}:{}",
         fakes.display(),
@@ -82,7 +106,7 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
     // The old release's copy of `forge`, in `cmd`'s environment.
     let mut cmd = std::process::Command::new(root.join("releases/old/forge"));
     cmd.envs(
-        e.cmd("slow-ok.sh")
+        e.cmd("gated-ok.sh")
             .get_envs()
             .filter_map(|(k, v)| Some((k, v?))),
     )
@@ -92,7 +116,10 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
     let mut old = Worker::spawn(&mut cmd);
     let _reap = Reap(e.home.clone());
     assert!(
-        wait_until(|| running_pid(&e, first).is_some(), Duration::from_secs(30)),
+        wait_until(
+            || running_pid(&e, first).is_some(),
+            Duration::from_secs(120)
+        ),
         "the old worker never claimed task {first}"
     );
     let old_pid = running_pid(&e, first).unwrap();
@@ -103,7 +130,7 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
     assert!(
         wait_until(
             || running_pid(&e, second).is_some(),
-            Duration::from_secs(30)
+            Duration::from_secs(120)
         ),
         "the successor never claimed task {second}"
     );
@@ -133,6 +160,8 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
     );
 
     // The old worker finishes the attempt it holds and exits by itself.
+    open_gate(&e, first);
+    open_gate(&e, second);
     assert!(
         old.wait().success(),
         "the old worker did not exit cleanly after draining"
@@ -151,7 +180,7 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
         "{calls}"
     );
     assert!(
-        wait_until(|| e.task(second).0 != "running", Duration::from_secs(60)),
+        wait_until(|| e.task(second).0 != "running", Duration::from_secs(120)),
         "task {second} never finished"
     );
     let claimed: i64 = e
@@ -214,14 +243,13 @@ fn a_successor_beside_a_predecessor_holding_two_attempts_claims_at_most_jobs_min
 
     let mut cmd = std::process::Command::new(root.join("releases/old/forge"));
     cmd.envs(
-        e.cmd("slow-ok.sh")
+        e.cmd("gated-ok.sh")
             .get_envs()
             .filter_map(|(k, v)| Some((k, v?))),
     )
     .env("PATH", &path)
     .args(["work", "--jobs", "3", "--poll", "1"]);
-    e.add(&["--retries", "0"]);
-    e.add(&["--retries", "0"]);
+    let held_by_old = [e.add(&["--retries", "0"]), e.add(&["--retries", "0"])];
     let mut old = Worker::spawn(&mut cmd);
     let _reap = Reap(e.home.clone());
     let old_pid = i64::from(old.id());
@@ -232,7 +260,7 @@ fn a_successor_beside_a_predecessor_holding_two_attempts_claims_at_most_jobs_min
             .map_or(0, |(_, n)| n)
     };
     assert!(
-        wait_until(|| held(old_pid) == 2, Duration::from_secs(30)),
+        wait_until(|| held(old_pid) == 2, Duration::from_secs(120)),
         "the old worker never held two attempts: {:?}",
         running_by_worker(&e)
     );
@@ -241,32 +269,43 @@ fn a_successor_beside_a_predecessor_holding_two_attempts_claims_at_most_jobs_min
     for _ in 0..3 {
         e.add(&["--retries", "0"]);
     }
-    // While the predecessor holds its two, no read of the store shows the
-    // box past three attempts, or the successor past one.
-    let mut successor_claimed = false;
+    // While the predecessor holds its two (gated, so it holds them until
+    // the gates open), no read of the store shows the box past three
+    // attempts, or the successor past one: watched until the successor
+    // claims, then for a few of its polls more.
+    let mut claimed_at = None;
     let t0 = std::time::Instant::now();
-    while t0.elapsed() < Duration::from_secs(6) {
+    loop {
         let by = running_by_worker(&e);
         let old_held = by.iter().find(|(p, _)| *p == old_pid).map_or(0, |b| b.1);
         let new_held: i64 = by.iter().filter(|(p, _)| *p != old_pid).map(|b| b.1).sum();
-        if old_held < 2 {
-            break;
-        }
+        assert_eq!(
+            old_held, 2,
+            "the predecessor let go of a gated attempt: {by:?}"
+        );
         assert!(
             new_held <= 1,
             "the successor took the box past its jobs: {by:?}"
         );
-        successor_claimed |= new_held == 1;
+        if new_held == 1 && claimed_at.is_none() {
+            claimed_at = Some(std::time::Instant::now());
+        }
+        match claimed_at {
+            Some(at) if at.elapsed() >= Duration::from_secs(3) => break,
+            None => assert!(
+                t0.elapsed() < Duration::from_secs(120),
+                "the successor claimed nothing: {by:?}"
+            ),
+            _ => {}
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(
-        successor_claimed,
-        "the successor claimed nothing: {:?}",
-        running_by_worker(&e)
-    );
     let out = String::from_utf8_lossy(&e.forge("ok.sh", &["doctor"]).stdout).to_string();
     let row = out.lines().find(|l| l.contains("worker")).unwrap_or("");
     assert!(row.contains("of 3 slots: predecessor"), "{out}");
+    for id in held_by_old {
+        open_gate(&e, id);
+    }
     assert!(old.wait().success());
 }
 
@@ -384,6 +423,102 @@ fn a_successor_takes_the_unit_over_and_honours_a_stop_job_that_arrives_while_it_
     assert_ne!(e.task(first).0, "running");
     assert_ne!(e.task(first).0, "queued");
     assert_eq!(e.task(second).0, "queued", "claimed under a stop job");
+}
+
+/// REVIEW-4 E2-3: a successor that takes the unit over and then exits
+/// cleanly (a stop job, not a crash) must not hand the claim back to a
+/// predecessor still draining a running attempt of its own.
+#[test]
+fn a_successor_that_stops_cleanly_after_taking_over_does_not_return_the_claim() {
+    let e = Env::new();
+    let root = e.home.join("bin");
+    for id in ["old", "new"] {
+        let dir = root.join("releases").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let built = std::path::Path::new(env!("CARGO_BIN_EXE_forge"))
+            .parent()
+            .unwrap();
+        for bin in ["forge", "forge-repomap"] {
+            std::fs::copy(built.join(bin), dir.join(bin)).unwrap();
+        }
+    }
+    std::os::unix::fs::symlink("releases/old", root.join("current")).unwrap();
+    let (path, state) = fake_systemctl(&e);
+    let sock_path = e.home.join("notify.sock");
+    let _sock = std::os::unix::net::UnixDatagram::bind(&sock_path).unwrap();
+
+    let first = e.add(&["--retries", "0"]);
+    let mut cmd = std::process::Command::new(root.join("releases/old/forge"));
+    cmd.envs(
+        e.cmd("slow-ok.sh")
+            .get_envs()
+            .filter_map(|(k, v)| Some((k, v?))),
+    )
+    .env("PATH", &path)
+    .env("NOTIFY_SOCKET", &sock_path)
+    .args(["work", "--jobs", "2", "--poll", "1"]);
+    let mut old = Worker::spawn(&mut cmd);
+    let _reap = Reap(e.home.clone());
+    assert!(
+        wait_until(|| running_pid(&e, first).is_some(), Duration::from_secs(30)),
+        "the old worker never claimed task {first}"
+    );
+    let old_pid = running_pid(&e, first).unwrap();
+    assert_eq!(old_pid, i64::from(old.id()));
+
+    std::os::unix::fs::symlink("releases/new", root.join("staged")).unwrap();
+    let new_pid = std::cell::Cell::new(None);
+    assert!(
+        wait_until(
+            || {
+                new_pid.set(
+                    std::fs::read_to_string(root.join("successor-capable"))
+                        .ok()
+                        .and_then(|s| s.trim().parse::<i64>().ok())
+                        .filter(|p| *p != old_pid),
+                );
+                new_pid.get().is_some()
+            },
+            Duration::from_secs(30)
+        ),
+        "the successor never took the unit over"
+    );
+    let new_pid = new_pid.get().unwrap();
+
+    // The operator's own stop or restart, before the successor claims
+    // anything of its own: it sees the unit deactivating and drains.
+    std::fs::write(&state, "deactivating\n").unwrap();
+    assert!(
+        wait_until(
+            || e.db()
+                .query_row(
+                    "SELECT stopped_at IS NOT NULL FROM workers WHERE pid=?1",
+                    [new_pid],
+                    |r| r.get(0),
+                )
+                .unwrap_or(false),
+            Duration::from_secs(30)
+        ),
+        "the predecessor never closed the successor's row"
+    );
+
+    // The predecessor still holds `first`; a task queued now must find
+    // nobody claiming it, even though no newer worker is live any more.
+    let third = e.add(&["--retries", "0"]);
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(
+        e.task(third).0,
+        "queued",
+        "the predecessor claimed after the successor's clean exit"
+    );
+    assert_eq!(
+        running_pid(&e, first),
+        Some(old_pid),
+        "the predecessor's own attempt is still running"
+    );
+
+    assert!(old.stop().success());
+    assert_eq!(e.task(third).0, "queued", "still nobody claimed it");
 }
 
 #[test]
@@ -1016,8 +1151,8 @@ fn deploy_self_under_a_worker_that_never_takes_over_fails_staged_but_never_live(
     );
 
     // Staged back to what current names, so no worker retries it.
-    assert_eq!(s.link("current"), "releases/old");
-    assert_eq!(s.link("staged"), "releases/old");
+    assert_eq!(s.link("current"), format!("releases/{}", s.old));
+    assert_eq!(s.link("staged"), format!("releases/{}", s.old));
 
     let rows = s.deploy_rows();
     assert_eq!(rows.len(), 1, "{rows:?}");

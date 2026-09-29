@@ -116,11 +116,24 @@ struct Prerequisite {
 /// What the supervisor did with a blocked task, for the caller's record.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Ruled {
-    Answered { retry: i64 },
-    Prerequisite { prerequisite: i64, retry: i64 },
-    Superseded { by: i64 },
-    Accepted { landed: String },
+    Answered {
+        retry: i64,
+    },
+    Prerequisite {
+        prerequisite: i64,
+        retry: i64,
+    },
+    Superseded {
+        by: i64,
+    },
+    Accepted {
+        landed: String,
+    },
     Escalated(String),
+    /// The supervisor's own run failed before it read the record: not a
+    /// ruling, so the question stands as it was, with a note that the
+    /// supervisor could not read it (never a fresh escalation).
+    CouldNotRead(String),
     Skipped(String),
 }
 
@@ -578,8 +591,12 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     )
     .await?;
 
-    // A run that did not finish (timeout, crash, refused) is an agent
-    // failure on the record, not a failed ruling; the question escalates.
+    // A run that did not finish (timeout, crash, refused) is the
+    // supervisor's own failure, recorded as such, never a ruling on the
+    // question: it falls back to the question as it stood, with a note
+    // that the supervisor could not read it, rather than manufacturing a
+    // fresh escalation over a one-letter question nobody actually asked
+    // (task 1069, 2026-09-28).
     if let Some(why) = crate::directive::agent_failure(&outcome) {
         let mut verdict = Verdict::open(&GitFacts::default());
         verdict.settle(Some(&why), None, false);
@@ -588,13 +605,13 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         f.report.emit(
             id,
             Event::Note {
-                text: &format!("supervisor escalated: {why}"),
+                text: &format!("supervisor could not read the record: {why}"),
             },
         );
         let mut t = t.clone();
-        t.reason = format!("{} [supervisor escalated: {why}]", t.reason);
+        t.reason = format!("{} [supervisor could not read it: {why}]", t.reason);
         f.store.update_task(&t)?;
-        return Ok(Ruled::Escalated(why));
+        return Ok(Ruled::CouldNotRead(why));
     }
     // The verdict: structured, untouched, citing things that exist,
     // substantive. Anything short of that is an escalation.

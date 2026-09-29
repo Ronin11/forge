@@ -353,9 +353,10 @@ not a separate process: the worker that landed the task calls
 process being restarted is the one running the method. Three things make
 that safe. `--no-block` returns as soon as systemd has queued the
 restart, so the method finishes and exits before anything is stopped.
-The worker's stop is a drain, not a kill (`deploy/forge-worker.service`
-sends one SIGTERM to the main process, `KillMode=mixed`, and waits up to
-`TimeoutStopSec=2400`): it claims nothing new and lets every running
+The worker's stop is a drain, not a kill (the unit `forge init` writes,
+`init::worker_unit`, sends one SIGTERM to the main process,
+`KillMode=mixed`, and waits up to `TimeoutStopSec=2400`): it claims
+nothing new and lets every running
 attempt finish, and the landing that triggered the deploy is one of them,
 so the smoke step, the deploy row, the `DeployFinished` event and the
 on-landing assessment are all written by the old process before it exits.

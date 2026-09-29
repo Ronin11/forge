@@ -121,6 +121,171 @@ fn kind_lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Kind, D::Error
     Ok(Kind::parse(&s).unwrap_or_default())
 }
 
+/// Common English verbs (bare, third-person, past and gerund forms) that
+/// a question or an imperative asking one is built from. Not exhaustive;
+/// wide enough for the shapes an agent's `needs_input.question` actually
+/// takes (see `is_placeholder_question`).
+const VERB_STEMS: &[&str] = &[
+    "is",
+    "are",
+    "was",
+    "were",
+    "am",
+    "be",
+    "been",
+    "do",
+    "does",
+    "did",
+    "have",
+    "has",
+    "had",
+    "can",
+    "could",
+    "should",
+    "would",
+    "will",
+    "shall",
+    "must",
+    "may",
+    "might",
+    "want",
+    "need",
+    "confirm",
+    "clarify",
+    "choose",
+    "pick",
+    "prefer",
+    "decide",
+    "tell",
+    "use",
+    "keep",
+    "remove",
+    "rename",
+    "proceed",
+    "continue",
+    "fix",
+    "verify",
+    "override",
+    "allow",
+    "approve",
+    "reject",
+    "check",
+    "review",
+    "explain",
+    "give",
+    "make",
+    "know",
+    "go",
+    "take",
+    "run",
+    "try",
+    "see",
+    "say",
+    "mean",
+    "get",
+    "set",
+    "point",
+    "add",
+    "drop",
+    "delete",
+    "create",
+    "update",
+    "change",
+    "revert",
+    "skip",
+    "merge",
+    "split",
+    "rebase",
+    "push",
+    "pull",
+    "commit",
+    "deploy",
+    "ship",
+    "land",
+    "block",
+    "escalate",
+    "answer",
+    "respond",
+    "reply",
+    "let",
+    "look",
+    "wait",
+    "stop",
+    "start",
+    "finish",
+    "help",
+    "think",
+    "expect",
+    "assume",
+    "suggest",
+    "recommend",
+    "specify",
+    "provide",
+    "supply",
+    "name",
+    "call",
+    "label",
+    "mark",
+    "flag",
+    "note",
+    "assert",
+    "contradict",
+    "write",
+    "read",
+    "find",
+    "match",
+    "handle",
+    "cover",
+    "test",
+    "break",
+    "pass",
+    "fail",
+    "print",
+];
+
+/// Strips a common inflectional suffix, if `word` ends in one and has more
+/// left over than that: the crude stemming `has_a_verb` checks against
+/// `VERB_STEMS` with, so "needs", "needed" and "needing" all match "need".
+fn stem(word: &str) -> &str {
+    for suffix in ["ing", "ed", "es", "s"] {
+        if let Some(s) = word.strip_suffix(suffix)
+            && !s.is_empty()
+        {
+            return s;
+        }
+    }
+    word
+}
+
+/// Whether `text` contains a word that reads as a verb: in `VERB_STEMS`
+/// itself, or once a trailing "s", "ed", "es" or "ing" is stripped.
+fn has_a_verb(text: &str) -> bool {
+    text.split_whitespace().any(|w| {
+        let cleaned: String = w
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_lowercase();
+        !cleaned.is_empty()
+            && (VERB_STEMS.contains(&cleaned.as_str()) || {
+                let stemmed = stem(&cleaned);
+                stemmed != cleaned && VERB_STEMS.contains(&stemmed)
+            })
+    })
+}
+
+/// Whether a `needs_input.question` is not really a question: empty,
+/// under fifteen characters, or with neither a question mark nor a verb.
+/// Task 1069 (2026-09-28) ended its second attempt with the question text
+/// `q` after 49 turns and 3 commits; the kernel blocked it for the
+/// operator as though it were a real question. A question this shape
+/// reads as the agent stopping early with nothing left to ask, so the
+/// kernel gives it one nudge to finish instead (`engine::step`).
+pub fn is_placeholder_question(question: &str) -> bool {
+    let q = question.trim();
+    q.is_empty() || q.chars().count() < 15 || (!q.contains('?') && !has_a_verb(q))
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NeedsInput {
     pub question: String,
@@ -207,6 +372,39 @@ mod tests {
         .unwrap();
         assert_eq!(env.changes[0].path, "a.txt");
         assert!(env.checks_run[0].passed);
+    }
+
+    #[test]
+    fn is_placeholder_question_catches_empty_and_short_and_verbless_text() {
+        assert!(is_placeholder_question(""));
+        assert!(is_placeholder_question("   "));
+        assert!(is_placeholder_question("q"), "task 1069's one-letter text");
+        assert!(is_placeholder_question("ok?"), "under fifteen characters");
+        assert!(
+            is_placeholder_question("which db?"),
+            "a real question mark does not save under-fifteen-character text"
+        );
+        assert!(
+            is_placeholder_question("unclear from context"),
+            "long enough, no '?', and no verb"
+        );
+    }
+
+    #[test]
+    fn is_placeholder_question_leaves_a_real_question_or_ask_alone() {
+        assert!(!is_placeholder_question(
+            "Should ANSWER.txt also be written?"
+        ));
+        assert!(
+            !is_placeholder_question("Please confirm the file name to use"),
+            "an imperative ask with a verb, no question mark"
+        );
+        assert!(!is_placeholder_question(
+            "This needs a browser e2e step; no workflow has one."
+        ));
+        assert!(!is_placeholder_question(
+            "tests/acceptance/old.sh asserts the answer is empty, which the task contradicts"
+        ));
     }
 
     #[test]

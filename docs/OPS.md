@@ -64,11 +64,18 @@ who holds the pointer: **the store and every running binary agree.**
   including while every slot is busy. A different, runnable release with
   no live worker starts `releases/<id>/forge work` with the same
   arguments and `FORGE_HOME`, in its own process group, and records it in
-  `workers` (pid, version, registration order). A worker with a newer
-  live worker of another version in that table claims nothing, stops its
-  plugins once that worker has claimed (not before), finishes its tasks
-  and jobs and exits; if the successor dies before that, it claims again,
-  restarts its plugins and does not restart the same release. The
+  `workers` (pid, version, registration order, and the registering
+  process's start identity, so a pid the table still calls live because
+  nothing closed the row is not mistaken for a worker that pid was
+  reused from). A worker with a newer live worker of another version in
+  that table claims nothing, stops its plugins once that worker has
+  claimed (not before), finishes its tasks and jobs and exits; a worker
+  that is stopping starts no successor at all. If the successor dies
+  before it ever named itself in the capability file, the row closes and
+  the predecessor claims again and restarts its plugins; once it has
+  named itself there, this predecessor never claims again, drain or
+  crash alike — a stop job that lets the successor exit 0 must not hand
+  the claim back while `TimeoutStopSec` still ticks (2026-09-27). The
   successor flips `current` to its release (when a deploy has not already)
   and restarts the units the self deploy target declares (its `units`
   arg, the one `deploy-self` reads; `forge-web` when it declares none),
@@ -196,7 +203,15 @@ working `FORGE_HOME` (default `~/.local/share/forge`, the same resolution
    `tests/e2e/init.rs` additionally strips `XDG_RUNTIME_DIR` and
    `DBUS_SESSION_BUS_ADDRESS` from its own no-session test's environment,
    so the suite exercises the print path even when run inside a desktop
-   session where both are set.
+   session where both are set. With a session, each unit is asked
+   `systemctl --user is-enabled` and only what is not enabled is enabled,
+   so a home whose first run had no session is fixed by the next. A
+   changed unit is written and `daemon-reload`ed but not applied to the
+   running process: the step says `restart forge-worker to apply` and
+   names the worker's live PATH when it differs from the unit's. The PATH
+   written is this shell's followed by the entries the unit's existing
+   `Environment=PATH=` has and this shell lacks; `--reset-path` writes
+   this shell's alone.
 6. Ends by running the same checks `forge doctor` reports (against the
    home `forge init` just set up, even with `--home`), so a missing
    `bwrap`, `git` or a `claude` CLI that is not logged in is named on the
@@ -356,11 +371,12 @@ copies, verifies and prunes to seven.
 `scripts/release.sh [target-triple]` builds the workspace in release mode
 and packs one archive: `forge`, `forge-web`, `forge-portal`, `forge-tui`,
 `forge-repomap` (and `forge-test`, once that crate exists),
-`deploy/forge-worker.service`, `docs/ops/forge-web.service` and a
-`config.toml` template, into `dist/forge-<version>-<target>.tar.gz` beside
-`dist/SHA256SUMS`. The target defaults to the host `rustc` reports; naming
-a different one assumes its toolchain is already installed and passes it
-to `cargo build --target`.
+`docs/ops/forge-web.service` and a `config.toml` template, into
+`dist/forge-<version>-<target>.tar.gz` beside `dist/SHA256SUMS`. The target
+defaults to the host `rustc` reports; naming a different one assumes its
+toolchain is already installed and passes it to `cargo build --target`.
+The worker unit is not packed: `forge init` (`init::worker_unit`) is its
+only source, so an installed unit can never drift from a checked-in copy.
 
 The version is never typed by hand: the script reads it back from the
 binary it just built (`forge version`), so the archive's own name — and

@@ -8,6 +8,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 pub const WORKER_UNIT: &str = "forge-worker.service";
+pub const WEB_UNIT: &str = "forge-web.service";
 
 /// `$XDG_CONFIG_HOME/systemd/user`, else `$HOME/.config/systemd/user` —
 /// the OS user's own config directory, never `FORGE_HOME` (which may sit
@@ -115,6 +116,20 @@ fn unquote(v: &str) -> String {
     out
 }
 
+/// `fresh` followed by the entries of `existing` (a unit's declared PATH)
+/// that `fresh` lacks, in their order, so a re-run from a narrower shell
+/// keeps the directories the unit already had. Empty and relative entries
+/// of `existing` are dropped, as `compose` drops them.
+pub fn merge(fresh: &str, existing: Option<&str>) -> String {
+    let mut dirs: Vec<&str> = fresh.split(':').collect();
+    for d in existing.unwrap_or_default().split(':') {
+        if Path::new(d).is_absolute() && !dirs.contains(&d) {
+            dirs.push(d);
+        }
+    }
+    dirs.join(":")
+}
+
 /// The `Environment=PATH=` a unit file declares, if it exists and has one.
 pub fn declared_path(unit: &Path) -> Option<String> {
     let text = std::fs::read_to_string(unit).ok()?;
@@ -173,6 +188,15 @@ mod tests {
             compose(Path::new("/h/bin"), None),
             "/h/bin:/usr/local/bin:/usr/bin:/bin"
         );
+    }
+
+    #[test]
+    fn merge_keeps_the_existing_entries_the_new_path_lacks_after_the_new_ones() {
+        assert_eq!(
+            merge("/h/bin:/usr/bin", Some("/h/bin:/x/agents:rel::/usr/bin:/y")),
+            "/h/bin:/usr/bin:/x/agents:/y"
+        );
+        assert_eq!(merge("/h/bin:/usr/bin", None), "/h/bin:/usr/bin");
     }
 
     #[test]

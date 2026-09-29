@@ -27,6 +27,10 @@ pub struct TaskRow {
     /// Trust the caller earned by the path it queued through: `"operator"`,
     /// `"contact"`, or `"public"` (see `store::Trust`).
     pub trust: String,
+    /// 0 (lowest) to 7 (highest), 2 ("normal") by default (see
+    /// `store::priority`); `forge log`'s text form only prints it away
+    /// from that default.
+    pub priority: i64,
     /// `"agent"`, or `"adopted"`: a hand-made branch `forge adopt` landed
     /// with no agent run, which `forge log` marks manual.
     pub origin: String,
@@ -94,6 +98,7 @@ impl From<&TaskSummary> for TaskRow {
             project: s.project.clone(),
             initiative: s.initiative,
             trust: s.trust.clone(),
+            priority: s.priority,
             origin: s.origin.clone(),
             touch: s.touch.clone(),
             matched: s.matched.clone(),
@@ -273,6 +278,19 @@ pub struct TraceLineage {
     pub cost_usd: f64,
 }
 
+impl From<&crate::store::LineageRow> for TraceLineage {
+    fn from(l: &crate::store::LineageRow) -> Self {
+        TraceLineage {
+            id: l.id,
+            parent: l.parent,
+            state: l.state.clone(),
+            reason: l.reason.clone(),
+            workflow: l.workflow.clone(),
+            cost_usd: l.cost,
+        }
+    }
+}
+
 /// The task half of `TraceDoc`: every key `forge trace --json` has always
 /// emitted under `"task"`, unchanged. `worktree_removed_at` and
 /// `decisions` are not part of that historical shape (`forge show` needs
@@ -286,6 +304,9 @@ pub struct TraceTask {
     /// Trust the caller earned by the path it queued through: `"operator"`,
     /// `"contact"`, or `"public"` (see `store::Trust`).
     pub trust: String,
+    /// See `store::priority`; `forge show`'s text form only prints it
+    /// away from the default (2).
+    pub priority: i64,
     /// Where the work came from, as `origin` and (adopted only) `adoption`.
     #[serde(flatten)]
     pub origin: TraceOrigin,
@@ -538,6 +559,7 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
         text: t.task.clone(),
         state: t.state.as_str().to_string(),
         trust: t.trust.as_str().to_string(),
+        priority: t.priority,
         origin: TraceOrigin::of(t),
         reason: t.reason.clone(),
         workflow: t.workflow.clone(),
@@ -572,27 +594,10 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
             .store
             .live_descendants(t.id)?
             .iter()
-            .map(|l| TraceLineage {
-                id: l.id,
-                parent: l.parent,
-                state: l.state.clone(),
-                reason: l.reason.clone(),
-                workflow: l.workflow.clone(),
-                cost_usd: l.cost,
-            })
+            .map(TraceLineage::from)
             .collect(),
         root: f.store.root_of(t.id)?,
-        lineage: lineage
-            .iter()
-            .map(|l| TraceLineage {
-                id: l.id,
-                parent: l.parent,
-                state: l.state.clone(),
-                reason: l.reason.clone(),
-                workflow: l.workflow.clone(),
-                cost_usd: l.cost,
-            })
-            .collect(),
+        lineage: lineage.iter().map(TraceLineage::from).collect(),
         refs: f.store.task_refs(t.id)?.iter().map(RefRow::from).collect(),
         journal: crate::journal::journal_for(f, t)
             .ok()

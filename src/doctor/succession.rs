@@ -10,7 +10,7 @@ use crate::worker;
 /// the successor's pid, what the old one still holds, and how the machine's
 /// slots divide between them.
 pub(super) fn check_succession(paths: &Paths, store: &Store) -> Option<Check> {
-    let live = store.live_workers(worker::pid_alive).ok()?;
+    let live = store.live_workers(worker::worker_alive).ok()?;
     let newest = live.last()?;
     let old: Vec<_> = live
         .iter()
@@ -49,7 +49,7 @@ pub(super) fn check_staged(paths: &Paths, store: &Store) -> Option<Check> {
         return None;
     }
     let running = store
-        .live_workers(worker::pid_alive)
+        .live_workers(worker::worker_alive)
         .is_ok_and(|live| live.iter().any(|w| w.version == staged));
     let starting = crate::successor::starting(&root).is_some_and(|(_, r)| r == staged);
     if running || starting {
