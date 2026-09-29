@@ -2027,11 +2027,37 @@ mod tests {
     /// not just the scratch, or a copy of the login leaks per task.
     #[tokio::test]
     async fn red_on_base_leaves_neither_the_scratch_nor_its_provider_directory() {
+        use std::collections::BTreeMap;
+
         let (dir, base) = commit_fixture().await;
         let mut cfg = test_cfg();
-        cfg.checks.insert("test".into(), vec!["false".into()]);
         let report = Reporter::new(false, None);
         let scratch = dir.path().join("wt-red");
+        let build_env = BTreeMap::from([("CARGO_BUILD_JOBS".into(), "2".into())]);
+        crate::agent::build_env::configure_env(dir.path(), &scratch, &build_env, &BTreeMap::new());
+        // Another attempt is configured before red-on-base creates its tree.
+        crate::agent::build_env::configure_env(
+            dir.path(),
+            dir.path(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        cfg.checks.insert(
+            "setup".into(),
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "test \"$CARGO_BUILD_JOBS\" = 2".into(),
+            ],
+        );
+        cfg.checks.insert(
+            "test".into(),
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "echo CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS; exit 1".into(),
+            ],
+        );
         let provider = PathBuf::from(format!("{}-provider", scratch.display()));
         std::fs::create_dir_all(provider.join("claude")).unwrap();
         std::fs::write(provider.join("claude").join("credentials.json"), "{}").unwrap();
@@ -2056,6 +2082,9 @@ mod tests {
         };
         let mut checks = Vec::new();
         red_on_base(&s, &mut checks).await.unwrap();
+        assert_eq!(checks.len(), 2);
+        assert!(checks.iter().all(|check| check.ok), "{checks:?}");
+        assert!(checks[1].tail.contains("CARGO_BUILD_JOBS=2"));
         assert!(!scratch.exists(), "the scratch directory was left behind");
         assert!(
             !provider.exists(),

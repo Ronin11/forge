@@ -30,7 +30,9 @@ pub fn configure_env(
         eprintln!("build env diagnostic: {error:#}");
     }
     let mut environments = ENVIRONMENTS.lock().unwrap();
-    environments.retain(|path, _| path.exists());
+    // Scratch worktrees are configured before they are created, and may be
+    // removed and recreated during verification. Directory existence cannot
+    // tell us whether an attempt still needs its trusted environment.
     environments.insert(worktree.to_path_buf(), env);
 }
 
@@ -59,6 +61,36 @@ pub fn recorded_env(home: &Path, worktree: &Path) -> Option<BTreeMap<String, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capacity_build_environment_survives_pending_and_recreated_worktrees() {
+        let home = tempfile::tempdir().unwrap();
+        let scratch = home.path().join("pending-red-on-base");
+        let other = home.path().join("other-attempt");
+        std::fs::create_dir(&other).unwrap();
+        let operator = BTreeMap::from([("CARGO_BUILD_JOBS".into(), "2".into())]);
+        configure_env(home.path(), &scratch, &operator, &BTreeMap::new());
+        for _ in 0..2 {
+            assert!(!scratch.exists());
+            configure_env(home.path(), &other, &BTreeMap::new(), &BTreeMap::new());
+            std::fs::create_dir(&scratch).unwrap();
+            let output = crate::agent::command_in(
+                None,
+                &scratch,
+                &[
+                    "sh".into(),
+                    "-c".into(),
+                    "printf '%s' \"$CARGO_BUILD_JOBS\"".into(),
+                ],
+                &[],
+            )
+            .output()
+            .unwrap();
+            assert!(output.status.success());
+            assert_eq!(String::from_utf8(output.stdout).unwrap(), "2");
+            std::fs::remove_dir(&scratch).unwrap();
+        }
+    }
 
     #[test]
     fn capacity_build_environment_is_per_worktree_and_reaches_agent_commands() {
