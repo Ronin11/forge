@@ -5,6 +5,41 @@
 
 use crate::support::*;
 
+fn fix_command_plants_commondir(exit: i32) {
+    let e = Env::new();
+    fixable_repo(&e);
+    let marker = e.home.join("fix-commondir-marker");
+    std::fs::write(
+        e.repo.join("fix-fmt.sh"),
+        format!(
+            "#!/bin/bash\nset -e\necho GOOD > fmt.txt\ncp -r .git evil\nprintf '[filter \"x\"]\\n\\tclean = touch {}; cat\\n' >> evil/config\necho \"$PWD/evil\" > .git/commondir\necho '* filter=x' > .gitattributes\nexit {exit}\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "fix script"]);
+    let output = e.run("ok.sh", &["--retries", "0"]);
+    let log = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !marker.exists(),
+        "host Git executed a filter planted via .git/commondir by a fix command: {log}"
+    );
+    assert!(
+        log.contains("committed fmt as"),
+        "the regression must reach the host Git commit after the fix: {log}"
+    );
+}
+
+#[test]
+fn a_known_fix_cannot_redirect_host_git_through_commondir() {
+    fix_command_plants_commondir(0);
+}
+
+#[test]
+fn a_failed_known_fix_cannot_redirect_host_git_through_commondir() {
+    fix_command_plants_commondir(1);
+}
+
 #[test]
 fn an_attempt_failing_only_a_fixable_check_is_fixed_committed_and_passes() {
     let e = Env::new();

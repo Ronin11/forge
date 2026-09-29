@@ -681,6 +681,9 @@ fn overlay_note(dirty: &[String], namespace: &[String]) -> String {
 /// again, so its own commit is `before` for that second call and must
 /// still pass this row.
 async fn candidate_unchanged(wt: &Path, before: &str) -> Result<CheckResult> {
+    // The checks just ran sandboxed in `wt` and could have written
+    // anything into `.git`; strip it before the host git calls below.
+    crate::git::restore_metadata(wt)?;
     let after = crate::git::head(wt).await?;
     let dirty = crate::git::dirty_tracked_paths(wt).await?;
     let moved = after != before;
@@ -737,6 +740,8 @@ async fn l1_l2(
     for name in names {
         let argv = &s.cfg.checks[name];
         let r = run_one_recorded(s, "L1", name, argv, s.worktree, timeout, &facts).await;
+        // Checks can replace Git metadata even when they fail.
+        crate::git::restore_metadata(s.worktree)?;
         s.report.emit(
             s.task_id,
             Event::Check {
@@ -794,6 +799,7 @@ async fn l1_l2(
             let name = format!("task-check-{}", i + 1);
             let argv = vec!["bash".to_string(), "-c".to_string(), cmd.clone()];
             let mut r = run_one_recorded(s, "L2", &name, &argv, s.worktree, timeout, &facts).await;
+            crate::git::restore_metadata(s.worktree)?;
             if !r.ok {
                 r.tail = format!("$ {cmd}\n{}", r.tail);
             }
@@ -854,6 +860,9 @@ async fn try_known_fix(s: &Subject<'_>, checks: &[CheckResult]) -> Result<Option
     for name in &failing {
         let argv = &s.cfg.fixable[*name];
         let r = run_one("fix", name, argv, s.worktree, s.sandbox, timeout, &facts).await;
+        // A fix command is untrusted just like a check. In particular,
+        // commit_all below must never read a config redirected by commondir.
+        crate::git::restore_metadata(s.worktree)?;
         ok &= r.ok;
         s.report.emit(
             s.task_id,
@@ -1680,6 +1689,7 @@ mod tests {
 
     fn test_cfg() -> Config {
         Config {
+            build_env: Default::default(),
             execution: Default::default(),
             checks: std::collections::BTreeMap::new(),
             fixable: std::collections::BTreeMap::new(),
@@ -2026,11 +2036,37 @@ mod tests {
     /// not just the scratch, or a copy of the login leaks per task.
     #[tokio::test]
     async fn red_on_base_leaves_neither_the_scratch_nor_its_provider_directory() {
+        use std::collections::BTreeMap;
+
         let (dir, base) = commit_fixture().await;
         let mut cfg = test_cfg();
-        cfg.checks.insert("test".into(), vec!["false".into()]);
         let report = Reporter::new(false, None);
         let scratch = dir.path().join("wt-red");
+        let build_env = BTreeMap::from([("CARGO_BUILD_JOBS".into(), "2".into())]);
+        crate::agent::build_env::configure_env(dir.path(), &scratch, &build_env, &BTreeMap::new());
+        // Another attempt is configured before red-on-base creates its tree.
+        crate::agent::build_env::configure_env(
+            dir.path(),
+            dir.path(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        cfg.checks.insert(
+            "setup".into(),
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "test \"$CARGO_BUILD_JOBS\" = 2".into(),
+            ],
+        );
+        cfg.checks.insert(
+            "test".into(),
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "echo CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS; exit 1".into(),
+            ],
+        );
         let provider = PathBuf::from(format!("{}-provider", scratch.display()));
         std::fs::create_dir_all(provider.join("claude")).unwrap();
         std::fs::write(provider.join("claude").join("credentials.json"), "{}").unwrap();
@@ -2055,6 +2091,9 @@ mod tests {
         };
         let mut checks = Vec::new();
         red_on_base(&s, &mut checks).await.unwrap();
+        assert_eq!(checks.len(), 2);
+        assert!(checks.iter().all(|check| check.ok), "{checks:?}");
+        assert!(checks[1].tail.contains("CARGO_BUILD_JOBS=2"));
         assert!(!scratch.exists(), "the scratch directory was left behind");
         assert!(
             !provider.exists(),

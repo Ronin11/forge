@@ -3,7 +3,7 @@
 //! object store never holds the verification refs, and the sandbox never
 //! sees the repository's own .git.
 //!
-//! After an agent exits, only a fetch touches its Git metadata. Fetch runs
+//! After an agent exits, clone-side reads disable hooks and fsmonitor. Fetch runs
 //! upload-pack in the source clone; Git itself does not honor repository-local
 //! hooks or upload-pack pack hooks there. All subsequent verification uses a
 //! fresh checkout from a kernel-owned bare repository, never the agent's config.
@@ -43,8 +43,8 @@ impl Git {
         self
     }
 
-    /// Hooks, fsmonitor and auto-gc off for this spawn: for the one command
-    /// that must run with an agent's clone as its working directory.
+    /// Hooks, fsmonitor and auto-gc off for commands in caller-named paths,
+    /// including clones whose metadata an agent may have modified.
     fn hardened(mut self) -> Self {
         self.hardened = true;
         self
@@ -141,6 +141,7 @@ pub fn porcelain_paths(raw: &str) -> Vec<String> {
 
 pub async fn current_branch(repo: &Path) -> Result<String> {
     Git::new(repo)
+        .hardened()
         .line(&["symbolic-ref", "--short", "HEAD"])
         .await
         .context("repo is on a detached HEAD; set defaults.base_branch in forge.toml")
@@ -148,6 +149,7 @@ pub async fn current_branch(repo: &Path) -> Result<String> {
 
 pub async fn ref_exists(repo: &Path, full_ref: &str) -> bool {
     Git::new(repo)
+        .hardened()
         .line(&["rev-parse", "--verify", "--quiet", full_ref])
         .await
         .is_ok()
@@ -170,6 +172,7 @@ pub async fn clone_task(
     // The clone target does not exist yet, so run from the source repo,
     // which does.
     Git::new(repo)
+        .hardened()
         .raw(&[
             "clone",
             "--quiet",
@@ -181,7 +184,7 @@ pub async fn clone_task(
             dir_s,
         ])
         .await?;
-    let dir_git = Git::new(dir);
+    let dir_git = Git::new(dir).hardened();
     // The base as the remote has it, not as the registered checkout has it;
     // a recorded sha wins over the ref, so every clone of one task agrees.
     match (at_ref, at_sha) {
@@ -213,12 +216,44 @@ pub async fn clone_task(
 // Deliberately a complete config, not a patch to metadata supplied by an agent.
 const KERNEL_CONFIG: &str = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n\thooksPath = /dev/null\n";
 
+/// Strips whatever a sandboxed launch or check may have written into
+/// `<dir>/.git` before the first host git command touches that directory
+/// unsandboxed: `config` back to a fresh, trusted one (never a patch to
+/// what a check left), `hooks/` and `info/` emptied, and `commondir` and
+/// `gitdir` removed outright rather than inspected, since either would
+/// make git honor an object store, refs and config the sandbox planted
+/// instead of this directory's own. `dir/.git` must already be a plain
+/// directory; a symlink or gitfile in its place is a deeper compromise
+/// this refuses to follow.
+pub fn restore_metadata(dir: &Path) -> Result<()> {
+    let git_dir = dir.join(".git");
+    let meta = std::fs::symlink_metadata(&git_dir)
+        .with_context(|| format!("no .git in {}", dir.display()))?;
+    if !meta.is_dir() {
+        bail!("{} is not a plain directory", git_dir.display());
+    }
+    for redirect in ["commondir", "gitdir"] {
+        let _ = std::fs::remove_file(git_dir.join(redirect));
+    }
+    std::fs::write(
+        git_dir.join("config"),
+        KERNEL_CONFIG.replace("bare = true", "bare = false"),
+    )?;
+    for sub in ["hooks", "info"] {
+        let d = git_dir.join(sub);
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d)?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn kernel_repository(home: &Path, repo: &Path) -> Result<PathBuf> {
     let key = crate::job::sha256_hex(repo.to_string_lossy().as_bytes());
     let dir = home.join("repositories").join(format!("{key}.git"));
     if !dir.exists() {
         std::fs::create_dir_all(&dir)?;
         Git::new(&dir)
+            .hardened()
             .line(&["init", "--bare", "--quiet", "--template="])
             .await?;
         std::fs::write(dir.join("config"), KERNEL_CONFIG)?;
@@ -248,6 +283,7 @@ pub async fn kernel_tree(home: &Path, repo: &Path, dir: &Path, branch: &str) -> 
         std::fs::remove_dir_all(dir)?;
     }
     Git::new(&kernel)
+        .hardened()
         .line(&[
             "clone",
             "--quiet",
@@ -299,7 +335,7 @@ pub async fn stage(
 ) -> Result<String> {
     let _lock = kernel_lock(home, repo).await?;
     let kernel = kernel_repository(home, repo).await?;
-    let g = Git::new(&kernel);
+    let g = Git::new(&kernel).hardened();
     g.line(&[
         "fetch",
         "--quiet",
@@ -327,7 +363,7 @@ pub async fn verification_checkout(
 ) -> Result<()> {
     let _lock = kernel_lock(home, repo).await?;
     let kernel = kernel_repository(home, repo).await?;
-    let g = Git::new(&kernel);
+    let g = Git::new(&kernel).hardened();
     let source = dir.to_str().context("clone path is not UTF-8")?;
     let reference = format!("refs/heads/{branch}");
     g.line(&[
@@ -376,6 +412,7 @@ pub async fn verification_checkout(
         KERNEL_CONFIG.replace("bare = true", "bare = false"),
     )?;
     Git::new(&fresh)
+        .hardened()
         .line(&[
             "fetch",
             "--quiet",
@@ -388,6 +425,7 @@ pub async fn verification_checkout(
     // Preserve a pending integration base via an explicit fetch as well.
     let pending = format!("refs/heads/forge/{base}");
     let _ = Git::new(&fresh)
+        .hardened()
         .line(&[
             "fetch",
             "--quiet",
@@ -422,6 +460,7 @@ pub async fn verification_checkout(
 /// Fetch one branch from any source (a path or a URL) into `dir` as FETCH_HEAD.
 pub async fn fetch_ref(dir: &Path, src: &str, branch: &str) -> Result<()> {
     Git::new(dir)
+        .hardened()
         .line(&["fetch", "--quiet", src, &format!("refs/heads/{branch}")])
         .await?;
     Ok(())
@@ -430,7 +469,7 @@ pub async fn fetch_ref(dir: &Path, src: &str, branch: &str) -> Result<()> {
 /// Bring one branch of a remote up to date in the registered checkout's
 /// remote-tracking refs, without touching any local branch. The sha.
 pub async fn fetch_branch(repo: &Path, remote: &str, branch: &str) -> Result<String> {
-    let g = Git::new(repo);
+    let g = Git::new(repo).hardened();
     g.line(&["fetch", "--quiet", remote, branch]).await?;
     g.line(&["rev-parse", &format!("refs/remotes/{remote}/{branch}")])
         .await
@@ -441,6 +480,7 @@ pub async fn fetch_branch(repo: &Path, remote: &str, branch: &str) -> Result<Str
 /// into the clone it verifies.
 pub async fn fetch_full_ref(dir: &Path, src: &str, full_ref: &str) -> Result<()> {
     Git::new(dir)
+        .hardened()
         .line(&["fetch", "--quiet", "--no-tags", "--", src, full_ref])
         .await?;
     Ok(())
@@ -452,25 +492,34 @@ pub async fn update_ref(repo: &Path, full_ref: &str, sha: &str) -> Result<()> {
     if !full_ref.starts_with("refs/forge/") {
         bail!("{full_ref} is not in Forge's own ref namespace");
     }
-    Git::new(repo).line(&["update-ref", full_ref, sha]).await?;
+    Git::new(repo)
+        .hardened()
+        .line(&["update-ref", full_ref, sha])
+        .await?;
     Ok(())
 }
 
 /// The best common ancestor of `a` and `b` in `dir`; `None` when they
 /// share no history.
 pub async fn merge_base(dir: &Path, a: &str, b: &str) -> Option<String> {
-    Git::new(dir).line(&["merge-base", a, b]).await.ok()
+    Git::new(dir)
+        .hardened()
+        .line(&["merge-base", a, b])
+        .await
+        .ok()
 }
 
 /// A commit's subject line.
 pub async fn subject(dir: &Path, rev: &str) -> Result<String> {
     Git::new(dir)
+        .hardened()
         .line(&["log", "-1", "--format=%s", rev, "--"])
         .await
 }
 
 pub async fn rev_parse(repo: &Path, rev: &str) -> Result<String> {
     Git::new(repo)
+        .hardened()
         .line(&["rev-parse", "--verify", "--quiet", rev])
         .await
 }
@@ -491,7 +540,10 @@ pub async fn place_branch(
     let staged = format!("refs/forge/placed/{branch}");
     {
         let _lock = kernel_lock(home, repo).await?;
-        Git::new(&src).line(&["update-ref", &staged, sha]).await?;
+        Git::new(&src)
+            .hardened()
+            .line(&["update-ref", &staged, sha])
+            .await?;
     }
     Git::new(dir)
         .hardened()
@@ -520,7 +572,7 @@ pub enum Merge {
 /// Merge `rev` into the current branch as Forge. A conflict is aborted and
 /// reported, never left in the tree.
 pub async fn merge(dir: &Path, rev: &str, message: &str) -> Result<Merge> {
-    let g = Git::new(dir);
+    let g = Git::new(dir).hardened();
     if g.line(&["merge-base", "--is-ancestor", rev, "HEAD"])
         .await
         .is_ok()
@@ -528,6 +580,7 @@ pub async fn merge(dir: &Path, rev: &str, message: &str) -> Result<Merge> {
         return Ok(Merge::UpToDate);
     }
     let out = Git::new(dir)
+        .hardened()
         .with_identity()
         .output(&["merge", "--quiet", "--no-edit", "-m", message, rev])
         .await?;
@@ -554,6 +607,7 @@ pub async fn merge(dir: &Path, rev: &str, message: &str) -> Result<Merge> {
 
 pub async fn is_ancestor(dir: &Path, ancestor: &str, descendant: &str) -> bool {
     Git::new(dir)
+        .hardened()
         .line(&["merge-base", "--is-ancestor", ancestor, descendant])
         .await
         .is_ok()
@@ -589,6 +643,7 @@ pub async fn net_changes(
 
 async fn changed_paths_between(wt: &Path, from: &str, to: &str) -> Result<Vec<String>> {
     let out = Git::new(wt)
+        .hardened()
         .line(&["diff", "--name-only", from, to])
         .await?;
     Ok(out
@@ -600,7 +655,10 @@ async fn changed_paths_between(wt: &Path, from: &str, to: &str) -> Result<Vec<St
 
 /// One file's patch between two commits, without the volatile index line.
 async fn file_patch(wt: &Path, from: &str, to: &str, path: &str) -> Result<String> {
-    let out = Git::new(wt).line(&["diff", from, to, "--", path]).await?;
+    let out = Git::new(wt)
+        .hardened()
+        .line(&["diff", from, to, "--", path])
+        .await?;
     Ok(out
         .lines()
         .filter(|l| !l.starts_with("index "))
@@ -619,7 +677,7 @@ pub async fn graft(
     branch: &str,
     message: &str,
 ) -> Result<Option<String>> {
-    let g = Git::new(repo);
+    let g = Git::new(repo).hardened();
     let full = format!("refs/heads/{branch}");
     let parent = g
         .line(&["rev-parse", "--verify", "--quiet", &full])
@@ -634,6 +692,7 @@ pub async fn graft(
         .to_string();
     let _ = std::fs::remove_file(&index);
     let indexed = Git::new(repo)
+        .hardened()
         .with_identity()
         .with_env([("GIT_INDEX_FILE".to_string(), index_s)]);
     let run = |args: Vec<String>| {
@@ -692,7 +751,7 @@ pub async fn graft(
 
 /// Catch a local suite branch up to the remote without discarding either history.
 pub async fn catch_up_branch(repo: &Path, url: &str, branch: &str) -> Result<()> {
-    let g = Git::new(repo);
+    let g = Git::new(repo).hardened();
     let full = format!("refs/heads/{branch}");
     let advertised = g.line(&["ls-remote", "--heads", url, &full]).await?;
     if advertised.is_empty() {
@@ -722,13 +781,14 @@ pub async fn catch_up_branch(repo: &Path, url: &str, branch: &str) -> Result<()>
 /// Returns the new commit, or `None` when there was nothing to commit.
 /// Ignored files stay ignored, as they do for the agent.
 pub async fn commit_all(dir: &Path, message: &str) -> Result<Option<String>> {
-    let g = Git::new(dir);
+    let g = Git::new(dir).hardened();
     g.line(&["add", "-A"]).await?;
     let staged = g.output(&["diff", "--cached", "--quiet"]).await?;
     if staged.status.success() {
         return Ok(None);
     }
     Git::new(dir)
+        .hardened()
         .with_identity()
         .line(&["commit", "--quiet", "--no-verify", "-m", message])
         .await?;
@@ -752,7 +812,7 @@ pub async fn commit_paths(dir: &Path, paths: &[&str], message: &str) -> Result<O
     if paths.is_empty() {
         return Ok(None);
     }
-    let g = Git::new(dir);
+    let g = Git::new(dir).hardened();
     let with_paths = |head: &[&str]| -> Vec<String> {
         head.iter()
             .chain(&["--"])
@@ -772,6 +832,7 @@ pub async fn commit_paths(dir: &Path, paths: &[&str], message: &str) -> Result<O
     }
     let commit = with_paths(&["commit", "--quiet", "--no-verify", "-m", message]);
     Git::new(dir)
+        .hardened()
         .with_identity()
         .line(&commit.iter().map(String::as_str).collect::<Vec<_>>())
         .await?;
@@ -782,7 +843,7 @@ pub async fn commit_paths(dir: &Path, paths: &[&str], message: &str) -> Result<O
 /// commit, and return that commit: how `forge job test` gives its scratch
 /// copy of a working tree the revision the job executor archives from.
 pub async fn init_commit_all(dir: &Path, message: &str) -> Result<String> {
-    Git::new(dir).line(&["init", "--quiet"]).await?;
+    Git::new(dir).hardened().line(&["init", "--quiet"]).await?;
     commit_all(dir, message)
         .await?
         .with_context(|| format!("nothing to commit in {}", dir.display()))
@@ -790,7 +851,7 @@ pub async fn init_commit_all(dir: &Path, message: &str) -> Result<String> {
 
 /// Discard every commit and change on the branch back to `sha`.
 pub async fn reset_hard(dir: &Path, sha: &str) -> Result<()> {
-    let g = Git::new(dir);
+    let g = Git::new(dir).hardened();
     g.line(&["reset", "--hard", "--quiet", sha]).await?;
     g.line(&["clean", "-fdq"]).await?;
     Ok(())
@@ -800,19 +861,20 @@ pub async fn reset_hard(dir: &Path, sha: &str) -> Result<()> {
 /// the commits never named are left where they are.
 pub async fn reset_tracked(dir: &Path, sha: &str) -> Result<()> {
     Git::new(dir)
+        .hardened()
         .line(&["reset", "--hard", "--quiet", sha])
         .await?;
     Ok(())
 }
 
 pub async fn head(dir: &Path) -> Result<String> {
-    Git::new(dir).line(&["rev-parse", "HEAD"]).await
+    Git::new(dir).hardened().line(&["rev-parse", "HEAD"]).await
 }
 
 /// The content of `path` at `rev`, or `None` if it does not exist there.
 pub async fn show_file(dir: &Path, rev: &str, path: &str) -> Result<Option<String>> {
     let spec = format!("{rev}:{path}");
-    let out = Git::new(dir).output(&["show", &spec]).await?;
+    let out = Git::new(dir).hardened().output(&["show", &spec]).await?;
     if out.status.success() {
         Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
     } else {
@@ -823,6 +885,7 @@ pub async fn show_file(dir: &Path, rev: &str, path: &str) -> Result<Option<Strin
 pub async fn count_commits(wt: &Path, base_sha: &str) -> Result<i64> {
     let range = format!("{base_sha}..HEAD");
     Ok(Git::new(wt)
+        .hardened()
         .line(&["rev-list", "--count", &range])
         .await?
         .parse()
@@ -832,6 +895,7 @@ pub async fn count_commits(wt: &Path, base_sha: &str) -> Result<i64> {
 /// Paths changed between base and HEAD, committed only.
 pub async fn changed_paths(wt: &Path, base_sha: &str) -> Result<Vec<String>> {
     let out = Git::new(wt)
+        .hardened()
         .line(&["diff", "--name-only", base_sha, "HEAD"])
         .await?;
     Ok(out
@@ -855,6 +919,7 @@ pub async fn diff_lines(
     to: &str,
 ) -> Result<(Vec<(String, String)>, Vec<(String, String)>)> {
     let raw = Git::new(repo)
+        .hardened()
         .raw(&["diff", "--unified=0", "--no-color", from, to])
         .await?;
     let mut added = Vec::new();
@@ -908,6 +973,7 @@ fn parse_status_line(line: &str) -> Option<GitChange> {
 /// an add that happen to land in the same diff.
 pub async fn changed_with_status(wt: &Path, from: &str, to: &str) -> Result<Vec<GitChange>> {
     let out = Git::new(wt)
+        .hardened()
         .line(&[
             "-c",
             "core.quotepath=off",
@@ -929,13 +995,14 @@ pub async fn changed_with_status(wt: &Path, from: &str, to: &str) -> Result<Vec<
 /// reviewer would read it (unlike `diff_lines`, which strips markers for
 /// the churn measurement).
 pub async fn diff_text(dir: &Path, from: &str, to: &str) -> Result<String> {
-    Git::new(dir).raw(&["diff", from, to]).await
+    Git::new(dir).hardened().raw(&["diff", from, to]).await
 }
 
 /// `git diff --shortstat`'s one line ("2 files changed, 3 insertions(+), 1
 /// deletion(-)"), for the diff stat a known fix's operation row carries.
 pub async fn diff_shortstat(dir: &Path, from: &str, to: &str) -> Result<String> {
     Ok(Git::new(dir)
+        .hardened()
         .line(&["diff", "--shortstat", from, to])
         .await?
         .trim()
@@ -945,7 +1012,10 @@ pub async fn diff_shortstat(dir: &Path, from: &str, to: &str) -> Result<String> 
 /// Lines added plus deleted from `from` to `to` (binary files count none),
 /// what the `diff-size` operation caps.
 pub async fn diff_line_total(dir: &Path, from: &str, to: &str) -> Result<u64> {
-    let text = Git::new(dir).raw(&["diff", "--numstat", from, to]).await?;
+    let text = Git::new(dir)
+        .hardened()
+        .raw(&["diff", "--numstat", from, to])
+        .await?;
     Ok(text
         .lines()
         .flat_map(|l| l.split('\t').take(2))
@@ -957,6 +1027,7 @@ pub async fn diff_line_total(dir: &Path, from: &str, to: &str) -> Result<u64> {
 pub async fn log_oneline(dir: &Path, from: &str) -> Result<String> {
     let range = format!("{from}..HEAD");
     Ok(Git::new(dir)
+        .hardened()
         .line(&["log", "--oneline", &range])
         .await?
         .trim()
@@ -967,6 +1038,7 @@ pub async fn log_oneline(dir: &Path, from: &str) -> Result<String> {
 /// changes) against `from`.
 pub async fn diff_stat_tree(dir: &Path, from: &str) -> Result<String> {
     Ok(Git::new(dir)
+        .hardened()
         .line(&["diff", "--stat", from])
         .await?
         .trim()
@@ -976,7 +1048,10 @@ pub async fn diff_stat_tree(dir: &Path, from: &str) -> Result<String> {
 /// Porcelain status entries: anything uncommitted, untracked included.
 pub async fn dirty_paths(wt: &Path) -> Result<Vec<String>> {
     Ok(porcelain_paths(
-        &Git::new(wt).raw(&["status", "--porcelain"]).await?,
+        &Git::new(wt)
+            .hardened()
+            .raw(&["status", "--porcelain"])
+            .await?,
     ))
 }
 
@@ -985,6 +1060,7 @@ pub async fn dirty_paths(wt: &Path) -> Result<Vec<String>> {
 pub async fn dirty_files(wt: &Path) -> Result<Vec<String>> {
     Ok(porcelain_paths(
         &Git::new(wt)
+            .hardened()
             .raw(&["status", "--porcelain", "--untracked-files=all"])
             .await?,
     ))
@@ -994,6 +1070,7 @@ pub async fn dirty_files(wt: &Path) -> Result<Vec<String>> {
 /// every other staged change as it is.
 pub async fn unstage(wt: &Path, path: &str) -> Result<()> {
     Git::new(wt)
+        .hardened()
         .line(&["reset", "--quiet", "HEAD", "--", path])
         .await?;
     Ok(())
@@ -1004,7 +1081,10 @@ pub async fn unstage(wt: &Path, path: &str) -> Result<()> {
 /// leftover build artifact must not read as tampering with the commit a
 /// check is judging, but a change to what HEAD already named must.
 pub async fn dirty_tracked_paths(wt: &Path) -> Result<Vec<String>> {
-    let raw = Git::new(wt).raw(&["status", "--porcelain"]).await?;
+    let raw = Git::new(wt)
+        .hardened()
+        .raw(&["status", "--porcelain"])
+        .await?;
     let tracked: String = raw
         .lines()
         .filter(|l| !l.starts_with("??"))
@@ -1015,6 +1095,7 @@ pub async fn dirty_tracked_paths(wt: &Path) -> Result<Vec<String>> {
 
 pub async fn remote_url(repo: &Path, remote: &str) -> Option<String> {
     Git::new(repo)
+        .hardened()
         .line(&["remote", "get-url", remote])
         .await
         .ok()
@@ -1023,6 +1104,7 @@ pub async fn remote_url(repo: &Path, remote: &str) -> Option<String> {
 /// Whether `dir` is a bare repository.
 pub async fn is_bare(dir: &Path) -> bool {
     Git::new(dir)
+        .hardened()
         .line(&["rev-parse", "--is-bare-repository"])
         .await
         .is_ok_and(|l| l == "true")
@@ -1059,7 +1141,10 @@ pub async fn published(
     let head = stage(home, repo, wt, "HEAD", "refs/forge/outgoing/published").await?;
     let kernel = kernel_repository(home, repo).await?;
     let full = format!("refs/heads/{branch}");
-    let out = Git::new(&kernel).raw(&["ls-remote", url, &full]).await?;
+    let out = Git::new(&kernel)
+        .hardened()
+        .raw(&["ls-remote", url, &full])
+        .await?;
     Ok(out.split_whitespace().next() == Some(head.as_str()))
 }
 
@@ -1101,6 +1186,7 @@ pub async fn push_ref(
 pub async fn push_sha(home: &Path, repo: &Path, sha: &str, url: &str, branch: &str) -> Result<()> {
     let kernel = kernel_repository(home, repo).await?;
     Git::new(&kernel)
+        .hardened()
         .line(&[
             "push",
             "--quiet",
@@ -1117,7 +1203,7 @@ pub async fn ls_tree(repo: &Path, rev: &str, paths: &[String]) -> Result<Vec<Str
     let mut args = vec!["ls-tree", "-r", "--name-only", rev, "--"];
     let owned: Vec<&str> = paths.iter().map(String::as_str).collect();
     args.extend(owned);
-    let out = Git::new(repo).line(&args).await?;
+    let out = Git::new(repo).hardened().line(&args).await?;
     Ok(out
         .lines()
         .filter(|l| !l.is_empty())
@@ -1134,7 +1220,7 @@ pub async fn archive_into(repo: &Path, rev: &str, files: &[String], dest: &Path)
     let mut args: Vec<&str> = vec!["archive", "--format=tar", rev, "--"];
     let owned: Vec<&str> = files.iter().map(String::as_str).collect();
     args.extend(owned);
-    let g = Git::new(repo);
+    let g = Git::new(repo).hardened();
     let tar = g.output(&args).await?;
     if !tar.status.success() {
         bail!(
@@ -1160,7 +1246,7 @@ pub async fn fresh_archive(repo: &Path, rev: &str, dest: &Path) -> Result<()> {
 pub async fn archive_all(repo: &Path, rev: &str, dest: &Path) -> Result<()> {
     std::fs::create_dir_all(dest)?;
     let args = ["archive", "--format=tar", rev];
-    let g = Git::new(repo);
+    let g = Git::new(repo).hardened();
     let tar = g.output(&args).await?;
     if !tar.status.success() {
         bail!(
@@ -1202,10 +1288,10 @@ async fn config_or(g: &Git, key: &str, default: &str) -> String {
         .unwrap_or_else(|| default.to_string())
 }
 
-/// The committer identity the clone would use, for passing into the sandbox
+/// The committer identity from a registered or kernel repository, passed into the sandbox
 /// where ~/.gitconfig is invisible.
 pub async fn identity(git_dir: &Path) -> Vec<(String, String)> {
-    let g = Git::new(git_dir);
+    let g = Git::new(git_dir).hardened();
     let name = config_or(&g, "user.name", IDENTITY.0).await;
     let email = config_or(&g, "user.email", IDENTITY.1).await;
     vec![
@@ -1224,7 +1310,7 @@ pub async fn identity(git_dir: &Path) -> Vec<(String, String)> {
 /// ran, for the human-attention measurement (docs/LATER.md, "Two metrics
 /// the record can compute and does not").
 pub async fn hand_commit_count(repo: &Path, from: &str, to: &str) -> Result<i64> {
-    let g = Git::new(repo);
+    let g = Git::new(repo).hardened();
     let name = config_or(&g, "user.name", IDENTITY.0).await;
     let email = config_or(&g, "user.email", IDENTITY.1).await;
     let range = format!("{from}..{to}");
@@ -1259,6 +1345,7 @@ pub fn compare_url(remote_url: &str, base: &str, branch: &str) -> Option<String>
 pub async fn remote_branch_exists(url: &str, branch: &str) -> Result<bool> {
     let full = format!("refs/heads/{branch}");
     let out = Git::new(".")
+        .hardened()
         .raw(&["ls-remote", "--heads", url, &full])
         .await?;
     Ok(!out.trim().is_empty())
@@ -1269,6 +1356,7 @@ pub async fn remote_branch_exists(url: &str, branch: &str) -> Result<bool> {
 pub async fn remote_branch_sha(url: &str, branch: &str) -> Option<String> {
     let full = format!("refs/heads/{branch}");
     let out = Git::new(".")
+        .hardened()
         .line(&["ls-remote", "--heads", url, &full])
         .await
         .ok()?;

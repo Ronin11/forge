@@ -178,9 +178,9 @@ enum Cmd {
     Chat(ChatCmd),
     /// Run queued tasks: stay up and poll, or drain and exit with --once
     Work {
-        /// Tasks to run at the same time
-        #[arg(long, default_value_t = 1)]
-        jobs: usize,
+        /// Override config.toml [worker] slots for this worker
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        jobs: Option<u32>,
         /// Seconds between queue polls when idle
         #[arg(long, default_value_t = 30)]
         poll: u64,

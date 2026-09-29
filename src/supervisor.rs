@@ -581,6 +581,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
             id,
             step: "supervisor",
             dir: wt,
+            identity_repo: Some(std::path::Path::new(&t.repo)),
             prompt: &prompt_text,
             system: "",
             model: &cfg.model,

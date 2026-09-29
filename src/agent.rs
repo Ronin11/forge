@@ -3,6 +3,7 @@
 //! first. Numbers Forge records come from the CLI's accounting or Forge's
 //! own clock, never from the model's prose.
 
+pub(crate) mod build_env;
 mod chat;
 mod claude;
 mod codex;
@@ -340,10 +341,15 @@ pub fn agent_env(phase: Phase) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The phase's inherited environment plus explicitly supplied `extra_env`.
-fn env_with(extra_env: &[(String, String)], phase: Phase) -> Vec<(String, String)> {
+/// The phase's inherited environment plus explicit values and build limits.
+fn env_with(
+    worktree: &Path,
+    extra_env: &[(String, String)],
+    phase: Phase,
+) -> Vec<(String, String)> {
     let mut env = agent_env(phase);
     env.extend(extra_env.iter().cloned());
+    env.extend(build_env::worktree_env(worktree));
     env
 }
 
@@ -357,7 +363,7 @@ pub async fn prepare_in(
     phase: Phase,
 ) {
     if let Some(sb) = sandbox {
-        sb.prepare(worktree, &env_with(extra_env, phase), phase)
+        sb.prepare(worktree, &env_with(worktree, extra_env, phase), phase)
             .await;
     }
 }
@@ -372,7 +378,7 @@ pub fn command_in(
     extra_env: &[(String, String)],
     phase: Phase,
 ) -> std::process::Command {
-    let env = env_with(extra_env, phase);
+    let env = env_with(worktree, extra_env, phase);
     match sandbox {
         Some(sb) => sb.command(worktree, argv, &env, phase),
         None => crate::executor::Executor::command(
@@ -411,6 +417,8 @@ async fn spawn_retrying_etxtbsy(
 pub struct Launch<'a> {
     pub task_id: i64,
     pub worktree: &'a Path,
+    /// Resolved from trusted repository metadata before entering the runner.
+    pub identity: Vec<(String, String)>,
     pub prompt: &'a str,
     /// System-level content a runner with its own system channel
     /// (`Runner::Chat`) sends as a separate message ahead of `prompt`;
@@ -1286,6 +1294,7 @@ mod tests {
         Launch {
             task_id: 1,
             worktree,
+            identity: Vec::new(),
             prompt: "do the task",
             system: "",
             model: "sonnet",
