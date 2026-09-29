@@ -366,11 +366,9 @@ fn a_task_is_judged_by_the_hidden_suite_that_matches_its_base_not_one_that_grew_
         .query_row("SELECT worktree FROM tasks WHERE id=1", [], |r| r.get(0))
         .unwrap();
     let gate = Path::new(&worktree).join(".git");
+    let ready = gate.join("gate-ready");
     assert!(
-        wait_until(
-            || gate.join("gate-ready").exists(),
-            Duration::from_secs(120)
-        ),
+        wait_until(|| ready.exists(), Duration::from_secs(120)),
         "B never reached its coder gate"
     );
     // A, a tdd task, lands meanwhile and folds "answer.txt must be 42" into forge-verify.
