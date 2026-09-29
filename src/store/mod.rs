@@ -20,6 +20,7 @@ mod descendants;
 mod events;
 mod factors;
 mod holds;
+mod initiative_holds;
 mod job_resolutions;
 mod job_runs;
 mod jobs;

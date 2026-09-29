@@ -359,6 +359,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   chat.rs           chat_sessions and chat_turns: every turn of Ask Forge, its tool calls and cost
   messages.rs       messages: one row per inbound/outbound message on a channel, so a rule can ask "has this contact replied since"
   holds.rs          provider_holds and provider_probes: a provider held for a refused login, and every probe of it with its cost
+  initiative_holds.rs  initiative_holds: which initiative holds have been announced and with what reason, so a successor worker never repeats one a predecessor already made
   webhooks.rs       webhook_tokens: per-hook tokens (only their hashes) that let `forge job fire` start a webhook-triggered job
   events.rs         event_cursors: per project and run workflow, the events.jsonl offset its event trigger has examined up to
   schedule.rs       schedule_refusals: the schedules a per_day cap holds back, which the worker's tick records and `forge job list` prints
