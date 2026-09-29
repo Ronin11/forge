@@ -683,6 +683,7 @@ impl Store {
     /// (the caller has already found those initiatives are holding new
     /// claims, see `view::initiative_hold`) or for which `provider_held`
     /// says the provider it would run under is at its rate-window cap.
+    #[cfg(test)]
     pub fn claim_next(
         &self,
         pid: i64,

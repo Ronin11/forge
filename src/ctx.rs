@@ -146,6 +146,8 @@ pub fn legacy_home_migration() -> Option<(PathBuf, PathBuf)> {
 }
 
 pub struct Forge {
+    pub worker: crate::config::capacity::Settings,
+    pub build_env: BTreeMap<String, String>,
     pub paths: Paths,
     pub store: Store,
     pub budget: Budget,
@@ -212,6 +214,8 @@ impl Forge {
         };
         let report = Reporter::new(prefix, Some(paths.home.join("events.jsonl")));
         Ok(Forge {
+            worker: home.worker,
+            build_env: home.build_env,
             paths,
             store,
             budget: home.budget,
@@ -250,6 +254,8 @@ impl Forge {
         let home = config::load_home(&paths.home)?;
         let report = Reporter::new(false, Some(paths.home.join("events.jsonl")));
         Ok(Forge {
+            worker: home.worker,
+            build_env: home.build_env,
             paths,
             store,
             budget: home.budget,
@@ -283,6 +289,12 @@ impl Forge {
         trust: crate::store::Trust,
         provider: Option<&str>,
     ) {
+        crate::agent::build_env::configure_env(
+            &self.paths.home,
+            worktree,
+            &self.build_env,
+            &cfg.build_env,
+        );
         if let Some(sandbox) = &self.sandbox {
             sandbox.configure(worktree, &cfg.execution);
             // A level whose egress is `model` reaches the model endpoints
