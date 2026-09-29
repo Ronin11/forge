@@ -136,6 +136,21 @@ pub fn failing_finding<'a>(
 
 const NEEDS_SANDBOX: &str = "the deploy look needs the sandbox; not run unsandboxed";
 
+/// Isolate the look's writes while allowing it to read the smoke output.
+fn prepare_scratch(f: &Forge, scratch: &Path, out_dir: &Path) -> Result<()> {
+    let _ = std::fs::remove_dir_all(scratch);
+    std::fs::create_dir_all(scratch).context("creating the look's scratch directory")?;
+    let granted = f
+        .sandbox
+        .as_ref()
+        .is_some_and(|sandbox| sandbox.grant_ro(scratch, out_dir.to_path_buf()));
+    if !granted {
+        let _ = std::fs::remove_dir_all(scratch);
+        bail!("{NEEDS_SANDBOX}");
+    }
+    Ok(())
+}
+
 /// Run look number `look_no` (1-based; a confirming look is 2) of
 /// `deploy-look` against a deploy's smoke output, when the target declared
 /// a smoke url and the smoke step left a screenshot to look at. `smoke_ok`
@@ -220,16 +235,7 @@ pub async fn run(
     // its own with `out_dir` bound read-only beside it, so nothing it does
     // reaches the smoke output, the deploy's tree, or anything else.
     let scratch = out_dir.with_file_name(format!("{deploy_id}-look-{look_no}"));
-    let _ = std::fs::remove_dir_all(&scratch);
-    std::fs::create_dir_all(&scratch).context("creating the look's scratch directory")?;
-    let granted = f
-        .sandbox
-        .as_ref()
-        .is_some_and(|sandbox| sandbox.grant_ro(&scratch, out_dir.to_path_buf()));
-    if !granted {
-        let _ = std::fs::remove_dir_all(&scratch);
-        bail!("{NEEDS_SANDBOX}");
-    }
+    prepare_scratch(f, &scratch, out_dir)?;
 
     let outcome = crate::directive::launch(
         f,
