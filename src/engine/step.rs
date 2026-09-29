@@ -4,6 +4,7 @@
 
 use super::*;
 
+mod attempts;
 mod bookkeeping;
 mod continuation;
 mod provider_hold;
@@ -314,51 +315,7 @@ pub(super) async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<Ste
         if let Some(end) = check_abort(f, t)? {
             return Ok(StepFlow::End(end));
         }
-        // A deterministic fix ran before this verdict was
-        // decided (see `verify::try_known_fix`): its own
-        // row, so the trace shows what Forge did without an
-        // agent turn before showing whether it worked.
-        if let Some(fix) = &verdict.known_fix {
-            op(
-                f,
-                id,
-                &timer,
-                OpRow {
-                    seq,
-                    name: "known-fix",
-                    kernel: true,
-                    ok: fix.ok,
-                    exit: None,
-                    detail: &match &fix.commit {
-                        Some(sha) => format!(
-                            "{} fixed as {}: {}",
-                            fix.checks.join(", "),
-                            &sha[..8],
-                            fix.diff_stat
-                        ),
-                        None => format!("{} left nothing to commit", fix.checks.join(", ")),
-                    },
-                    attempt_id: Some(a.id),
-                    output: "",
-                },
-            )?;
-        }
-        // The kernel's verify, as a row of its own.
-        op(
-            f,
-            id,
-            &timer,
-            OpRow {
-                seq,
-                name: "verify",
-                kernel: true,
-                ok: a.state == AttemptState::Succeeded,
-                exit: None,
-                detail: &a.reason,
-                attempt_id: Some(a.id),
-                output: "",
-            },
-        )?;
+        attempts::record_verification(f, id, seq, &timer, &a, &verdict)?;
         last = a.state;
         last_reason = a.reason.clone();
         last_checks = verdict.checks.clone();
