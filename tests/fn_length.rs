@@ -225,13 +225,13 @@ const ALLOWLIST: &[(&str, &str, usize, &str)] = &[
         "existing function awaiting a focused split",
     ),
     (
-        "src/verify.rs",
+        "src/verify/l0_checks.rs",
         "common_l0",
         160,
         "existing function awaiting a focused split",
     ),
     (
-        "src/verify.rs",
+        "src/verify/directive.rs",
         "verify_directive",
         176,
         "existing function awaiting a focused split",

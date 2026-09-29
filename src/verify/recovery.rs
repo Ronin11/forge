@@ -1,6 +1,8 @@
 //! A missing final report must not discard committed work before checks see it.
 
+use super::l0_checks::derive_changes;
 use super::*;
+use anyhow::Result;
 use crate::directive::{self, Failure};
 
 /// Recover only against this attempt's start, never a previous attempt's
