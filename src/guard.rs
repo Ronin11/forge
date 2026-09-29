@@ -101,6 +101,8 @@ pub fn installed(bare: &Path) -> bool {
 pub async fn install(bare: &Path, home: &Path, repo: &str, base_branch: &str) -> Result<bool> {
     use std::os::unix::fs::PermissionsExt;
     let hooks = git::hooks_dir(bare).await?;
+    std::fs::create_dir_all(&hooks)
+        .with_context(|| format!("creating guard hook directory {}", hooks.display()))?;
     let hook = hooks.join("pre-receive");
     let mut changed = false;
     let old = std::fs::read_to_string(&hook).ok();

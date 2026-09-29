@@ -167,7 +167,8 @@ fn assert_guard_landing(origin: &str, absolute_hooks: Option<bool>) {
     let e = Env::new();
     let hooks = if let Some(absolute) = absolute_hooks {
         let path = e.origin.join("custom hooks");
-        std::fs::create_dir_all(&path).unwrap();
+        // Installation must create a configured hooks directory that does
+        // not exist yet, just as it creates the hook itself.
         let setting = if absolute {
             path.to_str().unwrap()
         } else {
