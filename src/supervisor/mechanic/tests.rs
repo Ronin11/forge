@@ -345,13 +345,27 @@ async fn an_unrecognized_failure_blocks_with_a_decision_and_leaves_the_task_fail
 }
 
 #[tokio::test]
-async fn an_operation_failure_is_out_of_scope_and_left_alone() {
+async fn an_operation_failure_blocks_with_a_decision_like_any_other_unrecognized_failure() {
     let (repo, base) = repo_fixture();
     let f = fixture_forge(repo.path());
     let t = fixture_task(&f, repo.path(), &base, "operation setup failed: exit 1");
     act(&f, t.id).await.unwrap();
-    assert!(
-        f.store.decisions_in_lineage(t.id).unwrap().is_empty(),
-        "an operation failure is the environment module's territory, not mechanic's"
-    );
+    let d = only_decision(&f, t.id);
+    assert_eq!(d.kind, BLOCK_KIND);
+    assert!(d.retry_id.is_none());
+    let after = f.store.task(t.id).unwrap().unwrap();
+    assert_eq!(after.state, TaskState::Failed);
+}
+
+#[tokio::test]
+async fn an_internal_error_failure_blocks_with_a_decision_like_any_other_unrecognized_failure() {
+    let (repo, base) = repo_fixture();
+    let f = fixture_forge(repo.path());
+    let t = fixture_task(&f, repo.path(), &base, "error: some internal fault");
+    act(&f, t.id).await.unwrap();
+    let d = only_decision(&f, t.id);
+    assert_eq!(d.kind, BLOCK_KIND);
+    assert!(d.retry_id.is_none());
+    let after = f.store.task(t.id).unwrap().unwrap();
+    assert_eq!(after.state, TaskState::Failed);
 }

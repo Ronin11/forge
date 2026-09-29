@@ -30,20 +30,6 @@ pub fn is_clean_tree_only(reason: &str) -> bool {
         .is_some_and(|names| names == "clean-tree")
 }
 
-/// Whether this reason is mechanic's to classify at all. An `operation ...`
-/// failure (a workflow step that is a command, not an agent — `setup`,
-/// `repo-map`, and the like) already has its own owner: an egress or cache
-/// refusal is the `environment` module's decision to grant or not
-/// (`src/environment.rs`), and every other operation failure is
-/// deterministic (the same command run again fails the same way), so
-/// nothing here would help. An `error:` reason is a kernel fault
-/// (`worker::drive`'s `Fault::Task` arm), not the agent's work, and is
-/// already reported as its own `Event::Note`. Both are complete no-ops:
-/// mechanic records nothing and takes no action on either.
-pub fn in_scope(reason: &str) -> bool {
-    !reason.starts_with("operation ") && !reason.starts_with("error:")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,16 +66,5 @@ mod tests {
         assert!(!is_clean_tree_only(
             "L0 failed: has-commits (after 1 attempt(s))"
         ));
-    }
-
-    #[test]
-    fn operation_and_internal_error_failures_are_out_of_scope() {
-        assert!(!in_scope("operation setup failed: exit 1"));
-        assert!(!in_scope(
-            "operation needs-extra (verifies) failed after 1 attempt(s): extra.txt is missing"
-        ));
-        assert!(!in_scope("error: some internal fault"));
-        assert!(in_scope("L0 failed: clean-tree (after 1 attempt(s))"));
-        assert!(in_scope("agent exit 1 (after 1 attempt(s))"));
     }
 }
