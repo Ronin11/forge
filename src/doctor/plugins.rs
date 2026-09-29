@@ -59,3 +59,46 @@ pub(super) fn check_plugins(paths: &Paths, store: &Store) -> Vec<Check> {
         None => check("plugins", Status::Warn, detail, drift_hint),
     }]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::{RunState, write_run_state};
+
+    #[test]
+    fn a_dead_plugin_pid_is_stopped_in_both_lists_while_a_worker_claims() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            home: dir.path().to_path_buf(),
+            worktrees: dir.path().join("worktrees"),
+            logs: dir.path().join("logs"),
+        };
+        let store = Store::open(&paths.home.join("forge.db")).unwrap();
+        store.set_plugin_enabled("b", true, 1).unwrap();
+        store
+            .register_worker(std::process::id() as i64, "r1")
+            .unwrap();
+
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead = child.id() as i64;
+        child.wait().unwrap();
+        write_run_state(
+            &paths.home,
+            "b",
+            &RunState::Running {
+                pid: dead,
+                since: 1,
+            },
+        );
+
+        let rows = check_plugins(&paths, &store);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "plugins");
+        assert_eq!(rows[0].status, Status::Fail);
+        assert_eq!(
+            rows[0].detail,
+            "0 plugin(s) found, 0 problem(s); enabled: b (stopped: supervisor gone); \
+             no process while a worker claims: b (stopped: supervisor gone)"
+        );
+    }
+}

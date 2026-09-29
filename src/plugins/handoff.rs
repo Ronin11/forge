@@ -89,7 +89,7 @@ pub async fn settle(f: &Arc<Forge>, plugins: &mut Option<Supervisor>, successor:
 }
 
 /// The enabled plugins with no process while a worker claims, each with
-/// what its record says. A plugin between restarts has a supervisor and is
+/// its effective state. A plugin between restarts has a supervisor and is
 /// not listed; one handed to a live successor is that worker's to run.
 pub fn unattended(home: &Path, store: &Store) -> Vec<String> {
     let claiming = store
@@ -104,17 +104,16 @@ pub fn unattended(home: &Path, store: &Store) -> Vec<String> {
     enabled
         .into_iter()
         .filter_map(|name| {
-            let state = read_run_state(home, &name);
+            let state = effective_run_state(home, &name);
             let has_process = match &state {
-                RunState::Running { pid, .. } => pid_alive(*pid),
+                RunState::Running { .. } => true,
                 RunState::Restarting { .. } => true,
                 RunState::Stopped { last_exit } => last_exit
                     .as_deref()
                     .and_then(handoff_target)
                     .is_some_and(pid_alive),
             };
-            (!has_process)
-                .then(|| format!("{name} ({})", effective_run_state(home, &name).describe()))
+            (!has_process).then(|| format!("{name} ({})", state.describe()))
         })
         .collect()
 }
