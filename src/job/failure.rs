@@ -142,6 +142,7 @@ pub(super) fn ask(
     };
     t.id = f.store.insert_task(&t)?;
     f.store.update_task(&t)?;
+    crate::audience::emit_ended(f, &t)?;
     Ok(())
 }
 

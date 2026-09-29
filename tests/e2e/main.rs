@@ -5,6 +5,7 @@
 mod support;
 
 mod adopt;
+mod audience;
 mod capacity;
 mod capped;
 mod chat;
