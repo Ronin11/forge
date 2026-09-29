@@ -137,6 +137,7 @@ async fn model_step(
             id: 0,
             step: "chat",
             dir: scratch,
+            identity_repo: None,
             prompt,
             system: &s.system,
             model: &s.model,

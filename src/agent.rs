@@ -416,6 +416,8 @@ async fn spawn_retrying_etxtbsy(
 pub struct Launch<'a> {
     pub task_id: i64,
     pub worktree: &'a Path,
+    /// Resolved from trusted repository metadata before entering the runner.
+    pub identity: Vec<(String, String)>,
     pub prompt: &'a str,
     /// System-level content a runner with its own system channel
     /// (`Runner::Chat`) sends as a separate message ahead of `prompt`;
@@ -1279,6 +1281,7 @@ mod tests {
         Launch {
             task_id: 1,
             worktree,
+            identity: Vec::new(),
             prompt: "do the task",
             system: "",
             model: "sonnet",
