@@ -448,13 +448,20 @@ impl Store {
         if let Some(name) = self.default_project_for_repo(repo)? {
             return Ok(Some(name));
         }
-        let ambiguous: i64 = self.lock().retry_query_row(
+        let seen: i64 = self.lock().retry_query_row(
             "SELECT COUNT(*) FROM project_repos WHERE repo=?1",
             params![repo],
             |r| r.get(0),
         )?;
-        if ambiguous > 0 {
-            return Ok(None);
+        if seen > 0 {
+            // Another process registered this repo between our check
+            // above and here. That registration might be the single one
+            // a racing `ensure_default_project` call just made (not
+            // ambiguous, just late to see it) or a second, genuinely
+            // ambiguous one; `default_project_for_repo` already tells
+            // the two apart, so defer to it rather than treating any
+            // row appearing here as ambiguity.
+            return self.default_project_for_repo(repo);
         }
         let name = project_name_for_repo(repo);
         if self.project(&name)?.is_none()
