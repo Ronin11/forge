@@ -314,3 +314,101 @@ fn an_override_is_rejected_when_recording_the_decision_fails() {
         .unwrap();
     assert_eq!(count, 0);
 }
+
+#[test]
+fn guard_protects_all_separate_push_urls_and_doctor_checks_each() {
+    assert_push_destinations_guarded(false);
+}
+
+#[test]
+fn guard_protects_a_push_instead_of_destination() {
+    assert_push_destinations_guarded(true);
+}
+
+fn assert_push_destinations_guarded(rewrite: bool) {
+    let e = Env::new();
+    let first = e.repo.parent().unwrap().join("push-one.git");
+    let second = e.repo.parent().unwrap().join("push-two.git");
+    for bare in [&first, &second] {
+        git(
+            e.repo.parent().unwrap(),
+            &["init", "--bare", bare.to_str().unwrap()],
+        );
+    }
+    if rewrite {
+        git(
+            &e.repo,
+            &[
+                "config",
+                &format!("url.{}.pushInsteadOf", first.display()),
+                e.origin.to_str().unwrap(),
+            ],
+        );
+    } else {
+        for url in ["../push-one.git", "../push-two.git"] {
+            git(
+                &e.repo,
+                &["remote", "set-url", "--add", "--push", "origin", url],
+            );
+        }
+    }
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "project",
+            "new",
+            "guarded",
+            "--purpose",
+            "Protect push destinations.",
+            "--repo",
+            e.repo.to_str().unwrap(),
+        ],
+    );
+    assert!(o.status.success(), "{}", text(&o));
+    // An already protected fetch destination must not conceal missing push hooks.
+    install_by_hand(&e);
+    let doc = text(&e.forge("ok.sh", &["doctor"]));
+    assert!(doc.contains("no landing guard: guarded"), "{doc}");
+    let o = e.forge("ok.sh", &["project", "guard", "guarded"]);
+    assert!(o.status.success(), "{}", text(&o));
+    let doc = text(&e.forge("ok.sh", &["doctor"]));
+    assert!(!doc.contains("no landing guard: guarded"), "{doc}");
+    let destinations = if rewrite {
+        vec![&first]
+    } else {
+        vec![&first, &second]
+    };
+    let o = push(&e.repo, &["origin", "main"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("forge adopt"), "{}", text(&o));
+    for bare in &destinations {
+        assert_eq!(
+            std::fs::read_to_string(bare.join("hooks/pre-receive")).unwrap(),
+            HOOK
+        );
+        assert!(git(bare, &["for-each-ref", "refs/heads/main"]).is_empty());
+    }
+    let o = push(&e.repo, &["origin", "main:refs/heads/feature"]);
+    assert!(o.status.success(), "{}", text(&o));
+    let token = std::fs::read_to_string(e.home.join("forge-integrator.token")).unwrap();
+    let o = push(
+        &e.repo,
+        &[
+            "-o",
+            &format!("forge-integrator={}", token.trim()),
+            "origin",
+            "main",
+        ],
+    );
+    assert!(o.status.success(), "{}", text(&o));
+    for bare in &destinations {
+        assert_eq!(
+            git(bare, &["rev-parse", "main"]),
+            git(&e.repo, &["rev-parse", "main"])
+        );
+    }
+    // Doctor must inspect the last push URL too, not only the first one.
+    std::fs::remove_file(destinations.last().unwrap().join("hooks/pre-receive")).unwrap();
+    let doc = text(&e.forge("ok.sh", &["doctor"]));
+    assert!(doc.contains("no landing guard: guarded"), "{doc}");
+}

@@ -147,22 +147,18 @@ pub async fn install_for_project(
         let Some(remote) = crate::init::origin_remote(repo).await else {
             continue;
         };
-        let Some(url) = git::remote_url(repo, &remote).await else {
-            continue;
-        };
-        let Some(bare) = git::local_bare(&url).await else {
-            continue;
-        };
         let base_branch = config::load_working(repo)
             .await
             .map(|c| c.base_branch)
             .unwrap_or_else(|_| "main".to_string());
-        let changed = install(&bare, home, &r.repo, &base_branch).await?;
-        steps.push(GuardStep {
-            repo: r.repo.clone(),
-            bare,
-            changed,
-        });
+        for bare in bare_destinations_sync(repo, &remote) {
+            let changed = install(&bare, home, &r.repo, &base_branch).await?;
+            steps.push(GuardStep {
+                repo: r.repo.clone(),
+                bare,
+                changed,
+            });
+        }
     }
     Ok(steps)
 }
@@ -177,36 +173,46 @@ pub async fn install_for_every_project(home: &Path, store: &Store) -> Result<Vec
     Ok(steps)
 }
 
-/// The bare origin `repo`'s (a registered repository's own path) push
-/// remote resolves to, read synchronously with the `origin` remote and no
-/// `forge.toml` lookup: `forge doctor` is entirely sync (its tests open no
-/// tokio runtime), so this trades a custom `[defaults] remote` for staying
-/// git-free of async.
-pub fn bare_origin_sync(repo: &Path) -> Option<PathBuf> {
-    let o = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["remote", "get-url", "origin"])
-        .output()
-        .ok()?;
-    if !o.status.success() {
-        return None;
+/// Local bare destinations of a remote, including every effective push URL
+/// (Git applies pushInsteadOf here) and the fetch URL used by the integrator.
+/// Shared by installation and synchronous doctor inspection.
+pub fn bare_destinations_sync(repo: &Path, remote: &str) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for args in [
+        vec!["remote", "get-url", remote],
+        vec!["remote", "get-url", "--push", "--all", remote],
+    ] {
+        let Ok(output) = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+        else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        for url in String::from_utf8_lossy(&output.stdout).lines() {
+            let Some(path) = git::local_remote_path(repo, url) else {
+                continue;
+            };
+            if paths.contains(&path) {
+                continue;
+            }
+            let bare = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&path)
+                .args(["rev-parse", "--is-bare-repository"])
+                .output();
+            if bare.is_ok_and(|o| {
+                o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true"
+            }) {
+                paths.push(path);
+            }
+        }
     }
-    let url = String::from_utf8_lossy(&o.stdout).trim().to_string();
-    if url.is_empty() {
-        return None;
-    }
-    let path = git::local_remote_path(repo, &url)?;
-    let bare = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&path)
-        .args(["rev-parse", "--is-bare-repository"])
-        .output()
-        .ok()?;
-    if !(bare.status.success() && String::from_utf8_lossy(&bare.stdout).trim() == "true") {
-        return None;
-    }
-    Some(path.canonicalize().unwrap_or(path))
+    paths
 }
 
 #[cfg(test)]

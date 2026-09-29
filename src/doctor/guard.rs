@@ -17,8 +17,9 @@ pub(super) fn check_guard(store: &Store) -> Vec<Check> {
     for p in &projects {
         let repos = store.project_repos(&p.name).unwrap_or_default();
         let unguarded = repos.iter().any(|r| {
-            crate::guard::bare_origin_sync(std::path::Path::new(&r.repo))
-                .is_some_and(|bare| !crate::guard::installed(&bare))
+            crate::guard::bare_destinations_sync(std::path::Path::new(&r.repo), "origin")
+                .iter()
+                .any(|bare| !crate::guard::installed(bare))
         });
         if unguarded {
             missing.push(p.name.clone());
