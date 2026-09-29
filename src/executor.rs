@@ -367,6 +367,12 @@ impl Execution {
             sb.set_provider_hosts(path, rules);
         }
     }
+    pub fn set_target_dir(&self, path: &Path, target: PathBuf) {
+        if let Ok(sb) = &self.bwrap {
+            sb.set_target_dir(path, target);
+        }
+    }
+
     pub fn set_cache_dir(&self, path: &Path, dir: PathBuf) {
         if let Ok(sb) = &self.bwrap {
             sb.set_cache_dir(path, dir);

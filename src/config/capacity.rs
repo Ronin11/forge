@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 #[serde(default)]
 pub struct Settings {
     pub slots: usize,
+    pub min_free_gb: u64,
     /// Projects without an explicit cap can use this many slots. None uses
     /// the machine budget, preserving existing single-project workers.
     pub project_slots: Option<usize>,
@@ -18,6 +19,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             slots: 1,
+            min_free_gb: 50,
             project_slots: None,
             max_load: None,
             projects: BTreeMap::new(),

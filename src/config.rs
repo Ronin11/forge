@@ -19,7 +19,7 @@ pub use measure::{ExploreRole, Measure};
 pub use providers::ROLES;
 pub use repo::{
     Config, Execution, in_scope, is_protected, load_at, load_working, load_working_build_env,
-    load_working_checks, load_working_egress, load_working_execution,
+    load_working_checks, load_working_egress, load_working_execution, shared_target_enabled,
 };
 pub use trust::{TrustEgress, TrustPolicies, TrustPolicy};
 

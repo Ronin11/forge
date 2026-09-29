@@ -50,11 +50,14 @@ impl Fixture {
             owed: HashMap::new(),
             done: HashSet::from([1, 2, 3]),
         };
+        let repo_path = dir.path().to_path_buf();
         Self {
             dir,
             f,
             t,
             cfg: config::Config {
+                shared_target: false,
+                repo_path,
                 namespace: vec!["tests/acceptance/".into()],
                 build_env: Default::default(),
                 execution: Default::default(),

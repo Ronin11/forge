@@ -697,6 +697,8 @@ mod tests {
 
     fn test_cfg(namespace: Vec<String>) -> config::Config {
         config::Config {
+            shared_target: false,
+            repo_path: PathBuf::new(),
             build_env: Default::default(),
             execution: Default::default(),
             checks: BTreeMap::new(),

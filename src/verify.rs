@@ -1690,6 +1690,8 @@ mod tests {
 
     fn test_cfg() -> Config {
         Config {
+            shared_target: false,
+            repo_path: PathBuf::new(),
             build_env: Default::default(),
             execution: Default::default(),
             checks: std::collections::BTreeMap::new(),

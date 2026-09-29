@@ -716,11 +716,15 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
         },
     );
     let scratch = scratch_dir(f, job_id);
+    let _cache_cleanup = crate::disk::JobCaches(scratch.clone());
     git::fresh_archive(repo, landed_sha, &scratch).await?;
     let repo_checks = config::load_working_checks(&scratch).unwrap_or_default();
     let build_env = config::load_working_build_env(&scratch)?;
     crate::agent::build_env::configure_env(&f.paths.home, &scratch, &f.build_env, &build_env);
 
+    if config::shared_target_enabled(&scratch)? {
+        f.shared_target(&scratch, repo);
+    }
     let idir = recovery::prepare_run(f, job_id, input_text)?;
 
     let effect_log = idir.join("effects.log");
@@ -1080,6 +1084,10 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
             cost_usd: total_cost,
         },
     );
+
+    if !dry_run && workflow == "doctor-daily" && state == JobState::Ok {
+        crate::audience::daily_digest(f)?;
+    }
 
     if let Some((action, job_row)) = on_failure {
         flow::apply_on_failure(

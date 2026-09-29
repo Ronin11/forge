@@ -25,6 +25,7 @@ mod job_runs;
 mod jobs;
 mod messages;
 mod migrations;
+mod notifications;
 mod owners;
 mod priority;
 mod projects;

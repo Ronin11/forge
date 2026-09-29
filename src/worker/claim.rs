@@ -15,6 +15,10 @@ pub fn task(
     held: &[i64],
     blocked: impl Fn(&Task) -> bool,
 ) -> Result<Option<Task>> {
+    if crate::disk::check_claim(f)? {
+        return Ok(None);
+    }
+
     if capacity::load_holds(&f.worker, capacity::load_per_core()) {
         return Ok(None);
     }
@@ -48,6 +52,10 @@ pub fn task(
 }
 
 pub fn job(f: &Forge, opts: &WorkOpts) -> Result<Option<Job>> {
+    if crate::disk::check_claim(f)? {
+        return Ok(None);
+    }
+
     if capacity::load_holds(&f.worker, capacity::load_per_core()) {
         return Ok(None);
     }
@@ -113,6 +121,8 @@ mod tests {
     #[test]
     fn capacity_claim_skips_a_full_project_and_counts_jobs() {
         let (_dir, mut f) = crate::worker::tests::fixture();
+        // Capacity assertions must not depend on the test host's free space.
+        f.worker.min_free_gb = 0;
         f.worker.slots = 3;
         f.worker.project_slots = Some(1);
         let heavy = enqueue(&f, "heavy");
@@ -150,10 +160,13 @@ mod tests {
 
     #[test]
     fn capacity_claim_is_atomic_across_competing_workers() {
-        let (_dir, f) = crate::worker::tests::fixture();
+        let (_dir, mut f) = crate::worker::tests::fixture();
+        f.worker.min_free_gb = 0;
         enqueue(&f, "heavy");
         enqueue(&f, "light");
-        let other = f.reopen().unwrap();
+        let mut other = f.reopen().unwrap();
+        // Reopening reloads defaults, so disable the disk hold for both workers.
+        other.worker.min_free_gb = 0;
         let gate = std::sync::Barrier::new(2);
         let claim = |f: &Forge| {
             gate.wait();

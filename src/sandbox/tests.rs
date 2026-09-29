@@ -132,6 +132,7 @@ fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
         declared: Mutex::new(BTreeMap::new()),
         provider_hosts: Mutex::new(BTreeMap::new()),
         caches: Mutex::new(BTreeMap::new()),
+        targets: Mutex::new(BTreeMap::new()),
         granted: Mutex::new(BTreeMap::new()),
     };
     sandbox.set_provider_hosts(&worktree, &[Rule::parse("api.example.com").unwrap()]);
@@ -353,6 +354,7 @@ fn test_sandbox(model: &str) -> Sandbox {
         declared: Mutex::new(BTreeMap::new()),
         provider_hosts: Mutex::new(BTreeMap::new()),
         caches: Mutex::new(BTreeMap::new()),
+        targets: Mutex::new(BTreeMap::new()),
         granted: Mutex::new(BTreeMap::new()),
     };
     sb.set_provider_hosts(Path::new("/work/1"), &[Rule::parse(model).unwrap()]);

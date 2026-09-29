@@ -351,6 +351,9 @@ impl Env {
         let mut c = Command::new(env!("CARGO_BIN_EXE_forge"));
         c.env("FORGE_HOME", &self.home);
         c.env("XDG_CONFIG_HOME", &self.xdg_config);
+        // Fixture homes may live on a tmpfs smaller than the production
+        // disk reserve. Disk-specific tests remove or override this value.
+        c.env("FORGE_MIN_FREE_GB", "0");
         c.env(
             "FORGE_CLAUDE_BIN",
             Path::new(env!("CARGO_MANIFEST_DIR"))

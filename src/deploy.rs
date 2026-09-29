@@ -419,7 +419,7 @@ fn record_deploy_error(
 /// File a separate no-work question for a failed deploy. Landed work is
 /// terminal; answering this question must never retry that work.
 fn ask(f: &Forge, project: &str, repo: &str, deploy_id: i64, reason: String) -> Result<()> {
-    f.store.insert_task(&Task {
+    let mut question = Task {
         repo: repo.to_string(),
         task: "deploy question".to_string(),
         state: TaskState::Blocked,
@@ -432,8 +432,9 @@ fn ask(f: &Forge, project: &str, repo: &str, deploy_id: i64, reason: String) -> 
         land: false,
         priority: crate::store::PRIORITY_DEFAULT,
         ..Default::default()
-    })?;
-    Ok(())
+    };
+    question.id = f.store.insert_task(&question)?;
+    crate::audience::emit_ended(f, &question)
 }
 
 /// The last, human-shaped step (see docs/DEPLOY.md, "The deploy look"):

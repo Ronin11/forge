@@ -652,7 +652,7 @@ fn block(f: &Forge, t: &mut Task, reason: &str, question: Option<NeedsInput>) ->
     t.worker_pid = None;
     f.store.update_task(t)?;
     f.report.emit(t.id, Event::Note { text: reason });
-    Ok(())
+    crate::audience::emit_ended(f, t)
 }
 
 /// End the task before any check ran: the branch is not adoptable.
@@ -665,6 +665,7 @@ fn refuse(f: &Forge, t: &mut Task, reason: &str) -> Result<Adopted> {
     f.report.emit(t.id, Event::Note { text: reason });
     let _ = std::fs::remove_dir_all(&t.worktree);
     crate::sandbox::discard_provider_state(Path::new(&t.worktree));
+    crate::audience::emit_ended(f, t)?;
     Ok(Adopted::Refused {
         id: t.id,
         reason: reason.to_string(),

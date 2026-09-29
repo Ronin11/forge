@@ -233,6 +233,24 @@ use. `per_task_usd` stops a task's retries; `per_day_usd` stops the worker
 claiming once the rolling 24-hour spend reaches it. `--budget` overrides
 the task cap for one task.
 
+Before each task or job claim, the worker checks free space on `FORGE_HOME`.
+`[worker] min_free_gb` in `config.toml` defaults to 50 GiB (0 disables the
+hold). `FORGE_MIN_FREE_GB` overrides that threshold for a process; the e2e
+harness sets it to 0 so small temporary filesystems can run fixture tasks.
+Below the threshold, claims pause, doctor reports FAIL, and one operator event
+per hold names the free space and the bytes `forge gc --caches` can reclaim.
+That command deletes `target/`, `node_modules/.cache`, and `.godot/` from
+non-running task and job worktrees; `--dry-run` reports without deleting.
+Finished tasks also discard these caches immediately, retaining their source
+worktrees. Doctor reports total worktree disk usage and the ten largest.
+
+A repository may opt into `[sandbox] shared_target = true` in its trusted
+`forge.toml` (off by default). Agents and checks then receive
+`CARGO_TARGET_DIR=FORGE_HOME/cache/<repository-key>/target`, where the key is
+the existing stable hash of the repository path. This kernel-selected
+directory is bound read-write in the sandbox and survives task cleanup.
+Cargo's own target-directory lock serializes concurrent builds.
+
 The same file's `[sandbox]` section lists what the sandbox exposes beyond
 the attempt's own holes. `ro_paths` (default `~/.local/share/mise`) are
 toolchains bound read-only, since `$HOME` is otherwise empty in there and
@@ -272,6 +290,7 @@ src/binary.rs       stable forge launch paths across binary replacement
 src/argument_policy_tests.rs  require reasons above argument-count allowances
 src/assess.rs       the assess directive: a read-only score of a landed diff's maintainability
 src/attempt.rs      one attempt of a directive: prompt, launch, verdict, the row
+src/audience.rs     task notification audience after recovery and daily digest events
 src/audit.rs        diagnosis for a terminal failure; cost anti-patterns
 src/builtins/       built-in actions, operations, and workflows, as TOML
 src/chat/           Ask Forge: forge chat's fixed tools, the confirm gate in front of the writes, the redactor, and the turn loop (docs/CHAT.md)
@@ -312,6 +331,7 @@ src/reload.rs       config reloads between claims: re-read, re-validate, keep th
 src/render.rs       text rendering for documents: first sentence, path-like tokens stripped, word-boundary cuts
 src/report.rs       typed events; the stderr printer is one consumer
 src/executor.rs     executor contract, backend selection, and guarantees
+src/disk.rs         free-space claim holds, worktree sizes, and build-cache sweeping
 src/sandbox.rs      bubblewrap
 src/job/secrets.rs      [secrets] names, a run step's declared secrets and egress hosts, and the redaction of their values
 src/login.rs        the agent login: a refreshed token written back over the host file, an empty one never seeded
@@ -320,6 +340,7 @@ src/successor.rs     the successor worker: a staged release starts forge work on
 src/store/          SQLite, forward-only migrations by user_version, one file per table family (workers.rs: the registered workers and their releases; owners.rs: a running row's owner, pid plus start time, and orphan detection)
   mod.rs            types, column lists, open, schema_version, the migration runner
   migrations.rs     MIGRATIONS: every forward-only schema migration, in order
+  notifications.rs  durable daily counts of follow-ups, retries, answered questions, and superseded blocks
   retry.rs          statement retries for SQLite busy and locked errors, with backoff up to one minute
   run_cursor.rs     the task's stored run cursor (tasks.run_json): the step a requeued or orphaned run resumes at
   tasks.rs          tasks: claim, queue, dependents, lineage
@@ -352,7 +373,7 @@ src/release.rs      releases as directories under FORGE_HOME/bin, the atomic cur
 src/upgrade.rs      forge upgrade: verify, backup, unpack a release, flip current, migrate, restart
 src/verify.rs       L0/L1/L2, the claim rule, and the pure verdict table
 src/view.rs         shapes behind `log`, `requests`, `decisions`: text and JSON from one struct
-src/worker.rs       drive, the queue loop, signals; worker/schedule.rs: the schedule tick and its refusal log
+src/worker.rs       drive, the queue loop, signals; worker/schedule.rs: the schedule tick and its refusal log; worker/tests.rs: worker unit tests
 src/workflows.rs    the workflow and action tables, loaded as one Catalog
 tests/e2e/          the real binary against fake agents in tests/fakes/
 

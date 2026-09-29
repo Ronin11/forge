@@ -102,6 +102,7 @@ pub struct Sandbox {
     /// in here gets no cache bind at all. Keyed per repository so one
     /// repository's attempts can never poison a cache another reads.
     caches: Mutex<BTreeMap<PathBuf, PathBuf>>,
+    targets: Mutex<BTreeMap<PathBuf, PathBuf>>,
     /// What the environment policy granted a worktree's attempts after a
     /// failure (see `environment`): hosts on top of the declared egress,
     /// host cache paths bound read-only. Kept apart from `declared` so
@@ -387,7 +388,12 @@ impl Sandbox {
         }
         let (config_dir, codex_dir, copilot_dir) = provider_dirs(&home, |k| std::env::var_os(k));
         // The relay is this binary, so its directory has to be visible.
-        let relay_exe = crate::binary::without_deleted_suffix(&crate::binary::launch_path()?);
+        // Resolved to the real file: the named path is often a symlink
+        // chain (~/.local/bin/forge -> bin/current -> releases/<id>) whose
+        // intermediate directories are not bound, so inside the sandbox
+        // only the target's own directory is guaranteed to exist.
+        let named = crate::binary::without_deleted_suffix(&crate::binary::launch_path()?);
+        let relay_exe = std::fs::canonicalize(&named).unwrap_or(named);
         let relay_dir = relay_exe.parent().map(Path::to_path_buf);
         let extra_ro: Vec<PathBuf> = paths
             .ro
@@ -419,6 +425,7 @@ impl Sandbox {
             declared: Mutex::new(BTreeMap::new()),
             provider_hosts: Mutex::new(BTreeMap::new()),
             caches: Mutex::new(BTreeMap::new()),
+            targets: Mutex::new(BTreeMap::new()),
             granted: Mutex::new(BTreeMap::new()),
         })
     }
@@ -508,6 +515,13 @@ impl Sandbox {
     /// cache what it computes: `dir`, private to the repository that owns
     /// `worktree`, so one repository's attempts can never read or poison
     /// what another cached (see `ctx::Forge::declare_cache`).
+    pub fn set_target_dir(&self, worktree: &Path, target: PathBuf) {
+        self.targets
+            .lock()
+            .unwrap()
+            .insert(worktree.to_path_buf(), target);
+    }
+
     pub fn set_cache_dir(&self, worktree: &Path, dir: PathBuf) {
         self.caches
             .lock()
@@ -579,6 +593,7 @@ impl Sandbox {
             declared: Mutex::new(BTreeMap::new()),
             provider_hosts: Mutex::new(BTreeMap::new()),
             caches: Mutex::new(BTreeMap::new()),
+            targets: Mutex::new(BTreeMap::new()),
             granted: Mutex::new(BTreeMap::new()),
         }
     }
@@ -849,6 +864,9 @@ impl Sandbox {
         // repository's, so one cannot poison a cache another reads.
         if let Some(dir) = self.cache_dir_for(worktree) {
             cmd.arg("--bind-try").arg(&dir).arg(&dir);
+        }
+        if let Some(target) = self.targets.lock().unwrap().get(worktree) {
+            cmd.arg("--bind").arg(target).arg(target);
         }
         cmd.arg("--chdir").arg(worktree).arg("--");
         let script = self.wrapper_script(

@@ -1253,7 +1253,7 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     ));
     out.extend(check_queue(&store));
     out.extend(check_deliveries(&store, unix_now()));
-    out.extend(check_worktrees(&store));
+    out.extend(capacity::disk(&paths, &store));
     out.extend(check_logs(&paths));
 
     if let Ok(f) = Forge::open_with(paths, store) {

@@ -43,6 +43,8 @@ struct RepoEnvironmentRaw {
 #[derive(Deserialize, Default)]
 struct RepoSandboxRaw {
     #[serde(default)]
+    shared_target: bool,
+    #[serde(default)]
     env: BTreeMap<String, String>,
     /// `host`, `host:port`, `*.suffix` or `*.suffix:port`; see `egress::Rule`.
     #[serde(default)]
@@ -127,6 +129,8 @@ impl Execution {
 }
 
 pub struct Config {
+    pub shared_target: bool,
+    pub repo_path: PathBuf,
     pub build_env: BTreeMap<String, String>,
     pub execution: Execution,
     pub checks: BTreeMap<String, Vec<String>>,
@@ -222,6 +226,8 @@ async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result
         None
     };
     Ok(Config {
+        shared_target: raw.sandbox.shared_target,
+        repo_path: repo.to_path_buf(),
         build_env: raw.sandbox.env,
         execution: raw.execution,
         checks: raw.checks.checks,
@@ -348,6 +354,22 @@ pub async fn load_at(repo: &Path, show_dir: &Path, rev: &str) -> Result<Config> 
 /// Build tuning in an archived tree, without asking it for Git metadata.
 /// Jobs can run without a repository config; they keep the operator's build
 /// settings and have no repository overrides in that case.
+pub fn shared_target_enabled(dir: &Path) -> Result<bool> {
+    let (_, _, text) = match read_working(dir) {
+        Ok(config) => config,
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    };
+    let raw: Raw = toml::from_str(&text)?;
+    Ok(raw.sandbox.shared_target)
+}
+
 pub fn load_working_build_env(dir: &Path) -> Result<BTreeMap<String, String>> {
     let (path, _, text) = match read_working(dir) {
         Ok(config) => config,
