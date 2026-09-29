@@ -125,12 +125,11 @@ fn a_push_to_another_branch_is_accepted() {
 #[test]
 fn deleting_the_base_branch_is_rejected_too() {
     let e = Env::new();
-    install_by_hand(&e);
     let sha = git(&e.repo, &["rev-parse", "HEAD"]);
-    // Seed the base first with the override so there is something to
-    // try to delete.
-    let seeded = push(&e.repo, &["origin", "main", "-o", "forge-override=seed"]);
+    // Seed the base before installing the guard so there is something to delete.
+    let seeded = push(&e.repo, &["origin", "main"]);
     assert!(seeded.status.success(), "{}", text(&seeded));
+    install_by_hand(&e);
     assert_eq!(origin_sha(&e, "main"), sha);
     let o = push(&e.repo, &["origin", "--delete", "main"]);
     assert!(!o.status.success());
@@ -193,6 +192,15 @@ fn forge_project_guard_installs_the_hook_and_the_integrators_landing_succeeds() 
 
 #[test]
 fn an_override_push_is_accepted_and_recorded_and_doctor_reports_it() {
+    assert_override_recorded("on-call fix, ticket 123");
+}
+
+#[test]
+fn an_override_reason_with_leading_dashes_is_recorded_verbatim() {
+    assert_override_recorded("--force needed for incident 123");
+}
+
+fn assert_override_recorded(expected_reason: &str) {
     let e = Env::new();
     // `forge doctor` first, only so FORGE_HOME (the store, the config)
     // exists before the hook tries to write into it.
@@ -201,15 +209,8 @@ fn an_override_push_is_accepted_and_recorded_and_doctor_reports_it() {
     link_forge_binary(&e);
 
     let sha = git(&e.repo, &["rev-parse", "HEAD"]);
-    let o = push(
-        &e.repo,
-        &[
-            "origin",
-            "main",
-            "-o",
-            "forge-override=on-call fix, ticket 123",
-        ],
-    );
+    let option = format!("forge-override={expected_reason}");
+    let o = push(&e.repo, &["origin", "main", "-o", &option]);
     assert!(o.status.success(), "{}", text(&o));
     assert_eq!(origin_sha(&e, "main"), sha);
 
@@ -222,7 +223,7 @@ fn an_override_push_is_accepted_and_recorded_and_doctor_reports_it() {
         )
         .unwrap();
     assert_eq!(repo, e.repo.to_str().unwrap());
-    assert_eq!(reason, "on-call fix, ticket 123");
+    assert_eq!(reason, expected_reason);
     let whoami = String::from_utf8_lossy(&Command::new("id").arg("-un").output().unwrap().stdout)
         .trim()
         .to_string();
@@ -230,5 +231,44 @@ fn an_override_push_is_accepted_and_recorded_and_doctor_reports_it() {
 
     let doc = text(&e.forge("ok.sh", &["doctor"]));
     assert!(doc.contains("guard_overrides"), "{doc}");
-    assert!(doc.contains("on-call fix, ticket 123"), "{doc}");
+    assert!(doc.contains(expected_reason), "{doc}");
+}
+
+#[test]
+fn an_override_is_rejected_when_recording_the_decision_fails() {
+    let e = Env::new();
+    let _ = e.forge("ok.sh", &["doctor", "--json"]);
+    git(&e.repo, &["push", "-q", "origin", "main"]);
+    let original = origin_sha(&e, "main");
+    install_by_hand(&e);
+    link_forge_binary(&e);
+    e.db()
+        .execute_batch(
+            "CREATE TRIGGER reject_override BEFORE INSERT ON decisions
+             WHEN NEW.kind = 'forge-override'
+             BEGIN SELECT RAISE(FAIL, 'override recording unavailable'); END;",
+        )
+        .unwrap();
+    std::fs::write(e.repo.join("incident.txt"), "fix").unwrap();
+    git(&e.repo, &["add", "incident.txt"]);
+    git(&e.repo, &["commit", "-qm", "incident fix"]);
+
+    for refspec in ["main", ":main"] {
+        let o = push(
+            &e.repo,
+            &["origin", refspec, "-o", "forge-override=incident"],
+        );
+        assert!(!o.status.success(), "{}", text(&o));
+        assert!(text(&o).contains("could not record the emergency override"));
+        assert_eq!(origin_sha(&e, "main"), original);
+    }
+    let count: i64 = e
+        .db()
+        .query_row(
+            "SELECT count(*) FROM decisions WHERE kind='forge-override'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
 }

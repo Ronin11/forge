@@ -50,10 +50,11 @@ while read -r old_sha new_sha ref; do
 	esac
 	if [ -n "$override_reason" ]; then
 		pusher=$(id -un 2>/dev/null || echo unknown)
-		if [ -n "$forge_bin" ]; then
-			FORGE_HOME="$home" "$forge_bin" guard record-override \
-				--repo "$repo" --pusher "$pusher" --reason "$override_reason" \
-				--branch "$base" >/dev/null 2>&1
+		if [ -z "$forge_bin" ] || ! FORGE_HOME="$home" "$forge_bin" guard record-override \
+			--repo="$repo" --pusher="$pusher" --reason="$override_reason" \
+			--branch="$base" >/dev/null; then
+			echo "Forge override rejected: could not record the emergency override; base branch unchanged" >&2
+			rejected=1
 		fi
 		continue
 	fi
