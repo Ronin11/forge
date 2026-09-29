@@ -228,58 +228,11 @@ pub(super) async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<Ste
         );
         return Ok(StepFlow::Next);
     }
-    // Per-step parameters: the workflow's override, else the action's default, else the task's.
-    let mut ts = t.clone();
-    if let Some(m) = &step.model {
-        ts.model = m.clone();
-        ts.model_source = "step".to_string();
-    }
-    if let Some(n) = step.max_turns {
-        ts.max_turns = n as i64;
-    }
-    if let Some(n) = step.timeout_secs {
-        ts.timeout_secs = n as i64;
-    }
-    // The provider this step's role runs under: the task's
-    // own flag, else its project's [roles], else the
-    // operator's, else "anthropic" (see
-    // `ctx::resolve_provider`). Recorded on `ts.provider` so
-    // `attempt::run_attempt`'s existing lookup picks it up.
+    // Per-step parameters (the workflow's override, else the action's
+    // default, else the task's), the provider this step's role runs
+    // under, and the routing record for it.
     let role = step.action.contract.as_str();
-    let (provider, provider_source) = f.effective_provider_routed(&ts, role).env()?;
-    ts.provider = provider.name.clone();
-    // The routing record (docs/ECONOMIST.md, "The routing record"): why
-    // this role ran where it did, named alongside what it ran on, before
-    // the first attempt spends anything — so even a step that never
-    // verifies still shows its own routing.
-    t.routing.insert(
-        role.to_string(),
-        crate::store::RoleRouting {
-            provider: crate::store::Routed {
-                value: ts.provider.clone(),
-                source: provider_source.to_string(),
-            },
-            model: crate::store::Routed {
-                value: crate::attempt::attempt_model(
-                    &step.action.name,
-                    &ts.model,
-                    &ts.model,
-                    provider,
-                    crate::attempt::model_pinned(&ts.model_source),
-                ),
-                source: crate::attempt::attempt_model_source(
-                    step.model.as_deref(),
-                    provider,
-                    &t.model_source,
-                ),
-            },
-            workflow: crate::store::Routed {
-                value: t.workflow.clone(),
-                source: t.workflow_source.clone(),
-            },
-        },
-    );
-    f.store.update_task(t).env()?;
+    let ts = per_step_task(f, t, step, role)?;
     let mut feedback: Option<String> = run.owed.remove(&seq);
     let mut resume: Option<Resume> = None;
     let mut step_ok = false;
@@ -297,7 +250,18 @@ pub(super) async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<Ste
     // clean, no result: the checks can still judge the code.
     let mut capped_committed = false;
     let mut consecutive_refusals = 0u32;
-    while run.used_at(seq) < t.max_attempts {
+    // A placeholder `needs_input` question (see
+    // `envelope::is_placeholder_question`) gets exactly one nudge to
+    // finish rather than blocking the operator on it: `nudged` stops a
+    // second one from getting the same treatment, and `nudge_pending`
+    // grants the round that spends it even on what would otherwise be
+    // the directive's last attempt (task 1069, 2026-09-28: a one-letter
+    // question after 49 turns and 3 commits sat blocked for want of
+    // exactly this).
+    let mut nudged = false;
+    let mut nudge_pending = false;
+    while run.used_at(seq) < t.max_attempts || nudge_pending {
+        nudge_pending = false;
         // A subscription window at its cap: give up the slot rather than
         // sleep it out here, deaf to shutdown, for as long as an hour at a
         // turn. The claim loop's own hold logic (`worker::first_role`,
@@ -559,22 +523,40 @@ pub(super) async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<Ste
                 break;
             }
             AttemptState::NeedsInput => {
-                // The interview's confirmation turn writes
-                // the brief alongside the question that
-                // asks the person to confirm it; every
-                // other contract's question stops here
-                // with nothing recorded as a plan.
-                if step.action.name == "interview"
-                    && let Some(summary) = verdict
-                        .envelope
-                        .as_ref()
-                        .map(|e| e.summary.trim().to_string())
-                    && !summary.is_empty()
+                // A placeholder question is the agent stopping early with
+                // nothing left to ask, not a question for the operator:
+                // one nudge, in the same session, before it can block.
+                if !nudged
+                    && let Some((r, fb)) = nudge_placeholder_question(t, &a, &verdict, &outcome)
                 {
-                    t.plan = summary;
-                    f.store.update_task(t).env()?;
+                    nudged = true;
+                    nudge_pending = true;
+                    f.report.emit(
+                        id,
+                        Event::Note {
+                            text: "resume   the question was not really one; nudging the session to finish instead of blocking",
+                        },
+                    );
+                    resume = Some(r);
+                    feedback = Some(fb);
+                } else {
+                    // The interview's confirmation turn writes
+                    // the brief alongside the question that
+                    // asks the person to confirm it; every
+                    // other contract's question stops here
+                    // with nothing recorded as a plan.
+                    if step.action.name == "interview"
+                        && let Some(summary) = verdict
+                            .envelope
+                            .as_ref()
+                            .map(|e| e.summary.trim().to_string())
+                        && !summary.is_empty()
+                    {
+                        t.plan = summary;
+                        f.store.update_task(t).env()?;
+                    }
+                    break;
                 }
-                break;
             }
             AttemptState::Unverified => break,
             AttemptState::ChecksFailed | AttemptState::AgentFailed => {
@@ -740,6 +722,93 @@ pub(super) async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<Ste
             pushes: false,
         },
     }))
+}
+
+/// Per-step task parameters (the workflow's override, else the action's
+/// default, else the task's), the provider this step's role runs under
+/// (the task's own flag, else its project's `[roles]`, else the
+/// operator's, else "anthropic" — see `ctx::resolve_provider`), and the
+/// routing record for `role` (docs/ECONOMIST.md, "The routing record"):
+/// written before the first attempt spends anything, so even a step that
+/// never verifies still shows its own routing.
+fn per_step_task(
+    f: &Forge,
+    t: &mut Task,
+    step: &workflows::ResolvedStep,
+    role: &str,
+) -> Result<Task, Fault> {
+    let mut ts = t.clone();
+    if let Some(m) = &step.model {
+        ts.model = m.clone();
+        ts.model_source = "step".to_string();
+    }
+    if let Some(n) = step.max_turns {
+        ts.max_turns = n as i64;
+    }
+    if let Some(n) = step.timeout_secs {
+        ts.timeout_secs = n as i64;
+    }
+    let (provider, provider_source) = f.effective_provider_routed(&ts, role).env()?;
+    ts.provider = provider.name.clone();
+    t.routing.insert(
+        role.to_string(),
+        crate::store::RoleRouting {
+            provider: crate::store::Routed {
+                value: ts.provider.clone(),
+                source: provider_source.to_string(),
+            },
+            model: crate::store::Routed {
+                value: crate::attempt::attempt_model(
+                    &step.action.name,
+                    &ts.model,
+                    &ts.model,
+                    provider,
+                    crate::attempt::model_pinned(&ts.model_source),
+                ),
+                source: crate::attempt::attempt_model_source(
+                    step.model.as_deref(),
+                    provider,
+                    &t.model_source,
+                ),
+            },
+            workflow: crate::store::Routed {
+                value: t.workflow.clone(),
+                source: t.workflow_source.clone(),
+            },
+        },
+    );
+    f.store.update_task(t).env()?;
+    Ok(ts)
+}
+
+/// Whether a `needs_input` question is a placeholder
+/// (`envelope::is_placeholder_question`) with a session to continue: if
+/// so, the resume and the feedback that ask it to finish instead of
+/// asking again.
+fn nudge_placeholder_question(
+    t: &Task,
+    a: &crate::store::Attempt,
+    verdict: &verify::Verdict,
+    outcome: &crate::agent::Outcome,
+) -> Option<(Resume, String)> {
+    let question = verdict
+        .envelope
+        .as_ref()
+        .and_then(|e| e.needs_input.as_ref())
+        .map(|q| q.question.as_str())
+        .unwrap_or("");
+    if !crate::envelope::is_placeholder_question(question) {
+        return None;
+    }
+    let sid = outcome.session_id.as_ref()?;
+    Some((
+        Resume {
+            session: sid.clone(),
+            start_sha: a.start_sha.clone(),
+            fresh_from: fresh_arm(t).then(|| PathBuf::from(&a.log_path)),
+        },
+        "there is no open question; finish the task and return a result".to_string(),
+    ))
 }
 
 /// A review whose demotion cited files only its sandbox had is asked,

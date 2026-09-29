@@ -210,6 +210,9 @@ async fn supervise_now(id: i64) -> Result<()> {
         crate::supervisor::Ruled::Superseded { by } => out!("superseded by task {by}"),
         crate::supervisor::Ruled::Accepted { landed } => out!("accepted the branch: {landed}"),
         crate::supervisor::Ruled::Escalated(why) => out!("escalated: {why}"),
+        crate::supervisor::Ruled::CouldNotRead(why) => {
+            out!("could not read the record; the question stands: {why}")
+        }
         crate::supervisor::Ruled::Skipped(why) => out!("skipped: {why}"),
     }
     Ok(())
