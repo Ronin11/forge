@@ -848,3 +848,22 @@ fn worker_json(f: &Forge) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod run_wait_tests {
+    use super::*;
+
+    #[test]
+    fn run_waits_by_default_and_accepts_no_wait() {
+        for (extra, expected) in [(None, false), (Some("--no-wait"), true)] {
+            let mut args = vec!["forge", "run", ".", "task"];
+            args.extend(extra);
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Cmd::Run(run) = cli.cmd else {
+                panic!("expected run")
+            };
+            assert_eq!(run.no_wait, expected);
+        }
+        assert!(Cli::try_parse_from(["forge", "add", ".", "task", "--no-wait"]).is_err());
+    }
+}

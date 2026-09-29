@@ -137,6 +137,7 @@ mod tests {
             assert!(
                 before_attempt(&f, &mut t, role, true)
                     .await
+                    .map_err(anyhow::Error::from)
                     .unwrap()
                     .is_none()
             );
@@ -153,7 +154,10 @@ mod tests {
         let (_dir, f, mut t) = fixture();
         hold(&f, &t, "openai", unix_now() + 3600);
         assert!(matches!(
-            before_attempt(&f, &mut t, "review", false).await.unwrap(),
+            before_attempt(&f, &mut t, "review", false)
+                .await
+                .map_err(anyhow::Error::from)
+                .unwrap(),
             Some(StepFlow::Requeue(_))
         ));
         assert_eq!(t.explore["review"], "openai");
@@ -166,14 +170,17 @@ mod tests {
         let now = unix_now();
         hold(&f, &t, "openai", now + 3600);
         hold(&f, &t, "anthropic", now + 1);
-        assert!(matches!(routing(&f, &t, "review").unwrap(),
-            Routing::Held { provider, until, .. } if provider == "anthropic" && until == now + 1));
+        assert!(
+            matches!(routing(&f, &t, "review").map_err(anyhow::Error::from).unwrap(),
+            Routing::Held { provider, until, .. } if provider == "anthropic" && until == now + 1)
+        );
         let flow = tokio::time::timeout(
             Duration::from_secs(3),
             before_attempt(&f, &mut t, "review", true),
         )
         .await
         .unwrap()
+        .map_err(anyhow::Error::from)
         .unwrap();
         assert!(flow.is_none());
         assert_eq!(t.explore["review"], "anthropic");
