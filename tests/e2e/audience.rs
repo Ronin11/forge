@@ -244,3 +244,42 @@ fn signal_obeys_audience_and_sends_one_daily_line() {
     assert!(hits.contains("task 2 blocked: needs input: choose"));
     assert!(hits.contains("yesterday: 1 demotions followed up"));
 }
+
+#[test]
+fn an_unchanged_withdrawn_dependency_notifies_once_across_worker_restarts() {
+    let e = Env::new();
+    let parent = e.add(&[]);
+    let dependent = e.add(&["--after", &parent.to_string()]);
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["withdraw", &parent.to_string(), "--reason", "cancelled"]
+        )
+        .status
+        .success()
+    );
+    let mut finished = None;
+    for _ in 0..3 {
+        assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
+        assert_eq!(e.task(dependent).0, "blocked");
+        let timestamp: i64 = e
+            .db()
+            .query_row(
+                "SELECT finished_at FROM tasks WHERE id=?1",
+                [dependent],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(*finished.get_or_insert(timestamp), timestamp);
+    }
+    let rows = events(&e);
+    let done: Vec<_> = rows
+        .iter()
+        .filter(|v| v["type"] == "task_done" && v["task"] == dependent)
+        .collect();
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(done[0]["audience"], "person");
+    let hits = notify(&e, &rows, "", &e._dir.path().join("notify-withdrawn"));
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert!(hits[0].starts_with(&format!("{dependent}|blocked|waits on task {parent}")));
+}

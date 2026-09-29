@@ -64,6 +64,9 @@ for the previous UTC day when `doctor-daily` succeeds, including follow-up
 filings and questions answered. Explicit `NOTIFY_ON` state lists retain
 the old per-task notifications; `NOTIFY_ON=person` is the default. See
 `docs/PLUGINS.md` for the digest event and command arguments.
+An unchanged dependency block is announced once, even across worker
+restarts. Withdrawing its prerequisite keeps it blocked until an answer
+or a successful replacement resolves the dependency.
 
 The `intake` workflow is one directive, `interview`, on a read-only
 contract like `investigate`: it is given the brief so far and every

@@ -867,7 +867,7 @@ fn prepare_claim(f: &Forge) -> Result<Option<Vec<i64>>> {
         return Ok(None);
     }
     for t in f.store.release_dependents()? {
-        eprintln!("task {t} unblocked: its dependencies landed or were withdrawn");
+        eprintln!("task {t} unblocked: its dependencies succeeded");
     }
     engine::settle_ready_initiatives(f)?;
     for (t, d, why) in f.store.block_dependents()? {

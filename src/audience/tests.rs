@@ -141,3 +141,35 @@ fn successful_transitions_do_not_ask_a_person() {
     let t = task(&s, TaskState::Succeeded, None);
     assert_eq!(classify(&s, &t).unwrap(), "none");
 }
+
+#[test]
+fn dependency_release_keeps_withdrawn_blocks_until_a_replacement_succeeds() {
+    let (_dir, s) = fixture();
+    let parent = task(&s, TaskState::Withdrawn, None);
+    let mut dependent = task(&s, TaskState::Queued, None);
+    dependent.after = vec![parent.id];
+    s.update_task(&dependent).unwrap();
+    assert_eq!(s.block_dependents().unwrap().len(), 1);
+    for _ in 0..3 {
+        assert!(s.release_dependents_of(parent.id).unwrap().is_empty());
+        assert!(s.release_dependents().unwrap().is_empty());
+        assert!(s.block_dependents().unwrap().is_empty());
+        let blocked = s.task(dependent.id).unwrap().unwrap();
+        assert_eq!(blocked.state, TaskState::Blocked);
+        assert_eq!(classify(&s, &blocked).unwrap(), "person");
+    }
+    let mut replacement = task(&s, TaskState::Queued, Some(parent.id));
+    s.reroute_dependents(parent.id, replacement.id).unwrap();
+    assert!(s.release_dependents().unwrap().is_empty());
+    replacement.state = TaskState::Succeeded;
+    replacement.land = false;
+    s.update_task(&replacement).unwrap();
+    assert_eq!(
+        s.release_dependents_of(replacement.id).unwrap(),
+        vec![dependent.id]
+    );
+    assert_eq!(
+        s.task(dependent.id).unwrap().unwrap().state,
+        TaskState::Queued
+    );
+}

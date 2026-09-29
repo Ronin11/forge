@@ -307,6 +307,9 @@ contact questions, job questions, dependencies without a live follow-up,
 and failures left without recovery reach a person. A demotion with a
 filed follow-up, a retried or refiled failure, and a superseded block have
 `audience=none`. Plugins do not infer this from reason text.
+An unchanged dependency block is announced once, even across worker
+restarts. Withdrawing its prerequisite keeps it blocked until an answer
+or a successful replacement resolves the dependency.
 
 Both **notify** and **signal** default to `NOTIFY_ON=person`. An explicit
 space-separated state list, such as `NOTIFY_ON=blocked failed`, preserves

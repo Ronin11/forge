@@ -64,7 +64,7 @@ pub(super) fn settle_terminal(
             f.report.emit(
                 d,
                 Event::Note {
-                    text: "unblocked: its dependencies landed or were withdrawn",
+                    text: "unblocked: its dependencies succeeded",
                 },
             );
         }
