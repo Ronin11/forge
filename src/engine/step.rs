@@ -4,6 +4,8 @@
 
 use super::*;
 
+mod provider_hold;
+
 /// Workflow state and completed operations needed to execute an operation step.
 pub(super) struct RunOperationStep<'a> {
     pub(super) f: &'a Forge,
@@ -263,7 +265,7 @@ pub(super) async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<Ste
     let mut nudge_pending = false;
     while run.used_at(seq) < t.max_attempts || nudge_pending {
         nudge_pending = false;
-        if let Some(flow) = super::provider_hold::before_attempt(f, t, role, wait).await? {
+        if let Some(flow) = provider_hold::before_attempt(f, t, role, wait).await? {
             if let Some(fb) = feedback {
                 run.owed.insert(seq, fb);
             }
