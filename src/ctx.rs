@@ -197,7 +197,8 @@ impl Forge {
         let sandbox = if need_agent {
             // Forge's own tools (forge-repomap) live beside the binary.
             let mut extra_ro = Vec::new();
-            if let Ok(exe) = std::env::current_exe()
+            if let Ok(exe) =
+                std::env::current_exe().map(|p| crate::binary::without_deleted_suffix(&p))
                 && let Some(dir) = exe.parent()
             {
                 extra_ro.push(dir.to_path_buf());

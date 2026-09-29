@@ -34,6 +34,8 @@ const CLAUDE_JSON_SEED: &str = r#"{"hasCompletedOnboarding":true,"theme":"dark"}
 /// Created by the egress relay once it is listening, in the sandbox's own
 /// tmpfs `/run`.
 const RELAY_READY: &str = "/run/forge/egress.ready";
+const RELAY_LOG: &str = "/run/forge/egress-relay.log";
+pub(crate) const RELAY_START_FAILED: &str = "forge: the egress relay did not start";
 
 /// Repository commands must not inherit the agent's private provider state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -382,7 +384,7 @@ impl Sandbox {
         }
         let (config_dir, codex_dir, copilot_dir) = provider_dirs(&home, |k| std::env::var_os(k));
         // The relay is this binary, so its directory has to be visible.
-        let relay_exe = std::env::current_exe().context("finding the forge binary")?;
+        let relay_exe = crate::binary::without_deleted_suffix(&crate::binary::launch_path()?);
         let relay_dir = relay_exe.parent().map(Path::to_path_buf);
         let extra_ro: Vec<PathBuf> = paths
             .ro
@@ -623,8 +625,10 @@ impl Sandbox {
         });
         let relay = if relay_enabled {
             format!(
-                "{} egress-relay --ready {RELAY_READY}{record} >/dev/null 2>&1 & \
-                 i=0; while [ ! -e {RELAY_READY} ] && [ $i -lt 500 ]; do i=$((i+1)); sleep 0.01; done; ",
+                "{} egress-relay --ready {RELAY_READY}{record} >/dev/null 2>{RELAY_LOG} & \
+                 i=0; while [ ! -e {RELAY_READY} ] && [ $i -lt 500 ]; do i=$((i+1)); sleep 0.01; done; \
+                 if [ ! -e {RELAY_READY} ]; then \
+                 echo '{RELAY_START_FAILED}' >&2; cat {RELAY_LOG} >&2; exit 125; fi; ",
                 shell_quote(&self.relay_exe.to_string_lossy())
             )
         } else {
