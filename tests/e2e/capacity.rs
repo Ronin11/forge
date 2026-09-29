@@ -34,7 +34,7 @@ RUST_TEST_THREADS = "3"
     );
 }
 
-fn running(e: &Env) -> usize {
+fn running(e: &Env) -> i64 {
     e.db()
         .query_row(
             "SELECT COUNT(*) FROM tasks WHERE state='running'",
@@ -76,8 +76,24 @@ fn capacity_watcher_and_sighup_resize_without_interrupting_attempts() {
     );
     assert!(wait_until(|| running(&e) == 3, Duration::from_secs(30)));
     std::fs::write(&config, "[worker]\nslots = 1\n").unwrap();
+    assert!(wait_until(
+        || {
+            std::fs::read_to_string(e.home.join("worker.capacity.json"))
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .is_some_and(|v| v["slots"] == 1)
+        },
+        Duration::from_secs(30)
+    ));
     // Lowering the cap leaves the already-running tasks alive.
     assert_eq!(running(&e), 3);
+    let output = e.forge("ok.sh", &["doctor", "--json"]);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    let row = rows.iter().find(|r| r["name"] == "worker").unwrap();
+    assert!(
+        row["detail"].as_str().unwrap().contains("3 of 1 slots"),
+        "{row}"
+    );
     // Worker Drop aborts these gated test processes.
     drop(worker);
 }

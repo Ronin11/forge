@@ -67,6 +67,7 @@ fn details(paths: &Paths, store: &Store) -> anyhow::Result<String> {
             }
         }
     }
+    parts.extend(active_environments(paths, store)?);
     parts.push(format!("default build env: {}", env_text(&build_env)));
     let load = worker::capacity::load_per_core();
     parts.push(match (settings.max_load, load) {
@@ -82,4 +83,25 @@ fn details(paths: &Paths, store: &Store) -> anyhow::Result<String> {
         (None, _) => "load cap disabled".into(),
     });
     Ok(parts.join("; "))
+}
+
+fn active_environments(paths: &Paths, store: &Store) -> anyhow::Result<Vec<String>> {
+    let conn = store.lock();
+    let mut stmt = conn.prepare(
+        "SELECT 'task ' || id AS label, worktree FROM tasks WHERE state='running'
+        UNION ALL SELECT 'job ' || id, ?1 || '/job-' || id FROM jobs WHERE state='running'",
+    )?;
+    let records = stmt
+        .query_map([paths.worktrees.to_string_lossy().as_ref()], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(records
+        .into_iter()
+        .filter_map(|(label, tree)| {
+            let env =
+                crate::agent::build_env::recorded_env(&paths.home, std::path::Path::new(&tree))?;
+            Some(format!("{label} active build env: {}", env_text(&env)))
+        })
+        .collect())
 }

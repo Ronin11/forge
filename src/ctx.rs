@@ -289,7 +289,12 @@ impl Forge {
         trust: crate::store::Trust,
         provider: Option<&str>,
     ) {
-        crate::agent::build_env::configure_env(worktree, &self.build_env, &cfg.build_env);
+        crate::agent::build_env::configure_env(
+            &self.paths.home,
+            worktree,
+            &self.build_env,
+            &cfg.build_env,
+        );
         if let Some(sandbox) = &self.sandbox {
             sandbox.configure(worktree, &cfg.execution);
             // A level whose egress is `model` reaches the model endpoints
