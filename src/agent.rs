@@ -113,7 +113,7 @@ pub enum Runner {
     #[default]
     ClaudeCli,
     CodexCli,
-    /// GitHub Copilot CLI, `copilot -p`; see `run_copilot`.
+    /// GitHub Copilot CLI with a capped `-p` prompt; see `run_copilot`.
     CopilotCli,
     Chat,
     /// TypeSafe's Jev: typed judgment, one HTTP call, never text; see
@@ -866,6 +866,7 @@ async fn run_json_phase(args: RunJsonPhase<'_>) -> Result<(Option<i32>, bool, St
     let RunJsonPhase {
         l,
         argv,
+        stdin,
         extra_env,
         start,
         log,
@@ -879,6 +880,7 @@ async fn run_json_phase(args: RunJsonPhase<'_>) -> Result<(Option<i32>, bool, St
         let (code, timed_out, stderr) = run_json_phase_once(RunJsonPhase {
             l,
             argv,
+            stdin,
             extra_env,
             start,
             log: &mut *log,
@@ -906,6 +908,7 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
     let RunJsonPhase {
         l,
         argv,
+        stdin,
         extra_env,
         start,
         log,
@@ -922,7 +925,7 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
             extra_env,
             Phase::Agent,
         ));
-        c.stdin(Stdio::null())
+        c.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
@@ -931,6 +934,7 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
     .await
     .with_context(|| format!("spawning {}", argv[0]))?;
 
+    inputs::feed_stdin(&mut child, stdin);
     let stderr = child.stderr.take().context("agent stderr")?;
     let stderr_task = tokio::spawn(async move {
         let mut s = String::new();
