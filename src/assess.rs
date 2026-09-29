@@ -167,6 +167,7 @@ async fn try_run(
             id: t.id,
             step: "assess",
             dir: wt,
+            identity_repo: Some(Path::new(&t.repo)),
             prompt: &prompt_text,
             system: "",
             model: &model,

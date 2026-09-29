@@ -1,13 +1,8 @@
-/// Every `Git::new(..)` call site, as `function:argument`. Kernel-owned:
-/// the kernel repository (`kernel`, `&kernel`, the `&src` of
-/// `place_branch`, the fresh verification checkouts and the directory
-/// `kernel_repository` initializes). The rest run in a path the caller
-/// names: the operator's registered repository, or a kernel-made tree or
-/// clone whose contents were read out of the agent's before any check
-/// ran. Nothing that pushes, or that runs a merge for landing, is in the
-/// second group, and the only command aimed at an agent's clone is the
-/// hardened fetch in `place_branch`. Adding a call site fails this test:
-/// name it here, and say which group it is in.
+/// Every Git constructor is inventoried. All general-purpose helpers must
+/// immediately harden their invocation, regardless of who supplies the path.
+/// Only mirror metadata inspection is exempt: its sole production caller
+/// receives bare origins from the registered project repositories (see the
+/// caller guard below). Kernel-only pushes retain their separate path guard.
 const CALL_SITES: &[&str] = &[
     // Kernel-owned.
     "kernel_repository:&dir",
@@ -19,9 +14,9 @@ const CALL_SITES: &[&str] = &[
     "place_branch:&src",
     "published:&kernel",
     "push_sha:&kernel",
-    // The hardened fetch into an agent's clone.
+    // Hardened fetch into an agent's clone.
     "place_branch:dir",
-    // Caller-named: registered repository or kernel-made tree.
+    // Caller-named: always hardened, including agent clones.
     "current_branch:repo",
     "ref_exists:repo",
     "clone_task:repo",
@@ -128,10 +123,68 @@ fn no_push_or_landing_step_runs_git_in_a_callers_directory() {
             assert!(arg.contains("kernel"), "{site}");
         }
     }
-    // The one command in an agent's clone is a hardened fetch.
+}
+
+#[test]
+fn caller_named_git_sites_are_hardened_or_have_a_trusted_caller() {
     let src = include_str!("../git.rs");
-    let at = src.find("Git::new(dir)\n        .hardened()").unwrap();
-    assert!(src[at..].contains("\"fetch\""));
+    let src = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+    let sites = call_sites();
+    for (site, tail) in sites.iter().zip(src.split("Git::new(").skip(1)) {
+        let after = tail.split_once(')').unwrap().1.trim_start();
+        if !["hooks_dir:dir", "config_get:dir", "config_set:dir"].contains(&site.as_str()) {
+            assert!(after.starts_with(".hardened()"), "unhardened Git at {site}");
+        }
+    }
+
+    // These exceptions must keep their single caller in mirror installation.
+    // Scan every production source, so adding a caller requires a new audit.
+    fn callers(dir: &Path, found: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                callers(&path, found);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                let production = text.split("#[cfg(test)]").next().unwrap();
+                for line in production.lines() {
+                    if ["git::hooks_dir(", "git::config_get(", "git::config_set("]
+                        .iter()
+                        .any(|needle| line.contains(needle))
+                    {
+                        found.push(format!(
+                            "{}:{}",
+                            path.file_name().unwrap().to_str().unwrap(),
+                            line.trim()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let mut found = Vec::new();
+    callers(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut found,
+    );
+    found.sort();
+    let mut expected = vec![
+        "init.rs:let hooks = git::hooks_dir(bare).await?;".to_string(),
+        "init.rs:if git::config_get(bare, \"forge.mirror\").await.as_deref() != Some(mirror) {"
+            .to_string(),
+        "init.rs:git::config_set(bare, \"forge.mirror\", mirror).await?;".to_string(),
+    ];
+    expected.sort();
+    assert_eq!(found, expected);
+    let init = include_str!("../init.rs");
+    assert_eq!(
+        init.matches("install_mirror_hook(&bare, mirror)").count(),
+        1
+    );
+    assert!(init.contains("for r in store.project_repos(&p.name)?"));
+    assert!(init.contains("let repo = Path::new(&r.repo)"));
+    assert!(init.contains("let Some(url) = git::remote_url(repo, &remote).await"));
+    assert!(init.contains("if let Some(bare) = local_bare(&url).await"));
 }
 
 #[tokio::test]

@@ -19,6 +19,8 @@ pub struct Spec<'a> {
     pub id: i64,
     pub step: &'a str,
     pub dir: &'a Path,
+    /// Registered repository; None for scratch-only directives.
+    pub identity_repo: Option<&'a Path>,
     pub prompt: &'a str,
     /// System-level content for a runner with its own system channel
     /// (`Runner::Chat`); every other runner ignores it. Empty when the
@@ -45,9 +47,19 @@ pub struct Spec<'a> {
 }
 
 pub async fn launch(f: &Forge, s: Spec<'_>) -> Result<Outcome> {
+    let kernel;
+    let identity_repo = match s.identity_repo {
+        Some(repo) => repo,
+        None => {
+            kernel = crate::git::kernel_repository(&f.paths.home, s.dir).await?;
+            &kernel
+        }
+    };
+    let identity = crate::git::identity(identity_repo).await;
     agent::run(agent::Launch {
         task_id: s.id,
         worktree: s.dir,
+        identity,
         prompt: s.prompt,
         system: s.system,
         model: s.model,

@@ -237,6 +237,7 @@ pub async fn run(
             id: 0,
             step: "deploy-look",
             dir: &scratch,
+            identity_repo: None,
             prompt: &prompt_text,
             system: "",
             model: &model,
