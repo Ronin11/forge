@@ -39,6 +39,10 @@ pub(super) enum InitiativeCmd {
         /// same tests (default: 3)
         #[arg(long = "stop-after")]
         stop_after: Option<u32>,
+        /// Claim order for every task `--from` files: 0 (lowest) to 7
+        /// (highest), or low, normal, high, urgent (default: normal)
+        #[arg(long, value_parser = crate::store::parse_priority)]
+        priority: Option<i64>,
     },
     /// File a task's recorded plan (from the investigate directive) into
     /// a new initiative: one task per plan item, chained in order,
@@ -65,6 +69,11 @@ pub(super) enum InitiativeCmd {
         /// One sentence saying what is true when the initiative is done
         #[arg(long)]
         outcome: Option<String>,
+        /// Set every currently-queued task of this initiative to this
+        /// claim order: 0 (lowest) to 7 (highest), or low, normal, high,
+        /// urgent (does not change tasks filed later)
+        #[arg(long, value_parser = crate::store::parse_priority)]
+        priority: Option<i64>,
     },
     /// Every initiative, its state, task counts and cost
     List {
@@ -134,6 +143,8 @@ fn print_initiative_row(r: &crate::view::InitiativeRow) {
     }
 }
 
+// Reason: one flag per parameter, mirroring the New subcommand's own fields.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn initiative_new(
     project: String,
     outcome: String,
@@ -142,6 +153,7 @@ pub(super) async fn initiative_new(
     workflow: Option<String>,
     budget: Option<f64>,
     stop_after: Option<u32>,
+    priority: Option<i64>,
 ) -> Result<()> {
     if let Some(b) = budget
         && b <= 0.0
@@ -185,6 +197,7 @@ pub(super) async fn initiative_new(
             default_repo.as_deref(),
             provider.as_deref(),
             workflow.as_deref(),
+            priority,
         )
         .await?;
         for (n, tid) in ids.iter().enumerate() {
@@ -230,9 +243,10 @@ pub(super) fn initiative_set(
     budget: Option<f64>,
     stop_after: Option<u32>,
     outcome: Option<String>,
+    priority: Option<i64>,
 ) -> Result<()> {
-    if budget.is_none() && stop_after.is_none() && outcome.is_none() {
-        bail!("nothing to set: pass --budget, --stop-after or --outcome");
+    if budget.is_none() && stop_after.is_none() && outcome.is_none() && priority.is_none() {
+        bail!("nothing to set: pass --budget, --stop-after, --outcome or --priority");
     }
     if let Some(b) = budget
         && b <= 0.0
@@ -253,6 +267,10 @@ pub(super) fn initiative_set(
         },
     )? {
         bail!("no initiative {id}");
+    }
+    if let Some(p) = priority {
+        let n = f.store.set_priority_for_queued_initiative_tasks(id, p)?;
+        out!("priority {p}: {n} queued task(s) updated");
     }
     let ini = f.store.initiative(id)?.context("initiative vanished")?;
     let row = crate::view::initiative_row(&f, &ini)?;

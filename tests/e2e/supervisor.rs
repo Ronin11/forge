@@ -165,12 +165,12 @@ fn the_supervisor_marks_a_task_superseded_by_one_that_already_landed() {
 }
 
 #[test]
-fn a_supervisor_that_crashes_is_an_agent_failure_and_the_question_escalates() {
+fn a_supervisor_that_crashes_is_its_own_failure_and_the_original_question_stands() {
     let e = Env::new();
     let o = supervised(&e, "supervisor-crash.sh", "write 42 to the answer file");
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
-        err.contains("supervisor escalated: its run failed: agent exit 1"),
+        err.contains("supervisor could not read the record: its run failed: agent exit 1"),
         "{err}"
     );
     let a = e.attempts(1);
@@ -179,12 +179,27 @@ fn a_supervisor_that_crashes_is_an_agent_failure_and_the_question_escalates() {
     assert_eq!(a[1].2, "agent exit 1");
     let (state, reason, _) = e.task(1);
     assert_eq!(state, "blocked");
+    // The original question is still there, not replaced by a fresh
+    // escalation reason: only a note is appended.
     assert!(
-        reason.contains("[supervisor escalated: its run failed: agent exit 1]"),
+        reason.contains("needs input: Which answer file: answer.txt or ANSWER.txt?"),
         "{reason}"
     );
+    assert!(
+        reason.contains("[supervisor could not read it: its run failed: agent exit 1]"),
+        "{reason}"
+    );
+    assert!(
+        !reason.contains("escalated"),
+        "a failed supervisor run is not a fresh escalation: {reason}"
+    );
+    // Nothing was ruled, so this is not a decision either.
     let ds: serde_json::Value = e.decisions_json();
     assert!(ds.as_array().unwrap().is_empty(), "{ds}");
+    // The question is still the operator's, exactly as it was asked.
+    let reqs: serde_json::Value = e.requests_json();
+    assert_eq!(reqs.as_array().unwrap().len(), 1, "{reqs}");
+    assert_eq!(reqs[0]["kind"], "question");
 }
 
 #[test]

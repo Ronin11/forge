@@ -451,6 +451,7 @@ fn ask(f: &Forge, project: &str, repo: &str, reason: String) -> Result<()> {
                 workflow: "direct".to_string(),
                 project: Some(project.to_string()),
                 land: false,
+                priority: crate::store::PRIORITY_DEFAULT,
                 ..Default::default()
             };
             t.id = f.store.insert_task(&t)?;

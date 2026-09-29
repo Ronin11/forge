@@ -821,6 +821,13 @@ ALTER TABLE tasks ADD COLUMN adoption_json TEXT NOT NULL DEFAULT '';
     "
 ALTER TABLE workers ADD COLUMN start TEXT NOT NULL DEFAULT '';
 ",
+    // Task priority (see `store::priority`): 0 (lowest) to 7 (highest),
+    // 2 ("normal") by default and for every existing row. Among
+    // otherwise-claimable tasks, the claim order is priority descending,
+    // then id ascending (`Store::queued_unblocked`).
+    "
+ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 2 CHECK (priority BETWEEN 0 AND 7);
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

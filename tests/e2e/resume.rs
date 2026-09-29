@@ -441,3 +441,79 @@ fn a_requeue_during_review_resumes_at_review_and_the_code_step_runs_once() {
         .unwrap();
     assert!(setups <= 1, "setup ran {setups} times");
 }
+
+#[test]
+fn a_placeholder_needs_input_question_is_nudged_and_the_task_finishes() {
+    // Task 1069 (2026-09-28): a one-letter question after 49 turns and 3
+    // commits sat blocked for the operator. It should get one nudge to
+    // finish instead.
+    let e = Env::new();
+    let o = e.run("nudge.sh", &["--retries", "1"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains(
+            "resume   the question was not really one; nudging the session to finish instead of blocking"
+        ),
+        "{err}"
+    );
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2, "{a:?}");
+    assert_eq!(a[0].1, "needs_input");
+    assert_eq!(a[1].1, "succeeded");
+    assert!(
+        e.log_text(1, 2)
+            .contains("there is no open question; finish the task and return a result"),
+        "the nudge prompt"
+    );
+    let doc: serde_json::Value = e.trace_json("1");
+    assert_eq!(doc["attempts"][1]["inputs"]["resumed"], "sess-nudge-1");
+    assert_eq!(e.task(1).0, "succeeded");
+}
+
+#[test]
+fn a_placeholder_needs_input_question_is_nudged_even_on_the_last_allowed_attempt() {
+    // The placeholder question came from the only attempt the directive
+    // was allowed: the nudge must still happen rather than blocking on a
+    // question nobody actually asked.
+    let e = Env::new();
+    let o = e.run("nudge.sh", &["--retries", "0"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("nudging the session to finish instead of blocking"),
+        "{err}"
+    );
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2, "{a:?}");
+    assert_eq!(a[1].1, "succeeded");
+    assert_eq!(e.task(1).0, "succeeded");
+}
+
+#[test]
+fn a_nudge_that_also_returns_needs_input_becomes_a_real_question() {
+    let e = Env::new();
+    let o = e.run("nudge-real.sh", &["--retries", "1"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("nudging the session to finish instead of blocking"),
+        "{err}"
+    );
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2, "{a:?}");
+    assert_eq!(a[0].1, "needs_input");
+    assert_eq!(a[1].1, "needs_input");
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "blocked");
+    assert!(
+        reason.contains("Which timezone should the report use?"),
+        "the second question stands, unnudged: {reason}"
+    );
+    // Only one nudge: a second placeholder-shaped question would not get
+    // a third attempt either, but this one is a real question anyway.
+    assert_eq!(
+        err.matches("nudging the session").count(),
+        1,
+        "the session was nudged only once: {err}"
+    );
+}
