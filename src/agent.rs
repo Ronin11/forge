@@ -940,8 +940,7 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
 
     let mut stdin = child.stdin.take().context("agent stdin")?;
     let write_prompt = async {
-        // Drain output concurrently: a CLI may write before reading the prompt.
-        // An early CLI exit can close the pipe; its status/stderr explain why.
+        // Drain output concurrently; early exits can close the input pipe.
         let _ = stdin.write_all(prompt.as_bytes()).await;
         drop(stdin);
     };
