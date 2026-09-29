@@ -280,7 +280,7 @@ pub async fn act(f: &Forge, id: i64) -> Result<()> {
     let Some(t) = f.store.task(id)? else {
         return Ok(());
     };
-    if t.state != TaskState::Failed {
+    if t.state != TaskState::Failed || !reasons::in_scope(&t.reason) {
         return Ok(());
     }
     let attempts = f.store.attempts(id)?;
