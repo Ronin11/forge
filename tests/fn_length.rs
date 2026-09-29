@@ -95,7 +95,7 @@ const ALLOWLIST: &[(&str, &str, usize, &str)] = &[
     (
         "src/engine/step.rs",
         "run_directive_step",
-        538,
+        173,
         "existing function awaiting a focused split",
     ),
     (
