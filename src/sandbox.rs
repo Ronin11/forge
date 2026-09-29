@@ -39,6 +39,13 @@ const CLAUDE_JSON_SEED: &str = "/run/forge/seed/claude.json";
 /// tmpfs `/run`.
 const RELAY_READY: &str = "/run/forge/egress.ready";
 
+/// Repository commands must not inherit the agent's private provider state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Agent,
+    Check,
+}
+
 pub struct Sandbox {
     bwrap: PathBuf,
     home: PathBuf,
@@ -591,7 +598,13 @@ impl Sandbox {
         argv: &[String],
         env: &[(String, String)],
     ) -> Command {
-        self.command(worktree, argv, env, &self.policy_for(worktree))
+        self.command(
+            worktree,
+            argv,
+            env,
+            &self.policy_for(worktree),
+            Phase::Agent,
+        )
     }
 
     /// Whether the proxy socket this worktree's launch will bind in is
@@ -610,7 +623,7 @@ impl Sandbox {
         Ok(())
     }
 
-    fn wrapper_script(&self, relay_enabled: bool, refused: Option<&Path>) -> String {
+    fn wrapper_script(&self, relay_enabled: bool, refused: Option<&Path>, phase: Phase) -> String {
         // The claude CLI's own config file, not the credential-bearing
         // config directory: seed it into the tmpfs $HOME as a real, private
         // file before exec, so the CLI's rename-over-a-lockfile update
@@ -636,11 +649,16 @@ impl Sandbox {
         } else {
             String::new()
         };
-        format!(
-            "cp -f {} {} 2>/dev/null; {relay}exec \"$@\"",
-            shell_quote(CLAUDE_JSON_SEED),
-            shell_quote(&dest.to_string_lossy())
-        )
+        let seed = if phase == Phase::Agent {
+            format!(
+                "cp -f {} {} 2>/dev/null; ",
+                shell_quote(CLAUDE_JSON_SEED),
+                shell_quote(&dest.to_string_lossy())
+            )
+        } else {
+            String::new()
+        };
+        format!("{seed}{relay}exec \"$@\"")
     }
 
     /// Everything a launch in `worktree` with `env` does to the host before
@@ -648,7 +666,10 @@ impl Sandbox {
     /// from the operator's (see `login`), waiting on the logins' locks
     /// without holding a thread (docs/REVIEW-4.md #1.10). Every launch
     /// awaits this first; `command` itself never touches a login.
-    pub async fn prepare(&self, worktree: &Path, env: &[(String, String)]) {
+    pub async fn prepare(&self, worktree: &Path, env: &[(String, String)], phase: Phase) {
+        if phase == Phase::Check {
+            return;
+        }
         let provider_dir = provider_dir_for(worktree, contract_of(env));
         for cli in ["claude", "codex", "copilot"] {
             let _ = std::fs::create_dir_all(provider_dir.join(cli));
@@ -683,6 +704,7 @@ impl Sandbox {
         argv: &[String],
         env: &[(String, String)],
         policy: &Policy,
+        phase: Phase,
     ) -> Command {
         let mut cmd = Command::new(&self.bwrap);
         cmd.args([
@@ -734,9 +756,11 @@ impl Sandbox {
         for d in ro {
             cmd.arg("--ro-bind-try").arg(d).arg(d);
         }
-        cmd.args(["--ro-bind-try"])
-            .arg(&self.claude_json_seed)
-            .arg(CLAUDE_JSON_SEED);
+        if phase == Phase::Agent {
+            cmd.args(["--ro-bind-try"])
+                .arg(&self.claude_json_seed)
+                .arg(CLAUDE_JSON_SEED);
+        }
         // The route out: the proxy for this worktree's policy, on a socket
         // bound in beside the seed. Without a runtime to run a proxy on
         // there is no route, and the namespace has nothing but loopback.
@@ -761,16 +785,34 @@ impl Sandbox {
         // the phase-two report find their thread. `discard_provider_state`
         // removes it with the worktree. The operator's real
         // `.claude`/`.codex` directories are never bound into a sandbox.
-        let provider_dir = provider_dir_for(worktree, contract_of(env));
-        let claude_priv = provider_dir.join("claude");
-        let codex_priv = provider_dir.join("codex");
-        let copilot_priv = provider_dir.join("copilot");
-        for d in [&claude_priv, &codex_priv, &copilot_priv] {
-            let _ = std::fs::create_dir_all(d);
+        if phase == Phase::Agent {
+            let provider_dir = provider_dir_for(worktree, contract_of(env));
+            let claude_priv = provider_dir.join("claude");
+            let codex_priv = provider_dir.join("codex");
+            let copilot_priv = provider_dir.join("copilot");
+            for d in [&claude_priv, &codex_priv, &copilot_priv] {
+                let _ = std::fs::create_dir_all(d);
+            }
+            cmd.arg("--bind").arg(&claude_priv).arg(&self.config_dir);
+            cmd.arg("--bind").arg(&codex_priv).arg(&self.codex_dir);
+            cmd.arg("--bind").arg(&copilot_priv).arg(&self.copilot_dir);
+        } else {
+            // Fresh private mounts on every check: no login seeding, no
+            // session state from an agent or a previous check to read or modify.
+            // Cover both configured locations and the defaults used when
+            // provider environment variables are absent.
+            let dirs = BTreeSet::from([
+                self.config_dir.clone(),
+                self.codex_dir.clone(),
+                self.copilot_dir.clone(),
+                self.home.join(".claude"),
+                self.home.join(".codex"),
+                self.home.join(".copilot"),
+            ]);
+            for dir in dirs {
+                cmd.arg("--tmpfs").arg(dir);
+            }
         }
-        cmd.arg("--bind").arg(&claude_priv).arg(&self.config_dir);
-        cmd.arg("--bind").arg(&codex_priv).arg(&self.codex_dir);
-        cmd.arg("--bind").arg(&copilot_priv).arg(&self.copilot_dir);
         // What lives inside a directory just bound over (an agent under
         // `~/.claude/local`) is bound again on top of the private copy.
         for d in under {
@@ -811,8 +853,11 @@ impl Sandbox {
             cmd.arg("--bind-try").arg(&dir).arg(&dir);
         }
         cmd.arg("--chdir").arg(worktree).arg("--");
-        let script =
-            self.wrapper_script(socket.is_some(), egress::refused_path(worktree).as_deref());
+        let script = self.wrapper_script(
+            socket.is_some(),
+            egress::refused_path(worktree).as_deref(),
+            phase,
+        );
         cmd.args(["/bin/sh", "-c"]).arg(script).arg("sh");
         cmd.args(argv);
         cmd.env_clear();
@@ -845,7 +890,7 @@ mod tests {
             .enable_time()
             .build()
             .unwrap()
-            .block_on(sandbox.prepare(worktree, env));
+            .block_on(sandbox.prepare(worktree, env, Phase::Agent));
     }
 
     const CREDS: &str =
@@ -867,12 +912,12 @@ mod tests {
         std::fs::write(sandbox.config_dir.join("settings.json"), "settings").unwrap();
         let policy = Policy::new([]);
         prepared(&sandbox, &worktree, &[]);
-        let _ = sandbox.command(&worktree, &[], &[], &policy);
+        let _ = sandbox.command(&worktree, &[], &[], &policy, Phase::Agent);
         std::fs::create_dir_all(coder.join("claude/projects")).unwrap();
         std::fs::write(coder.join("claude/projects/session"), "coder transcript").unwrap();
         let env = vec![("FORGE_CONTRACT".into(), "review".into())];
         prepared(&sandbox, &worktree, &env);
-        let cmd = sandbox.command(&worktree, &[], &env, &policy);
+        let cmd = sandbox.command(&worktree, &[], &env, &policy, Phase::Agent);
         assert!(args_of(&cmd).contains(&review.join("claude").display().to_string()));
         assert!(!args_of(&cmd).contains(&coder.join("claude").display().to_string()));
         assert!(!review.join("claude/projects").exists());

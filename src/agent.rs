@@ -12,6 +12,7 @@ mod jev;
 pub mod refusal;
 mod relaunch;
 mod usage_limit;
+use crate::sandbox::Phase;
 use chat::run_chat;
 pub(super) use chat::truncated_first_line;
 use claude::{claude_argv, run_claude};
@@ -307,25 +308,25 @@ fn path_with_bin_dir(path: &str) -> String {
     }
 }
 
-/// The environment the agent and the checks see, sandboxed or not. This is
-/// the one list; the sandbox overrides HOME on top of it.
-pub fn agent_env() -> Vec<(String, String)> {
+/// Which inherited variables a launch may receive. Explicit check
+/// configuration is appended separately, after this filter.
+fn inherited_env_allowed(key: &str, phase: Phase) -> bool {
+    matches!(
+        key,
+        "PATH" | "HOME" | "LANG" | "TERM" | "FAKE_SLEEP" | "FAKE_SLEEP_SECS"
+    ) || key.starts_with("LC_")
+        || (phase == Phase::Agent
+            && (key == "CLAUDE_CONFIG_DIR"
+                || ["ANTHROPIC_", "CODEX_", "COPILOT_"]
+                    .iter()
+                    .any(|prefix| key.starts_with(prefix))))
+}
+
+/// The inherited environment for this phase, sandboxed or not. The
+/// sandbox overrides HOME on top of it.
+pub fn agent_env(phase: Phase) -> Vec<(String, String)> {
     std::env::vars()
-        .filter(|(k, _)| {
-            matches!(
-                k.as_str(),
-                "PATH"
-                    | "HOME"
-                    | "LANG"
-                    | "TERM"
-                    | "CLAUDE_CONFIG_DIR"
-                    | "CODEX_HOME"
-                    | "FAKE_SLEEP"
-                    | "FAKE_SLEEP_SECS"
-            ) || ["LC_", "ANTHROPIC_", "CODEX_", "COPILOT_"]
-                .iter()
-                .any(|p| k.starts_with(p))
-        })
+        .filter(|(key, _)| inherited_env_allowed(key, phase))
         .map(|(k, v)| {
             if k == "PATH" {
                 (k, path_with_bin_dir(&v))
@@ -337,8 +338,8 @@ pub fn agent_env() -> Vec<(String, String)> {
 }
 
 /// The agent environment plus `extra_env`.
-fn env_with(extra_env: &[(String, String)]) -> Vec<(String, String)> {
-    let mut env = agent_env();
+fn env_with(extra_env: &[(String, String)], phase: Phase) -> Vec<(String, String)> {
+    let mut env = agent_env(phase);
     env.extend(extra_env.iter().cloned());
     env
 }
@@ -350,9 +351,11 @@ pub async fn prepare_in(
     sandbox: Option<&Execution>,
     worktree: &Path,
     extra_env: &[(String, String)],
+    phase: Phase,
 ) {
     if let Some(sb) = sandbox {
-        sb.prepare(worktree, &env_with(extra_env)).await;
+        sb.prepare(worktree, &env_with(extra_env, phase), phase)
+            .await;
     }
 }
 
@@ -364,16 +367,18 @@ pub fn command_in(
     worktree: &Path,
     argv: &[String],
     extra_env: &[(String, String)],
+    phase: Phase,
 ) -> std::process::Command {
-    let env = env_with(extra_env);
+    let env = env_with(extra_env, phase);
     match sandbox {
-        Some(sb) => sb.command(worktree, argv, &env),
+        Some(sb) => sb.command(worktree, argv, &env, phase),
         None => crate::executor::Executor::command(
             &crate::executor::Host,
             worktree,
             argv,
             &env,
             &crate::egress::Policy::new([]),
+            phase,
         ),
     }
 }
@@ -584,9 +589,9 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
         report,
         log,
     } = args;
-    prepare_in(sandbox, worktree, identity).await;
+    prepare_in(sandbox, worktree, identity, Phase::Agent).await;
     let mut child = spawn_retrying_etxtbsy(|| {
-        let mut c = Command::from(command_in(sandbox, worktree, argv, identity));
+        let mut c = Command::from(command_in(sandbox, worktree, argv, identity, Phase::Agent));
         c.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -919,9 +924,15 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
         watch,
         apply,
     } = args;
-    prepare_in(l.sandbox, l.worktree, extra_env).await;
+    prepare_in(l.sandbox, l.worktree, extra_env, Phase::Agent).await;
     let mut child = spawn_retrying_etxtbsy(|| {
-        let mut c = Command::from(command_in(l.sandbox, l.worktree, argv, extra_env));
+        let mut c = Command::from(command_in(
+            l.sandbox,
+            l.worktree,
+            argv,
+            extra_env,
+            Phase::Agent,
+        ));
         c.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

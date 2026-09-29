@@ -573,7 +573,7 @@ fn spawn_plugin(
     cmd.args(&plugin.manifest.run[1..])
         .current_dir(&plugin.dir)
         .env_clear()
-        .envs(crate::agent::agent_env())
+        .envs(crate::agent::agent_env(crate::sandbox::Phase::Agent))
         .env("FORGE_BIN", bin)
         .env("FORGE_HOME", home)
         .env("FORGE2_HOME", home)
