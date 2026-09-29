@@ -43,6 +43,24 @@ fn running_pid(e: &Env, id: i64) -> Option<i64> {
         .flatten()
 }
 
+/// Lets task `id`'s `gated-ok.sh` attempt finish: writes the gate file
+/// into its worktree once the clone is there.
+fn open_gate(e: &Env, id: i64) {
+    let git = || -> Option<std::path::PathBuf> {
+        let wt: String = e
+            .db()
+            .query_row("SELECT worktree FROM tasks WHERE id=?1", [id], |r| r.get(0))
+            .ok()?;
+        let git = std::path::Path::new(&wt).join(".git");
+        (!wt.is_empty() && git.is_dir()).then_some(git)
+    };
+    assert!(
+        wait_until(|| git().is_some(), Duration::from_secs(120)),
+        "task {id} never had a worktree to open the gate in"
+    );
+    std::fs::write(git().unwrap().join("gate-open"), "").unwrap();
+}
+
 #[test]
 fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains() {
     let e = Env::new();
@@ -82,7 +100,7 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
     // The old release's copy of `forge`, in `cmd`'s environment.
     let mut cmd = std::process::Command::new(root.join("releases/old/forge"));
     cmd.envs(
-        e.cmd("slow-ok.sh")
+        e.cmd("gated-ok.sh")
             .get_envs()
             .filter_map(|(k, v)| Some((k, v?))),
     )
@@ -92,7 +110,10 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
     let mut old = Worker::spawn(&mut cmd);
     let _reap = Reap(e.home.clone());
     assert!(
-        wait_until(|| running_pid(&e, first).is_some(), Duration::from_secs(30)),
+        wait_until(
+            || running_pid(&e, first).is_some(),
+            Duration::from_secs(120)
+        ),
         "the old worker never claimed task {first}"
     );
     let old_pid = running_pid(&e, first).unwrap();
@@ -103,7 +124,7 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
     assert!(
         wait_until(
             || running_pid(&e, second).is_some(),
-            Duration::from_secs(30)
+            Duration::from_secs(120)
         ),
         "the successor never claimed task {second}"
     );
@@ -133,6 +154,8 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
     );
 
     // The old worker finishes the attempt it holds and exits by itself.
+    open_gate(&e, first);
+    open_gate(&e, second);
     assert!(
         old.wait().success(),
         "the old worker did not exit cleanly after draining"
@@ -151,7 +174,7 @@ fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains()
         "{calls}"
     );
     assert!(
-        wait_until(|| e.task(second).0 != "running", Duration::from_secs(60)),
+        wait_until(|| e.task(second).0 != "running", Duration::from_secs(120)),
         "task {second} never finished"
     );
     let claimed: i64 = e
@@ -214,14 +237,13 @@ fn a_successor_beside_a_predecessor_holding_two_attempts_claims_at_most_jobs_min
 
     let mut cmd = std::process::Command::new(root.join("releases/old/forge"));
     cmd.envs(
-        e.cmd("slow-ok.sh")
+        e.cmd("gated-ok.sh")
             .get_envs()
             .filter_map(|(k, v)| Some((k, v?))),
     )
     .env("PATH", &path)
     .args(["work", "--jobs", "3", "--poll", "1"]);
-    e.add(&["--retries", "0"]);
-    e.add(&["--retries", "0"]);
+    let held_by_old = [e.add(&["--retries", "0"]), e.add(&["--retries", "0"])];
     let mut old = Worker::spawn(&mut cmd);
     let _reap = Reap(e.home.clone());
     let old_pid = i64::from(old.id());
@@ -232,7 +254,7 @@ fn a_successor_beside_a_predecessor_holding_two_attempts_claims_at_most_jobs_min
             .map_or(0, |(_, n)| n)
     };
     assert!(
-        wait_until(|| held(old_pid) == 2, Duration::from_secs(30)),
+        wait_until(|| held(old_pid) == 2, Duration::from_secs(120)),
         "the old worker never held two attempts: {:?}",
         running_by_worker(&e)
     );
@@ -241,32 +263,43 @@ fn a_successor_beside_a_predecessor_holding_two_attempts_claims_at_most_jobs_min
     for _ in 0..3 {
         e.add(&["--retries", "0"]);
     }
-    // While the predecessor holds its two, no read of the store shows the
-    // box past three attempts, or the successor past one.
-    let mut successor_claimed = false;
+    // While the predecessor holds its two (gated, so it holds them until
+    // the gates open), no read of the store shows the box past three
+    // attempts, or the successor past one: watched until the successor
+    // claims, then for a few of its polls more.
+    let mut claimed_at = None;
     let t0 = std::time::Instant::now();
-    while t0.elapsed() < Duration::from_secs(6) {
+    loop {
         let by = running_by_worker(&e);
         let old_held = by.iter().find(|(p, _)| *p == old_pid).map_or(0, |b| b.1);
         let new_held: i64 = by.iter().filter(|(p, _)| *p != old_pid).map(|b| b.1).sum();
-        if old_held < 2 {
-            break;
-        }
+        assert_eq!(
+            old_held, 2,
+            "the predecessor let go of a gated attempt: {by:?}"
+        );
         assert!(
             new_held <= 1,
             "the successor took the box past its jobs: {by:?}"
         );
-        successor_claimed |= new_held == 1;
+        if new_held == 1 && claimed_at.is_none() {
+            claimed_at = Some(std::time::Instant::now());
+        }
+        match claimed_at {
+            Some(at) if at.elapsed() >= Duration::from_secs(3) => break,
+            None => assert!(
+                t0.elapsed() < Duration::from_secs(120),
+                "the successor claimed nothing: {by:?}"
+            ),
+            _ => {}
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(
-        successor_claimed,
-        "the successor claimed nothing: {:?}",
-        running_by_worker(&e)
-    );
     let out = String::from_utf8_lossy(&e.forge("ok.sh", &["doctor"]).stdout).to_string();
     let row = out.lines().find(|l| l.contains("worker")).unwrap_or("");
     assert!(row.contains("of 3 slots: predecessor"), "{out}");
+    for id in held_by_old {
+        open_gate(&e, id);
+    }
     assert!(old.wait().success());
 }
 
