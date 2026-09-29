@@ -535,8 +535,13 @@ enum Cmd {
         /// operator's attention cost at [measure] operator_usd_per_hour
         #[arg(long)]
         questions: bool,
-        /// With --factors or --questions, only tasks that finished (or
-        /// blocked) in the last N days
+        /// Every mechanic decision (docs/WORKFLOWS.md, "Mechanic"): a
+        /// count per kind — load flake, landing conflict, ratchet, turn
+        /// cap, clean-tree, or raised to the operator
+        #[arg(long)]
+        mechanic: bool,
+        /// With --factors, --questions, or --mechanic, only tasks that
+        /// finished (or blocked) in the last N days
         #[arg(long)]
         days: Option<i64>,
         /// Only this project's tasks (also adds the per-project section

@@ -20,6 +20,7 @@ mod execution;
 mod executors;
 mod fixtures;
 mod fold;
+mod followups;
 mod graph;
 mod init;
 mod initiatives;
