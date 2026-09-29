@@ -125,6 +125,7 @@ pub async fn rule(f: &Forge, t: &Task, deny: &[String], need: &Need) -> Result<R
             id: t.id,
             step: "supervisor",
             dir: wt,
+            identity_repo: Some(Path::new(&t.repo)),
             prompt: &text,
             system: "",
             model: &cfg.model,

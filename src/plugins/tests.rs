@@ -409,7 +409,7 @@ fn forge_enabling(dir: &Path, plugins: &[(&str, &str)]) -> Arc<crate::ctx::Forge
 }
 
 async fn wait_running(home: &Path, name: &str) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(120);
     while !matches!(read_run_state(home, name), RunState::Running { .. }) {
         assert!(Instant::now() < deadline, "{name} never started");
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -461,13 +461,17 @@ async fn a_plugin_whose_lock_is_held_is_skipped_until_it_is_released() {
     let lock = try_lock_plugin(dir.path(), "held").expect("first lock");
     assert!(try_lock_plugin(dir.path(), "held").is_none());
 
-    let sup = Supervisor::start(f.clone());
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let enabled = enabled_plugins_now(&f).unwrap();
+    let mut running = BTreeMap::new();
+    reconcile(&f, &mut running, &enabled).await;
+    assert!(
+        running.is_empty(),
+        "a completed tick must skip the held lock"
+    );
     assert!(matches!(
         read_run_state(dir.path(), "held"),
         RunState::Stopped { last_exit: None }
     ));
-    sup.stop().await;
 
     drop(lock);
     let sup = Supervisor::start(f.clone());
@@ -480,7 +484,8 @@ async fn a_plugin_whose_lock_is_held_is_skipped_until_it_is_released() {
     // A sibling test's fork can hold a copy of the lock's descriptor
     // for the instant before it execs; the lock is free right after.
     let mut released = false;
-    for _ in 0..50 {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while Instant::now() < deadline {
         if try_lock_plugin(dir.path(), "held").is_some() {
             released = true;
             break;

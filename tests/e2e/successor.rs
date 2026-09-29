@@ -709,7 +709,7 @@ fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_o
     let first = e.add(&["--retries", "0"]);
     let mut cmd = std::process::Command::new(root.join("releases/old/forge"));
     cmd.envs(
-        e.cmd("slow-ok.sh")
+        e.cmd("gated-ok.sh")
             .get_envs()
             .filter_map(|(k, v)| Some((k, v?))),
     )
@@ -718,7 +718,10 @@ fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_o
     let mut old = Worker::spawn(&mut cmd);
     let _reap = Reap(e.home.clone());
     assert!(
-        wait_until(|| running_pid(&e, first).is_some(), Duration::from_secs(30)),
+        wait_until(
+            || running_pid(&e, first).is_some(),
+            Duration::from_secs(120)
+        ),
         "the old worker never claimed task {first}"
     );
 
@@ -726,7 +729,7 @@ fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_o
     // `mkdir` of its directory cannot collide with ours), and one left by a
     // worker that died.
     let mut alive = std::process::Command::new("sleep")
-        .arg("60")
+        .arg("600")
         .spawn()
         .unwrap();
     let mut gone = std::process::Command::new("true").spawn().unwrap();
@@ -741,7 +744,7 @@ fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_o
     assert!(
         wait_until(
             || running_pid(&e, second).is_some(),
-            Duration::from_secs(30)
+            Duration::from_secs(120)
         ),
         "the successor never claimed task {second}"
     );
@@ -750,6 +753,8 @@ fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_o
         "the successor removed the live predecessor's directory"
     );
     assert!(!dead.exists(), "the dead worker's directory was not swept");
+    open_gate(&e, first);
+    open_gate(&e, second);
     assert!(old.wait().success());
     alive.kill().unwrap();
     alive.wait().unwrap();

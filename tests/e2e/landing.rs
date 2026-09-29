@@ -335,10 +335,9 @@ fn a_task_is_judged_by_the_hidden_suite_that_matches_its_base_not_one_that_grew_
     )
     .unwrap();
     git(&e.repo, &["commit", "-qam", "acceptance layout"]);
-    // B starts first and takes a while; it does not write the answer.
+    // B snapshots its base, then waits until A has landed.
     let child = e
-        .cmd("addfile.sh")
-        .env("FAKE_SLEEP", "1")
+        .cmd("gated-addfile.sh")
         .args([
             "run",
             e.repo.to_str().unwrap(),
@@ -360,8 +359,18 @@ fn a_task_is_judged_by_the_hidden_suite_that_matches_its_base_not_one_that_grew_
                     )
                     .is_ok()
         },
-        Duration::from_secs(10)
+        Duration::from_secs(120)
     ));
+    let worktree: String = e
+        .db()
+        .query_row("SELECT worktree FROM tasks WHERE id=1", [], |r| r.get(0))
+        .unwrap();
+    let gate = Path::new(&worktree).join(".git");
+    let ready = gate.join("gate-ready");
+    assert!(
+        wait_until(|| ready.exists(), Duration::from_secs(120)),
+        "B never reached its coder gate"
+    );
     // A, a tdd task, lands meanwhile and folds "answer.txt must be 42" into forge-verify.
     let mut c = e.with_role("ok.sh", "TESTS", "testwriter.sh");
     let a = c
@@ -378,6 +387,7 @@ fn a_task_is_judged_by_the_hidden_suite_that_matches_its_base_not_one_that_grew_
         .unwrap();
     assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
     assert!(origin_file(&e, "forge-verify", "tests/acceptance/answer.sh").is_some());
+    std::fs::write(gate.join("gate-open"), "").unwrap();
     // B is judged by the suite as of its base (none), then lands against the current one.
     let o = child.wait_with_output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);

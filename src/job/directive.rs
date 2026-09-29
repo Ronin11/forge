@@ -95,6 +95,7 @@ pub(super) async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOut
             id: job_id,
             step: action.name.as_str(),
             dir: scratch,
+            identity_repo: None,
             prompt: &prompt,
             system: &system,
             model: &model,
