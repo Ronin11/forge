@@ -7,6 +7,7 @@ use super::*;
 mod bookkeeping;
 mod continuation;
 mod provider_hold;
+mod success;
 
 /// Workflow state and completed operations needed to execute an operation step.
 pub(super) struct RunOperationStep<'a> {
@@ -426,81 +427,10 @@ pub(super) async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<Ste
         }
         match a.state {
             AttemptState::Succeeded => {
-                if step.action.contract == Contract::Tests {
-                    let tests_dir = tests_clone_dir(&t.worktree);
-                    git::push_to_repo(&f.paths.home, repo, &tests_dir, &format!("verify/{}", t.id))
-                        .await
-                        .task()?;
-                    if let Some(url) = &remote_url
-                        && let Err(e) = git::push(
-                            &f.paths.home,
-                            repo,
-                            &tests_dir,
-                            url,
-                            &format!("verify/{}", t.id),
-                        )
-                        .await
-                    {
-                        f.report.emit(
-                            id,
-                            Event::Note {
-                                text: &format!("tests    push of verify/{} failed: {e:#}", t.id),
-                            },
-                        );
-                    }
-                    t.interface = verdict
-                        .envelope
-                        .as_ref()
-                        .map(|e| e.summary.clone())
-                        .unwrap_or_default();
-                    f.store.update_task(t).env()?;
-                }
-                if step.action.contract == Contract::Plan {
-                    // The plan is the product: shown to every later
-                    // directive, verified only to name real paths.
-                    t.plan = verdict
-                        .envelope
-                        .as_ref()
-                        .map(|e| e.summary.clone())
-                        .unwrap_or_default();
-                    f.store.update_task(t).env()?;
-                    f.report.emit(
-                        id,
-                        Event::Note {
-                            text: &format!(
-                                "plan     {} line(s) from {}",
-                                t.plan.lines().count(),
-                                step.action.name
-                            ),
-                        },
-                    );
-                    // file_into_initiative: the plan's items become
-                    // sibling tasks in the same initiative instead
-                    // of this task running the code step itself.
-                    if step.action.file_into_initiative
-                        && let Some(iid) = t.initiative
-                    {
-                        let filed = crate::queue::file_plan(f, t, iid).await.task()?;
-                        f.report.emit(
-                            id,
-                            Event::Note {
-                                text: &format!(
-                                    "filed    {} task(s) into initiative {iid}: {}",
-                                    filed.len(),
-                                    filed
-                                        .iter()
-                                        .map(i64::to_string)
-                                        .collect::<Vec<_>>()
-                                        .join(", ")
-                                ),
-                            },
-                        );
-                        return Ok(StepFlow::End(End::Filed {
-                            n: filed.len(),
-                            initiative: iid,
-                            last: *filed.last().unwrap_or(&id),
-                        }));
-                    }
+                if let Some(flow) =
+                    success::record_success(f, t, step, repo, remote_url, &verdict).await?
+                {
+                    return Ok(flow);
                 }
                 step_ok = true;
                 break;
