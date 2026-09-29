@@ -117,7 +117,7 @@ fn an_attempt_runs_sandboxed_when_bwrap_is_present() {
 }
 
 /// The operator's claude config directory (`CLAUDE_CONFIG_DIR`) is seeded
-/// into the sandbox with only what the CLI needs — the settings file — and
+/// into the sandbox with only the login, and
 /// nothing else it holds is visible at that path (src/sandbox.rs, `command`).
 #[test]
 fn the_operators_config_directory_is_seeded_not_bound_into_the_sandbox() {
@@ -139,7 +139,7 @@ fn the_operators_config_directory_is_seeded_not_bound_into_the_sandbox() {
     .unwrap();
     std::fs::write(
         e.home.join("workflows/actions/canary.toml"),
-        "name = \"canary\"\nkind = \"operation\"\ndescription = \"d\"\nconsumes = [\"branch\"]\nrun = [\"bash\", \"-c\", \"set -e; test \\\"$(cat \\\"$CLAUDE_CONFIG_DIR/settings.json\\\")\\\" = operator-settings; test ! -e \\\"$CLAUDE_CONFIG_DIR/real-secret.txt\\\"\"]\n",
+        "name = \"canary\"\nkind = \"operation\"\ndescription = \"d\"\nconsumes = [\"branch\"]\nrun = [\"bash\", \"-c\", \"set -e; test ! -e \\\"$CLAUDE_CONFIG_DIR/settings.json\\\"; test ! -e \\\"$CLAUDE_CONFIG_DIR/real-secret.txt\\\"\"]\n",
     )
     .unwrap();
     std::fs::write(

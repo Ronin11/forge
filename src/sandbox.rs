@@ -1,8 +1,8 @@
 //! The agent and the checks run under bubblewrap. Read-only system, private
 //! /tmp, /run and /proc, a tmpfs $HOME with only the holes the attempt
 //! needs: the task's clone (its .git included), the agent binary, and a
-//! private copy of the claude and codex CLIs' credentials and settings,
-//! seeded from the operator's real state and discarded with the worktree
+//! private copy of the CLIs' credentials with kernel-built settings,
+//! seeded from the operator's logins and discarded with the worktree
 //! (see `provider_state_dir`, `discard_provider_state`) — the operator's
 //! real `.claude`/`.codex` directories are never bound into a sandbox.
 //! Nothing else on the host is visible, and in particular not the
@@ -28,12 +28,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-/// Where the host's `~/.claude.json` is bound read-only inside the sandbox.
-/// Not under `/opt`: on a host with a real `/opt`, that directory is itself
-/// bound read-only a few flags earlier, and bwrap cannot create the
-/// `forge/seed` path inside a read-only mount to bind onto. `/run` is a
-/// tmpfs bwrap creates itself, so it always has room.
-const CLAUDE_JSON_SEED: &str = "/run/forge/seed/claude.json";
+/// The only user config Claude needs in the private home.
+const CLAUDE_JSON_SEED: &str = r#"{"hasCompletedOnboarding":true,"theme":"dark"}"#;
 
 /// Created by the egress relay once it is listening, in the sandbox's own
 /// tmpfs `/run`.
@@ -62,12 +58,6 @@ pub struct Sandbox {
     /// each sandbox's private copy of its `config.json` (the login), never
     /// bound in itself.
     copilot_dir: PathBuf,
-    /// The host's `~/.claude.json`, bound read-only at `CLAUDE_JSON_SEED`
-    /// and copied into the tmpfs $HOME before the agent runs. Never bound
-    /// at its real path: many claude CLIs write it concurrently (rename
-    /// over a lockfile), and two sandboxes sharing that bind race bwrap's
-    /// own bind-mount setup.
-    claude_json_seed: PathBuf,
     /// Operator-configured toolchain paths, read-only.
     extra_ro: Vec<PathBuf>,
     /// Operator-configured package caches (`~/.npm`, `~/.cargo/registry`,
@@ -196,7 +186,7 @@ pub(crate) fn shell_quote(s: &str) -> String {
 /// Where the attempts in `worktree` get their private copy of the claude
 /// and codex CLIs' state: a sibling of the worktree, under its parent, in
 /// the same style as `attempt::tests_clone_dir`. Created and seeded by the
-/// first launch's `Sandbox::prepare`, reseeded (credentials and settings
+/// first launch's `Sandbox::prepare`, reseeded (credentials
 /// only) by every later one, and removed by `discard_provider_state` when the worktree
 /// itself goes. It lives as long as the task, not one attempt: a capped or
 /// failed attempt is resumed by `--resume <session>`, and the phase-two
@@ -384,7 +374,6 @@ impl Sandbox {
             }
         }
         let (config_dir, codex_dir, copilot_dir) = provider_dirs(&home, |k| std::env::var_os(k));
-        let claude_json_seed = home.join(".claude.json");
         // The relay is this binary, so its directory has to be visible.
         let relay_exe = std::env::current_exe().context("finding the forge binary")?;
         let relay_dir = relay_exe.parent().map(Path::to_path_buf);
@@ -408,7 +397,6 @@ impl Sandbox {
             forge_home,
             codex_dir,
             copilot_dir,
-            claude_json_seed,
             extra_ro,
             extra_rw: paths.rw.iter().cloned().chain(extra_rw).collect(),
             overlay,
@@ -566,7 +554,6 @@ impl Sandbox {
             forge_home: home.join("forge-home"),
             codex_dir: home.join(".codex"),
             copilot_dir: home.join(".copilot"),
-            claude_json_seed: home.join(".claude.json"),
             home,
             agent_dirs: vec![],
             extra_ro: vec![],
@@ -611,13 +598,7 @@ impl Sandbox {
     }
 
     fn wrapper_script(&self, relay_enabled: bool, refused: Option<&Path>) -> String {
-        // The claude CLI's own config file, not the credential-bearing
-        // config directory: seed it into the tmpfs $HOME as a real, private
-        // file before exec, so the CLI's rename-over-a-lockfile update
-        // never races another sandbox's copy of the same host file. Absent
-        // on the host, the `--ro-bind-try` above is a no-op and this `cp`
-        // silently does nothing, which is fine: the agent just starts
-        // without one.
+        // Build the config in the tmpfs home without reading operator state.
         let dest = self.home.join(".claude.json");
         // Then the egress relay, in the background: it dies with the
         // namespace when the command ends. Its ready file is what the
@@ -637,14 +618,14 @@ impl Sandbox {
             String::new()
         };
         format!(
-            "cp -f {} {} 2>/dev/null; {relay}exec \"$@\"",
+            "printf '%s\\n' {} > {} || exit; {relay}exec \"$@\"",
             shell_quote(CLAUDE_JSON_SEED),
             shell_quote(&dest.to_string_lossy())
         )
     }
 
     /// Everything a launch in `worktree` with `env` does to the host before
-    /// its `command` is built: seed the step's private logins and settings
+    /// its `command` is built: seed the step's private logins
     /// from the operator's (see `login`), waiting on the logins' locks
     /// without holding a thread (docs/REVIEW-4.md #1.10). Every launch
     /// awaits this first; `command` itself never touches a login.
@@ -656,7 +637,7 @@ impl Sandbox {
         // Each login is the kernel's (see `login`): a later private login is
         // written back over the host file first, and an empty host file
         // seeds nothing. copilot's login lives in its `config.json`, beside
-        // its settings. The other settings are plain copies.
+        // its settings; only login fields are seeded.
         for shape in crate::login::SHAPES {
             shape
                 .seed(
@@ -667,13 +648,16 @@ impl Sandbox {
                 )
                 .await;
         }
-        let _ = crate::login::seed_copy(
-            &self.config_dir.join("settings.json"),
-            &provider_dir.join("claude/settings.json"),
-        );
-        let _ = crate::login::seed_copy(
-            &self.codex_dir.join("config.toml"),
+        // Remove settings left by older kernels; never read the host copy.
+        let _ = std::fs::remove_file(provider_dir.join("claude/settings.json"));
+        let config = env
+            .iter()
+            .rev()
+            .find(|(k, _)| k == "FORGE_CODEX_CONFIG")
+            .map_or("", |(_, v)| v.as_str());
+        let _ = crate::login::replace_atomic(
             &provider_dir.join("codex/config.toml"),
+            config.as_bytes(),
         );
     }
 
@@ -734,9 +718,6 @@ impl Sandbox {
         for d in ro {
             cmd.arg("--ro-bind-try").arg(d).arg(d);
         }
-        cmd.args(["--ro-bind-try"])
-            .arg(&self.claude_json_seed)
-            .arg(CLAUDE_JSON_SEED);
         // The route out: the proxy for this worktree's policy, on a socket
         // bound in beside the seed. Without a runtime to run a proxy on
         // there is no route, and the namespace has nothing but loopback.
@@ -751,10 +732,9 @@ impl Sandbox {
             cmd.arg("--bind").arg(s).arg(egress::SANDBOX_SOCKET);
         }
         cmd.arg("--bind").arg(worktree).arg(worktree);
-        // A private copy of the claude CLI's credentials and settings, and
-        // of codex's login and config: seeded from the operator's real
-        // files by `prepare` (read, never bound into a sandbox themselves),
-        // then bound writable here at the paths each CLI expects. The directory is
+        // Private logins and kernel-built settings are bound writable at
+        // the paths each CLI expects. Only logins are read from the host.
+        // The directory is
         // the step's (see `provider_dir_for`): the seed files are
         // refreshed on every launch, everything else the CLIs wrote there
         // (session transcripts above all) is kept, so a resumed attempt and
@@ -836,6 +816,9 @@ impl Sandbox {
 }
 
 #[cfg(test)]
+mod seeding;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -876,10 +859,7 @@ mod tests {
         assert!(args_of(&cmd).contains(&review.join("claude").display().to_string()));
         assert!(!args_of(&cmd).contains(&coder.join("claude").display().to_string()));
         assert!(!review.join("claude/projects").exists());
-        assert_eq!(
-            std::fs::read_to_string(review.join("claude/settings.json")).unwrap(),
-            "settings"
-        );
+        assert!(!review.join("claude/settings.json").exists());
         discard_provider_state(&worktree);
         assert!(!coder.exists());
         assert!(!review.exists());
@@ -943,7 +923,11 @@ mod tests {
         std::fs::create_dir_all(&config_dir).unwrap();
         std::fs::create_dir_all(&codex_dir).unwrap();
         std::fs::create_dir_all(&copilot_dir).unwrap();
-        std::fs::write(copilot_dir.join("config.json"), "login").unwrap();
+        std::fs::write(
+            copilot_dir.join("config.json"),
+            r#"{"copilotTokens":{"github":"login"}}"#,
+        )
+        .unwrap();
         std::fs::write(config_dir.join(".credentials.json"), CREDS).unwrap();
         std::fs::write(config_dir.join("settings.json"), "settings").unwrap();
         std::fs::write(codex_dir.join("auth.json"), CODEX_AUTH).unwrap();
@@ -960,7 +944,6 @@ mod tests {
             forge_home: root.path().join("forge-home"),
             codex_dir: codex_dir.clone(),
             copilot_dir: copilot_dir.clone(),
-            claude_json_seed: PathBuf::from("/home/real/.claude.json"),
             extra_ro: vec![PathBuf::from("/opt/toolchain")],
             extra_rw: vec![npm_cache.clone()],
             overlay: true,
@@ -990,7 +973,6 @@ mod tests {
         let tmpfs_home = pos("--tmpfs", "/home/attempt");
         let ro_agent = pos("--ro-bind-try", "/opt/agent");
         let ro_extra = pos("--ro-bind-try", "/opt/toolchain");
-        let ro_seed = pos("--ro-bind-try", "/home/real/.claude.json");
         let worktree_bind = pos("--bind", worktree.to_str().unwrap());
         let overlay_src = pos("--overlay-src", npm_cache.to_str().unwrap());
         let tmp_overlay = pos("--tmp-overlay", npm_cache.to_str().unwrap());
@@ -1005,10 +987,6 @@ mod tests {
         assert!(
             ro_extra < worktree_bind,
             "extra ro binds must precede the worktree bind"
-        );
-        assert!(
-            ro_seed < worktree_bind,
-            "the claude.json seed ro bind must precede the worktree bind"
         );
         assert!(
             worktree_bind < overlay_src,
@@ -1057,42 +1035,26 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(copilot_priv.join("config.json")).unwrap(),
-            "login"
+            r#"{"copilotTokens":{"github":"login"}}"#
         );
         assert_eq!(
             std::fs::read_to_string(claude_priv.join(".credentials.json")).unwrap(),
             CREDS
         );
-        assert_eq!(
-            std::fs::read_to_string(claude_priv.join("settings.json")).unwrap(),
-            "settings"
-        );
+        assert!(!claude_priv.join("settings.json").exists());
         assert_eq!(
             std::fs::read_to_string(codex_priv.join("auth.json")).unwrap(),
             CODEX_AUTH
         );
         assert_eq!(
             std::fs::read_to_string(codex_priv.join("config.toml")).unwrap(),
-            "cfg"
+            ""
         );
 
-        // The seed is bound read-only at a neutral path, never at the real
-        // `.claude.json` path: nothing binds that path read-write anymore.
-        assert!(
-            !args.iter().any(|a| a == "/home/attempt/.claude.json"),
-            "the sandbox must never bind the host file at the real .claude.json path: {args:?}"
-        );
-        let seed_dest_pos = args
-            .windows(2)
-            .position(|w| w[0] == "/home/real/.claude.json")
-            .map(|i| i + 1)
-            .expect("seed source arg present");
-        assert_eq!(
-            args[seed_dest_pos], "/run/forge/seed/claude.json",
-            "seed must land at the neutral in-sandbox path"
-        );
+        assert!(!args.iter().any(|a| a == "/home/attempt/.claude.json"));
+        assert!(!args.iter().any(|a| a == "/home/real/.claude.json"));
 
-        // The sandboxed command is a copy-then-exec wrapper around the real
+        // The sandboxed command is a seed-then-exec wrapper around the real
         // argv, not the real argv directly: `true` must not appear as argv[0].
         let dash_dash = args
             .iter()
@@ -1102,13 +1064,13 @@ mod tests {
         assert_eq!(tail[0], "/bin/sh");
         assert_eq!(tail[1], "-c");
         assert!(
-            tail[2].contains("/run/forge/seed/claude.json"),
-            "wrapper must copy from the seed path: {}",
+            tail[2].contains(CLAUDE_JSON_SEED),
+            "wrapper must write the kernel-built seed: {}",
             tail[2]
         );
         assert!(
             tail[2].contains("/home/attempt/.claude.json"),
-            "wrapper must copy to $HOME/.claude.json: {}",
+            "wrapper must write to $HOME/.claude.json: {}",
             tail[2]
         );
         assert!(
@@ -1204,7 +1166,6 @@ mod tests {
             forge_home: PathBuf::from("/home/attempt/forge-home"),
             codex_dir: PathBuf::from("/home/attempt/.codex"),
             copilot_dir: PathBuf::from("/home/attempt/.copilot"),
-            claude_json_seed: PathBuf::from("/home/real/.claude.json"),
             extra_ro: vec![],
             extra_rw: vec![],
             overlay: true,

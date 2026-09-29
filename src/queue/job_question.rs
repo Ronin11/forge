@@ -1,42 +1,48 @@
-//! The answer to a job's `job question` (docs/JOBS.md, "The human rung,
-//! per run"): a blocked no-work task no attempt ever ran, so there is
-//! nothing to re-queue. The answer is the job's resolution and ends the
-//! task.
+//! Answers to job and deploy questions: blocked no-work tasks with no
+//! attempt to retry. Recording an answer closes the question itself.
 
 use super::*;
 
-/// Whether `t` is a job's blocked `job question`: the shape `job::ask`
-/// files, with no attempt behind it.
-pub(super) fn is_job_question(f: &Forge, t: &Task) -> Result<bool> {
+/// Whether `t` is a blocked job or deploy question with no attempt to retry.
+pub(super) fn is_no_work_question(f: &Forge, t: &Task) -> Result<bool> {
     Ok(t.state == TaskState::Blocked
-        && t.task == "job question"
+        && (t.task == "job question" || (t.task == "deploy question" && t.deploy_id.is_some()))
         && t.workflow == "direct"
         && f.store.attempts(t.id)?.is_empty())
 }
 
-/// Record `text` as the answer to job question `old`: a decision row
-/// `job <id> answered: <text>`, the job's `needs_human` closed as
-/// `answered`, and the task `succeeded` with the answer as its reason.
-/// Nothing is queued. Returns the decision and the settled task.
-pub(super) fn answer(f: &Forge, old: &Task, text: &str, by: &str) -> Result<(i64, Task)> {
-    let job_id = crate::job::question_job_id(&old.reason);
-    let recorded = match job_id {
-        Some(job) => format!("job {job} answered: {text}"),
-        None => format!("job question answered: {text}"),
+/// Record the answer and settle the question without queuing anything.
+/// A deploy question is withdrawn; a job question succeeds and closes
+/// the job's `needs_human` resolution. Returns the decision and task.
+pub(super) fn answer(
+    f: &Forge,
+    old: &Task,
+    text: &str,
+    by: &str,
+    citations: &str,
+) -> Result<(i64, Task)> {
+    let job_id = if old.deploy_id.is_none() {
+        crate::job::question_job_id(&old.reason)
+    } else {
+        None
     };
-    if !f.store.settle_blocked_task(old.id, text)? {
-        bail!("task {} changed state before it could be answered", old.id);
-    }
-    let decision = f.store.insert_decision_by(crate::store::InsertDecisionBy {
-        task_id: old.id,
-        repo: &old.repo,
-        question: &old.reason,
-        answer: &recorded,
-        answered_by: by,
-        citations: "",
-        answered_for: old.question_to.as_deref(),
-    })?;
-    f.store.set_decision_retry(decision, old.id)?;
+    let recorded = match (old.deploy_id, job_id) {
+        (Some(deploy), _) => format!("deploy {deploy} answered: {text}"),
+        (_, Some(job)) => format!("job {job} answered: {text}"),
+        _ => format!("job question answered: {text}"),
+    };
+    let decision = f.store.answer_blocked_question(
+        crate::store::InsertDecisionBy {
+            task_id: old.id,
+            repo: &old.repo,
+            question: &old.reason,
+            answer: &recorded,
+            answered_by: by,
+            citations,
+            answered_for: old.question_to.as_deref(),
+        },
+        text,
+    )?;
     if let Some(job_id) = job_id.filter(|&j| f.store.job(j).ok().flatten().is_some()) {
         f.store.resolve_job(&crate::store::JobResolution {
             job_id,
@@ -139,7 +145,7 @@ mod tests {
         let reason = format!("job {job} (drift-weekly) failed: drift: 3 files\n\nEffects:\nnone");
         let t = insert(&f, blocked("/repo", "job question", &reason, None));
 
-        let (decision, settled) = answer(&f, &t, "ignore this week", "operator").unwrap();
+        let (decision, settled) = answer(&f, &t, "ignore this week", "operator", "").unwrap();
         assert_eq!(settled.id, t.id);
         assert_eq!(settled.state, TaskState::Succeeded);
         assert_eq!(settled.reason, "ignore this week");
@@ -188,6 +194,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_deploy_question_checks_scope_and_records_its_own_recipient() {
+        let (_dir, f) = fixture();
+        let deploy = f
+            .store
+            .start_deploy("demo", "prod", "sha", 1, None)
+            .unwrap();
+        let mut t = blocked("/repo", "deploy question", "deploy failed", Some("alice"));
+        t.deploy_id = Some(deploy);
+        let t = insert(&f, t);
+        let refused = super::super::answer(&f, t.id, "ok", "bob", "", Some(("demo", "bob")))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("addressed to alice"), "{refused}");
+        assert_eq!(
+            f.store.task(t.id).unwrap().unwrap().state,
+            TaskState::Blocked
+        );
+        let (_, settled) = super::super::answer(
+            &f,
+            t.id,
+            "ok",
+            "alice",
+            "deploy log",
+            Some(("demo", "alice")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(settled.state, TaskState::Withdrawn);
+        assert_eq!(settled.deploy_id, Some(deploy));
+        assert!(settled.finished_at.is_some());
+        assert_eq!(f.store.queued_count().unwrap(), 0);
+        assert!(f.store.attempts(t.id).unwrap().is_empty());
+        let decisions = f.store.decisions_in_lineage(t.id).unwrap();
+        assert_eq!(decisions.len(), 1);
+        let d = &decisions[0];
+        assert_eq!(d.question, "deploy failed");
+        assert_eq!(d.answer, format!("deploy {deploy} answered: ok"));
+        assert_eq!(d.answered_by, "alice");
+        assert_eq!(d.answered_for.as_deref(), Some("alice"));
+        assert_eq!(d.citations, "deploy log");
+        assert_eq!(d.retry_id, Some(t.id));
+        assert!(answer(&f, &t, "again", "operator", "").is_err());
+        assert_eq!(f.store.decisions_in_lineage(t.id).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn a_task_blocked_on_an_attempts_question_still_requeues() {
         let (dir, f) = fixture();
         let repo = dir.path().join("repo");
@@ -231,7 +284,7 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        assert!(!is_job_question(&f, &t).unwrap());
+        assert!(!is_no_work_question(&f, &t).unwrap());
 
         let (decision, n) = super::super::answer(&f, t.id, "the blue one", "operator", "", None)
             .await

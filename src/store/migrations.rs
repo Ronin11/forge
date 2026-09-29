@@ -828,6 +828,11 @@ ALTER TABLE workers ADD COLUMN start TEXT NOT NULL DEFAULT '';
     "
 ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 2 CHECK (priority BETWEEN 0 AND 7);
 ",
+    // Deploy failure questions own their task instead of blocking landed work.
+    "
+ALTER TABLE tasks ADD COLUMN deploy_id INTEGER REFERENCES deploys(id);
+",
+
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

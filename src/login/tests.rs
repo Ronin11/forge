@@ -661,25 +661,25 @@ fn seed_copies_a_usable_host_login_and_removes_a_stale_copy_of_an_empty_one() {
 
 #[test]
 fn a_login_that_cannot_rotate_is_seeded_without_a_record_and_never_written_back() {
-    // copilot's file, with a token or without (the keychain holds it),
-    // and codex's API key.
+    // Copilot's token and Codex's API key never rotate.
     let with_token = copilot_raw(&format!("gho_{:x<36}", "t"), "", 0);
-    let settings_only = "// managed\n{\"firstLaunchAt\":\"2026-01-01\"}";
     let key = r#"{"OPENAI_API_KEY":"sk-proj-abc","tokens":null}"#;
-    for (s, text) in [
-        (&COPILOT, with_token.as_str()),
-        (&COPILOT, settings_only),
-        (&CODEX, key),
-    ] {
+    for (s, text) in [(&COPILOT, with_token.as_str()), (&CODEX, key)] {
         let t = seeded(s, text);
-        assert_eq!(std::fs::read_to_string(&t.private).unwrap(), text);
+        assert_eq!(
+            std::fs::read_to_string(&t.private).unwrap(),
+            s.login_seed(text)
+        );
         assert!(!Seed::path(&t.state, &t.private).exists());
         let later = copilot_raw(&format!("gho_{:x<36}", "planted"), "", 0);
         std::fs::write(&t.private, &later).unwrap();
         assert!(!block_on(s.write_back(&t.dir, &t.state, &t.private)).wrote());
         block_on(s.seed(&t.dir, &t.state, &t.worktree, &t.private));
         assert_eq!(std::fs::read_to_string(t.dir.join(s.file)).unwrap(), text);
-        assert_eq!(std::fs::read_to_string(&t.private).unwrap(), text);
+        assert_eq!(
+            std::fs::read_to_string(&t.private).unwrap(),
+            s.login_seed(text)
+        );
         assert!(!t.dir.join(s.prev()).exists());
     }
 }
@@ -695,7 +695,10 @@ fn seed_never_writes_through_a_private_symlink_to_the_host_login() {
         block_on(f.shape.seed(&t.dir, &t.state, &t.worktree, &t.private));
         assert_eq!(std::fs::read_to_string(&host).unwrap(), text);
         assert!(is_regular_file(&t.private));
-        assert_eq!(std::fs::read_to_string(&t.private).unwrap(), text);
+        assert_eq!(
+            std::fs::read_to_string(&t.private).unwrap(),
+            f.shape.login_seed(&text)
+        );
     }
 }
 
@@ -711,7 +714,10 @@ fn seed_never_writes_through_a_private_symlink_to_an_unrelated_file() {
         block_on(f.shape.seed(&t.dir, &t.state, &t.worktree, &t.private));
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
         assert!(is_regular_file(&t.private));
-        assert_eq!(std::fs::read_to_string(&t.private).unwrap(), text);
+        assert_eq!(
+            std::fs::read_to_string(&t.private).unwrap(),
+            f.shape.login_seed(&text)
+        );
     }
 }
 
@@ -962,4 +968,21 @@ fn the_last_probe_is_recorded_beside_the_lock() {
     record_probe(dir.path(), &r).unwrap();
     assert_eq!(last_probe(dir.path()), Some(r));
     assert!(dir.path().join(PROBE_MARK).exists());
+}
+
+#[test]
+fn copilot_seeds_only_login_tokens_and_removes_a_settings_only_copy() {
+    let host = r#"{"copilotTokens":{"github":"token"},"env":{"SECRET":"secret-marker"},"firstLaunchAt":"secret-marker"}"#;
+    let t = seeded(&COPILOT, host);
+    assert_eq!(
+        std::fs::read_to_string(&t.private).unwrap(),
+        r#"{"copilotTokens":{"github":"token"}}"#
+    );
+    std::fs::write(
+        t.dir.join(COPILOT.file),
+        r#"{"firstLaunchAt":"secret-marker"}"#,
+    )
+    .unwrap();
+    block_on(COPILOT.seed(&t.dir, &t.state, &t.worktree, &t.private));
+    assert!(!t.private.exists());
 }

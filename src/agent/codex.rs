@@ -100,6 +100,8 @@ fn codex_common_argv(l: &Launch<'_>) -> Vec<String> {
     let mut argv = vec![
         "--skip-git-repo-check".to_string(),
         "--json".to_string(),
+        "-c".to_string(),
+        "mcp_servers={}".to_string(),
         "-C".to_string(),
         l.worktree.display().to_string(),
     ];
@@ -236,6 +238,10 @@ pub(super) async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
 
     let mut extra_env = crate::git::identity(&l.worktree.join(".git")).await;
     extra_env.extend(inputs::provider_env(l.provider));
+    extra_env.push((
+        "FORGE_CODEX_CONFIG".into(),
+        inputs::codex_config(l.provider, l.model)?,
+    ));
 
     let mut log =
         File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
@@ -649,12 +655,15 @@ if [ \"$has_schema\" = \"1\" ]; then\n\
     const NUDGE_FAKE_HEADER: &str = "#!/bin/sh\n\
 has_schema=0\n\
 has_resume=0\n\
+has_mcp_override=0\n\
 for a in \"$@\"; do\n\
   case \"$a\" in\n\
     --output-schema) has_schema=1 ;;\n\
     resume) has_resume=1 ;;\n\
+    mcp_servers={}) has_mcp_override=1 ;;\n\
   esac\n\
-done\n";
+done\n\
+test \"$has_mcp_override\" = 1 || exit 91\n";
 
     #[tokio::test]
     async fn a_phase_one_with_only_reads_triggers_one_nudge_that_edits_and_commits() {
