@@ -74,7 +74,7 @@ pub(super) struct AttemptLoop {
     pub(super) nudge_pending: bool,
 }
 
-enum AttemptFlow {
+pub(super) enum AttemptFlow {
     Continue,
     Stop,
     Exit(StepFlow),
@@ -145,7 +145,7 @@ pub(super) async fn run_attempt_loop(
         if let Some(end) = check_abort(f, t)? {
             return Ok(Some(StepFlow::End(end)));
         }
-        attempts::record_verification(f, id, seq, &timer, &a, &verdict)?;
+        record_verification(f, id, seq, &timer, &a, &verdict)?;
         state.last = a.state;
         state.last_reason = a.reason.clone();
         state.last_checks = verdict.checks.clone();
@@ -154,7 +154,9 @@ pub(super) async fn run_attempt_loop(
             .as_ref()
             .and_then(|e| e.needs_input.as_ref())
             .and_then(|q| crate::envelope::addressee(q.to.as_deref()));
-        let flow = match retry_after_attempt(args, state, &ts, &a, &verdict, &outcome).await? {
+        let flow = match bookkeeping::retry_after_attempt(args, state, &ts, &a, &verdict, &outcome)
+            .await?
+        {
             Some(flow) => flow,
             None => settle_attempt(args, state, &ts, &a, &verdict, &outcome).await?,
         };
@@ -163,62 +165,6 @@ pub(super) async fn run_attempt_loop(
             AttemptFlow::Stop => break,
             AttemptFlow::Exit(flow) => return Ok(Some(flow)),
         }
-    }
-    Ok(None)
-}
-
-async fn retry_after_attempt(
-    args: &mut RunDirectiveStep<'_>,
-    state: &mut AttemptLoop,
-    ts: &Task,
-    a: &crate::store::Attempt,
-    verdict: &verify::Verdict,
-    outcome: &crate::agent::Outcome,
-) -> Result<Option<AttemptFlow>, Fault> {
-    let f = args.f;
-    let t = &mut *args.t;
-    let cfg = args.cfg;
-    let run = &mut *args.run;
-    let step = args.step;
-    let seq = args.seq;
-    let id = t.id;
-    // The provider refused the run: not an attempt the agent
-    // spent. The hold at the top of the loop waits for the
-    // window, or for a refused login to answer a probe; the same
-    // state.feedback and session go again.
-    if outcome.rate_limited && a.state != AttemptState::Unverified {
-        if outcome.login_refused {
-            crate::login_hold::hold(f, &ts.provider, outcome, id).env()?;
-        }
-        state.consecutive_refusals += 1;
-        if state.consecutive_refusals > REFUSAL_LIMIT {
-            return Ok(Some(AttemptFlow::Exit(StepFlow::End(refusal_exhausted()))));
-        }
-        f.report.emit(
-            id,
-            Event::Note {
-                text: "rate     the provider refused this run; it does not count as an attempt",
-            },
-        );
-        run.refund(f, seq, a.id)?;
-        return Ok(Some(AttemptFlow::Continue));
-    }
-    state.consecutive_refusals = 0;
-    // An environment need the policy covers (a refused host, a host cache) is
-    // applied and rerun without counting; anything else falls through.
-    match environment_after(f, t, cfg, a, verdict).await? {
-        Environment::Applied => {
-            run.refund(f, seq, a.id)?;
-            return Ok(Some(AttemptFlow::Continue));
-        }
-        Environment::Ask(reason) => return Ok(Some(AttemptFlow::Exit(blocked_on(reason)))),
-        Environment::Left => {}
-    }
-    if reask_reproduction(f, step, a, verdict, run, seq, &mut state.feedback)? {
-        return Ok(Some(AttemptFlow::Continue));
-    }
-    if let Some(flow) = bookkeeping::rewind_tests(args, a, verdict).await? {
-        return Ok(Some(AttemptFlow::Exit(flow)));
     }
     Ok(None)
 }

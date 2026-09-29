@@ -189,20 +189,6 @@ pub(super) async fn run_operation_step(args: RunOperationStep<'_>) -> Result<Ste
     }))
 }
 
-/// Consecutive provider refusals a directive tolerates before giving up the
-/// slot rather than relaunching forever on a provider that never relents.
-const REFUSAL_LIMIT: u32 = 5;
-
-/// A provider kept refusing past `REFUSAL_LIMIT`: the task fails without
-/// spending an attempt, since none of the refusals counted as one.
-fn refusal_exhausted() -> End {
-    End::Failed {
-        reason: format!("the provider refused {REFUSAL_LIMIT} times in a row without a window"),
-        counted: false,
-        pushes: false,
-    }
-}
-
 /// One directive step of the run: attempts until one verifies or the
 /// directive is out of them, with the window hold, the budget, the resume
 /// of a capped session, the tests-fault rewind, and what each contract
@@ -419,36 +405,6 @@ fn nudge_placeholder_question(
         },
         "there is no open question; finish the task and return a result".to_string(),
     ))
-}
-
-/// A review whose demotion cited files only its sandbox had is asked,
-/// once, to inline the reproduction (`verify::review::reask`): that
-/// attempt does not count against the step, and the ask becomes the
-/// feedback the next attempt is shown. True when it asked.
-fn reask_reproduction(
-    f: &Forge,
-    step: &workflows::ResolvedStep,
-    a: &crate::store::Attempt,
-    verdict: &verify::Verdict,
-    run: &mut Run,
-    seq: i64,
-    feedback: &mut Option<String>,
-) -> Result<bool, Fault> {
-    if step.action.contract != Contract::Review || a.state != AttemptState::ChecksFailed {
-        return Ok(false);
-    }
-    let Some(ask) = verify::review::reask(&verdict.checks, feedback.as_deref(), a.task_id) else {
-        return Ok(false);
-    };
-    f.report.emit(
-        a.task_id,
-        Event::Note {
-            text: "review   the demotion cites files outside the clone; asking the reviewer once to inline its reproduction",
-        },
-    );
-    run.refund(f, seq, a.id)?;
-    *feedback = Some(ask);
-    Ok(true)
 }
 
 /// Whether the task drew the `fresh` arm of the continuation factor
