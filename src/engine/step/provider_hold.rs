@@ -73,5 +73,5 @@ pub(super) async fn before_attempt(
 }
 
 #[cfg(test)]
-#[path = "provider_hold_tests.rs"]
+#[path = "../provider_hold_tests.rs"]
 mod tests;
