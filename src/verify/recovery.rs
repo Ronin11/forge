@@ -2,8 +2,8 @@
 
 use super::l0_checks::derive_changes;
 use super::*;
-use anyhow::Result;
 use crate::directive::{self, Failure};
+use anyhow::Result;
 
 /// Recover only against this attempt's start, never a previous attempt's
 /// commits. Refusals and runs stopped by the kernel keep their own handling.
