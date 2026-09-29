@@ -642,10 +642,8 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// One attempt's block in `forge show`: its summary line, then whatever
-/// it recorded (tools run, check verdicts, the envelope it reported, rate
-/// limits, the first lines of its result text).
-fn print_attempt(a: &crate::view::TraceAttempt) {
+/// An attempt's summary line, its log path and agent, and the tools it ran.
+fn print_attempt_header(a: &crate::view::TraceAttempt) {
     out!();
     out!(
         "attempt {} [{}]  {}{}  {}  {} turns  {} tools  {:.1}s  {}  {} commit(s)  {} file(s){}",
@@ -680,6 +678,10 @@ fn print_attempt(a: &crate::view::TraceAttempt) {
     {
         out!("  ran     {}", t.line());
     }
+}
+
+/// An attempt's L2 check verdicts, one line each.
+fn print_attempt_checks(a: &crate::view::TraceAttempt) {
     if let Ok(checks) = serde_json::from_value::<Vec<crate::checks::CheckResult>>(a.verdict.clone())
     {
         for c in checks {
@@ -697,6 +699,11 @@ fn print_attempt(a: &crate::view::TraceAttempt) {
             );
         }
     }
+}
+
+/// An attempt's reported envelope (changes, checks run, claims and any
+/// question), its rate-limit usage, and the first lines of its result text.
+fn print_attempt_envelope(a: &crate::view::TraceAttempt) {
     let envelope: Option<crate::envelope::Envelope> = if a.envelope.is_null() {
         None
     } else {
@@ -734,4 +741,13 @@ fn print_attempt(a: &crate::view::TraceAttempt) {
             .join(" / ");
         out!("  result  {}", first.chars().take(200).collect::<String>());
     }
+}
+
+/// One attempt's block in `forge show`: its summary line, then whatever
+/// it recorded (tools run, check verdicts, the envelope it reported, rate
+/// limits, the first lines of its result text).
+fn print_attempt(a: &crate::view::TraceAttempt) {
+    print_attempt_header(a);
+    print_attempt_checks(a);
+    print_attempt_envelope(a);
 }
