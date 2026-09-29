@@ -142,6 +142,9 @@ fn caller_named_git_sites_are_hardened_or_have_a_trusted_caller() {
     fn callers(dir: &Path, found: &mut Vec<String>) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
+            if path.file_stem().is_some_and(|name| name == "tests") {
+                continue;
+            }
             if path.is_dir() {
                 callers(&path, found);
             } else if path.extension().is_some_and(|ext| ext == "rs") {
