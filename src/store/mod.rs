@@ -26,6 +26,7 @@ mod jobs;
 mod messages;
 mod migrations;
 mod owners;
+mod priority;
 mod projects;
 mod questions;
 mod record;
@@ -48,6 +49,7 @@ pub use job_resolutions::JobResolution;
 pub use jobs::{Job, JobEffect, JobStat, JobState, JobStep, PerDayRefused};
 pub use messages::{Direction, InsertMessage, Message, MessageFilter};
 pub use owners::{Caller, Owner, start_of};
+pub use priority::{PRIORITY_DEFAULT, PRIORITY_MAX, PRIORITY_MIN, parse_priority};
 pub use projects::{
     BacklogItem, Initiative, InitiativeUpdate, Project, ProjectDefaults, ProjectRepo, ProjectStat,
     ProjectTaskStats, is_placeholder_purpose,
@@ -149,6 +151,8 @@ pub struct TaskSummary {
     pub project: Option<String>,
     pub initiative: Option<i64>,
     pub trust: String,
+    /// See `store::priority`.
+    pub priority: i64,
     /// `"agent"`, or `"adopted"` for a hand-made branch `forge adopt`
     /// landed (see `Origin`).
     pub origin: String,
@@ -215,6 +219,7 @@ const TASK_COLUMNS: &[&str] = &[
     "state",
     "reason",
     "question_to",
+    "deploy_id",
     "created_at",
     "started_at",
     "finished_at",
@@ -263,6 +268,7 @@ const TASK_COLUMNS: &[&str] = &[
     "handoff",
     "origin",
     "adoption_json",
+    "priority",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -303,6 +309,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         )?,
         reason: r.get("reason")?,
         question_to: r.get("question_to")?,
+        deploy_id: r.get("deploy_id")?,
         created_at: r.get("created_at")?,
         started_at: r.get("started_at")?,
         finished_at: r.get("finished_at")?,
@@ -365,6 +372,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
             Origin::try_from(r.get::<_, String>("origin")?.as_str()),
         )?,
         adoption: adoption::from_column(&r.get::<_, String>("adoption_json")?),
+        priority: r.get("priority")?,
     })
 }
 
@@ -399,7 +407,7 @@ impl Store {
         if fresh == 0 {
             // A brand-new database is shared with no older worker, so its
             // contract steps run now.
-            store.apply_contracts(env!("CARGO_PKG_VERSION"), |_| false)?;
+            store.apply_contracts(env!("CARGO_PKG_VERSION"), |_, _| false)?;
         }
         Ok(store)
     }
@@ -554,6 +562,7 @@ impl Store {
                     (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id) AS cost,
                     t.workflow AS workflow, t.created_at AS created_at, t.finished_at AS finished_at,
                     t.project AS project, t.initiative AS initiative, t.trust AS trust, t.origin AS origin,
+                    t.priority AS priority,
                     CASE WHEN ?9 IS NULL THEN NULL WHEN {touched} THEN 'changes' ELSE 'text' END AS touch,
                     CASE WHEN ?5 IS NULL THEN NULL WHEN {by_text} THEN 'text' WHEN {by_title} THEN 'title'
                          WHEN {by_plan} THEN 'plan' ELSE 'summary' END AS matched
@@ -598,6 +607,7 @@ impl Store {
                     project: r.get("project")?,
                     initiative: r.get("initiative")?,
                     trust: r.get("trust")?,
+                    priority: r.get("priority")?,
                     origin: r.get("origin")?,
                     touch: r.get("touch")?,
                     matched: r.get("matched")?,
@@ -750,7 +760,11 @@ impl Store {
     /// applied, but only when every live worker runs `version`: none on an
     /// older one shares the store. A dead pid does not count. Each step
     /// records its own `applied_at`. Returns how many were applied.
-    pub fn apply_contracts(&self, version: &str, alive: impl Fn(i64) -> bool) -> Result<usize> {
+    pub fn apply_contracts(
+        &self,
+        version: &str,
+        alive: impl Fn(i64, &str) -> bool,
+    ) -> Result<usize> {
         if self
             .live_workers(alive)?
             .iter()
@@ -1037,14 +1051,14 @@ mod tests {
         s.register_worker(11, "new").unwrap();
         // Both versions are live: an older worker still shares the store,
         // so the step stays pending.
-        assert_eq!(s.apply_contracts("new", |_| true).unwrap(), 0);
+        assert_eq!(s.apply_contracts("new", |_, _| true).unwrap(), 0);
         // The older worker exits: only "new" is left live, so the pending
         // steps run.
         s.stop_worker(old).unwrap();
-        let applied = s.apply_contracts("new", |_| true).unwrap();
+        let applied = s.apply_contracts("new", |_, _| true).unwrap();
         assert!(applied > 0, "expected pending contract steps to run");
         // Nothing pending now: one SELECT per step, no write.
-        assert_eq!(s.apply_contracts("new", |_| true).unwrap(), 0);
+        assert_eq!(s.apply_contracts("new", |_, _| true).unwrap(), 0);
     }
 
     #[test]

@@ -53,6 +53,10 @@ pub(super) enum TaskCmd {
         /// worker never re-draws a task that names one)
         #[arg(long)]
         provider: Option<String>,
+        /// Claim order: 0 (lowest) to 7 (highest), or low, normal, high,
+        /// urgent
+        #[arg(long, value_parser = crate::store::parse_priority)]
+        priority: Option<i64>,
     },
 }
 
@@ -210,6 +214,9 @@ async fn supervise_now(id: i64) -> Result<()> {
         crate::supervisor::Ruled::Superseded { by } => out!("superseded by task {by}"),
         crate::supervisor::Ruled::Accepted { landed } => out!("accepted the branch: {landed}"),
         crate::supervisor::Ruled::Escalated(why) => out!("escalated: {why}"),
+        crate::supervisor::Ruled::CouldNotRead(why) => {
+            out!("could not read the record; the question stands: {why}")
+        }
         crate::supervisor::Ruled::Skipped(why) => out!("skipped: {why}"),
     }
     Ok(())
@@ -574,6 +581,7 @@ async fn dispatch_task(cmd: Cmd) -> Result<()> {
                 checks,
                 no_checks,
                 provider,
+                priority,
             } => {
                 let text = match text_file {
                     Some(p) => Some(
@@ -595,6 +603,7 @@ async fn dispatch_task(cmd: Cmd) -> Result<()> {
                         after: (no_after || !after.is_empty()).then_some(after),
                         checks: (no_checks || !checks.is_empty()).then_some(checks),
                         provider,
+                        priority,
                     },
                 )
                 .await

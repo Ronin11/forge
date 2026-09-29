@@ -55,6 +55,23 @@ pub fn pid_alive(pid: i64) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// Whether `pid` is alive and still the process that recorded `start`
+/// (`crate::store::start_of`): the check orphan recovery runs on a claimed
+/// row's owner (`Caller::is_orphan`), applied to a `workers` row so a pid
+/// the table calls live after a reuse is not mistaken for the worker that
+/// registered it (REVIEW-4 E2-2). An empty `start` (a row from before it
+/// was recorded) or a `start_of` that cannot read the process proves
+/// nothing, so it counts as still alive.
+pub fn worker_alive(pid: i64, start: &str) -> bool {
+    if !pid_alive(pid) {
+        return false;
+    }
+    match crate::store::start_of(pid) {
+        Some(current) if !start.is_empty() => current == start,
+        _ => true,
+    }
+}
+
 /// The worker as `worker.pid` says: pid, its binary, whether it is alive,
 /// and whether that binary was rebuilt underneath it since it started.
 pub struct WorkerStatus {
@@ -144,6 +161,10 @@ pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
             }
             Ok(TaskState::Blocked)
         }
+        Ok(TaskState::Failed) => {
+            on_failed(&f, id).await;
+            Ok(TaskState::Failed)
+        }
         Ok(state) => Ok(state),
         Err(Fault::Task(e)) => {
             f.report.emit(
@@ -160,6 +181,7 @@ pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
                 f.store.update_task(&t)?;
                 engine::finish_fault(&f, &t)?;
             }
+            on_failed(&f, id).await;
             Ok(TaskState::Failed)
         }
         Err(Fault::Env(e)) => {
@@ -172,6 +194,20 @@ pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
                 "worker cannot run task {id}; it is back in the queue"
             )))
         }
+    }
+}
+
+/// The kernel's follow-up rule for a task that just ended `Failed`
+/// (`src/supervisor/mechanic.rs`): a retry, a guided refile, or an
+/// operator decision. Its own failure is a note, never the task's.
+async fn on_failed(f: &Forge, id: i64) {
+    if let Err(e) = crate::supervisor::mechanic::act(f, id).await {
+        f.report.emit(
+            id,
+            Event::Note {
+                text: &format!("mechanic error: {e:#}"),
+            },
+        );
     }
 }
 
@@ -717,6 +753,14 @@ pub fn slot_budget(jobs: usize, running_elsewhere: usize) -> usize {
     jobs.saturating_sub(running_elsewhere).min(jobs)
 }
 
+/// `slot_budget`, reading what the other live workers hold right now.
+fn free_slots(f: &Forge, pid: i64, jobs: usize) -> usize {
+    slot_budget(
+        jobs,
+        f.store.running_elsewhere(pid, worker_alive).unwrap_or(0),
+    )
+}
+
 pub struct WorkOpts {
     pub jobs: usize,
     /// Seconds between queue polls when idle; `None` exits when idle.
@@ -888,7 +932,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         let mut superseded = false;
         let pass: Result<()> = async {
             recover_orphans(&f, false)?;
-            superseded = succession.superseded(&f, &mut plugins).await?;
+            superseded = succession.superseded(&f, &mut plugins, stopping).await?;
             if !stopping && succession.stop_requested().await {
                 stopping = true;
                 eprintln!(
@@ -899,7 +943,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
             run_ticks(&f, &mut refusals, superseded, stopping).await?;
 
             // Fill free slots, re-reading what the other workers hold.
-            slots = slot_budget(jobs, f.store.running_elsewhere(pid, pid_alive).unwrap_or(0));
+            slots = free_slots(&f, pid, jobs);
             while !stopping
                 && !superseded
                 && env_error.is_none()
@@ -1098,6 +1142,19 @@ mod tests {
         let pid = child.id() as i64;
         child.wait().unwrap();
         assert!(!super::pid_alive(pid));
+    }
+
+    #[test]
+    fn worker_alive_trusts_an_empty_or_matching_start_but_not_a_stale_one() {
+        let me = std::process::id() as i64;
+        let mine = crate::store::start_of(me).unwrap();
+        assert!(super::worker_alive(me, ""));
+        assert!(super::worker_alive(me, &mine));
+        assert!(!super::worker_alive(me, "not-the-recorded-start"));
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id() as i64;
+        child.wait().unwrap();
+        assert!(!super::worker_alive(pid, ""), "the pid itself is dead");
     }
 
     #[test]

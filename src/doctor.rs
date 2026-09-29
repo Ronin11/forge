@@ -597,7 +597,7 @@ fn check_learning(paths: &Paths, store: &Store) -> Vec<Check> {
 /// successor, and systemd waits out `TimeoutStopSec` without signalling
 /// the one that claims.
 fn check_stuck_stop(store: &Store) -> Option<Check> {
-    let live = store.live_workers(worker::pid_alive).ok()?;
+    let live = store.live_workers(worker::worker_alive).ok()?;
     let claiming = live.last()?;
     let unit = crate::successor::WORKER_UNIT;
     if crate::successor::unit_state(unit)? != "deactivating" {

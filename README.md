@@ -322,6 +322,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   retry.rs          statement retries for SQLite busy and locked errors, with backoff up to one minute
   run_cursor.rs     the task's stored run cursor (tasks.run_json): the step a requeued or orphaned run resumes at
   tasks.rs          tasks: claim, queue, dependents, lineage
+  priority.rs       task priority (0-7, default 2): the claim-order query and parse_priority's CLI aliases
   adoption.rs       a task's origin (agent or adopted), the adopted branch and commit, and the manual count in forge stats
   arms.rs           insert_task_armed: insert a task and draw its journal/explore arms in one transaction
   attempts.rs       attempts and ops: insert, finish, rate limits, tool facts
@@ -343,7 +344,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   factors.rs        forge stats --factors: factor levels, the main-effects fit, size classes
   stats_tests.rs    stats.rs's #[cfg(test)] mod, split out to keep stats.rs under the line bound
   daily.rs          StatsDoc.daily: landings and spend per UTC day, the /stats chart's kernel query
-src/supervisor.rs   the rung between a blocked task and the human
+src/supervisor.rs   the rung between a blocked task and the human; mechanic.rs: the same rung for a task that ends failed
 src/tools.rs        what an attempt ran, read back from its stream
 src/release.rs      releases as directories under FORGE_HOME/bin, the atomic current/previous pointers
 src/upgrade.rs      forge upgrade: verify, backup, unpack a release, flip current, migrate, restart

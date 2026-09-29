@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod guard;
+
 fn short(sha: &str) -> &str {
     &sha[..sha.len().min(8)]
 }
@@ -78,6 +80,10 @@ async fn deploy_at(
             "FORGE_WORKER_SUCCESSORS".to_string(),
             if successors { "1" } else { "0" }.to_string(),
         ));
+        // `run` already holds `bin/.deploy-self.lock` (guard::take_lock)
+        // around this call; told so, the script skips its own `flock`,
+        // which would otherwise wait on the very process running it.
+        extra.push(("FORGE_DEPLOY_LOCK_HELD".to_string(), "1".to_string()));
     }
     // The action's own timeout (deploy-self declares one ample for a cold
     // build) outranks the repository's check timeout.
@@ -110,7 +116,7 @@ async fn wait_live(f: &Forge, sha: &str, wait: Duration) -> Option<i64> {
     loop {
         let worker = f
             .store
-            .live_workers(crate::worker::pid_alive)
+            .live_workers(crate::worker::worker_alive)
             .ok()
             .and_then(|live| live.into_iter().find(|w| w.version == sha));
         if let Some(w) = worker
@@ -132,9 +138,12 @@ pub(crate) const SELF_METHOD: &str = "deploy-self";
 /// origin's base branch fetched into the kernel repository (never the
 /// registered checkout's refs or working tree), and `sha` resolved there —
 /// origin's tip when none is given. A commit origin's base does not
-/// contain is refused, and so, without `force`, is one that is an
-/// ancestor of the live release (`FORGE_HOME/bin/current`): migrations do
-/// not run backwards.
+/// contain is refused, and so, without `force`, is one older than the
+/// newer of the live release (`FORGE_HOME/bin/current`) and the one
+/// already staged (see [`guard::not_older_than_live`]): migrations do not
+/// run backwards. Called under [`guard::take_lock`] for `SELF_METHOD`, so
+/// this and the method that follows see the same live and staged
+/// releases another racing deploy would.
 async fn origin_truth(
     f: &Forge,
     repo: &Path,
@@ -177,20 +186,7 @@ async fn origin_truth(
             full
         }
     };
-    let live = crate::release::pointed_at(&crate::release::root(home), "current");
-    if let Some(live) = live
-        && !force
-        && let Ok(live_sha) = git::rev_parse(&kernel, &format!("{live}^{{commit}}")).await
-        && live_sha != sha
-        && git::is_ancestor(&kernel, &sha, &live_sha).await
-    {
-        bail!(
-            "{} is older than the live release {} (an ancestor of it); migrations do not run \
-             backwards, so it is refused. Pass --force to deploy it anyway.",
-            short(&sha),
-            short(&live_sha)
-        );
-    }
+    guard::not_older_than_live(&kernel, home, &sha, force).await?;
     Ok((kernel, sha))
 }
 
@@ -279,6 +275,7 @@ async fn never_live(f: &Forge, run: &FinishedRun<'_>, tail: &str) -> Result<bool
         f,
         run.project,
         &run.target.repo,
+        run.deploy_id,
         format!("{reason}:\n{tail}"),
     )?;
     Ok(false)
@@ -409,6 +406,7 @@ fn record_deploy_error(
             f,
             project,
             repo,
+            deploy_id,
             format!(
                 "the deploy of {} failed with an error and was not rolled back; it may still be live:\n{reason}",
                 short(sha)
@@ -418,50 +416,23 @@ fn record_deploy_error(
     e
 }
 
-/// Mark the project's most recent terminal task for `repo` as blocked
-/// with `reason`, or file a new no-work task in that state when there is
-/// none: the human rung docs/DEPLOY.md ends every failed deploy at.
-fn ask(f: &Forge, project: &str, repo: &str, reason: String) -> Result<()> {
-    let existing = f
-        .store
-        .project_tasks(project)?
-        .into_iter()
-        .filter(|t| {
-            t.repo == repo
-                && matches!(
-                    t.state,
-                    TaskState::Succeeded
-                        | TaskState::Failed
-                        | TaskState::Unverified
-                        | TaskState::Withdrawn
-                        | TaskState::Blocked
-                )
-        })
-        .max_by_key(|t| t.id);
-    let t = match existing {
-        Some(mut t) => {
-            t.state = TaskState::Blocked;
-            t.reason = reason;
-            t
-        }
-        None => {
-            let mut t = Task {
-                repo: repo.to_string(),
-                task: "deploy question".to_string(),
-                base_branch: String::new(),
-                state: TaskState::Blocked,
-                reason,
-                created_at: unix_now(),
-                workflow: "direct".to_string(),
-                project: Some(project.to_string()),
-                land: false,
-                ..Default::default()
-            };
-            t.id = f.store.insert_task(&t)?;
-            t
-        }
-    };
-    f.store.update_task(&t)?;
+/// File a separate no-work question for a failed deploy. Landed work is
+/// terminal; answering this question must never retry that work.
+fn ask(f: &Forge, project: &str, repo: &str, deploy_id: i64, reason: String) -> Result<()> {
+    f.store.insert_task(&Task {
+        repo: repo.to_string(),
+        task: "deploy question".to_string(),
+        state: TaskState::Blocked,
+        reason: format!("needs input: {reason}"),
+        question_to: None, // Deploy failures are addressed to the operator.
+        deploy_id: Some(deploy_id),
+        created_at: unix_now(),
+        workflow: "direct".to_string(),
+        project: Some(project.to_string()),
+        land: false,
+        priority: crate::store::PRIORITY_DEFAULT,
+        ..Default::default()
+    })?;
     Ok(())
 }
 
@@ -562,6 +533,16 @@ pub async fn run(
     // deploy-self builds origin's truth, never the registered checkout
     // (docs/OPS.md, "The running binary"): the commit and the tree to
     // archive both come from the kernel repository's copy of origin.
+    //
+    // `bin/.deploy-self.lock` (the file the script itself locks) is held
+    // from here through the method's own run: of two deploys racing for
+    // it, the guard inside `origin_truth` must never run for one before
+    // the other has staged (docs/REVIEW-4.md, E3-11c). Released right
+    // after the method returns, well before a wait for a successor to go
+    // live, which itself needs the lock to flip `current`.
+    let self_lock = (target.method == SELF_METHOD)
+        .then(|| guard::take_lock(&f.paths.home))
+        .transpose()?;
     let (src, sha) = if target.method == SELF_METHOD {
         origin_truth(f, &repo, &cfg, sha, force).await?
     } else {
@@ -596,6 +577,9 @@ pub async fn run(
             &scratch_dir(f, deploy_id, ""),
         )
         .await?;
+        // The method has run; drop `bin/.deploy-self.lock` before waiting
+        // on a successor, which needs it too.
+        drop(self_lock);
 
         // A self-deploy under a worker that starts successors has only
         // staged: the release is live once a worker runs it and `current`
@@ -693,6 +677,7 @@ pub async fn run(
                 f,
                 project,
                 &target.repo,
+                deploy_id,
                 format!("{reason}; here is the check's output:\n{}", r.tail),
             )?;
             return Ok(false);
@@ -749,7 +734,7 @@ pub async fn run(
                 rb.tail
             )
         };
-        ask(f, project, &target.repo, question)?;
+        ask(f, project, &target.repo, deploy_id, question)?;
         Ok(false)
     }
     .await;
