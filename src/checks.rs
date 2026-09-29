@@ -237,7 +237,7 @@ async fn run_one_capped_once(args: &RunOneCapped<'_>) -> CheckResult {
         cap_bytes,
         full_log_dir,
         egress,
-    } = args;
+    } = *args;
     let start = Instant::now();
     let mut r = CheckResult {
         level: level.to_string(),
