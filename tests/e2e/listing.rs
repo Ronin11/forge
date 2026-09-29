@@ -755,7 +755,8 @@ fn forge_log_failed_on_and_reason_find_tasks_by_their_attempts_failures() {
             .success()
     );
     assert_eq!(e.task(1).0, "succeeded");
-    // 2 fails the L0 rule clean-tree; 3 dies with agent exit 1.
+    // 2 fails the L0 rule clean-tree (mechanic retries it once, as task 3,
+    // still queued: nothing ever drains it here); 4 dies with agent exit 1.
     assert!(!e.run("dirty.sh", &["--retries", "0"]).status.success());
     assert!(!e.run("crash.sh", &["--retries", "0"]).status.success());
 
@@ -800,7 +801,7 @@ fn forge_log_failed_on_and_reason_find_tasks_by_their_attempts_failures() {
     );
 
     let r = rows(&["--reason", "agent exit 1"]);
-    assert_eq!(ids(&r), vec![3]);
+    assert_eq!(ids(&r), vec![4]);
     let f = r[0]["failures"].as_array().unwrap();
     assert_eq!(f.len(), 1, "{f:?}");
     assert!(f[0]["name"].is_null());

@@ -168,6 +168,8 @@ pub struct Task {
     /// operator. Set from the envelope's `needs_input.to` when the task
     /// blocks; meaningless outside `TaskState::Blocked`.
     pub question_to: Option<String>,
+    /// The deploy whose failure filed this no-work question.
+    pub deploy_id: Option<i64>,
     pub created_at: i64,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
@@ -519,8 +521,8 @@ pub(super) fn insert_task_row(conn: &Connection, t: &Task) -> Result<i64> {
     conn.retry_execute(
         "INSERT INTO tasks (repo, task, title, base_branch, model, provider, max_turns, max_attempts, timeout_secs, checks_json,
                             state, reason, question_to, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm, explore_json,
-                            project, initiative, shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json, trust, origin, adoption_json, priority)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41)",
+                            project, initiative, shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json, trust, origin, adoption_json, priority, deploy_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42)",
         params![
             t.repo,
             t.task,
@@ -563,6 +565,7 @@ pub(super) fn insert_task_row(conn: &Connection, t: &Task) -> Result<i64> {
             t.origin.as_str(),
             super::adoption::to_column(t.adoption.as_ref())?,
             t.priority,
+            t.deploy_id,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -597,7 +600,7 @@ impl Store {
              concierge_json=?43, proposal_json=?44, proposal_answer=?45, proposal_initiative=?46,
              title=?47, landed_at=?48, hand_landed=?49, shape_text_len=?50, shape_path_tokens=?51,
              shape_tdd=?52, shape_declared_checks=?53, model_source=?54, workflow_source=?55,
-             routing_json=?56, session_id=?57, handoff=?58 WHERE id=?1",
+             routing_json=?56, session_id=?57, handoff=?58, deploy_id=?59 WHERE id=?1",
             params![
                 t.id,
                 t.repo,
@@ -657,6 +660,7 @@ impl Store {
                 serde_json::to_string(&t.routing)?,
                 t.session_id,
                 t.handoff,
+                t.deploy_id,
             ],
         )?;
         Ok(())
