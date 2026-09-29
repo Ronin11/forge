@@ -20,6 +20,7 @@
 //! the host (`executor::default_backend`), and `forge doctor` warns what
 //! that forgoes; one that declares `backend = "bwrap"` still refuses.
 
+use crate::config::SandboxLimits as ResourceLimits;
 use crate::egress::{self, Policy, Proxies, Rule};
 use crate::workflows::Contract;
 use anyhow::{Context, Result, bail};
@@ -42,24 +43,6 @@ pub(crate) const RELAY_START_FAILED: &str = "forge: the egress relay did not sta
 pub enum Phase {
     Agent,
     Check,
-}
-
-/// Operator-owned resource policy; byte values are never read from a worktree.
-#[derive(Clone, Copy, Debug)]
-pub struct ResourceLimits {
-    pub tmp_bytes: u64,
-    pub memory_max: u64,
-    pub tasks_max: u64,
-}
-
-impl Default for ResourceLimits {
-    fn default() -> Self {
-        Self {
-            tmp_bytes: 1 << 30,
-            memory_max: 8 << 30,
-            tasks_max: 4096,
-        }
-    }
 }
 
 impl ResourceLimits {

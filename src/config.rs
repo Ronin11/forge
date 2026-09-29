@@ -12,8 +12,8 @@ mod trust;
 
 #[allow(unused_imports)] // HomeConfig is named directly only by secrets.rs's tests
 pub use home::{
-    Budget, EarlyEnding, HomeConfig, Intake, SandboxPaths, Supervisor, ensure_home_config,
-    load_home,
+    Budget, EarlyEnding, HomeConfig, Intake, SandboxLimits, SandboxPaths, Supervisor,
+    ensure_home_config, load_home,
 };
 pub use measure::{ExploreRole, Measure};
 pub use providers::ROLES;

@@ -134,13 +134,31 @@ struct SandboxRaw {
     tasks_max: Option<u64>,
 }
 
+/// Operator-owned resource policy; byte values are never read from a worktree.
+#[derive(Clone, Copy, Debug)]
+pub struct SandboxLimits {
+    pub tmp_bytes: u64,
+    pub memory_max: u64,
+    pub tasks_max: u64,
+}
+
+impl Default for SandboxLimits {
+    fn default() -> Self {
+        Self {
+            tmp_bytes: 1 << 30,
+            memory_max: 8 << 30,
+            tasks_max: 4096,
+        }
+    }
+}
+
 /// What the sandbox exposes beyond the attempt's own holes: toolchains the
 /// checks need, read-only, and package caches, read through with an
 /// attempt's own writes going to a private overlay discarded with it (see
 /// `sandbox::Sandbox::command`), so one attempt can never poison what
 /// another reads from these. Paths that do not exist are skipped.
 pub struct SandboxPaths {
-    pub limits: crate::sandbox::ResourceLimits,
+    pub limits: SandboxLimits,
     pub ro: Vec<PathBuf>,
     pub rw: Vec<PathBuf>,
     /// `[sandbox] dependency_cache`: a directory the operator warms with
@@ -507,8 +525,8 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => HomeRaw::default(),
         Err(e) => return Err(e).context(format!("reading {}", path.display())),
     };
-    let defaults = crate::sandbox::ResourceLimits::default();
-    let limits = crate::sandbox::ResourceLimits {
+    let defaults = SandboxLimits::default();
+    let limits = SandboxLimits {
         tmp_bytes: raw.sandbox.tmp_bytes.unwrap_or(defaults.tmp_bytes),
         memory_max: raw.sandbox.memory_max.unwrap_or(defaults.memory_max),
         tasks_max: raw.sandbox.tasks_max.unwrap_or(defaults.tasks_max),
