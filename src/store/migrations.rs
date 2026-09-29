@@ -815,6 +815,12 @@ CREATE INDEX chat_turns_at ON chat_turns(at);
 ALTER TABLE tasks ADD COLUMN origin TEXT NOT NULL DEFAULT 'agent';
 ALTER TABLE tasks ADD COLUMN adoption_json TEXT NOT NULL DEFAULT '';
 ",
+    // The registering process's start identity (`store::start_of`), the
+    // same field `worker_start` records for a claimed row: a reused pid
+    // does not count as the worker that registered here (REVIEW-4 E2-2).
+    "
+ALTER TABLE workers ADD COLUMN start TEXT NOT NULL DEFAULT '';
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs
