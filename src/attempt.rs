@@ -603,6 +603,7 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
             id: t.id,
             step,
             dir: worktree,
+            identity_repo: Some(Path::new(&t.repo)),
             prompt,
             system: "",
             model: &model,

@@ -753,3 +753,42 @@ fn an_unpriced_claude_provider_keeps_the_clis_figure() {
     assert_eq!(cost, 0.01);
     assert_eq!(cli, None);
 }
+
+#[test]
+fn a_codex_nudge_does_not_execute_clone_fsmonitor() {
+    let e = Env::new();
+    git(&e.repo, &["config", "user.name", "Registered Author"]);
+    git(&e.repo, &["config", "user.email", "registered@example.com"]);
+    write_config(
+        &e,
+        "[providers.fake-codex]\nrunner = \"codex-cli\"\nmodel = \"codex-fake-model\"\nnudges = 2\n",
+    );
+    let o = e
+        .cmd("ok.sh")
+        .env_remove("GIT_CONFIG_COUNT")
+        .env("FORGE_CODEX_BIN", codex_fake("codex-nudge-metadata.sh"))
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--provider",
+            "fake-codex",
+            "--no-land",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .expect("forge run");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    let log = e.log_text(1, 1);
+    assert_eq!(log.matches("\"type\":\"forge_nudge\"").count(), 1, "{log}");
+    assert!(log.contains("\"reason\":\"uncommitted\""), "{log}");
+    assert!(
+        !e.home
+            .join("worktrees/host-nudge-fsmonitor-marker")
+            .exists(),
+        "the host executed the clone's fsmonitor before verification"
+    );
+}

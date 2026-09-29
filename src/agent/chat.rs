@@ -280,6 +280,7 @@ mod tests {
         Launch {
             task_id: 1,
             worktree,
+            identity: Vec::new(),
             prompt,
             system,
             model: "test-model",

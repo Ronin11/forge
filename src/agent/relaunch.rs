@@ -188,6 +188,7 @@ mod tests {
         let l = Launch {
             task_id: 1,
             worktree: &work,
+            identity: Vec::new(),
             prompt: "do the task",
             system: "",
             model: "fake-model",

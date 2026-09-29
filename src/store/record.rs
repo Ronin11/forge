@@ -125,6 +125,15 @@ impl Store {
         Ok(())
     }
 
+    /// The source checkout of an automatic refile, without joining its retry lineage.
+    pub fn refile_source(&self, id: i64) -> Result<Option<i64>> {
+        Ok(self.lock().retry_query_row(
+            "SELECT task_id FROM decisions WHERE retry_id=?1 AND kind='mechanic-ratchet' ORDER BY id DESC LIMIT 1",
+            params![id],
+            |r| r.get(0),
+        ).optional()?)
+    }
+
     /// Mark a decision as the kernel's own ruling of `kind`.
     pub fn set_decision_kind(&self, decision_id: i64, kind: &str) -> Result<()> {
         self.lock().retry_execute(

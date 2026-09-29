@@ -219,7 +219,7 @@ async fn run_copilot_phase(args: RunCopilotPhase<'_>) -> Result<(Option<i32>, bo
 /// whatever tokens it does report at the per-million prices.
 pub(super) async fn run_copilot(l: Launch<'_>) -> Result<Outcome> {
     let bin = crate::executor::agent_bin(l.sandbox, l.worktree, copilot_bin_for(l.step));
-    let mut extra_env = crate::git::identity(&l.worktree.join(".git")).await;
+    let mut extra_env = l.identity.clone();
     extra_env.extend(inputs::provider_env(l.provider));
     extra_env.push(("COPILOT_AUTO_UPDATE".to_string(), "false".to_string()));
 

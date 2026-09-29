@@ -99,7 +99,7 @@ pub(super) async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
     // before the agent starts. Forge 1 learned this the same way.
     let bin = crate::executor::agent_bin(l.sandbox, l.worktree, agent_bin_for(l.step));
     let argv = claude_argv(&bin, &l);
-    let mut identity = crate::git::identity(&l.worktree.join(".git")).await;
+    let mut identity = l.identity.clone();
     identity.extend(inputs::provider_env(l.provider));
     let mut log = CappedLog::create(l.log_path)
         .with_context(|| format!("creating {}", l.log_path.display()))?;
