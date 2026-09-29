@@ -279,7 +279,7 @@ const ALLOWLIST: &[(&str, &str, usize, &str)] = &[
         "existing function awaiting a focused split",
     ),
     (
-        "src/workflows.rs",
+        "src/workflows/definitions.rs",
         "parse_action",
         175,
         "existing function awaiting a focused split",
