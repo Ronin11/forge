@@ -279,11 +279,23 @@ impl Execution {
         env: &[(String, String)],
         phase: Phase,
     ) -> Command {
+        self.command_under(path, argv, env, None, phase)
+    }
+    /// An explicit policy replaces inherited model, repository and granted hosts.
+    pub fn command_under(
+        &self,
+        path: &Path,
+        argv: &[String],
+        env: &[(String, String)],
+        egress: Option<&Policy>,
+        phase: Phase,
+    ) -> Command {
         let policy = self
             .bwrap
             .as_ref()
             .map(|s| s.policy_for(path))
             .unwrap_or_else(|_| Policy::new([]));
+        let policy = egress.unwrap_or(&policy);
         if self.backend(path) == Backend::Ssh {
             let remotes = self.remotes.lock().unwrap();
             let destination = path
@@ -293,10 +305,10 @@ impl Execution {
             return ssh_command(destination, path, argv, env);
         }
         if self.backend(path) == Backend::Host {
-            return Host.command(path, argv, env, &policy, phase);
+            return Host.command(path, argv, env, policy, phase);
         }
         match &self.bwrap {
-            Ok(sb) => Executor::command(sb, path, argv, env, &policy, phase),
+            Ok(sb) => Executor::command(sb, path, argv, env, policy, phase),
             Err(error) => {
                 let mut cmd = Command::new("/bin/sh");
                 cmd.args([

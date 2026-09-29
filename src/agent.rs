@@ -377,9 +377,21 @@ pub fn command_in(
     extra_env: &[(String, String)],
     phase: Phase,
 ) -> std::process::Command {
+    command_under(sandbox, worktree, argv, extra_env, None, phase)
+}
+
+/// Construct a command with an optional, exclusive per-command egress policy.
+pub fn command_under(
+    sandbox: Option<&Execution>,
+    worktree: &Path,
+    argv: &[String],
+    extra_env: &[(String, String)],
+    egress: Option<&crate::egress::Policy>,
+    phase: Phase,
+) -> std::process::Command {
     let env = env_with(worktree, extra_env, phase);
     match sandbox {
-        Some(sb) => sb.command(worktree, argv, &env, phase),
+        Some(sb) => sb.command_under(worktree, argv, &env, egress, phase),
         None => crate::executor::Executor::command(
             &crate::executor::Host,
             worktree,

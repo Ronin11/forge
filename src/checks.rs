@@ -24,6 +24,10 @@ pub struct RunOneCapped<'a> {
     /// on the row. `None` skips the capture; nothing is written and
     /// `CheckResult::log_path` stays empty.
     pub full_log_dir: Option<&'a Path>,
+    /// The egress policy of this one command, when the caller has one of
+    /// its own (a job step's declared hosts); the executor unsandboxed
+    /// cannot bound a network, so it only travels to a backend that can.
+    pub egress: Option<&'a crate::egress::Policy>,
 }
 
 use crate::executor::Execution;
@@ -152,6 +156,7 @@ pub async fn run_one(
         env,
         cap_bytes: TAIL_BYTES,
         full_log_dir: None,
+        egress: None,
     })
     .await
 }
@@ -206,6 +211,7 @@ async fn run_one_capped_once(args: &RunOneCapped<'_>) -> CheckResult {
         env,
         cap_bytes,
         full_log_dir,
+        egress,
     } = *args;
     let start = Instant::now();
     let mut r = CheckResult {
@@ -213,11 +219,19 @@ async fn run_one_capped_once(args: &RunOneCapped<'_>) -> CheckResult {
         name: name.to_string(),
         ..Default::default()
     };
-    // All repository checks, operations and landing verification share this
-    // launch path and must never prepare or mount the agent's credentials.
+    if egress.is_some() && !sandbox.is_some_and(|s| s.guarantees(cwd).egress_bounded) {
+        r.tail = "declared secrets or egress require a network-isolating executor".into();
+        return r;
+    }
     crate::agent::prepare_in(sandbox, cwd, env, crate::sandbox::Phase::Check).await;
-    let mut std_cmd =
-        crate::agent::command_in(sandbox, cwd, argv, env, crate::sandbox::Phase::Check);
+    let mut std_cmd = crate::agent::command_under(
+        sandbox,
+        cwd,
+        argv,
+        env,
+        egress,
+        crate::sandbox::Phase::Check,
+    );
     // Unsandboxed checks get their own process group so a backgrounded
     // child can be killed with them; bwrap's --new-session does the same.
     std_cmd.process_group(0);
@@ -342,6 +356,7 @@ mod tests {
             env: &[],
             cap_bytes: TAIL_BYTES,
             full_log_dir: None,
+            egress: None,
         })
         .await;
         (r, crate::agent::launches(&counter))
@@ -484,6 +499,7 @@ mod tests {
             env: &[],
             cap_bytes,
             full_log_dir: Some(logs.path()),
+            egress: None,
         })
         .await;
         assert_eq!(r.exit, Some(1));

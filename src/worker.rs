@@ -1433,6 +1433,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_message_triggered_job_is_recorded_at_contact_trust() {
+        let (_dir, f) = message_fixture(&[("anyone", "on = \"message\"\ncontact = \"*\"")]);
+        let m = record(&f, Direction::In, "alice", "hi");
+        let started = message_triggers(&f, &m).await;
+        assert_eq!(
+            f.store.job_trust(started[0].1).unwrap(),
+            Some(crate::store::Trust::Contact)
+        );
+    }
+
+    #[tokio::test]
     async fn a_project_without_a_repository_fires_nothing() {
         let (_dir, f) = fixture();
         f.store
@@ -1460,6 +1471,7 @@ mod tests {
             source,
             trigger_ref: key,
             input_text: input,
+            trust: crate::store::Trust::Public,
         })
     }
 
@@ -1484,6 +1496,17 @@ mod tests {
                 .unwrap();
         assert_eq!(input, r#"{"order":"17"}"#);
         assert_eq!(f.store.jobs(Some("demo"), None).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn start_webhook_has_recorded_the_trust_by_the_time_it_returns() {
+        let (_dir, f) = message_fixture(&[("ship", "on = \"webhook\"\nname = \"orders\"")]);
+        let (id, started) = fire(&f, "orders", "delivery-1", "{}").await.unwrap();
+        assert!(started);
+        assert_eq!(
+            f.store.job_trust(id).unwrap(),
+            Some(crate::store::Trust::Public)
+        );
     }
 
     #[tokio::test]

@@ -350,6 +350,7 @@ async fn run_one_recorded(
         env,
         cap_bytes: RECORD_TAIL_BYTES,
         full_log_dir: Some(s.logs_dir),
+        egress: None,
     })
     .await
 }

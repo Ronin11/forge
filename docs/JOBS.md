@@ -693,6 +693,59 @@ that speaks the CLI over the network, executes operations tagged
 the plugin model applied to effects, and it is the last piece, not the
 first.
 
+## Secrets and egress on a step
+
+A job's operation runs with the environment cleared to an allowlist
+(`agent::agent_env`) and, on the host executor a job runs on today, no
+egress policy of its own. A step that has to call a paid external API says
+so, and is given exactly that:
+
+```toml
+# config.toml (the operator's): a name for an environment variable the
+# worker already has, never a value.
+[secrets]
+cloudflare_token = { env = "CLOUDFLARE_API_TOKEN" }
+```
+
+```toml
+steps = [
+  { action = "play-segments", effect = "file",
+    secrets = ["cloudflare_token"],
+    egress = ["api.cloudflare.com"],
+    budget_usd = 2.00 },
+]
+```
+
+- **Secrets.** Each declared name is read from the worker's environment
+  when the step starts and passed to that step, under the variable
+  `[secrets]` names, and to no other step. A name `[secrets]` does not
+  define, or a variable the worker does not have, fails the step before it
+  runs, naming the secret.
+- **Egress.** The declared hosts (`host`, `host:port`, `*.suffix`; the
+  same rules as `[sandbox] egress`) are the step's own egress policy
+  (`secrets::step_grant`), added for that step and nothing else's. The
+  host executor cannot bound a network, so today the policy travels to the
+  executor and is enforced only where the backend can; the declaration is
+  what a sandboxed job executor will enforce.
+- **Trust.** Neither is given to a job below operator trust, and hosts
+  only when `[trust.operator] egress` is `declared`; a step asking under
+  any other level fails with the reason. A build workflow's step, a
+  directive step and a splice may not declare them. A job's trust is
+  recorded when it is created, before it can be claimed: `forge job
+  start` and a schedule or event trigger are operator trust; a message
+  trigger is contact trust; a webhook is the trust of the token that
+  fired it. A job recorded with none (there should be none) gets neither.
+- **Redaction.** A secret's value is replaced with `[redacted:<name>]` in
+  the step's output tail, the file `output_ref` names, the verdict, the
+  effect log (file and rows) and the error text, before any of it is
+  recorded.
+- **Spend.** `budget_usd` declares what the step may spend. The step is
+  given `FORGE_STEP_BUDGET_USD` and `FORGE_COST_FILE`, and writes the
+  dollars it spent to the file. That figure is the step's `cost_usd` and
+  counts against `[limits] budget_usd` like a directive's; a step that
+  reports nothing is charged its declared budget (nothing on a dry run),
+  and one that reports more than it declared fails.
+
 ## Security posture
 
 Trigger payloads are untrusted, and every directive's prompt says so,
