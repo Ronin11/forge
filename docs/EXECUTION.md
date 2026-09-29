@@ -352,3 +352,19 @@ the host file's refresh token dead, and the next host-side refresh empties the f
   `forge doctor` fails the provider's row ("anthropic: login expired since 23:48; run claude login
   as the operator, then forge doctor"), and the notify and signal plugins carry the hold once, as
   a `provider_held` event, not once per attempt.
+
+## Prompts and the command line
+
+Codex receives every phase's prompt on stdin (`codex exec [resume <id>] -`),
+so task text is absent from its argv and does not hit `MAX_ARG_STRLEN`.
+
+Copilot 1.0.88 advertises piped stdin. A direct invocation of its installed
+binary with `--output-format json --allow-all-tools --allow-all-paths
+--disable-builtin-mcps --no-auto-update -C <dir>` and `say hi` on stdin
+produced no output before a 25-second timeout. Adding `--resume` with an
+unavailable session ID exited with a missing-session error. Probes with a
+fresh HOME also produced no output before 10-second timeouts. These results
+do not verify that stdin runs one non-interactive turn with JSONL output.
+Forge therefore retains `-p` and caps its prompt at 96 KiB, cutting at a UTF-8
+boundary and appending a visible truncation note. Copilot prompt text remains
+visible in process arguments to local users who can inspect them.

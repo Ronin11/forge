@@ -6,9 +6,10 @@ use super::*;
 pub(super) struct RunCodexPhase<'a> {
     pub(super) l: &'a Launch<'a>,
     pub(super) argv: &'a [String],
+    pub(super) stdin: &'a str,
     pub(super) extra_env: &'a [(String, String)],
     pub(super) start: &'a Instant,
-    pub(super) log: &'a mut File,
+    pub(super) log: &'a mut CappedLog,
     pub(super) out: &'a mut Outcome,
     pub(super) watch: &'a mut Watch,
 }
@@ -26,16 +27,17 @@ pub(super) struct AgentRun<'a> {
     pub(super) early_ending: crate::config::EarlyEnding,
     pub(super) task_id: i64,
     pub(super) report: &'a Reporter,
-    pub(super) log: &'a mut File,
+    pub(super) log: &'a mut CappedLog,
 }
 
 /// A JSON-streaming agent phase and the parser that folds frames into its outcome.
 pub(super) struct RunJsonPhase<'a> {
     pub(super) l: &'a Launch<'a>,
     pub(super) argv: &'a [String],
+    pub(super) stdin: &'a str,
     pub(super) extra_env: &'a [(String, String)],
     pub(super) start: &'a Instant,
-    pub(super) log: &'a mut File,
+    pub(super) log: &'a mut CappedLog,
     pub(super) out: &'a mut Outcome,
     pub(super) watch: &'a mut Watch,
     pub(super) apply:
@@ -46,12 +48,50 @@ pub(super) struct RunJsonPhase<'a> {
 pub(super) struct RunCopilotPhase<'a> {
     pub(super) l: &'a Launch<'a>,
     pub(super) argv: &'a [String],
+    pub(super) stdin: &'a str,
     pub(super) extra_env: &'a [(String, String)],
     pub(super) start: &'a Instant,
-    pub(super) log: &'a mut File,
+    pub(super) log: &'a mut CappedLog,
     pub(super) out: &'a mut Outcome,
     pub(super) watch: &'a mut Watch,
     pub(super) tally: &'a mut CopilotTally,
+}
+
+/// The most prompt bytes the copilot CLI is handed: stdin could not be verified
+/// non-interactively, so we retain `-p <text>`, one argv entry the kernel caps at 128 KiB
+/// (`MAX_ARG_STRLEN`, past which `execve` fails E2BIG), so a longer one is cut
+/// here, under that with room to spare.
+pub(super) const COPILOT_PROMPT_LIMIT: usize = 96 * 1024;
+
+/// `prompt` as copilot's `-p` argument: itself when it fits, else its head
+/// (cut on a character boundary) and a note saying how much was dropped.
+pub(super) fn cap_prompt(prompt: &str) -> String {
+    if prompt.len() <= COPILOT_PROMPT_LIMIT {
+        return prompt.to_string();
+    }
+    let note = format!(
+        "\n\n[forge: this prompt was {} bytes; Forge passes it as a command-line \
+         argument, so it was cut to {COPILOT_PROMPT_LIMIT} bytes and the rest is missing]",
+        prompt.len()
+    );
+    let mut end = COPILOT_PROMPT_LIMIT - note.len();
+    while !prompt.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{note}", &prompt[..end])
+}
+
+/// Writes `text` to the child's stdin and closes it, off to the side: a child
+/// that exits or never reads must not block the caller on a full pipe, and a
+/// write that lands on a closed pipe is nothing to fail the launch for.
+pub(super) fn feed_stdin(child: &mut tokio::process::Child, text: &str) {
+    if let Some(mut stdin) = child.stdin.take() {
+        let text = text.to_string();
+        tokio::spawn(async move {
+            let _ = stdin.write_all(text.as_bytes()).await;
+            let _ = stdin.shutdown().await;
+        });
+    }
 }
 
 // Resolve portable API credentials at launch, never into attempt inputs.
@@ -196,5 +236,86 @@ mod tests {
                 .unwrap()
                 .contains("schema_version")
         );
+    }
+    #[test]
+    fn a_copilot_prompt_over_the_limit_is_cut_with_a_visible_note() {
+        let short = "do the task";
+        assert_eq!(cap_prompt(short), short);
+        let long = "é".repeat(200 * 1024);
+        let capped = cap_prompt(&long);
+        assert!(capped.len() <= COPILOT_PROMPT_LIMIT);
+        assert!(capped.len() < 100 * 1024);
+        assert!(capped.contains("[forge: this prompt was 409600 bytes"));
+        assert!(capped.starts_with("éé"));
+    }
+
+    /// A fake codex that fails when its argv is longer than 1 KiB and
+    /// otherwise reports the bytes it read on stdin.
+    #[tokio::test]
+    async fn a_200_kib_codex_prompt_travels_on_stdin_not_argv() {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let fake = scratch.path().join("codex-fake.sh");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\n\
+             n=0; for a in \"$@\"; do n=$((n + ${#a} + 1)); done\n\
+             if [ \"$n\" -gt 1024 ]; then echo \"argv is $n bytes\" >&2; exit 7; fi\n\
+             got=$(wc -c)\n\
+             echo '{\"type\":\"thread.started\",\"thread_id\":\"big-sess\"}'\n\
+             echo \"{\\\"type\\\":\\\"forge_test_stdin\\\",\\\"bytes\\\":$got}\"\n\
+             echo '{\"type\":\"item.completed\",\"item\":{\"id\":\"m\",\"type\":\"agent_message\",\"text\":\"ok\"}}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+        // SAFETY: the step name is unique to this test.
+        unsafe { std::env::set_var("FORGE_CODEX_BIN_BIG_PROMPT", &fake) };
+        let prompt = "x".repeat(200 * 1024);
+        let log_path = scratch.path().join("log.jsonl");
+        let report = crate::report::Reporter::new(false, None);
+        let provider = Provider {
+            runner: Runner::CodexCli,
+            ..Provider::default()
+        };
+        let out = run_codex(Launch {
+            identity: Vec::new(),
+            task_id: 1,
+            worktree: repo.path(),
+            prompt: &prompt,
+            system: "",
+            model: "",
+            max_turns: 30,
+            timeout: Duration::from_secs(20),
+            check_timeout: Duration::ZERO,
+            log_path: &log_path,
+            sandbox: None,
+            report: &report,
+            step: "big-prompt",
+            provider: &provider,
+            resume: None,
+            writes: false,
+            start_sha: "",
+            schema: crate::envelope::SCHEMA,
+            early_ending: crate::config::EarlyEnding {
+                no_edit_calls: 100,
+                edits_without_commit: 100,
+                repeats: 100,
+                signals_to_end: 0,
+            },
+            no_tools: false,
+            judgment: None,
+        })
+        .await
+        .unwrap();
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            !out.stderr_text.contains("argv is"),
+            "argv too long: {}",
+            out.stderr_text
+        );
+        assert_eq!(out.exit_code, Some(0), "{log}");
+        assert!(log.contains("\"bytes\":204800"), "{log}");
     }
 }

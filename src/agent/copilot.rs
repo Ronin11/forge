@@ -20,7 +20,8 @@ fence.\n\nSchema:\n";
 /// off (an attempt gets the repository's tools and no other); no
 /// self-update; its own logs at error level; `-C` the worktree; `--model`
 /// when the launch names one (absent, the CLI's own choice); the provider's
-/// own args; `--resume <session>` to continue one.
+/// own args; `--resume <session>` to continue one. The prompt is capped at
+/// 96 KiB because piped stdin could not be verified with Copilot 1.0.88.
 fn copilot_argv(bin: &str, l: &Launch<'_>, resume: Option<&str>, prompt: &str) -> Vec<String> {
     let mut argv = vec![
         bin.to_string(),
@@ -45,7 +46,7 @@ fn copilot_argv(bin: &str, l: &Launch<'_>, resume: Option<&str>, prompt: &str) -
         argv.push(id.to_string());
     }
     argv.push("-p".to_string());
-    argv.push(prompt.to_string());
+    argv.push(inputs::cap_prompt(prompt));
     argv
 }
 
@@ -178,6 +179,7 @@ async fn run_copilot_phase(args: RunCopilotPhase<'_>) -> Result<(Option<i32>, bo
     let RunCopilotPhase {
         l,
         argv,
+        stdin,
         extra_env,
         start,
         log,
@@ -196,6 +198,7 @@ async fn run_copilot_phase(args: RunCopilotPhase<'_>) -> Result<(Option<i32>, bo
     run_json_phase(RunJsonPhase {
         l,
         argv,
+        stdin,
         extra_env,
         start,
         log,
@@ -212,7 +215,9 @@ async fn run_copilot_phase(args: RunCopilotPhase<'_>) -> Result<(Option<i32>, bo
 /// and the envelope is read out of the final message. Phase one runs the
 /// prompt (or resumes the attempt's session); once it ends, phase two
 /// resumes that session with `COPILOT_REPORT_PROMPT`. Stdin is closed in
-/// both: the prompt travels on argv. The CLI meters premium requests, not
+/// both: the prompt travels on argv, capped at 96 KiB with a truncation note.
+/// A direct 1.0.88 stdin probe timed out; a resume probe rejected the missing
+/// session before a turn could run. The CLI meters premium requests, not
 /// tokens (1.0.88 reports no token counts at all), so the attempt's cost is
 /// the requests its `result` frames report at the provider's
 /// `price_usd_per_premium_request` — 0 within a plan's allowance — plus
@@ -223,8 +228,8 @@ pub(super) async fn run_copilot(l: Launch<'_>) -> Result<Outcome> {
     extra_env.extend(inputs::provider_env(l.provider));
     extra_env.push(("COPILOT_AUTO_UPDATE".to_string(), "false".to_string()));
 
-    let mut log =
-        File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
+    let mut log = CappedLog::create(l.log_path)
+        .with_context(|| format!("creating {}", l.log_path.display()))?;
     writeln!(
         log,
         "{{\"type\":\"forge_prompt\",\"text\":{}}}",
@@ -243,6 +248,7 @@ pub(super) async fn run_copilot(l: Launch<'_>) -> Result<Outcome> {
     let (exit1, timed_out1, mut stderr_text) = run_copilot_phase(RunCopilotPhase {
         l: &l,
         argv: &argv1,
+        stdin: "",
         extra_env: &extra_env,
         start: &start,
         log: &mut log,
@@ -275,6 +281,7 @@ pub(super) async fn run_copilot(l: Launch<'_>) -> Result<Outcome> {
         let (exit2, timed_out2, stderr2) = run_copilot_phase(RunCopilotPhase {
             l: &l,
             argv: &argv2,
+            stdin: "",
             extra_env: &extra_env,
             start: &start,
             log: &mut log,

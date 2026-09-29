@@ -101,8 +101,8 @@ pub(super) async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
     let argv = claude_argv(&bin, &l);
     let mut identity = l.identity.clone();
     identity.extend(inputs::provider_env(l.provider));
-    let mut log =
-        File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
+    let mut log = CappedLog::create(l.log_path)
+        .with_context(|| format!("creating {}", l.log_path.display()))?;
     writeln!(
         log,
         "{{\"type\":\"forge_prompt\",\"text\":{}}}",

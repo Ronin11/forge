@@ -3,7 +3,9 @@
 //! first. Numbers Forge records come from the CLI's accounting or Forge's
 //! own clock, never from the model's prose.
 
+mod bounded;
 pub(crate) mod build_env;
+use bounded::{BoundedLines, CappedLog, read_stderr};
 mod chat;
 mod claude;
 mod codex;
@@ -31,12 +33,11 @@ use crate::report::{Event, Reporter};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::HashSet;
-use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 #[derive(Default, Debug)]
@@ -113,7 +114,7 @@ pub enum Runner {
     #[default]
     ClaudeCli,
     CodexCli,
-    /// GitHub Copilot CLI, `copilot -p`; see `run_copilot`.
+    /// GitHub Copilot CLI with a capped `-p` prompt; see `run_copilot`.
     CopilotCli,
     Chat,
     /// TypeSafe's Jev: typed judgment, one HTTP call, never text; see
@@ -620,11 +621,7 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
         let _ = stdin.shutdown().await;
     }
     let stderr = child.stderr.take().context("agent stderr")?;
-    let stderr_task = tokio::spawn(async move {
-        let mut s = String::new();
-        BufReader::new(stderr).read_to_string(&mut s).await.ok();
-        s
-    });
+    let stderr_task = tokio::spawn(read_stderr(stderr));
 
     let start = Instant::now();
     let deadline = tokio::time::Instant::now() + timeout;
@@ -632,14 +629,14 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
     let mut seen_tools: HashSet<String> = HashSet::new();
     let mut watch = Watch::new(early_ending);
     let stdout = child.stdout.take().context("agent stdout")?;
-    let mut lines = BufReader::new(stdout).lines();
+    let mut lines = BoundedLines::new(BufReader::new(stdout));
 
     let read = async {
-        while let Some(line) = lines.next_line().await? {
+        while let Some(line) = lines.next_uncut(log).await? {
             // The CLI's frames carry no clock; Forge stamps each with its
             // own, so a tool call and its result measure a duration.
             let Ok(mut v) = serde_json::from_str::<Value>(&line) else {
-                writeln!(log, "{line}")?;
+                log.line(&line, None)?;
                 continue;
             };
             if let Some(obj) = v.as_object_mut() {
@@ -648,7 +645,7 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
                     Value::from(start.elapsed().as_millis() as u64),
                 );
             }
-            writeln!(log, "{v}")?;
+            log.line(&v.to_string(), None)?;
             match v["type"].as_str() {
                 Some("assistant") => {
                     // The CLI repeats a message once per content block; count
@@ -881,6 +878,7 @@ async fn run_json_phase(args: RunJsonPhase<'_>) -> Result<(Option<i32>, bool, St
     let RunJsonPhase {
         l,
         argv,
+        stdin,
         extra_env,
         start,
         log,
@@ -894,6 +892,7 @@ async fn run_json_phase(args: RunJsonPhase<'_>) -> Result<(Option<i32>, bool, St
         let (code, timed_out, stderr) = run_json_phase_once(RunJsonPhase {
             l,
             argv,
+            stdin,
             extra_env,
             start,
             log: &mut *log,
@@ -921,6 +920,7 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
     let RunJsonPhase {
         l,
         argv,
+        stdin,
         extra_env,
         start,
         log,
@@ -937,7 +937,7 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
             extra_env,
             Phase::Agent,
         ));
-        c.stdin(Stdio::null())
+        c.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
@@ -946,22 +946,19 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
     .await
     .with_context(|| format!("spawning {}", argv[0]))?;
 
+    inputs::feed_stdin(&mut child, stdin);
     let stderr = child.stderr.take().context("agent stderr")?;
-    let stderr_task = tokio::spawn(async move {
-        let mut s = String::new();
-        BufReader::new(stderr).read_to_string(&mut s).await.ok();
-        s
-    });
+    let stderr_task = tokio::spawn(read_stderr(stderr));
 
     let deadline = tokio::time::Instant::now() + l.timeout;
     let stdout = child.stdout.take().context("agent stdout")?;
-    let mut lines = BufReader::new(stdout).lines();
+    let mut lines = BoundedLines::new(BufReader::new(stdout));
     let mut tripped_this_phase = false;
 
     let read = async {
-        while let Some(line) = lines.next_line().await? {
+        while let Some(line) = lines.next_uncut(log).await? {
             let Ok(mut v) = serde_json::from_str::<Value>(&line) else {
-                writeln!(log, "{line}")?;
+                log.line(&line, None)?;
                 continue;
             };
             if let Some(obj) = v.as_object_mut() {
@@ -970,7 +967,7 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
                     Value::from(start.elapsed().as_millis() as u64),
                 );
             }
-            writeln!(log, "{v}")?;
+            log.line(&v.to_string(), None)?;
             if let Some(text) = apply(&v, out, watch) {
                 writeln!(
                     log,
@@ -1210,7 +1207,7 @@ mod tests {
         let script = dir.join("agent.sh");
         std::fs::write(&script, body).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut log = tempfile::NamedTempFile::new().unwrap();
+        let mut log = CappedLog::new(tempfile::tempfile().unwrap(), 64 << 20);
         let report = crate::report::Reporter::new(false, None);
         run_with_relaunch(AgentRun {
             sandbox: None,
@@ -1224,7 +1221,7 @@ mod tests {
             early_ending: thresholds(0, 0, 0, 0),
             task_id: 1,
             report: &report,
-            log: log.as_file_mut(),
+            log: &mut log,
         })
         .await
         .unwrap()
