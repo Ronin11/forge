@@ -11,10 +11,9 @@ pub(super) fn is_no_work_question(f: &Forge, t: &Task) -> Result<bool> {
         && f.store.attempts(t.id)?.is_empty())
 }
 
-/// Record `text` as the answer to job question `old`: a decision row
-/// `job <id> answered: <text>`, the job's `needs_human` closed as
-/// `answered`, and the task `succeeded` with the answer as its reason.
-/// Nothing is queued. Returns the decision and the settled task.
+/// Record the answer and settle the question without queuing anything.
+/// A deploy question is withdrawn; a job question succeeds and closes
+/// the job's `needs_human` resolution. Returns the decision and task.
 pub(super) fn answer(
     f: &Forge,
     old: &Task,
@@ -192,6 +191,53 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(again.contains("not blocked on a question"), "{again}");
+    }
+
+    #[tokio::test]
+    async fn a_deploy_question_checks_scope_and_records_its_own_recipient() {
+        let (_dir, f) = fixture();
+        let deploy = f
+            .store
+            .start_deploy("demo", "prod", "sha", 1, None)
+            .unwrap();
+        let mut t = blocked("/repo", "deploy question", "deploy failed", Some("alice"));
+        t.deploy_id = Some(deploy);
+        let t = insert(&f, t);
+        let refused = super::super::answer(&f, t.id, "ok", "bob", "", Some(("demo", "bob")))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("addressed to alice"), "{refused}");
+        assert_eq!(
+            f.store.task(t.id).unwrap().unwrap().state,
+            TaskState::Blocked
+        );
+        let (_, settled) = super::super::answer(
+            &f,
+            t.id,
+            "ok",
+            "alice",
+            "deploy log",
+            Some(("demo", "alice")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(settled.state, TaskState::Withdrawn);
+        assert_eq!(settled.deploy_id, Some(deploy));
+        assert!(settled.finished_at.is_some());
+        assert_eq!(f.store.queued_count().unwrap(), 0);
+        assert!(f.store.attempts(t.id).unwrap().is_empty());
+        let decisions = f.store.decisions_in_lineage(t.id).unwrap();
+        assert_eq!(decisions.len(), 1);
+        let d = &decisions[0];
+        assert_eq!(d.question, "deploy failed");
+        assert_eq!(d.answer, format!("deploy {deploy} answered: ok"));
+        assert_eq!(d.answered_by, "alice");
+        assert_eq!(d.answered_for.as_deref(), Some("alice"));
+        assert_eq!(d.citations, "deploy log");
+        assert_eq!(d.retry_id, Some(t.id));
+        assert!(answer(&f, &t, "again", "operator", "").is_err());
+        assert_eq!(f.store.decisions_in_lineage(t.id).unwrap().len(), 1);
     }
 
     #[tokio::test]

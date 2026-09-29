@@ -423,7 +423,7 @@ fn ask(f: &Forge, project: &str, repo: &str, deploy_id: i64, reason: String) -> 
         repo: repo.to_string(),
         task: "deploy question".to_string(),
         state: TaskState::Blocked,
-        reason,
+        reason: format!("needs input: {reason}"),
         question_to: None, // Deploy failures are addressed to the operator.
         deploy_id: Some(deploy_id),
         created_at: unix_now(),
