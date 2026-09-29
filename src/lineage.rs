@@ -49,15 +49,14 @@ fn is_question(reason: &str) -> bool {
     reason.starts_with("needs input:")
 }
 
-/// The task in `rows` that retries `id`, the most recent when more than
-/// one does (a review demotion's follow-up beside a hand retry both retry
-/// the same parent): the same pick `Store::latest_retry_of` makes.
+/// The task in `rows` that follows up on `id`, the most recent when more
+/// than one does (a review demotion's follow-up beside a hand retry both
+/// retry the same parent): the same pick `Store::latest_retry_of` makes.
+/// A retry (`parent == Some(id)`) and a supersession (`supersedes ==
+/// Some(id)`) are both follow-ups here — either moves the lineage's tip on.
 fn newest_retry_of(id: i64, rows: &[LineageRow]) -> Option<i64> {
-    // HOOK: once task 1057's `supersedes` column lands, a task whose
-    // `supersedes == Some(id)` is a follow-up too; fold it into this same
-    // max-of-candidates pick and nothing else in this file needs to change.
     rows.iter()
-        .filter(|r| r.parent == Some(id))
+        .filter(|r| r.parent == Some(id) || r.supersedes == Some(id))
         .map(|r| r.id)
         .max()
 }
@@ -186,9 +185,20 @@ mod tests {
     use super::*;
 
     fn row(id: i64, parent: Option<i64>, state: &str, reason: &str) -> LineageRow {
+        supersede_row(id, parent, None, state, reason)
+    }
+
+    fn supersede_row(
+        id: i64,
+        parent: Option<i64>,
+        supersedes: Option<i64>,
+        state: &str,
+        reason: &str,
+    ) -> LineageRow {
         LineageRow {
             id,
             parent,
+            supersedes,
             state: state.into(),
             reason: reason.into(),
             workflow: "direct".into(),
@@ -228,6 +238,25 @@ mod tests {
             row(823, Some(811), "succeeded", ""),
         ];
         assert_eq!(tip_of(811, &rows), 823);
+    }
+
+    #[test]
+    fn tip_of_follows_a_supersede_chain() {
+        let rows = [
+            supersede_row(1, None, None, "blocked", "waits on task 9"),
+            supersede_row(2, None, Some(1), "succeeded", ""),
+        ];
+        assert_eq!(tip_of(1, &rows), 2);
+    }
+
+    #[test]
+    fn tip_of_a_supersede_and_a_retry_of_the_same_task_picks_the_newest() {
+        let rows = [
+            supersede_row(1, None, None, "failed", "L1 failed: test"),
+            supersede_row(2, Some(1), None, "failed", "L1 failed: test"),
+            supersede_row(3, None, Some(1), "succeeded", ""),
+        ];
+        assert_eq!(tip_of(1, &rows), 3);
     }
 
     #[test]

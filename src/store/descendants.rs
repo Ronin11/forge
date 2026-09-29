@@ -62,6 +62,7 @@ mod tests {
         LineageRow {
             id,
             parent,
+            supersedes: None,
             state: state.into(),
             reason: String::new(),
             workflow: "w".into(),

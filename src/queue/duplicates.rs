@@ -84,6 +84,7 @@ mod tests {
         let row = |id, state: &str| crate::store::LineageRow {
             id,
             parent: Some(811),
+            supersedes: None,
             state: state.into(),
             reason: String::new(),
             workflow: "w".into(),
