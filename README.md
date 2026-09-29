@@ -290,6 +290,7 @@ src/binary.rs       stable forge launch paths across binary replacement
 src/argument_policy_tests.rs  require reasons above argument-count allowances
 src/assess.rs       the assess directive: a read-only score of a landed diff's maintainability
 src/attempt.rs      one attempt of a directive: prompt, launch, verdict, the row
+src/audience.rs     task notification audience after recovery and daily digest events
 src/audit.rs        diagnosis for a terminal failure; cost anti-patterns
 src/builtins/       built-in actions, operations, and workflows, as TOML
 src/chat/           Ask Forge: forge chat's fixed tools, the confirm gate in front of the writes, the redactor, and the turn loop (docs/CHAT.md)
@@ -339,6 +340,7 @@ src/successor.rs     the successor worker: a staged release starts forge work on
 src/store/          SQLite, forward-only migrations by user_version, one file per table family (workers.rs: the registered workers and their releases; owners.rs: a running row's owner, pid plus start time, and orphan detection)
   mod.rs            types, column lists, open, schema_version, the migration runner
   migrations.rs     MIGRATIONS: every forward-only schema migration, in order
+  notifications.rs  durable daily counts of follow-ups, retries, answered questions, and superseded blocks
   retry.rs          statement retries for SQLite busy and locked errors, with backoff up to one minute
   run_cursor.rs     the task's stored run cursor (tasks.run_json): the step a requeued or orphaned run resumes at
   tasks.rs          tasks: claim, queue, dependents, lineage
