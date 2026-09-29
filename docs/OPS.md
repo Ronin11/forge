@@ -574,6 +574,34 @@ The operator widens what needs no asking by widening the `[environment]`
 table in `config.toml` (above); that table is never consulted by the
 supervisor's judgement, only read by code.
 
+## The landing guard
+
+A repository Forge owns rejects a push straight to its base branch (and a
+deletion of it), so hand work cannot bypass the checks by accident:
+`forge init`, and `forge project guard <project>` for a project registered
+afterward, installs `deploy/pre-receive.guard` as `hooks/pre-receive` in the
+bare origin of every registered repository whose push remote is a bare
+repository on this machine (the same reach as `--mirror`'s hook), sets
+`receive.advertisePushOptions true` there, and records what the hook cannot
+otherwise know as its own git config: `forge.home`, `forge.repo` (named in
+its rejection message) and `forge.base-branch`. A plain push to the base is
+rejected with:
+
+```
+master is landed by Forge: push your branch and run forge adopt <repo> <branch>
+```
+
+Every other branch is unaffected. The integrator's own landing push carries
+the push option `-o forge-integrator=<token>`, a per-home secret at
+`FORGE_HOME/forge-integrator.token` (mode 0600, provisioned on first use) that
+only the hook and the integrator ever read; a push to a repository the guard
+has not been installed on carries no such option and pushes exactly as it
+always has. An emergency push straight to the base is still possible with
+`-o forge-override=<reason>` in place of the token: it is accepted, logged as
+a decision (the pusher and the reason), and `forge doctor` reports it for the
+next 24 hours (`guard_overrides`). `forge doctor` also reports
+(`guard`) each project with a repository whose bare origin lacks the hook.
+
 ## Landing hand-made work
 
 A branch written by hand, outside Forge, still lands through the integrator:

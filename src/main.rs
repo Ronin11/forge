@@ -34,6 +34,7 @@ mod experiment;
 
 mod git;
 mod graph;
+mod guard;
 mod handoff;
 mod init;
 mod intake;

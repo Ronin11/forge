@@ -172,6 +172,12 @@ pub(super) enum ProjectCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Install the landing guard into this project's bare origin(s): a
+    /// pre-receive hook that rejects a push to the base branch (or its
+    /// deletion) unless it carries the integrator's own push option (see
+    /// `forge init`, `docs/OPS.md`, "Landing hand-made work"). Run this
+    /// for a project registered after `forge init` last ran; idempotent.
+    Guard { name: String },
 }
 
 fn ref_add(task: i64, kind: String, url: String, label: String, by: String) -> Result<()> {
@@ -621,6 +627,31 @@ fn project_resolve_token(token: String, json: bool) -> Result<()> {
     Ok(())
 }
 
+async fn project_guard(name: String) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    if f.store.project(&name)?.is_none() {
+        bail!("no project {name}");
+    }
+    let steps = crate::guard::install_for_project(&f.paths.home, &f.store, &name).await?;
+    if steps.is_empty() {
+        out!("{name} has no repository with a bare origin on this machine to guard");
+        return Ok(());
+    }
+    for s in &steps {
+        out!(
+            "{} {} @ {}",
+            if s.changed {
+                "guarded"
+            } else {
+                "already guarded"
+            },
+            s.repo,
+            s.bare.display()
+        );
+    }
+    Ok(())
+}
+
 async fn dispatch_ref(cmd: Cmd) -> Result<()> {
     match cmd {
         Cmd::Ref { cmd } => match cmd {
@@ -687,6 +718,7 @@ async fn dispatch_project(cmd: Cmd) -> Result<()> {
             ProjectCmd::Portal { name, revoke } => project_portal(name, revoke),
             ProjectCmd::View { name, json } => project_view(name, json),
             ProjectCmd::ResolveToken { token, json } => project_resolve_token(token, json),
+            ProjectCmd::Guard { name } => project_guard(name).await,
         },
         _ => unreachable!("command routed to the wrong family"),
     }

@@ -1110,6 +1110,19 @@ pub async fn is_bare(dir: &Path) -> bool {
         .is_ok_and(|l| l == "true")
 }
 
+/// The bare repository a remote URL names on this machine, if it is one:
+/// a network URL (or a missing path) is somebody else's to hook.
+pub async fn local_bare(url: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(url.strip_prefix("file://").unwrap_or(url));
+    if !path.is_absolute() || !path.is_dir() {
+        return None;
+    }
+    if !is_bare(&path).await {
+        return None;
+    }
+    Some(path.canonicalize().unwrap_or(path))
+}
+
 /// The hooks directory git runs `dir`'s hooks from (`core.hooksPath`
 /// honored), absolute.
 pub async fn hooks_dir(dir: &Path) -> Result<PathBuf> {
@@ -1195,6 +1208,40 @@ pub async fn push_sha(home: &Path, repo: &Path, sha: &str, url: &str, branch: &s
             &format!("{sha}:refs/heads/{branch}"),
         ])
         .await?;
+    Ok(())
+}
+
+/// `push_sha`, but for the integrator's own landing push onto the base
+/// branch: when `url` names a bare repository on this machine that
+/// advertises push options (`forge init` / `forge project guard` set
+/// `receive.advertisePushOptions true` there, see `guard`), the push
+/// carries `-o forge-integrator=<token>` so the bare origin's pre-receive
+/// guard hook accepts it. A repository never guarded this way sees no
+/// option at all, so it pushes exactly as it always has.
+pub async fn push_base_sha(
+    home: &Path,
+    repo: &Path,
+    sha: &str,
+    url: &str,
+    branch: &str,
+) -> Result<()> {
+    let kernel = kernel_repository(home, repo).await?;
+    let mut args: Vec<String> = vec!["push".into(), "--quiet".into()];
+    if let Some(bare) = local_bare(url).await
+        && config_get(&bare, "receive.advertisePushOptions")
+            .await
+            .as_deref()
+            == Some("true")
+    {
+        let token = crate::guard::ensure_token(home)?;
+        args.push("-o".into());
+        args.push(format!("forge-integrator={token}"));
+    }
+    args.push("--".into());
+    args.push(url.to_string());
+    args.push(format!("{sha}:refs/heads/{branch}"));
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    Git::new(&kernel).line(&refs).await?;
     Ok(())
 }
 

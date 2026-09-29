@@ -29,6 +29,7 @@ mod demo;
 mod deploy;
 mod eval;
 mod gc;
+mod guard;
 mod initiatives;
 mod jobs;
 mod project_targets;
@@ -44,6 +45,7 @@ mod workflows_draft;
 use chat::ChatCmd;
 use deploy::{DeployArgs, PluginCmd, ProvisionArgs};
 use eval::EvalCmd;
+use guard::GuardCmd;
 use initiatives::InitiativeCmd;
 use jobs::{EconomistCmd, ExperimentCmd, JobCmd, MessageCmd};
 use projects::{IntakeCmd, ProjectCmd, RefCmd};
@@ -733,6 +735,14 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ExperimentCmd,
     },
+    /// The landing guard's own callback: what its pre-receive hook shells
+    /// out to, not a person's command (see `forge project guard`,
+    /// `docs/OPS.md`, "Landing hand-made work")
+    #[command(hide = true)]
+    Guard {
+        #[command(subcommand)]
+        cmd: GuardCmd,
+    },
     /// The operator's own way to reach a running (or not-yet-started)
     /// `forge-web`: the tokened link it prints at start, without having
     /// to start a second one just to see it (see docs/CLIENT.md,
@@ -774,6 +784,7 @@ pub async fn main() -> Result<()> {
         Cmd::Audit { .. } => audit_cmd::dispatch(cmd).await,
         Cmd::Workflows { .. } | Cmd::Providers { .. } => workflows::dispatch(cmd).await,
         Cmd::Plugin { .. } | Cmd::Deploy(..) | Cmd::Provision(..) => deploy::dispatch(cmd).await,
+        Cmd::Guard { .. } => guard::dispatch(cmd),
         Cmd::Gc { .. }
         | Cmd::Init { .. }
         | Cmd::Doctor { .. }

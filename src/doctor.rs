@@ -131,6 +131,8 @@ pub(crate) fn ymd(unix_secs: i64) -> String {
 
 mod binaries;
 use binaries::check_binaries;
+mod guard;
+use guard::{check_guard, check_guard_overrides};
 mod plugins;
 use plugins::check_plugins;
 mod presence;
@@ -1207,6 +1209,8 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     out.extend(check_schema(&store));
     out.extend(check_executors(&store, &paths));
     out.extend(check_project_purposes(&store));
+    out.extend(check_guard(&store));
+    out.extend(check_guard_overrides(&store));
     out.extend(check_egress(&paths, &store));
     out.extend(login::anthropic(&paths));
     out.extend(login::others());

@@ -14,6 +14,7 @@ const CALL_SITES: &[&str] = &[
     "place_branch:&src",
     "published:&kernel",
     "push_sha:&kernel",
+    "push_base_sha:&kernel",
     // Hardened fetch into an agent's clone.
     "place_branch:dir",
     // Caller-named: always hardened, including agent clones.
@@ -69,7 +70,7 @@ const CALL_SITES: &[&str] = &[
     "remote_branch_exists:\".\"",
     "remote_branch_sha:\".\"",
     // Caller-named: a registered repository's bare origin, which
-    // `forge init --mirror` hooks.
+    // `forge init` (the landing guard, `--mirror`) hooks.
     "is_bare:dir",
     "hooks_dir:dir",
     "config_get:dir",
@@ -115,6 +116,7 @@ fn no_push_or_landing_step_runs_git_in_a_callers_directory() {
         "stage",
         "published",
         "push_sha",
+        "push_base_sha",
         "push_ref",
         "push",
         "push_to_repo",

@@ -1,0 +1,67 @@
+#!/bin/sh
+# pre-receive: reject any update (including deletion) of the base branch
+# unless the push carries the push option `forge-integrator=<token>`, the
+# per-home secret at `$FORGE_HOME/forge-integrator.token` (mode 600). Every
+# other branch is unaffected.
+#
+# Installed by `forge init` and `forge project guard <project>` into a
+# registered repository's bare origin, alongside `receive.advertisePushOptions
+# true`; the reviewed text is deploy/pre-receive.guard in the forge
+# repository. Edit it there and re-run `forge init` (or `forge project
+# guard`). The bare repository's own git config carries what this script
+# cannot know by itself: `forge.home` (FORGE_HOME, to find the token and the
+# `forge` binary), `forge.repo` (the repository's path as Forge has it
+# registered, named in the rejection message) and `forge.base-branch`.
+#
+# An emergency override is a second push option, `forge-override=<reason>`:
+# it is accepted in place of the token, and logged as a decision (by the OS
+# user running the push, with the reason given) through `forge guard
+# record-override`, so `forge doctor` can report it for the next 24 hours.
+
+home=$(git config --get forge.home) || exit 0
+[ -n "$home" ] || exit 0
+repo=$(git config --get forge.repo 2>/dev/null)
+base=$(git config --get forge.base-branch 2>/dev/null)
+[ -n "$base" ] || base=main
+
+token=""
+override_reason=""
+i=0
+while [ "$i" -lt "${GIT_PUSH_OPTION_COUNT:-0}" ]; do
+	eval "opt=\$GIT_PUSH_OPTION_$i"
+	case "$opt" in
+	forge-integrator=*) token="${opt#forge-integrator=}" ;;
+	forge-override=*) override_reason="${opt#forge-override=}" ;;
+	esac
+	i=$((i + 1))
+done
+
+forge_bin="$home/bin/current/forge"
+[ -x "$forge_bin" ] || forge_bin=$(command -v forge 2>/dev/null || true)
+
+saved_token=""
+[ -f "$home/forge-integrator.token" ] && saved_token=$(cat "$home/forge-integrator.token")
+
+rejected=0
+while read -r old_sha new_sha ref; do
+	case "$ref" in
+	"refs/heads/$base") : ;;
+	*) continue ;;
+	esac
+	if [ -n "$override_reason" ]; then
+		pusher=$(id -un 2>/dev/null || echo unknown)
+		if [ -n "$forge_bin" ]; then
+			FORGE_HOME="$home" "$forge_bin" guard record-override \
+				--repo "$repo" --pusher "$pusher" --reason "$override_reason" \
+				--branch "$base" >/dev/null 2>&1
+		fi
+		continue
+	fi
+	if [ -z "$saved_token" ] || [ "$token" != "$saved_token" ]; then
+		echo "master is landed by Forge: push your branch and run forge adopt $repo $base" >&2
+		rejected=1
+	fi
+done
+
+[ "$rejected" -eq 0 ] || exit 1
+exit 0

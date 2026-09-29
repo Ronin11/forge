@@ -286,6 +286,34 @@ impl Store {
         Ok(c.last_insert_rowid())
     }
 
+    /// Record the landing guard's emergency override (see `guard`): a hand
+    /// push to the base branch that carried `forge-override=<reason>`
+    /// instead of the integrator's token. `task_id` is `None`, the same as
+    /// `insert_reprice_decision` — the push touches no one task — and
+    /// `kind` is `"forge-override"`, so `decisions_of_kind_since` is how
+    /// `forge doctor` finds one within the last 24 hours.
+    pub fn insert_override_decision(
+        &self,
+        repo: &str,
+        pusher: &str,
+        reason: &str,
+        branch: &str,
+    ) -> Result<i64> {
+        let c = self.lock();
+        c.retry_execute(
+            "INSERT INTO decisions (task_id, repo, question, answer, created_at, answered_by, citations, answered_for, kind)
+             VALUES (NULL, ?1, ?2, ?3, ?4, ?5, '', NULL, 'forge-override')",
+            params![
+                repo,
+                format!("emergency push to {branch}"),
+                reason,
+                crate::unix_now(),
+                pusher
+            ],
+        )?;
+        Ok(c.last_insert_rowid())
+    }
+
     /// Record a reference on a task: the pull request it landed as, the
     /// issue it came from.
     pub fn insert_task_ref(

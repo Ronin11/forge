@@ -312,6 +312,7 @@ src/envelope.rs     the result contract: schema and parser
 src/experiment.rs   the economist: experiment.toml's weighted draw and its weekly rebalance
 src/git.rs          the few git operations Forge performs
 src/graph.rs        forge graph: the module graph as data, from forge-repomap edges
+src/guard.rs        the landing guard: a pre-receive hook rejecting hand pushes to the base branch, and the emergency override
 src/handoff.rs      the fresh continuation arm: a handoff built from git, the journal and the log
 src/init.rs         forge init: data directory, config template, committed workflow catalog, web.token, systemd units
 src/unit_path.rs    the PATH the systemd units carry: composed at init, read back from the unit by doctor and the worker

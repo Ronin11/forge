@@ -516,24 +516,11 @@ pub const MIRROR_HOOK: &str = include_str!("../deploy/post-update.mirror");
 
 /// The remote a registered repository pushes to (`[defaults] remote`,
 /// `origin` when its config cannot be read), or `None` for `push = false`.
-async fn origin_remote(repo: &Path) -> Option<String> {
+pub(crate) async fn origin_remote(repo: &Path) -> Option<String> {
     match config::load_working(repo).await {
         Ok(cfg) => cfg.push_remote,
         Err(_) => Some("origin".to_string()),
     }
-}
-
-/// The bare repository a remote URL names on this machine, if it is one:
-/// a network URL (or a missing path) is somebody else's to hook.
-async fn local_bare(url: &str) -> Option<PathBuf> {
-    let path = PathBuf::from(url.strip_prefix("file://").unwrap_or(url));
-    if !path.is_absolute() || !path.is_dir() {
-        return None;
-    }
-    if !git::is_bare(&path).await {
-        return None;
-    }
-    Some(path.canonicalize().unwrap_or(path))
 }
 
 /// Install `MIRROR_HOOK` as `bare`'s post-update hook (honoring its
@@ -581,7 +568,7 @@ async fn install_mirrors(home: &Path, mirror: &str) -> Result<Vec<StepResult>> {
             let Some(url) = git::remote_url(repo, &remote).await else {
                 continue;
             };
-            if let Some(bare) = local_bare(&url).await {
+            if let Some(bare) = git::local_bare(&url).await {
                 bares.insert(bare);
             }
         }
@@ -602,6 +589,38 @@ async fn install_mirrors(home: &Path, mirror: &str) -> Result<Vec<StepResult>> {
         steps.push(step("mirror", changed, detail));
     }
     Ok(steps)
+}
+
+/// The landing guard (`crate::guard`) into every registered project's
+/// bare origin(s) on this machine: unlike `--mirror`, this runs on every
+/// `forge init`, since a repository Forge owns rejecting a hand push to
+/// its base branch is the default, not an opt-in. A project with no local
+/// bare origin (a network remote, or `push = false`) reports nothing to
+/// guard rather than failing the run.
+async fn install_guards(home: &Path) -> Result<Vec<StepResult>> {
+    let store = crate::store::Store::open(&home.join("forge.db"))?;
+    let guarded = crate::guard::install_for_every_project(home, &store).await?;
+    if guarded.is_empty() {
+        return Ok(vec![step(
+            "guard",
+            false,
+            "no registered repository has a bare origin on this machine to guard",
+        )]);
+    }
+    Ok(guarded
+        .into_iter()
+        .map(|g| {
+            step(
+                "guard",
+                g.changed,
+                format!(
+                    "{} rejects a hand push to its base branch ({})",
+                    g.bare.display(),
+                    g.repo
+                ),
+            )
+        })
+        .collect())
 }
 
 /// Commit the catalog files `workflows::catalog_dir` wrote (the built-in
@@ -690,6 +709,7 @@ pub async fn run(
         steps.extend(adopt_running_binaries(&home)?);
     }
     steps.extend(link_local_bin(&home)?);
+    steps.extend(install_guards(&home).await?);
     if let Some(m) = mirror {
         steps.extend(install_mirrors(&home, m).await?);
     }
