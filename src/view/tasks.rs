@@ -278,6 +278,19 @@ pub struct TraceLineage {
     pub cost_usd: f64,
 }
 
+impl From<&crate::store::LineageRow> for TraceLineage {
+    fn from(l: &crate::store::LineageRow) -> Self {
+        TraceLineage {
+            id: l.id,
+            parent: l.parent,
+            state: l.state.clone(),
+            reason: l.reason.clone(),
+            workflow: l.workflow.clone(),
+            cost_usd: l.cost,
+        }
+    }
+}
+
 /// The task half of `TraceDoc`: every key `forge trace --json` has always
 /// emitted under `"task"`, unchanged. `worktree_removed_at` and
 /// `decisions` are not part of that historical shape (`forge show` needs
@@ -581,27 +594,10 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
             .store
             .live_descendants(t.id)?
             .iter()
-            .map(|l| TraceLineage {
-                id: l.id,
-                parent: l.parent,
-                state: l.state.clone(),
-                reason: l.reason.clone(),
-                workflow: l.workflow.clone(),
-                cost_usd: l.cost,
-            })
+            .map(TraceLineage::from)
             .collect(),
         root: f.store.root_of(t.id)?,
-        lineage: lineage
-            .iter()
-            .map(|l| TraceLineage {
-                id: l.id,
-                parent: l.parent,
-                state: l.state.clone(),
-                reason: l.reason.clone(),
-                workflow: l.workflow.clone(),
-                cost_usd: l.cost,
-            })
-            .collect(),
+        lineage: lineage.iter().map(TraceLineage::from).collect(),
         refs: f.store.task_refs(t.id)?.iter().map(RefRow::from).collect(),
         journal: crate::journal::journal_for(f, t)
             .ok()

@@ -203,21 +203,29 @@ async fn dependency_fits(f: &Forge, dep: i64) -> Result<()> {
     Ok(())
 }
 
-pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Result<Task> {
-    if let Some(b) = args.budget
-        && b <= 0.0
-    {
-        bail!("budget must be positive");
-    }
-    if let Some(p) = args.priority
-        && !(crate::store::PRIORITY_MIN..=crate::store::PRIORITY_MAX).contains(&p)
-    {
+/// `args.priority`, defaulted and range-checked: `store::parse_priority`
+/// already does this for the CLI's own `--priority`, but a priority
+/// reaching `enqueue` any other way (a retry, a refile, an initiative's
+/// default) gets the same guarantee here.
+fn resolve_priority(p: Option<i64>) -> Result<i64> {
+    let p = p.unwrap_or(crate::store::PRIORITY_DEFAULT);
+    if !(crate::store::PRIORITY_MIN..=crate::store::PRIORITY_MAX).contains(&p) {
         bail!(
             "priority must be between {} and {}",
             crate::store::PRIORITY_MIN,
             crate::store::PRIORITY_MAX
         );
     }
+    Ok(p)
+}
+
+pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Result<Task> {
+    if let Some(b) = args.budget
+        && b <= 0.0
+    {
+        bail!("budget must be positive");
+    }
+    let priority = resolve_priority(args.priority)?;
     let repo = args.repo.canonicalize().context("repo path")?;
     if !repo.join(".git").exists() {
         bail!("{} is not a git repository", repo.display());
@@ -405,7 +413,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         model_source: model_source.to_string(),
         workflow_source: workflow_source.to_string(),
         trust,
-        priority: args.priority.unwrap_or(crate::store::PRIORITY_DEFAULT),
+        priority,
         ..Default::default()
     };
     for &dep in &t.after {

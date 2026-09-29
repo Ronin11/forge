@@ -73,6 +73,32 @@ async fn after_fits(f: &Forge, id: i64, after: &[i64]) -> Result<Vec<i64>> {
     Ok(deps)
 }
 
+/// `--provider name`: it must be a configured provider; the change is
+/// recorded against what routing the task had before (a name, or "by
+/// role" when it named none).
+fn apply_provider(
+    f: &Forge,
+    old: &Task,
+    name: &str,
+    changes: &mut Vec<String>,
+    up: &mut crate::store::TaskUpdate,
+) -> Result<()> {
+    if !f.providers.contains_key(name) {
+        bail!("unknown provider {name:?}; see `forge providers` for what is configured");
+    }
+    let was = Some(old.provider.as_str()).filter(|p| !p.is_empty());
+    changes.push(format!("provider {} → {name}", was.unwrap_or("by role")));
+    up.provider = Some(name.to_string());
+    Ok(())
+}
+
+/// `--priority`: already held to 0..7 by `store::parse_priority` at
+/// argument-parsing time, so nothing left to validate here.
+fn apply_priority(old: i64, p: i64, changes: &mut Vec<String>, up: &mut crate::store::TaskUpdate) {
+    changes.push(format!("priority {old} → {p}"));
+    up.priority = Some(p);
+}
+
 /// Apply `edit` to task `id` in place: the task must be queued or blocked
 /// (a running attempt might still finish; a finished task is done), and
 /// every new value is held to what `enqueue` holds it to: a positive
@@ -146,16 +172,10 @@ pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String
         up.task = Some((text.clone(), text.chars().count() as i64, path_tokens));
     }
     if let Some(name) = &edit.provider {
-        if !f.providers.contains_key(name) {
-            bail!("unknown provider {name:?}; see `forge providers` for what is configured");
-        }
-        let was = Some(old.provider.as_str()).filter(|p| !p.is_empty());
-        changes.push(format!("provider {} → {name}", was.unwrap_or("by role")));
-        up.provider = Some(name.clone());
+        apply_provider(f, &old, name, &mut changes, &mut up)?;
     }
     if let Some(p) = edit.priority {
-        changes.push(format!("priority {} → {p}", old.priority));
-        up.priority = Some(p);
+        apply_priority(old.priority, p, &mut changes, &mut up);
     }
     let repo = PathBuf::from(&old.repo);
     let cfg = config::load_working(&repo).await?;

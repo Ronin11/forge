@@ -362,6 +362,13 @@ fn print_origin(t: &crate::store::Task) {
     }
 }
 
+/// Only away from the default (2): see `store::priority`.
+fn print_priority(t: &crate::store::Task) {
+    if t.priority != crate::store::PRIORITY_DEFAULT {
+        out!("priority   {}", t.priority);
+    }
+}
+
 pub(super) fn show(id: i64, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let Some(t) = f.store.task(id)? else {
@@ -387,9 +394,7 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
     print_resume(&f, &t)?;
     print_origin(&t);
     out!("trust      {}", t.trust.as_str());
-    if task.priority != crate::store::PRIORITY_DEFAULT {
-        out!("priority   {}", task.priority);
-    }
+    print_priority(&t);
     if let Some(to) = &task.to {
         out!(
             "asked      {to}, {}",
