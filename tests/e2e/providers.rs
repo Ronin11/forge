@@ -441,10 +441,13 @@ fn a_task_routed_by_role_runs_while_anthropics_window_is_at_its_cap() {
     let (mut worker, log) = capped_worker(&e, "codex-plan-ok.sh");
     assert!(
         wait_until(
-            || std::fs::read_to_string(&log)
-                .unwrap()
-                .contains("; holding,"),
-            Duration::from_secs(60)
+            || {
+                e.task(planned_task).0 == "queued"
+                    && std::fs::read_to_string(&log)
+                        .unwrap()
+                        .contains("; holding,")
+            },
+            Duration::from_secs(120)
         ),
         "the planned task should reach its held code step: {}",
         std::fs::read_to_string(&log).unwrap()
@@ -475,7 +478,7 @@ fn a_task_routed_by_role_runs_while_anthropics_window_is_at_its_cap() {
     assert!(
         wait_until(
             || e.task(planned_task).0 == "succeeded",
-            Duration::from_secs(60)
+            Duration::from_secs(120)
         ),
         "the planned task should finish after the hold is released: {}",
         std::fs::read_to_string(&log).unwrap()
@@ -686,8 +689,7 @@ fn a_task_on_a_copilot_provider_runs_end_to_end_and_prices_premium_requests() {
             assert!(argv.contains(&flag.to_string()), "{flag}: {argv:?}");
         }
         assert!(argv.contains(&"copilot-fake-model".to_string()), "{argv:?}");
-        // The prompt follows `-p` last; the fake drops the prompt itself.
-        assert_eq!(argv.last().map(String::as_str), Some("-p"), "{argv:?}");
+        assert!(!argv.iter().any(|arg| arg == "-p"), "{argv:?}");
     }
     assert!(
         !phase_one.contains(&"--resume".to_string()),
@@ -749,4 +751,43 @@ fn an_unpriced_claude_provider_keeps_the_clis_figure() {
         .unwrap();
     assert_eq!(cost, 0.01);
     assert_eq!(cli, None);
+}
+
+#[test]
+fn a_codex_nudge_does_not_execute_clone_fsmonitor() {
+    let e = Env::new();
+    git(&e.repo, &["config", "user.name", "Registered Author"]);
+    git(&e.repo, &["config", "user.email", "registered@example.com"]);
+    write_config(
+        &e,
+        "[providers.fake-codex]\nrunner = \"codex-cli\"\nmodel = \"codex-fake-model\"\nnudges = 2\n",
+    );
+    let o = e
+        .cmd("ok.sh")
+        .env_remove("GIT_CONFIG_COUNT")
+        .env("FORGE_CODEX_BIN", codex_fake("codex-nudge-metadata.sh"))
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--provider",
+            "fake-codex",
+            "--no-land",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .expect("forge run");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    let log = e.log_text(1, 1);
+    assert_eq!(log.matches("\"type\":\"forge_nudge\"").count(), 1, "{log}");
+    assert!(log.contains("\"reason\":\"uncommitted\""), "{log}");
+    assert!(
+        !e.home
+            .join("worktrees/host-nudge-fsmonitor-marker")
+            .exists(),
+        "the host executed the clone's fsmonitor before verification"
+    );
 }

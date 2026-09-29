@@ -120,6 +120,17 @@ fn codex_common_argv(l: &Launch<'_>) -> Vec<String> {
     argv
 }
 
+/// Common phase arguments, with exec options before the resume subcommand.
+fn codex_phase_argv(bin: &str, l: &Launch<'_>, resume: Option<&str>) -> Vec<String> {
+    let mut argv = vec![bin.to_string(), "exec".to_string()];
+    argv.extend(codex_common_argv(l));
+    argv.extend(l.provider.extra_args.iter().cloned());
+    if let Some(id) = resume {
+        argv.extend(["resume".into(), id.to_string()]);
+    }
+    argv
+}
+
 /// A nudge's fixed prompt for a phase one that made no edit at all: told
 /// once, plainly, to do the work rather than end the turn with only a
 /// description of it.
@@ -172,7 +183,7 @@ fn phase_one_needs_real_input(out: &Outcome) -> bool {
 /// while it worked, so this is the first it hears of the shape its answer
 /// must take. Named fields match `envelope::SCHEMA` so the model has enough
 /// to go on without having seen the schema itself.
-const CODEX_REPORT_PROMPT: &str = "Do no further work. Report the structured \
+pub(super) const CODEX_REPORT_PROMPT: &str = "Do no further work. Report the structured \
 result for everything done in this thread so far: schema_version, summary, \
 checks_run, claims, and needs_input if you stopped for a reason \
 before finishing, matching the schema you were given exactly.";
@@ -183,6 +194,7 @@ async fn run_codex_phase(args: RunCodexPhase<'_>) -> Result<(Option<i32>, bool, 
     let RunCodexPhase {
         l,
         argv,
+        prompt,
         extra_env,
         start,
         log,
@@ -200,6 +212,7 @@ async fn run_codex_phase(args: RunCodexPhase<'_>) -> Result<(Option<i32>, bool, 
     run_json_phase(RunJsonPhase {
         l,
         argv,
+        prompt,
         extra_env,
         start,
         log,
@@ -208,6 +221,16 @@ async fn run_codex_phase(args: RunCodexPhase<'_>) -> Result<(Option<i32>, bool, 
         apply: &mut apply,
     })
     .await
+}
+
+fn codex_environment(l: &Launch<'_>) -> Result<Vec<(String, String)>> {
+    let mut extra_env = l.identity.clone();
+    extra_env.extend(inputs::provider_env(l.provider));
+    extra_env.push((
+        "FORGE_CODEX_CONFIG".into(),
+        inputs::codex_config(l.provider, l.model)?,
+    ));
+    Ok(extra_env)
 }
 
 /// The codex-cli backend, run in two phases. A weaker model asked to commit
@@ -219,9 +242,8 @@ async fn run_codex_phase(args: RunCodexPhase<'_>) -> Result<(Option<i32>, bool, 
 /// prompt with no schema attached, and only once that run ends — with or
 /// without a plain final message — does phase two resume the same thread
 /// with `--output-schema` and a short fixed prompt asking only for the
-/// structured report `run_codex` parses as the attempt's result. Stdin is
-/// always closed in both phases: codex blocks forever reading it otherwise,
-/// unlike the claude CLI, which takes the prompt on stdin.
+/// structured report `run_codex` parses as the attempt's result. Each phase passes `-`
+/// as the prompt argument and writes the prompt to stdin, closing it at EOF.
 pub(super) async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
     let bin = crate::executor::agent_bin(l.sandbox, l.worktree, codex_bin_for(l.step));
     // The schema is text (`envelope::SCHEMA`), but codex takes a file, and
@@ -236,15 +258,10 @@ pub(super) async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
         .join(format!("forge-{}-schema.json", l.step));
     inputs::write_codex_schema(&schema_path, l.schema)?;
 
-    let mut extra_env = crate::git::identity(&l.worktree.join(".git")).await;
-    extra_env.extend(inputs::provider_env(l.provider));
-    extra_env.push((
-        "FORGE_CODEX_CONFIG".into(),
-        inputs::codex_config(l.provider, l.model)?,
-    ));
+    let extra_env = codex_environment(&l)?;
 
-    let mut log =
-        File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
+    let mut log = CappedLog::create(l.log_path)
+        .with_context(|| format!("creating {}", l.log_path.display()))?;
     writeln!(
         log,
         "{{\"type\":\"forge_prompt\",\"text\":{}}}",
@@ -261,18 +278,13 @@ pub(super) async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
     // Every `exec` option (--json, -C, the sandbox flag, -m, the provider's
     // own args) goes before the `resume` subcommand: codex rejects them
     // after it ("error: unexpected argument '-C' found", task 305).
-    let mut argv1: Vec<String> = vec![bin.clone(), "exec".to_string()];
-    argv1.extend(codex_common_argv(&l));
-    argv1.extend(l.provider.extra_args.iter().cloned());
-    if let Some(id) = l.resume {
-        argv1.push("resume".into());
-        argv1.push(id.to_string());
-    }
-    argv1.push(l.prompt.to_string());
+    let mut argv1 = codex_phase_argv(&bin, &l, l.resume);
+    argv1.push("-".into());
 
     let (exit1, timed_out1, mut stderr_text) = run_codex_phase(RunCodexPhase {
         l: &l,
         argv: &argv1,
+        prompt: l.prompt,
         extra_env: &extra_env,
         start: &start,
         log: &mut log,
@@ -329,16 +341,13 @@ pub(super) async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
                 },
             );
 
-            let mut argv_n: Vec<String> = vec![bin.clone(), "exec".to_string()];
-            argv_n.extend(codex_common_argv(&l));
-            argv_n.extend(l.provider.extra_args.iter().cloned());
-            argv_n.push("resume".into());
-            argv_n.push(thread_id);
-            argv_n.push(prompt.to_string());
+            let mut argv_n = codex_phase_argv(&bin, &l, Some(&thread_id));
+            argv_n.push("-".into());
 
             let (exit_n, timed_out_n, stderr_n) = run_codex_phase(RunCodexPhase {
                 l: &l,
                 argv: &argv_n,
+                prompt,
                 extra_env: &extra_env,
                 start: &start,
                 log: &mut log,
@@ -374,18 +383,15 @@ pub(super) async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
             },
         );
 
-        let mut argv2: Vec<String> = vec![bin.clone(), "exec".to_string()];
-        argv2.extend(codex_common_argv(&l));
-        argv2.extend(l.provider.extra_args.iter().cloned());
-        argv2.push("resume".into());
-        argv2.push(thread_id);
+        let mut argv2 = codex_phase_argv(&bin, &l, Some(&thread_id));
         argv2.push("--output-schema".into());
         argv2.push(schema_path.display().to_string());
-        argv2.push(CODEX_REPORT_PROMPT.to_string());
+        argv2.push("-".into());
 
         let (exit2, timed_out2, stderr2) = run_codex_phase(RunCodexPhase {
             l: &l,
             argv: &argv2,
+            prompt: CODEX_REPORT_PROMPT,
             extra_env: &extra_env,
             start: &start,
             log: &mut log,
@@ -619,6 +625,7 @@ mod tests {
         let out = run_codex(Launch {
             task_id: 1,
             worktree: dir,
+            identity: crate::git::identity(dir).await,
             prompt: "do the task",
             system: "",
             model: "fake-model",

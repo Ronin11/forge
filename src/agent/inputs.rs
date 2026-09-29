@@ -6,9 +6,10 @@ use super::*;
 pub(super) struct RunCodexPhase<'a> {
     pub(super) l: &'a Launch<'a>,
     pub(super) argv: &'a [String],
+    pub(super) prompt: &'a str,
     pub(super) extra_env: &'a [(String, String)],
     pub(super) start: &'a Instant,
-    pub(super) log: &'a mut File,
+    pub(super) log: &'a mut CappedLog,
     pub(super) out: &'a mut Outcome,
     pub(super) watch: &'a mut Watch,
 }
@@ -26,16 +27,17 @@ pub(super) struct AgentRun<'a> {
     pub(super) early_ending: crate::config::EarlyEnding,
     pub(super) task_id: i64,
     pub(super) report: &'a Reporter,
-    pub(super) log: &'a mut File,
+    pub(super) log: &'a mut CappedLog,
 }
 
 /// A JSON-streaming agent phase and the parser that folds frames into its outcome.
 pub(super) struct RunJsonPhase<'a> {
     pub(super) l: &'a Launch<'a>,
     pub(super) argv: &'a [String],
+    pub(super) prompt: &'a str,
     pub(super) extra_env: &'a [(String, String)],
     pub(super) start: &'a Instant,
-    pub(super) log: &'a mut File,
+    pub(super) log: &'a mut CappedLog,
     pub(super) out: &'a mut Outcome,
     pub(super) watch: &'a mut Watch,
     pub(super) apply:
@@ -46,9 +48,10 @@ pub(super) struct RunJsonPhase<'a> {
 pub(super) struct RunCopilotPhase<'a> {
     pub(super) l: &'a Launch<'a>,
     pub(super) argv: &'a [String],
+    pub(super) prompt: &'a str,
     pub(super) extra_env: &'a [(String, String)],
     pub(super) start: &'a Instant,
-    pub(super) log: &'a mut File,
+    pub(super) log: &'a mut CappedLog,
     pub(super) out: &'a mut Outcome,
     pub(super) watch: &'a mut Watch,
     pub(super) tally: &'a mut CopilotTally,
@@ -196,5 +199,74 @@ mod tests {
                 .unwrap()
                 .contains("schema_version")
         );
+    }
+    /// A fake codex that fails when its argv is longer than 1 KiB and
+    /// otherwise reports the bytes it read on stdin.
+    #[tokio::test]
+    async fn a_200_kib_codex_prompt_travels_on_stdin_not_argv() {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let fake = scratch.path().join("codex-fake.sh");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\n\
+             n=0; for a in \"$@\"; do n=$((n + ${#a} + 1)); done\n\
+             if [ \"$n\" -gt 1024 ]; then echo \"argv is $n bytes\" >&2; exit 7; fi\n\
+             got=$(wc -c)\n\
+             echo '{\"type\":\"thread.started\",\"thread_id\":\"big-sess\"}'\n\
+             echo \"{\\\"type\\\":\\\"forge_test_stdin\\\",\\\"bytes\\\":$got}\"\n\
+             echo '{\"type\":\"item.completed\",\"item\":{\"id\":\"m\",\"type\":\"agent_message\",\"text\":\"ok\"}}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+        // SAFETY: the step name is unique to this test.
+        unsafe { std::env::set_var("FORGE_CODEX_BIN_BIG_PROMPT", &fake) };
+        let prompt = "x".repeat(200 * 1024);
+        let log_path = scratch.path().join("log.jsonl");
+        let report = crate::report::Reporter::new(false, None);
+        let provider = Provider {
+            runner: Runner::CodexCli,
+            ..Provider::default()
+        };
+        let out = run_codex(Launch {
+            identity: Vec::new(),
+            task_id: 1,
+            worktree: repo.path(),
+            prompt: &prompt,
+            system: "",
+            model: "",
+            max_turns: 30,
+            timeout: Duration::from_secs(20),
+            check_timeout: Duration::ZERO,
+            log_path: &log_path,
+            sandbox: None,
+            report: &report,
+            step: "big-prompt",
+            provider: &provider,
+            resume: None,
+            writes: false,
+            start_sha: "",
+            schema: crate::envelope::SCHEMA,
+            early_ending: crate::config::EarlyEnding {
+                no_edit_calls: 100,
+                edits_without_commit: 100,
+                repeats: 100,
+                signals_to_end: 0,
+            },
+            no_tools: false,
+            judgment: None,
+        })
+        .await
+        .unwrap();
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            !out.stderr_text.contains("argv is"),
+            "argv too long: {}",
+            out.stderr_text
+        );
+        assert_eq!(out.exit_code, Some(0), "{log}");
+        assert!(log.contains("\"bytes\":204800"), "{log}");
     }
 }

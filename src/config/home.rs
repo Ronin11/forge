@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 #[derive(Deserialize, Default)]
 struct HomeRaw {
     #[serde(default)]
+    limits: Limits,
+    #[serde(default)]
     budget: BudgetRaw,
     #[serde(default)]
     worker: crate::config::capacity::Settings,
@@ -145,6 +147,7 @@ pub struct SandboxPaths {
 }
 
 pub struct HomeConfig {
+    pub limits: Limits,
     pub worker: crate::config::capacity::Settings,
     pub build_env: BTreeMap<String, String>,
     pub budget: Budget,
@@ -524,6 +527,7 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
     let roles = build_roles(raw.roles, &providers)?;
     let explore = build_explore(raw.measure.explore, &providers)?;
     Ok(HomeConfig {
+        limits: raw.limits,
         worker,
         build_env: raw.sandbox.env,
         budget,
@@ -592,6 +596,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = load_home(dir.path()).unwrap();
         assert_eq!(c.budget.per_task_usd, 2.0);
+        assert_eq!(c.limits.log_bytes, 64 << 20);
         assert!(c.sandbox.rw.iter().any(|p| p.ends_with(".npm")));
         assert!(
             !dir.path().join("config.toml").exists(),
@@ -599,11 +604,12 @@ mod tests {
         );
         std::fs::write(
             dir.path().join("config.toml"),
-            "[sandbox]\nro_paths = [\"/opt/tools\"]\nrw_paths = []\n",
+            "[limits]\nlog_bytes = 1048576\n[sandbox]\nro_paths = [\"/opt/tools\"]\nrw_paths = []\n",
         )
         .unwrap();
         let c = load_home(dir.path()).unwrap();
         assert_eq!(c.sandbox.ro, vec![PathBuf::from("/opt/tools")]);
+        assert_eq!(c.limits.log_bytes, 1 << 20);
         assert!(c.sandbox.rw.is_empty());
         assert_eq!(c.budget.per_day_usd, None);
         assert_eq!(c.budget.five_hour_max, 0.9);
@@ -731,5 +737,20 @@ mod tests {
         assert_eq!(c.early_ending.edits_without_commit, 4);
         assert_eq!(c.early_ending.repeats, 3);
         assert_eq!(c.early_ending.signals_to_end, 0);
+    }
+}
+
+/// Host-side attempt log limit configured under `[limits]`.
+#[derive(Deserialize)]
+#[serde(default)]
+pub struct Limits {
+    pub log_bytes: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            log_bytes: 64 << 20,
+        }
     }
 }

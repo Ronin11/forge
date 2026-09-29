@@ -60,6 +60,9 @@ pub async fn answer(
         old.question_to.as_deref(),
         scope,
     )?;
+    if old.state == TaskState::Blocked && old.proposal_json.is_some() {
+        return crate::concierge::answer_proposal(f, id, text, by, citations).await;
+    }
     if job_question::is_no_work_question(f, &old)? {
         return job_question::answer(f, &old, text, by, citations);
     }
