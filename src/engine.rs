@@ -28,6 +28,9 @@ use needs::{Environment, apply_environment, environment_after};
 mod worktree;
 pub use worktree::slug;
 use worktree::prepare_worktree;
+mod outcome;
+pub(crate) use outcome::resume_done;
+use outcome::{End, Run, l0_failure_reason, save_cursor};
 
 /// Workflow state and completed operations needed to execute an operation step.
 struct RunOperationStep<'a> {
@@ -1289,134 +1292,6 @@ async fn publish(
     Ok((compare, failed))
 }
 
-/// The run's cursor over the resolved steps: where it is, what each
-/// directive has spent, what a verifying step or a landing owes a
-/// directive as feedback, and which directives are already verified.
-/// One `rewind` does every piece of bookkeeping a step back needs; the
-/// side effects the caller owns (resetting the tree, reloading the
-/// config, refunding an attempt) stay at the call site, named.
-struct Run {
-    /// Hash of the resolved steps `idx` indexes into (`cursor::workflow_hash`).
-    hash: String,
-    idx: usize,
-    /// The op sequence number of the current step; landing and push
-    /// continue from it.
-    seq: i64,
-    /// Attempts used per directive, seeded from the record (`seed_used`).
-    used: HashMap<i64, i64>,
-    /// Feedback owed to a directive by a verifying operation or a landing
-    /// that failed after it.
-    owed: HashMap<i64, String>,
-    /// Directives already verified, by sequence number.
-    done: HashSet<i64>,
-}
-
-/// Directives a resumed task may skip: those whose latest attempt
-/// succeeded with no later attempt at an earlier step. An attempt at an
-/// earlier step after it means the run was rewound past it, so the old
-/// success no longer verifies what the tree now holds.
-pub(crate) fn resume_done(prior: &[crate::store::Attempt]) -> HashSet<i64> {
-    let mut done = HashSet::new();
-    let mut floor = i64::MAX;
-    for a in prior.iter().rev() {
-        if a.step_seq < floor {
-            floor = a.step_seq;
-            if a.state == AttemptState::Succeeded {
-                done.insert(a.step_seq);
-            }
-        }
-    }
-    done
-}
-
-/// Record where the run stands: the step it is about to run.
-fn save_cursor(f: &Forge, t: &Task, run: &Run, attempt_no: i64) -> Result<(), Fault> {
-    f.store
-        .set_run_cursor(t.id, &run.cursor(t, attempt_no).to_json())
-        .env()
-}
-
-impl Run {
-    fn cursor(&self, t: &Task, attempt_no: i64) -> RunCursor {
-        RunCursor {
-            workflow_hash: self.hash.clone(),
-            idx: self.idx,
-            attempt: attempt_no,
-            owed: self.owed.iter().map(|(k, v)| (*k, v.clone())).collect(),
-            interface: t.interface.clone(),
-            plan: t.plan.clone(),
-        }
-    }
-
-    fn step_seq(&self) -> i64 {
-        self.idx as i64 + 1
-    }
-
-    fn used_at(&self, seq: i64) -> i64 {
-        *self.used.get(&seq).unwrap_or(&0)
-    }
-
-    /// An attempt that does not count against the directive (refused by
-    /// the provider, or a failure that was the test author's).
-    fn refund(&mut self, f: &Forge, seq: i64, attempt_id: i64) -> Result<(), Fault> {
-        *self.used.entry(seq).or_insert(1) -= 1;
-        f.store.refund_attempt(attempt_id).env()
-    }
-
-    /// Go back to the directive at `to`, owing it `feedback`; everything
-    /// verified from there on is unverified again.
-    fn rewind(&mut self, to: usize, feedback: String) {
-        let to_seq = to as i64 + 1;
-        self.owed.insert(to_seq, feedback);
-        self.done.retain(|&d| d < to_seq);
-        self.idx = to;
-    }
-}
-
-/// How a run ended. Set exactly once at the point that decides it; the
-/// push decision and the task's state and reason derive from it, so
-/// they cannot disagree.
-#[derive(Debug)]
-enum End {
-    /// Every step verified; the branch is pushed for a human (no landing
-    /// asked for, or no remote to land on).
-    Verified,
-    /// Landed on the base at this commit.
-    Landed(String),
-    /// Verified work that no agent vouched for, or a review that never
-    /// finished: pushed, and a human decides.
-    Unverified(String),
-    /// The agent stopped with a question, or a reviewer demoted the
-    /// task; a demoted branch is pushed so the human can look. `to` is
-    /// who the question is addressed to (`None` means the operator).
-    Blocked {
-        reason: String,
-        demoted: bool,
-        to: Option<String>,
-    },
-    /// The task failed. `counted` appends the attempt count to the
-    /// reason; `pushes` keeps a verified branch that could not land.
-    Failed {
-        reason: String,
-        counted: bool,
-        pushes: bool,
-    },
-    /// The task's cost cap would be crossed by its next attempt: a
-    /// decision, not a failure. `pushes` keeps the branch when an attempt
-    /// ran, so a human can read or land what verified.
-    Capped { reason: String, pushes: bool },
-    /// A plan step with `file_into_initiative` filed its items as
-    /// sibling tasks in the task's initiative; nothing changed the tree,
-    /// so nothing is pushed. `last` is the last filed task, chained
-    /// after every other: `finish` re-points this task's own dependents
-    /// at it, since the work they waited for now happens there.
-    Filed {
-        n: usize,
-        initiative: i64,
-        last: i64,
-    },
-}
-
 /// A review whose demotion cited files only its sandbox had is asked,
 /// once, to inline the reproduction (`verify::review::reask`): that
 /// attempt does not count against the step, and the ask becomes the
@@ -1447,79 +1322,8 @@ fn reask_reproduction(
     Ok(true)
 }
 
-/// Names the L0 rows the last attempt's verdict failed, the same shape
-/// `verify::decide` reports them in ("L0 failed: has-commits"). `None`
-/// when nothing at L0 failed, so the caller falls back to the attempt
-/// state's own reason (an agent failure or a question carries no rows).
-fn l0_failure_reason(checks: &[CheckResult]) -> Option<String> {
-    let failed: Vec<&str> = checks
-        .iter()
-        .filter(|c| c.level == "L0" && !c.ok)
-        .map(|c| c.name.as_str())
-        .collect();
-    (!failed.is_empty()).then(|| format!("L0 failed: {}", failed.join(", ")))
-}
-
-impl End {
-    fn pushes(&self) -> bool {
-        match self {
-            End::Verified | End::Unverified(_) => true,
-            End::Landed(_) | End::Filed { .. } => false,
-            End::Capped { pushes, .. } => *pushes,
-            End::Blocked { demoted, .. } => *demoted,
-            End::Failed { pushes, .. } => *pushes,
-        }
-    }
-
-    fn task_state(&self) -> TaskState {
-        match self {
-            End::Verified | End::Landed(_) | End::Filed { .. } => TaskState::Succeeded,
-            End::Unverified(_) => TaskState::Unverified,
-            End::Blocked { .. } => TaskState::Blocked,
-            End::Failed { .. } => TaskState::Failed,
-            End::Capped { .. } => TaskState::Capped,
-        }
-    }
-
-    /// Who a blocking question is addressed to; `None` for every other
-    /// end, and for a blocked one with no addressee (the operator).
-    fn question_to(&self) -> Option<String> {
-        match self {
-            End::Blocked { to, .. } => to.clone(),
-            _ => None,
-        }
-    }
-
-    fn reason(&self, t: &Task, attempts: usize) -> String {
-        match self {
-            End::Verified => String::new(),
-            End::Landed(sha) => {
-                format!("landed {} @ {}", t.base_branch, &sha[..sha.len().min(8)])
-            }
-            End::Filed { n, initiative, .. } => {
-                format!("filed {n} task(s) into initiative {initiative}")
-            }
-            End::Unverified(r) | End::Blocked { reason: r, .. } | End::Capped { reason: r, .. } => {
-                r.clone()
-            }
-            End::Failed {
-                reason, counted, ..
-            } => {
-                if *counted {
-                    format!("{reason} (after {attempts} attempt(s))")
-                } else {
-                    reason.clone()
-                }
-            }
-        }
-    }
-}
-
 /// Whether the task drew the `fresh` arm of the continuation factor
 /// (docs/CONTEXT.md): a continuation starts a new session on a handoff.
 fn fresh_arm(t: &Task) -> bool {
     t.explore.get("continuation").map(String::as_str) == Some("fresh")
 }
-
-#[cfg(test)]
-mod tests;
