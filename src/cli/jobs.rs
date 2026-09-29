@@ -322,7 +322,7 @@ async fn job_start(
     at: Option<i64>,
     delay: Option<String>,
 ) -> Result<()> {
-    let f = Forge::open(false, false)?;
+    let f = Forge::open(now, false)?;
     let due_at = match (at, delay) {
         (Some(at), _) => Some(at),
         (None, Some(d)) => {

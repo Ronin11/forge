@@ -724,9 +724,11 @@ steps = [
 - **Egress.** The declared hosts (`host`, `host:port`, `*.suffix`; the
   same rules as `[sandbox] egress`) are the step's own egress policy
   (`secrets::step_grant`), added for that step and nothing else's. The
-  host executor cannot bound a network, so today the policy travels to the
-  executor and is enforced only where the backend can; the declaration is
-  what a sandboxed job executor will enforce.
+  sandbox enforces this policy instead of inheriting model or repository
+  hosts. Steps declaring secrets or egress are refused before launch if the
+  executor cannot isolate the network, including when `FORGE_SANDBOX=0`.
+  HTTP clients use the sandbox proxy; a local test endpoint on the allowlist
+  must also use it (for curl, `--noproxy ""`).
 - **Trust.** Neither is given to a job below operator trust, and hosts
   only when `[trust.operator] egress` is `declared`; a step asking under
   any other level fails with the reason. A build workflow's step, a

@@ -90,15 +90,7 @@ pub(super) async fn run(args: OperationStep<'_>) -> Result<Ran> {
         Err(e) => return Ok(failed_before_running(&action.name, format!("{e:#}"))),
     };
     env.extend(grant.env.iter().cloned());
-    let cost_file = idir.join(format!("step-{seq}.cost"));
-    if let Some(b) = step.budget_usd {
-        let _ = std::fs::remove_file(&cost_file);
-        env.push(("FORGE_STEP_BUDGET_USD".to_string(), b.to_string()));
-        env.push((
-            "FORGE_COST_FILE".to_string(),
-            cost_file.display().to_string(),
-        ));
-    }
+    let cost_file = budget_env(&mut env, idir, seq, step.budget_usd);
     // Bind only this job's input/output directory alongside its scratch tree.
     if let Some(execution) = f.sandbox.as_ref() {
         execution.set_cache_dir(scratch, idir.to_path_buf());
@@ -181,6 +173,24 @@ pub(super) async fn run(args: OperationStep<'_>) -> Result<Ran> {
         stdout,
         charged: spend.charged,
     })
+}
+
+fn budget_env(
+    env: &mut Vec<(String, String)>,
+    idir: &Path,
+    seq: i64,
+    budget: Option<f64>,
+) -> std::path::PathBuf {
+    let cost_file = idir.join(format!("step-{seq}.cost"));
+    if let Some(b) = budget {
+        let _ = std::fs::remove_file(&cost_file);
+        env.push(("FORGE_STEP_BUDGET_USD".to_string(), b.to_string()));
+        env.push((
+            "FORGE_COST_FILE".to_string(),
+            cost_file.display().to_string(),
+        ));
+    }
+    cost_file
 }
 
 /// What one operation step is charged against the job's `[limits] budget`.

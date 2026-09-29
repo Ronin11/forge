@@ -43,7 +43,7 @@ kind = "operation"
 description = "calls the endpoint with the secret, then leaks it on purpose into every place a step writes"
 run = ["bash", "-c", '''
 set -e
-resp=$(curl -sS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$FORGE_INPUT_URL")
+resp=$(curl --fail --max-time 5 --noproxy "" -sS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$FORGE_INPUT_URL")
 echo "token is $CLOUDFLARE_API_TOKEN"
 echo "endpoint said $resp" >&2
 printf "row\treport.csv\tauth=%s\n" "$CLOUDFLARE_API_TOKEN" >> "$FORGE_EFFECT_LOG"
@@ -131,6 +131,8 @@ fn run_job(e: &Env) -> serde_json::Value {
         .output()
         .unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!String::from_utf8_lossy(&o.stdout).contains(SECRET));
+    assert!(!String::from_utf8_lossy(&o.stderr).contains(SECRET));
     let id = String::from_utf8_lossy(&o.stdout).trim().to_string();
     let shown = e.forge("ok.sh", &["job", "show", &id, "--json"]);
     serde_json::from_slice(&shown.stdout).unwrap()
@@ -158,6 +160,9 @@ fn files_holding(dir: &Path, needle: &str) -> Vec<String> {
 #[test]
 fn a_step_sees_its_declared_secret_and_reaches_its_host_and_nothing_records_the_value() {
     let e = Env::new();
+    if e.sandbox_disabled() {
+        return;
+    }
     let fake = endpoint();
     setup(&e, fake.port, 1.0, "0.1");
     let doc = run_job(&e);
@@ -196,6 +201,9 @@ fn a_step_sees_its_declared_secret_and_reaches_its_host_and_nothing_records_the_
 #[test]
 fn a_steps_reported_cost_counts_against_the_jobs_budget() {
     let e = Env::new();
+    if e.sandbox_disabled() {
+        return;
+    }
     let fake = endpoint();
     setup(&e, fake.port, 1.0, "0.1");
     let doc = run_job(&e);
@@ -207,6 +215,9 @@ fn a_steps_reported_cost_counts_against_the_jobs_budget() {
 #[test]
 fn a_step_that_spends_past_the_jobs_budget_asks_the_operator() {
     let e = Env::new();
+    if e.sandbox_disabled() {
+        return;
+    }
     let fake = endpoint();
     setup(&e, fake.port, 0.05, "0.1");
     let doc = run_job(&e);
@@ -218,6 +229,9 @@ fn a_step_that_spends_past_the_jobs_budget_asks_the_operator() {
 #[test]
 fn a_step_that_reports_more_than_it_declared_fails() {
     let e = Env::new();
+    if e.sandbox_disabled() {
+        return;
+    }
     let fake = endpoint();
     setup(&e, fake.port, 5.0, "0.5");
     let doc = run_job(&e);
@@ -336,4 +350,76 @@ contact = "*"
     assert!(!text.contains(secret), "{text}");
     let log = e.forge("ok.sh", &["job", "log", &id.to_string()]);
     assert!(!String::from_utf8_lossy(&log.stdout).contains(secret));
+}
+
+#[test]
+fn a_declared_secret_cannot_reach_an_undeclared_endpoint() {
+    for bypass_proxy in [false, true] {
+        let e = Env::new();
+        if e.sandbox_disabled() {
+            return;
+        }
+        let fake = endpoint();
+        setup(&e, fake.port, 1.0, "0.1");
+        let workflow = e.home.join("workflows/nightly-jev.toml");
+        let text = std::fs::read_to_string(&workflow).unwrap();
+        std::fs::write(
+            &workflow,
+            text.replace(&format!("127.0.0.1:{}", fake.port), "api.cloudflare.com"),
+        )
+        .unwrap();
+        if bypass_proxy {
+            std::fs::write(
+                e.home.join("workflows/actions/play-segments.toml"),
+                PLAY.replace("--noproxy \"\"", "--noproxy '*'"),
+            )
+            .unwrap();
+        }
+        let doc = run_job(&e);
+        assert_eq!(doc["state"], "failed", "{doc:?}");
+        let tail = doc["steps"][0]["tail"].as_str().unwrap();
+        if bypass_proxy {
+            assert!(tail.contains("Failed to connect"), "{tail}");
+        } else {
+            assert!(tail.contains("403"), "{tail}");
+        }
+        assert!(fake.seen.lock().unwrap().is_empty());
+        assert!(!doc.to_string().contains(SECRET));
+        assert!(files_holding(&e.home, SECRET).is_empty());
+    }
+}
+
+#[test]
+fn a_secret_step_is_refused_when_network_isolation_is_disabled() {
+    let e = Env::new();
+    let fake = endpoint();
+    setup(&e, fake.port, 1.0, "0.1");
+    let out = e
+        .cmd("ok.sh")
+        .env("FORGE_SANDBOX", "0")
+        .env("CLOUDFLARE_API_TOKEN", SECRET)
+        .args([
+            "job",
+            "start",
+            "exploration",
+            "nightly-jev",
+            "--now",
+            "--input",
+        ])
+        .arg(e.home.join("input.json"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    let shown = e.forge("ok.sh", &["job", "show", &id, "--json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(doc["state"], "failed", "{doc:?}");
+    assert!(
+        doc.to_string().contains("network-isolating executor"),
+        "{doc:?}"
+    );
+    assert!(fake.seen.lock().unwrap().is_empty());
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(SECRET));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains(SECRET));
+    assert!(files_holding(&e.home, SECRET).is_empty());
 }
