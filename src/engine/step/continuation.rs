@@ -82,10 +82,10 @@ pub(super) fn after_failure(
             start_sha: a.start_sha.clone(),
             fresh_from: over.then(|| PathBuf::from(&a.log_path)),
         });
-        feedback = Some(verify::feedback(&verdict, &outcome, ts.max_turns));
+        feedback = Some(verify::feedback(verdict, outcome, ts.max_turns));
     } else {
         resume = None;
-        feedback = Some(verify::feedback(&verdict, &outcome, ts.max_turns));
+        feedback = Some(verify::feedback(verdict, outcome, ts.max_turns));
     }
     (resume, feedback, capped_committed)
 }
