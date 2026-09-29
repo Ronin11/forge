@@ -27,26 +27,38 @@ pub fn token_path(home: &Path) -> PathBuf {
 /// `cli::web_token`). Callers on the landing path call this on every push,
 /// so it never needs a separate provisioning step.
 pub fn ensure_token(home: &Path) -> Result<String> {
+    use std::io::{ErrorKind, Write};
+    use std::os::unix::fs::PermissionsExt;
+
     let path = token_path(home);
-    if let Ok(t) = std::fs::read_to_string(&path) {
-        let t = t.trim().to_string();
-        if !t.is_empty() {
+    match std::fs::read_to_string(&path) {
+        Ok(t) => {
+            let t = t.trim().to_string();
+            anyhow::ensure!(!t.is_empty(), "empty integrator token: {}", path.display());
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
             return Ok(t);
         }
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     }
     let mut bytes = [0u8; 32];
     std::fs::File::open("/dev/urandom")
         .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut bytes))
         .context("reading /dev/urandom")?;
     let t: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    std::fs::create_dir_all(home).ok();
-    std::fs::write(&path, &t).with_context(|| format!("writing {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::create_dir_all(home)?;
+    // Publish a complete, private file without replacing a token another
+    // installer or integrator created while we were reading randomness.
+    let mut pending = tempfile::NamedTempFile::new_in(home)?;
+    pending
+        .as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    pending.write_all(t.as_bytes())?;
+    match pending.persist_noclobber(&path) {
+        Ok(_) => Ok(t),
+        Err(e) if e.error.kind() == ErrorKind::AlreadyExists => ensure_token(home),
+        Err(e) => Err(e.error).with_context(|| format!("writing {}", path.display())),
     }
-    Ok(t)
 }
 
 /// Whether `bare`'s pre-receive hook is exactly the guard's reviewed text
@@ -238,6 +250,45 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn concurrent_installers_share_one_complete_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Barrier::new(8);
+        let tokens = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        ensure_token(dir.path()).unwrap()
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|t| t.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let saved = std::fs::read_to_string(token_path(dir.path())).unwrap();
+        assert_eq!(saved.len(), 64);
+        assert!(tokens.iter().all(|token| token == &saved));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn existing_token_permissions_are_repaired_without_rotating_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let token = ensure_token(dir.path()).unwrap();
+        let path = token_path(dir.path());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(ensure_token(dir.path()).unwrap(), token);
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]
