@@ -689,8 +689,7 @@ fn a_task_on_a_copilot_provider_runs_end_to_end_and_prices_premium_requests() {
             assert!(argv.contains(&flag.to_string()), "{flag}: {argv:?}");
         }
         assert!(argv.contains(&"copilot-fake-model".to_string()), "{argv:?}");
-        // The prompt follows `-p` last; the fake drops the prompt itself.
-        assert_eq!(argv.last().map(String::as_str), Some("-p"), "{argv:?}");
+        assert!(!argv.iter().any(|arg| arg == "-p"), "{argv:?}");
     }
     assert!(
         !phase_one.contains(&"--resume".to_string()),
