@@ -632,6 +632,9 @@ enum Cmd {
     },
     /// Remove worktrees that are clean and whose commits are all on a remote
     Gc {
+        /// Remove only build caches from non-running task and job worktrees
+        #[arg(long)]
+        caches: bool,
         /// Report what would happen without removing anything
         #[arg(long)]
         dry_run: bool,

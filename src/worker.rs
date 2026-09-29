@@ -957,6 +957,9 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 && running.len() < slots
                 && opts.max_tasks.is_none_or(|m| claimed < m)
             {
+                if crate::disk::check_claim(&f)? {
+                    break;
+                }
                 crate::login_hold::probe_due(&f).await;
                 let Some(held) = prepare_claim(&f)? else {
                     stopping = true;

@@ -663,6 +663,9 @@ impl Store {
                 t.deploy_id,
             ],
         )?;
+        if !matches!(t.state, TaskState::Running | TaskState::Queued) {
+            crate::disk::task_caches(&t.worktree)?;
+        }
         Ok(())
     }
 
@@ -718,6 +721,11 @@ impl Store {
             "UPDATE tasks SET state='withdrawn', reason=?2, finished_at=?3 WHERE id=?1 AND state IN ('blocked', 'queued')",
             params![id, reason, crate::unix_now()],
         )?;
+        if n == 1
+            && let Some(t) = self.task(id)?
+        {
+            crate::disk::task_caches(&t.worktree)?;
+        }
         Ok(n == 1)
     }
 

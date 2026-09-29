@@ -21,6 +21,7 @@ mod ctx;
 mod deploy;
 mod deploy_look;
 mod directive;
+mod disk;
 mod doctor;
 mod egress;
 mod engine;

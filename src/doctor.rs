@@ -783,6 +783,35 @@ fn check_project_purposes(store: &Store) -> Vec<Check> {
     }]
 }
 
+fn check_disk(paths: &Paths) -> Check {
+    let result = (|| -> anyhow::Result<_> {
+        let settings = config::load_home(&paths.home)?.worker;
+        let free = crate::disk::free_bytes(&paths.home)?;
+        Ok((free, settings.min_free_gb))
+    })();
+    match result {
+        Ok((free, min)) => check(
+            "disk",
+            if crate::disk::holds(free, min) {
+                Status::Fail
+            } else {
+                Status::Ok
+            },
+            format!(
+                "{}: {free} bytes free; minimum {min} GiB",
+                paths.home.display()
+            ),
+            "forge gc --caches",
+        ),
+        Err(e) => check(
+            "disk",
+            Status::Fail,
+            format!("{e:#}"),
+            "check FORGE_HOME filesystem",
+        ),
+    }
+}
+
 fn check_worktrees(store: &Store) -> Vec<Check> {
     let tasks = match store.tasks_with_worktrees() {
         Ok(t) => t,
@@ -1253,7 +1282,13 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     ));
     out.extend(check_queue(&store));
     out.extend(check_deliveries(&store, unix_now()));
-    out.extend(check_worktrees(&store));
+    let mut worktrees = check_worktrees(&store);
+    for row in &mut worktrees {
+        row.detail
+            .push_str(&format!("; {}", crate::disk::worktrees(&paths.worktrees)));
+    }
+    out.extend(worktrees);
+    out.push(check_disk(&paths));
     out.extend(check_logs(&paths));
 
     if let Ok(f) = Forge::open_with(paths, store) {

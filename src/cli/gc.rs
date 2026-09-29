@@ -10,8 +10,20 @@ use super::*;
 /// none). Everything else is kept with the reason and the command a human
 /// would run. Branches are never deleted, and a pushed branch lands without
 /// its worktree (`forge land` recreates it), so removing one loses nothing.
-pub(super) async fn gc(dry_run: bool, older_than: Option<i64>) -> Result<()> {
+pub(super) async fn gc(dry_run: bool, older_than: Option<i64>, caches: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
+    if caches {
+        let bytes = crate::disk::sweep(&f.store, &f.paths.worktrees, dry_run)?;
+        out!(
+            "{} {bytes} bytes of build caches",
+            if dry_run { "would free" } else { "freed" }
+        );
+        return Ok(());
+    }
+    gc_worktrees(&f, dry_run, older_than).await
+}
+
+async fn gc_worktrees(f: &Forge, dry_run: bool, older_than: Option<i64>) -> Result<()> {
     let (mut removed, mut kept) = (0, 0);
     let now = crate::unix_now();
     for t in f.store.tasks_with_worktrees()? {
@@ -47,37 +59,13 @@ pub(super) async fn gc(dry_run: bool, older_than: Option<i64>) -> Result<()> {
             Ok(Ok(()))
         }
         .await;
-        match verdict {
-            Ok(Ok(())) => {
-                removed += 1;
-                if !dry_run {
-                    f.store.mark_worktree_removed(t.id)?;
-                }
-                out!(
-                    "task {:<4} {} {}",
-                    t.id,
-                    if dry_run {
-                        "would remove"
-                    } else {
-                        "removed     "
-                    },
-                    t.worktree
-                );
-            }
-            Ok(Err(reason)) => {
-                kept += 1;
-                out!("task {:<4} kept ({reason})", t.id);
-                out!("           rm -rf {}", t.worktree);
-                out!(
-                    "           once its branch is pushed, forge land no longer needs this worktree"
-                );
-            }
-            Err(e) => {
-                kept += 1;
-                out!("task {:<4} kept (error: {e:#})", t.id);
-            }
+        if report_gc(&f.store, &t, verdict, dry_run)? {
+            removed += 1;
+        } else {
+            kept += 1;
         }
     }
+
     out!(
         "{} {removed}, kept {kept}",
         if dry_run { "would remove" } else { "removed" }
@@ -85,6 +73,41 @@ pub(super) async fn gc(dry_run: bool, older_than: Option<i64>) -> Result<()> {
     Ok(())
 }
 
+fn report_gc(
+    store: &crate::store::Store,
+    t: &Task,
+    verdict: Result<Result<(), String>>,
+    dry_run: bool,
+) -> Result<bool> {
+    match verdict {
+        Ok(Ok(())) => {
+            if !dry_run {
+                store.mark_worktree_removed(t.id)?;
+            }
+            out!(
+                "task {:<4} {} {}",
+                t.id,
+                if dry_run {
+                    "would remove"
+                } else {
+                    "removed     "
+                },
+                t.worktree
+            );
+            Ok(true)
+        }
+        Ok(Err(reason)) => {
+            out!("task {:<4} kept ({reason})", t.id);
+            out!("           rm -rf {}", t.worktree);
+            out!("           once its branch is pushed, forge land no longer needs this worktree");
+            Ok(false)
+        }
+        Err(e) => {
+            out!("task {:<4} kept (error: {e:#})", t.id);
+            Ok(false)
+        }
+    }
+}
 /// Remove `wt` and its tests-clone and scratch siblings, and each one's
 /// private provider-state directory (see `sandbox::discard_provider_state`):
 /// otherwise a copy of the login leaks per task (docs/REVIEW-4.md #1.23).

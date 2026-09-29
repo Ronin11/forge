@@ -99,6 +99,7 @@ pub struct Sandbox {
     /// in here gets no cache bind at all. Keyed per repository so one
     /// repository's attempts can never poison a cache another reads.
     caches: Mutex<BTreeMap<PathBuf, PathBuf>>,
+    targets: Mutex<BTreeMap<PathBuf, PathBuf>>,
     /// What the environment policy granted a worktree's attempts after a
     /// failure (see `environment`): hosts on top of the declared egress,
     /// host cache paths bound read-only. Kept apart from `declared` so
@@ -415,6 +416,7 @@ impl Sandbox {
             declared: Mutex::new(BTreeMap::new()),
             provider_hosts: Mutex::new(BTreeMap::new()),
             caches: Mutex::new(BTreeMap::new()),
+            targets: Mutex::new(BTreeMap::new()),
             granted: Mutex::new(BTreeMap::new()),
         })
     }
@@ -504,6 +506,13 @@ impl Sandbox {
     /// cache what it computes: `dir`, private to the repository that owns
     /// `worktree`, so one repository's attempts can never read or poison
     /// what another cached (see `ctx::Forge::declare_cache`).
+    pub fn set_target_dir(&self, worktree: &Path, target: PathBuf) {
+        self.targets
+            .lock()
+            .unwrap()
+            .insert(worktree.to_path_buf(), target);
+    }
+
     pub fn set_cache_dir(&self, worktree: &Path, dir: PathBuf) {
         self.caches
             .lock()
@@ -574,6 +583,7 @@ impl Sandbox {
             declared: Mutex::new(BTreeMap::new()),
             provider_hosts: Mutex::new(BTreeMap::new()),
             caches: Mutex::new(BTreeMap::new()),
+            targets: Mutex::new(BTreeMap::new()),
             granted: Mutex::new(BTreeMap::new()),
         }
     }
@@ -846,6 +856,9 @@ impl Sandbox {
             cmd.arg("--bind-try").arg(&dir).arg(&dir);
         }
         cmd.arg("--chdir").arg(worktree).arg("--");
+        if let Some(target) = self.targets.lock().unwrap().get(worktree) {
+            cmd.arg("--bind").arg(target).arg(target);
+        }
         let script = self.wrapper_script(
             socket.is_some(),
             egress::refused_path(worktree).as_deref(),

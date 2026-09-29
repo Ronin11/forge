@@ -301,6 +301,9 @@ impl Forge {
             &self.build_env,
             &cfg.build_env,
         );
+        if cfg.shared_target {
+            self.shared_target(worktree, &cfg.repo_path);
+        }
         if let Some(sandbox) = &self.sandbox {
             sandbox.configure(worktree, &cfg.execution);
             // A level whose egress is `model` reaches the model endpoints
@@ -371,6 +374,20 @@ impl Forge {
     /// (`FORGE_CACHE_DIR`): `paths.home/cache/<hash of repo's path>`, so
     /// two repositories never share a directory and one cannot poison or
     /// read what the other cached.
+    pub fn shared_target(&self, worktree: &Path, repo: &Path) {
+        let cache = self.cache_dir(repo);
+        let target = cache.join("target");
+        // Creation errors surface again at launch/build; never fall back to
+        // allocating a private target directory.
+        if let Err(error) = std::fs::create_dir_all(&target) {
+            eprintln!("shared Cargo target {}: {error}", target.display());
+        }
+        crate::agent::build_env::set_target(worktree, &target);
+        if let Some(sandbox) = &self.sandbox {
+            sandbox.set_target_dir(worktree, target);
+        }
+    }
+
     pub fn cache_dir(&self, repo: &Path) -> PathBuf {
         let key = crate::job::sha256_hex(repo.to_string_lossy().as_bytes());
         self.paths.home.join("cache").join(&key[..16])

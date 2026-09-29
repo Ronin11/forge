@@ -721,6 +721,9 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
     let build_env = config::load_working_build_env(&scratch)?;
     crate::agent::build_env::configure_env(&f.paths.home, &scratch, &f.build_env, &build_env);
 
+    if config::shared_target_enabled(&scratch)? {
+        f.shared_target(&scratch, repo);
+    }
     let idir = recovery::prepare_run(f, job_id, input_text)?;
 
     let effect_log = idir.join("effects.log");

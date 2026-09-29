@@ -36,6 +36,18 @@ pub fn configure_env(
     environments.insert(worktree.to_path_buf(), env);
 }
 
+pub fn set_target(worktree: &Path, target: &Path) {
+    ENVIRONMENTS
+        .lock()
+        .unwrap()
+        .entry(worktree.to_path_buf())
+        .or_default()
+        .insert(
+            "CARGO_TARGET_DIR".into(),
+            target.to_string_lossy().into_owned(),
+        );
+}
+
 pub fn worktree_env(worktree: &Path) -> BTreeMap<String, String> {
     ENVIRONMENTS
         .lock()

@@ -153,6 +153,10 @@ pub enum Event<'a> {
     /// it waits, until a probe answers or the operator runs `forge doctor`
     /// after logging in (src/login_hold.rs). Emitted once per hold, never
     /// once per refused attempt.
+    DiskHeld {
+        reason: &'a str,
+        audience: &'a str,
+    },
     ProviderHeld {
         provider: &'a str,
         reason: &'a str,
@@ -336,6 +340,7 @@ impl Event<'_> {
                 "job {job_id} ({project}/{workflow}) {state} ({})",
                 money(Some(*cost_usd))
             ),
+            Event::DiskHeld { reason, .. } => reason.to_string(),
             Event::ProviderHeld { reason, .. } => format!("held {reason}"),
             Event::ProviderReleased { provider } => {
                 format!("released {provider}: its login answered")
@@ -703,7 +708,9 @@ fn render(ev: Event) -> Vec<String> {
         Event::ProjectCreated { .. } => vec![summary],
         Event::JobStarted { .. } => vec![summary],
         Event::JobFinished { .. } => vec![String::new(), summary],
-        Event::ProviderHeld { .. } | Event::ProviderReleased { .. } => vec![summary],
+        Event::DiskHeld { .. } | Event::ProviderHeld { .. } | Event::ProviderReleased { .. } => {
+            vec![summary]
+        }
         Event::InitiativeHeld { .. } => vec![summary],
     }
 }
