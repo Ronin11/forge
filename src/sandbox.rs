@@ -227,10 +227,47 @@ fn contract_of(env: &[(String, String)]) -> Option<Contract> {
 
 /// Remove `worktree`'s private provider-state directory (see
 /// `provider_state_dir`): called where the worktree itself is removed, so
-/// nothing about the task's claude or codex sessions outlives its tree.
+/// nothing about the task's claude or codex sessions outlives its tree. A
+/// copy still holding a login later than the host's is written back first
+/// (docs/REVIEW-4.md #1.9): deleting it unwritten could throw away the only
+/// live refresh token. The directory is kept, not removed, when that
+/// write-back fails, so a later launch gets another chance at it.
 pub fn discard_provider_state(worktree: &Path) {
+    let state = crate::ctx::Paths::compute_home().ok();
+    discard_provider_state_in(worktree, state.as_deref(), |shape| shape.config_dir());
+}
+
+/// `discard_provider_state`, with `state` (FORGE_HOME) and each shape's host
+/// directory taken as arguments rather than read from the ambient
+/// environment: what makes the write-before-removal guard testable without
+/// a process-wide `std::env::set_var` (see `git::tests::identity_falls_back…`
+/// for why that is avoided here).
+fn discard_provider_state_in(
+    worktree: &Path,
+    state: Option<&Path>,
+    host_dir: impl Fn(&crate::login::Shape) -> Option<PathBuf>,
+) {
     for contract in [None, Some(Contract::Review)] {
-        let _ = std::fs::remove_dir_all(provider_dir_for(worktree, contract));
+        let dir = provider_dir_for(worktree, contract);
+        if let Some(state) = state {
+            let mut failed = false;
+            for shape in crate::login::SHAPES {
+                let private = dir.join(shape.cli).join(shape.file);
+                if !crate::login::is_regular_file(&private) {
+                    continue;
+                }
+                let Some(host) = host_dir(shape) else {
+                    continue;
+                };
+                if shape.write_back_sync(&host, state, &private).failed() {
+                    failed = true;
+                }
+            }
+            if failed {
+                continue;
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -498,7 +535,7 @@ impl Sandbox {
             any |= shape
                 .write_back(self.login_dir(shape), &self.forge_home, &private)
                 .await
-                .unwrap_or(false);
+                .wrote();
         }
         any
     }
@@ -846,6 +883,53 @@ mod tests {
         discard_provider_state(&worktree);
         assert!(!coder.exists());
         assert!(!review.exists());
+    }
+
+    /// docs/REVIEW-4.md #1.9: a copy holding the only live refresh token is
+    /// kept, not discarded, when the host directory refuses the write-back
+    /// that would have made the host file catch up first. `_in` takes the
+    /// state directory and each shape's host directory as arguments instead
+    /// of reading the ambient environment, so the read-only host directory
+    /// is a temp directory of this test's own and no `std::env::set_var`
+    /// races the rest of the test binary (see
+    /// `git::tests::identity_falls_back_to_the_constant_when_unset`).
+    #[tokio::test]
+    async fn discard_provider_state_keeps_the_copy_when_its_write_back_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let host = root.path().join("host-claude");
+        std::fs::create_dir_all(&host).unwrap();
+        let state = root.path().join("forge-home");
+        let worktree = root.path().join("work/task");
+        let provider = root.path().join("work/task-provider");
+        let private = provider.join("claude").join(crate::login::CLAUDE.file);
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(private.parent().unwrap()).unwrap();
+        let far = crate::unix_now() * 1000 + 8 * 3600 * 1000;
+        let login = |a: &str, r: &str, at: i64| {
+            format!(
+                r#"{{"claudeAiOauth":{{"accessToken":"sk-ant-oat01-{a:x<32}","refreshToken":"sk-ant-ort01-{r:x<32}","expiresAt":{at}}}}}"#
+            )
+        };
+        std::fs::write(host.join(crate::login::CLAUDE.file), login("a0", "r0", far)).unwrap();
+        crate::login::CLAUDE
+            .seed(&host, &state, &worktree, &private)
+            .await;
+        // The sandbox refreshed: the private copy is later than the host's.
+        std::fs::write(&private, login("a1", "r1", far + 1000)).unwrap();
+        // Nothing could write to the host directory: read-only, a full
+        // disk, ownership by another user.
+        std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o500)).unwrap();
+        discard_provider_state_in(&worktree, Some(&state), |_| Some(host.clone()));
+        std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(private.exists(), "the only live refresh token is kept");
+        assert!(provider.exists());
+        assert!(
+            std::fs::read_to_string(host.join(crate::login::CLAUDE.file))
+                .unwrap()
+                .contains("r0"),
+            "the host file was never written"
+        );
     }
 
     #[test]
