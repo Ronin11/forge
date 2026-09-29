@@ -29,7 +29,6 @@ const LAYERS: &[(&str, &[&str])] = &[
             "environment",
             "handoff",
             "journal",
-            "mechanic",
         ],
     ),
     (
