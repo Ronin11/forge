@@ -1369,6 +1369,54 @@ pub fn overlay_manifest_path(dest: &Path) -> PathBuf {
     dest.join(".git").join("forge-overlay")
 }
 
+/// Remove verification-owned paths from both the index and the filesystem,
+/// including ignored files and files staged by checks. Never commit cleanup.
+pub async fn clear_namespace(dest: &Path, namespace: &[String]) -> Result<()> {
+    let g = Git::new(dest).hardened();
+    for path in namespace {
+        let path = format!(":(literal){}", path.trim_end_matches('/'));
+        g.line(&[
+            "rm",
+            "-r",
+            "-f",
+            "--cached",
+            "--ignore-unmatch",
+            "--",
+            &path,
+        ])
+        .await?;
+        g.line(&["clean", "-fdx", "--", &path]).await?;
+    }
+    Ok(())
+}
+
+/// All paths touched by commits, including changes later reverted and merge
+/// resolutions. A final-tree diff alone cannot enforce namespace ownership.
+pub async fn committed_paths(wt: &Path, base: &str) -> Result<Vec<String>> {
+    let range = format!("{base}..HEAD");
+    let out = Git::new(wt)
+        .hardened()
+        .raw(&[
+            "log",
+            "--format=",
+            "--name-only",
+            "-z",
+            "--diff-merges=first-parent",
+            "--no-renames",
+            &range,
+            "--",
+        ])
+        .await?;
+    let mut paths: Vec<String> = out
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
 /// Removes what an interrupted overlay left in `dest`, from the manifest
 /// written before it was placed. Returns how many files were removed.
 pub fn clear_recorded_overlay(worktree: &str) -> usize {

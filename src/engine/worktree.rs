@@ -126,6 +126,16 @@ pub(super) async fn prepare_worktree(
             merged_base_retry = reuse_branch(f, t, old, &dir).await?;
         }
     }
+    git::clear_namespace(Path::new(&t.worktree), &base_cfg.namespace)
+        .await
+        .env()?;
+    let dirty = git::dirty_paths(Path::new(&t.worktree)).await.env()?;
+    if !dirty.is_empty() {
+        return Err(Fault::Env(anyhow::anyhow!(
+            "worktree is not clean after verification cleanup: {}",
+            dirty.join(", ")
+        )));
+    }
     Ok(merged_base_retry)
 }
 
