@@ -388,7 +388,12 @@ impl Sandbox {
         }
         let (config_dir, codex_dir, copilot_dir) = provider_dirs(&home, |k| std::env::var_os(k));
         // The relay is this binary, so its directory has to be visible.
-        let relay_exe = crate::binary::without_deleted_suffix(&crate::binary::launch_path()?);
+        // Resolved to the real file: the named path is often a symlink
+        // chain (~/.local/bin/forge -> bin/current -> releases/<id>) whose
+        // intermediate directories are not bound, so inside the sandbox
+        // only the target's own directory is guaranteed to exist.
+        let named = crate::binary::without_deleted_suffix(&crate::binary::launch_path()?);
+        let relay_exe = std::fs::canonicalize(&named).unwrap_or(named);
         let relay_dir = relay_exe.parent().map(Path::to_path_buf);
         let extra_ro: Vec<PathBuf> = paths
             .ro
