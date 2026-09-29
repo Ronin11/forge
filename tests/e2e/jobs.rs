@@ -1375,13 +1375,23 @@ ok = ["true"]
     let slot: i64 = trigger_ref.parse().unwrap();
     assert_eq!(slot % 60, 0, "the slot is a minute boundary: {trigger_ref}");
 
-    // Running the worker again right away, still inside the same minute,
-    // finds nothing new due: the same slot never starts a second job.
+    // A loaded worker can cross a minute boundary. Each observed slot must
+    // still have exactly one job, including the slot from the first run.
     let o = e.forge("ok.sh", &["work", "--once"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let rows: serde_json::Value =
         serde_json::from_slice(&e.forge("ok.sh", &["job", "list", "--json"]).stdout).unwrap();
-    assert_eq!(rows.as_array().unwrap().len(), 1, "{rows:?}");
+    let mut slots = std::collections::BTreeSet::new();
+    for row in rows.as_array().unwrap() {
+        let observed: i64 = row["trigger_ref"].as_str().unwrap().parse().unwrap();
+        assert_eq!(observed % 60, 0);
+        assert!(observed >= slot);
+        assert!(slots.insert(observed), "duplicate schedule slot: {rows}");
+    }
+    assert!(
+        slots.contains(&slot),
+        "the original job disappeared: {rows}"
+    );
 }
 
 fn setup_snapshot_workflow(e: &Env) {

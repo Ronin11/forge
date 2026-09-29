@@ -419,14 +419,51 @@ fn a_task_routed_by_role_runs_while_anthropics_window_is_at_its_cap() {
     let anthropic_task = e.add(&["--no-land"]);
     let planned_task = e.add(&["--no-land", "--workflow", "planned"]);
 
+    let log_path = e.home.join("role-worker.log");
     let mut cmd = e.cmd("ratelimited.sh");
     cmd.env("FORGE_CODEX_BIN", codex_fake("codex-plan-ok.sh"));
+    // Hold the window until the test observes the plan and requeue, rather
+    // than racing the fake's three-second reset.
+    cmd.env("FAKE_RESET_SECS", "3600");
     cmd.args(["work", "--once"]);
-    let o = cmd.output().expect("forge work");
-    let stdout = String::from_utf8_lossy(&o.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-    eprintln!("--- forge work --once (role-routed plan step) ---\n{stdout}{stderr}");
-    assert!(o.status.success(), "{stderr}");
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::fs::File::create(&log_path).unwrap());
+    let mut worker = Worker::spawn(&mut cmd);
+    assert!(
+        wait_until(
+            || {
+                e.task(planned_task).0 == "queued"
+                    && std::fs::read_to_string(&log_path)
+                        .unwrap_or_default()
+                        .contains("; holding,")
+            },
+            std::time::Duration::from_secs(120)
+        ),
+        "the plan never requeued behind the held provider"
+    );
+    let resets: i64 = e
+        .db()
+        .query_row(
+            "SELECT rl_five_hour_resets FROM attempts WHERE task_id=?1 ORDER BY id LIMIT 1",
+            [anthropic_task],
+            |r| r.get(0),
+        )
+        .unwrap();
+    e.db()
+        .execute(
+            "UPDATE attempts SET rl_five_hour_resets=0 WHERE provider='anthropic'",
+            [],
+        )
+        .unwrap();
+    assert!(
+        wait_until(
+            || e.task(planned_task).0 == "succeeded",
+            std::time::Duration::from_secs(120)
+        ),
+        "the task did not resume after the window was released"
+    );
+    assert!(worker.wait().success());
+    let stderr = std::fs::read_to_string(&log_path).unwrap();
 
     assert_eq!(e.task(anthropic_task).0, "succeeded");
     assert_eq!(
@@ -465,14 +502,6 @@ fn a_task_routed_by_role_runs_while_anthropics_window_is_at_its_cap() {
         .query_row(
             "SELECT started_at FROM attempts WHERE task_id=?1 ORDER BY id LIMIT 1",
             [planned_task],
-            |r| r.get(0),
-        )
-        .unwrap();
-    let resets: i64 = e
-        .db()
-        .query_row(
-            "SELECT rl_five_hour_resets FROM attempts WHERE task_id=?1 AND provider='anthropic' ORDER BY id LIMIT 1",
-            [anthropic_task],
             |r| r.get(0),
         )
         .unwrap();
