@@ -730,7 +730,11 @@ steps = [
 - **Trust.** Neither is given to a job below operator trust, and hosts
   only when `[trust.operator] egress` is `declared`; a step asking under
   any other level fails with the reason. A build workflow's step, a
-  directive step and a splice may not declare them.
+  directive step and a splice may not declare them. A job's trust is
+  recorded when it is created, before it can be claimed: `forge job
+  start` and a schedule or event trigger are operator trust; a message
+  trigger is contact trust; a webhook is the trust of the token that
+  fired it. A job recorded with none (there should be none) gets neither.
 - **Redaction.** A secret's value is replaced with `[redacted:<name>]` in
   the step's output tail, the file `output_ref` names, the verdict, the
   effect log (file and rows) and the error text, before any of it is

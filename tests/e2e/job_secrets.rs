@@ -237,3 +237,103 @@ fn a_secret_the_config_does_not_define_fails_the_step_without_running_it() {
     assert!(fake.seen.lock().unwrap().is_empty());
     assert!(!doc.to_string().contains(SECRET));
 }
+
+/// A message trigger's job carries contact trust, never operator trust
+/// (`job::start_message`, `store::set_job_trust`); a step declaring
+/// `secrets` is refused before it runs, so a stranger who gets a run
+/// workflow to fire can never see, nor leak, an operator's secret.
+#[test]
+fn a_message_triggered_jobs_step_never_sees_the_operators_secret() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "exploration",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    std::fs::write(
+        e.home.join("config.toml"),
+        "[secrets]\ncloudflare_token = { env = \"CLOUDFLARE_API_TOKEN\" }\n",
+    )
+    .unwrap();
+    std::fs::write(e.home.join("workflows/actions/probe-env.toml"), PROBE).unwrap();
+    std::fs::write(
+        e.home.join("workflows/nightly-jev.toml"),
+        r#"name = "nightly-jev"
+kind = "run"
+description = "a stranger's message must never be trusted with a secret"
+
+steps = [
+  { action = "probe-env", effect = "row", secrets = ["cloudflare_token"] },
+]
+
+[trigger]
+on = "message"
+contact = "*"
+"#,
+    )
+    .unwrap();
+    let secret = "operator-only-secret";
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "message",
+            "record",
+            "exploration",
+            "--channel",
+            "signal",
+            "--from",
+            "stranger",
+            "--text",
+            "hi",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = e
+        .cmd("ok.sh")
+        .env("CLOUDFLARE_API_TOKEN", secret)
+        .args(["work", "--once"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let rows: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["job", "list", "--json"]).stdout).unwrap();
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let id = rows[0]["id"].as_i64().unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    // The step was refused before it ran; the job never got the secret.
+    assert_eq!(doc["state"], "failed", "{doc:?}");
+    assert!(doc["steps"].as_array().unwrap().is_empty(), "{doc:?}");
+    let verdict = doc["verdict_json"].as_str().unwrap();
+    assert!(
+        verdict.contains("only an operator-trust job may be given"),
+        "{verdict}"
+    );
+
+    assert!(!doc.to_string().contains(secret));
+    let leaks = files_holding(&e.home, secret);
+    assert!(leaks.is_empty(), "{leaks:?}");
+    let text = String::from_utf8_lossy(&e.forge("ok.sh", &["job", "show", &id.to_string()]).stdout)
+        .into_owned();
+    assert!(!text.contains(secret), "{text}");
+    let log = e.forge("ok.sh", &["job", "log", &id.to_string()]);
+    assert!(!String::from_utf8_lossy(&log.stdout).contains(secret));
+}

@@ -67,6 +67,8 @@ pub struct StartWebhook<'a> {
     pub source: workflows::JobSource,
     pub trigger_ref: &'a str,
     pub input_text: &'a str,
+    /// The trust level of the token the delivery carried (`forge job fire`).
+    pub trust: Trust,
 }
 
 /// Trigger identity, delivery time, and input payload for a queued job.
@@ -81,6 +83,10 @@ struct QueueTriggered<'a> {
     trigger_ref: &'a str,
     event_at: i64,
     input_text: &'a str,
+    /// The trust level this job is recorded at (`store::set_job_trust`),
+    /// before it can be claimed: what `secrets::step_grant` reads back to
+    /// decide whether a step's secrets and egress are granted.
+    trust: Trust,
 }
 
 /// Resolved workflow, inputs, and recorded outputs for an inline job run.
@@ -375,6 +381,7 @@ pub async fn start(args: Start<'_>) -> Result<i64> {
         )?,
         None => f.store.create_job(&job)?,
     };
+    f.store.set_job_trust(job_id, Trust::Operator)?;
     if !now {
         input::publish(f, job_id, &input_text, due_at)?;
         return Ok(job_id);
@@ -437,6 +444,7 @@ pub async fn start_scheduled(
         trigger_ref: &slot.to_string(),
         event_at: slot,
         input_text: "{}",
+        trust: Trust::Operator,
     })
 }
 
@@ -488,6 +496,7 @@ pub fn start_message(
         trigger_ref: &trigger_ref,
         event_at: m.at,
         input_text: &message_input(m).to_string(),
+        trust: Trust::Contact,
     })
     .map(Some)
 }
@@ -531,6 +540,7 @@ pub fn start_event(args: StartEvent<'_>) -> Result<Option<i64>> {
         trigger_ref: &trigger_ref,
         event_at: at,
         input_text: input,
+        trust: Trust::Operator,
     }) {
         Ok(id) => Ok(Some(id)),
         // Two ticks racing on one event: the unique index refused the
@@ -572,6 +582,7 @@ pub fn start_webhook(args: StartWebhook<'_>) -> Result<(i64, bool)> {
         source,
         trigger_ref,
         input_text,
+        trust,
     } = args;
     let kind = workflows::TriggerOn::Webhook;
     let input_text = if input_text.trim().is_empty() {
@@ -600,6 +611,7 @@ pub fn start_webhook(args: StartWebhook<'_>) -> Result<(i64, bool)> {
         trigger_ref,
         event_at: unix_now(),
         input_text,
+        trust,
     }) {
         Ok(id) => Ok((id, true)),
         // Two deliveries of one key racing: the unique index refused the
@@ -627,6 +639,7 @@ fn queue_triggered(args: QueueTriggered<'_>) -> Result<i64> {
         trigger_ref,
         event_at,
         input_text,
+        trust,
     } = args;
     let started_at = unix_now();
     let due_at = wf
@@ -659,6 +672,7 @@ fn queue_triggered(args: QueueTriggered<'_>) -> Result<i64> {
         }
         None => f.store.create_job(&job)?,
     };
+    f.store.set_job_trust(job_id, trust)?;
     input::publish(f, job_id, input_text, due_at)?;
     Ok(job_id)
 }
@@ -711,7 +725,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
     std::fs::write(&effect_log, "")?;
 
     let secrets = f.project_secrets.get(project).cloned().unwrap_or_default();
-    let trust = f.store.job_trust(job_id)?.unwrap_or(Trust::Operator);
+    let trust = f.store.job_trust(job_id)?.unwrap_or(Trust::Public);
     let timeout = Duration::from_secs(check_timeout_secs);
     let input_bytes = limits.map_or(workflows::default_input_bytes(), |l| l.input_bytes);
 
