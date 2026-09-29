@@ -223,6 +223,16 @@ async fn run_codex_phase(args: RunCodexPhase<'_>) -> Result<(Option<i32>, bool, 
     .await
 }
 
+fn codex_environment(l: &Launch<'_>) -> Result<Vec<(String, String)>> {
+    let mut extra_env = l.identity.clone();
+    extra_env.extend(inputs::provider_env(l.provider));
+    extra_env.push((
+        "FORGE_CODEX_CONFIG".into(),
+        inputs::codex_config(l.provider, l.model)?,
+    ));
+    Ok(extra_env)
+}
+
 /// The codex-cli backend, run in two phases. A weaker model asked to commit
 /// to `--output-schema`'s shape before it has done anything just answers
 /// with a description of what it would do instead of doing it (dev.home's
@@ -248,15 +258,10 @@ pub(super) async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
         .join(format!("forge-{}-schema.json", l.step));
     inputs::write_codex_schema(&schema_path, l.schema)?;
 
-    let mut extra_env = l.identity.clone();
-    extra_env.extend(inputs::provider_env(l.provider));
-    extra_env.push((
-        "FORGE_CODEX_CONFIG".into(),
-        inputs::codex_config(l.provider, l.model)?,
-    ));
+    let extra_env = codex_environment(&l)?;
 
-    let mut log =
-        File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
+    let mut log = CappedLog::create(l.log_path)
+        .with_context(|| format!("creating {}", l.log_path.display()))?;
     writeln!(
         log,
         "{{\"type\":\"forge_prompt\",\"text\":{}}}",
