@@ -1340,10 +1340,9 @@ mod tests {
 #[cfg(test)]
 mod relay_tests {
     use super::*;
-    use crate::engine::{Classify, Fault};
 
     #[test]
-    fn relay_start_failure_is_an_environment_fault() {
+    fn relay_start_failure_returns_the_relay_diagnostic() {
         let outcome = Outcome {
             exit_code: Some(125),
             stderr_text: format!(
@@ -1352,9 +1351,13 @@ mod relay_tests {
             ),
             ..Outcome::default()
         };
-        let classified = check_relay_start(outcome).env();
-        assert!(
-            matches!(classified, Err(Fault::Env(e)) if e.to_string().contains("missing relay binary"))
+        let error = check_relay_start(outcome).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "{}\nmissing relay binary",
+                crate::sandbox::RELAY_START_FAILED
+            )
         );
     }
 
