@@ -286,6 +286,12 @@ enum Cmd {
         /// Route every role of the new task to this provider (default: as before)
         #[arg(long)]
         provider: Option<String>,
+        /// Let this retry change the repo's [verify] protected paths, for
+        /// a task filed without --allow-protected (recorded as a
+        /// decision); never lowers what the task it retries already
+        /// allowed
+        #[arg(long)]
+        allow_protected: bool,
     },
     /// Answer a task blocked on a question and re-queue it as a retry
     Answer {

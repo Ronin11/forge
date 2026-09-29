@@ -133,7 +133,8 @@ async fn retry(id: i64, chain: bool, again: bool, o: crate::queue::RetryOverride
         // branch again, as it is now, and lands it if it passes.
         drop(f);
         let f = Forge::open(true, true)?;
-        let adopted = crate::adopt::retry(&f, &old, &crate::adopt::adopter()).await?;
+        let adopted =
+            crate::adopt::retry(&f, &old, &crate::adopt::adopter(), o.allow_protected).await?;
         return print_adopted(&f, &adopted).await;
     }
     if matches!(old.state, TaskState::Queued | TaskState::Running) {
@@ -445,6 +446,7 @@ async fn dispatch_retry(cmd: Cmd) -> Result<()> {
             timeout_secs,
             workflow,
             provider,
+            allow_protected,
         } => {
             retry(
                 id,
@@ -458,6 +460,7 @@ async fn dispatch_retry(cmd: Cmd) -> Result<()> {
                     timeout_secs,
                     workflow,
                     provider,
+                    allow_protected,
                 },
             )
             .await
