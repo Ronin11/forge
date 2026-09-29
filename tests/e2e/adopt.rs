@@ -86,6 +86,18 @@ fn assert_no_agent(e: &Env, id: i64) {
     }
 }
 
+/// Adoption questions reach the reference plugin exactly once.
+fn assert_person_notification(e: &Env, state: &str) {
+    let rows = crate::audience::events(e);
+    let done: Vec<_> = rows.iter().filter(|v| v["type"] == "task_done").collect();
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(done[0]["audience"], "person");
+    assert_eq!(done[0]["state"], state);
+    let hits = crate::audience::notify(e, &rows, "", &e._dir.path().join("notify"));
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert!(hits[0].starts_with(&format!("1|{state}|")), "{hits:?}");
+}
+
 #[test]
 fn an_adopted_branch_lands_on_the_base_as_it_is_with_no_agent_run() {
     let e = Env::new();
@@ -158,6 +170,7 @@ fn an_adopted_branch_that_fails_a_check_is_blocked_naming_it_and_not_landed() {
     let q = req[0]["question"].as_str().unwrap_or_default().to_string()
         + req[0]["tried"].as_str().unwrap_or_default();
     assert!(q.contains("answer"), "{req}");
+    assert_person_notification(&e, "blocked");
     // A retry verifies the branch again, as it is now: fixed by hand, it lands.
     git(&e.repo, &["checkout", "-q", "wrong"]);
     std::fs::write(e.repo.join("answer.txt"), "42\n").unwrap();
@@ -210,6 +223,7 @@ fn an_adopted_branch_editing_forge_toml_is_refused_without_allow_protected() {
     let d = e.decisions_json();
     assert!(d.to_string().contains("refused"), "{d}");
     assert!(d.to_string().contains("forge.toml"), "{d}");
+    assert_person_notification(&e, "failed");
 }
 
 #[test]
@@ -273,6 +287,7 @@ fn an_adopted_branch_that_conflicts_with_the_moved_base_is_blocked_and_nothing_l
     assert_eq!(origin_sha(&e, "main"), before, "no half-merged result");
     assert_eq!(git(&e.repo, &["rev-parse", "stale"]), branch_before);
     assert_no_agent(&e, 1);
+    assert_person_notification(&e, "blocked");
 }
 
 #[test]
