@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod guard;
+
 fn short(sha: &str) -> &str {
     &sha[..sha.len().min(8)]
 }
@@ -78,6 +80,10 @@ async fn deploy_at(
             "FORGE_WORKER_SUCCESSORS".to_string(),
             if successors { "1" } else { "0" }.to_string(),
         ));
+        // `run` already holds `bin/.deploy-self.lock` (guard::take_lock)
+        // around this call; told so, the script skips its own `flock`,
+        // which would otherwise wait on the very process running it.
+        extra.push(("FORGE_DEPLOY_LOCK_HELD".to_string(), "1".to_string()));
     }
     // The action's own timeout (deploy-self declares one ample for a cold
     // build) outranks the repository's check timeout.
@@ -110,7 +116,7 @@ async fn wait_live(f: &Forge, sha: &str, wait: Duration) -> Option<i64> {
     loop {
         let worker = f
             .store
-            .live_workers(crate::worker::pid_alive)
+            .live_workers(crate::worker::worker_alive)
             .ok()
             .and_then(|live| live.into_iter().find(|w| w.version == sha));
         if let Some(w) = worker
@@ -132,9 +138,12 @@ pub(crate) const SELF_METHOD: &str = "deploy-self";
 /// origin's base branch fetched into the kernel repository (never the
 /// registered checkout's refs or working tree), and `sha` resolved there —
 /// origin's tip when none is given. A commit origin's base does not
-/// contain is refused, and so, without `force`, is one that is an
-/// ancestor of the live release (`FORGE_HOME/bin/current`): migrations do
-/// not run backwards.
+/// contain is refused, and so, without `force`, is one older than the
+/// newer of the live release (`FORGE_HOME/bin/current`) and the one
+/// already staged (see [`guard::not_older_than_live`]): migrations do not
+/// run backwards. Called under [`guard::take_lock`] for `SELF_METHOD`, so
+/// this and the method that follows see the same live and staged
+/// releases another racing deploy would.
 async fn origin_truth(
     f: &Forge,
     repo: &Path,
@@ -177,20 +186,7 @@ async fn origin_truth(
             full
         }
     };
-    let live = crate::release::pointed_at(&crate::release::root(home), "current");
-    if let Some(live) = live
-        && !force
-        && let Ok(live_sha) = git::rev_parse(&kernel, &format!("{live}^{{commit}}")).await
-        && live_sha != sha
-        && git::is_ancestor(&kernel, &sha, &live_sha).await
-    {
-        bail!(
-            "{} is older than the live release {} (an ancestor of it); migrations do not run \
-             backwards, so it is refused. Pass --force to deploy it anyway.",
-            short(&sha),
-            short(&live_sha)
-        );
-    }
+    guard::not_older_than_live(&kernel, home, &sha, force).await?;
     Ok((kernel, sha))
 }
 
@@ -562,6 +558,16 @@ pub async fn run(
     // deploy-self builds origin's truth, never the registered checkout
     // (docs/OPS.md, "The running binary"): the commit and the tree to
     // archive both come from the kernel repository's copy of origin.
+    //
+    // `bin/.deploy-self.lock` (the file the script itself locks) is held
+    // from here through the method's own run: of two deploys racing for
+    // it, the guard inside `origin_truth` must never run for one before
+    // the other has staged (docs/REVIEW-4.md, E3-11c). Released right
+    // after the method returns, well before a wait for a successor to go
+    // live, which itself needs the lock to flip `current`.
+    let self_lock = (target.method == SELF_METHOD)
+        .then(|| guard::take_lock(&f.paths.home))
+        .transpose()?;
     let (src, sha) = if target.method == SELF_METHOD {
         origin_truth(f, &repo, &cfg, sha, force).await?
     } else {
@@ -596,6 +602,9 @@ pub async fn run(
             &scratch_dir(f, deploy_id, ""),
         )
         .await?;
+        // The method has run; drop `bin/.deploy-self.lock` before waiting
+        // on a successor, which needs it too.
+        drop(self_lock);
 
         // A self-deploy under a worker that starts successors has only
         // staged: the release is live once a worker runs it and `current`
