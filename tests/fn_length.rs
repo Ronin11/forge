@@ -183,7 +183,7 @@ const ALLOWLIST: &[(&str, &str, usize, &str)] = &[
         "existing function awaiting a focused split",
     ),
     (
-        "src/sandbox.rs",
+        "src/sandbox/tests.rs",
         "command_binds_tmpfs_home_before_ro_dirs_before_the_worktree",
         204,
         "existing function awaiting a focused split",
