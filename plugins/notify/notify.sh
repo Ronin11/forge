@@ -84,7 +84,7 @@ while IFS= read -r line; do
     elif [ "$type" = notification_digest ]; then
         day=$(printf '%s\n' "$line" | sed -n 's/.*"day":\([0-9]*\).*/\1/p')
         sent=$(cat "$FORGE_PLUGIN_STATE/digest-day" 2>/dev/null || true)
-        if [ -n "$day" ] && [ "$day" != "$sent" ]; then
+        if [ -n "$day" ] && [ "$day" -gt "${sent:-0}" ]; then
             text=$(printf '%s\n' "$line" | json_str text)
             if printf '%s' "$line" | sh "$FORGE_PLUGIN_DIR/command" digest "$day" "$text"; then
                 printf '%s\n' "$day" >"$FORGE_PLUGIN_STATE/digest-day.tmp"

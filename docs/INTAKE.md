@@ -53,6 +53,18 @@ to**, so the channel plugin knows to deliver it to the person rather
 than to the operator, and returns their reply as the answer. Days
 between turns cost nothing; the task waits.
 
+A person receives a task notification only when the kernel's `task_done`
+sets `audience=person`: an unanswered question addressed to that contact
+or the operator, a job question, a dependency without a live follow-up,
+or a failure still needing an answer after recovery. Demotions filed as
+follow-ups, retried/refiled failures and superseded blocks have
+`audience=none`. Notify and Signal use that field, while Signal's
+`CONTACTS` mapping chooses the recipient. Handled work is summarized once
+for the previous UTC day when `doctor-daily` succeeds, including follow-up
+filings and questions answered. Explicit `NOTIFY_ON` state lists retain
+the old per-task notifications; `NOTIFY_ON=person` is the default. See
+`docs/PLUGINS.md` for the digest event and command arguments.
+
 The `intake` workflow is one directive, `interview`, on a read-only
 contract like `investigate`: it is given the brief so far and every
 answer, asks the next question or, when the checklist is satisfied,

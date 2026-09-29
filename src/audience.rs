@@ -43,7 +43,7 @@ pub(crate) fn classify(store: &Store, ended: &Task) -> Result<&'static str> {
                     || t.state == TaskState::Withdrawn
                     || (t.state == TaskState::Succeeded && (!t.land || !t.landed_sha.is_empty()))
             });
-            if !live && !answered(store, *dep)? {
+            if !live && !live_followup(store, *dep)? {
                 return Ok("person");
             }
         }
@@ -101,3 +101,25 @@ pub(crate) fn daily_digest(f: &Forge) -> Result<()> {
     );
     Ok(())
 }
+
+fn live_followup(store: &Store, id: i64) -> Result<bool> {
+    if !store.live_descendants(id)?.is_empty() {
+        return Ok(true);
+    }
+    for d in store.decisions_in_lineage(id)? {
+        if d.task_id == Some(id)
+            && let Some(next) = d.retry_id.filter(|next| *next != id)
+            && let Some(t) = store.task(next)?
+            && matches!(
+                t.state,
+                TaskState::Queued | TaskState::Running | TaskState::Unverified
+            )
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(test)]
+mod tests;

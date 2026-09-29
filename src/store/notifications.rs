@@ -32,3 +32,43 @@ impl Store {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn digest_counts_completed_actions_once_in_the_previous_day() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("db")).unwrap();
+        let task = s.insert_task(&Task::default()).unwrap();
+        let next = s.insert_task(&Task::default()).unwrap();
+        let record = |kind: &str, at: i64, retry: Option<i64>| {
+            s.lock()
+                .execute(
+                    "INSERT INTO decisions (task_id, repo, question, answer, created_at,
+                 answered_by, citations, kind, retry_id) VALUES (?1, '', 'q', 'a', ?2,
+                 'supervisor', '', ?3, ?4)",
+                    params![task, at, kind, retry],
+                )
+                .unwrap();
+        };
+        record("demotion-as-task", 86_400, Some(next));
+        record("demotion-as-task", 86_401, Some(next));
+        record("mechanic-ratchet", 86_410, Some(next));
+        record("", 86_420, Some(next));
+        record("mechanic-clean-tree", 86_450, None); // filing failed
+        assert_eq!(
+            s.notification_digest(86_400, 172_800).unwrap(),
+            "yesterday: 1 demotions followed up, 1 failures retried, 1 questions answered, 0 blocks superseded"
+        );
+        assert_eq!(
+            s.notification_digest(172_800, 259_200).unwrap(),
+            "yesterday: 0 demotions followed up, 0 failures retried, 0 questions answered, 0 blocks superseded"
+        );
+        assert_eq!(
+            s.notification_digest(0, 86_400).unwrap(),
+            "yesterday: 0 demotions followed up, 0 failures retried, 0 questions answered, 0 blocks superseded"
+        );
+    }
+}
