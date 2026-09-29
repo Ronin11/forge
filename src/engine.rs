@@ -20,6 +20,9 @@ use cursor::RunCursor;
 mod terminal;
 use terminal::finish;
 pub(crate) use terminal::{finish_fault, settle_ready_initiatives};
+mod op;
+pub use op::{Classify, Fault};
+pub(crate) use op::{OpRow, Timer, op};
 
 /// Workflow state and completed operations needed to execute an operation step.
 struct RunOperationStep<'a> {
@@ -83,33 +86,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-pub enum Fault {
-    Task(anyhow::Error),
-    Env(anyhow::Error),
-}
-
-impl From<Fault> for anyhow::Error {
-    fn from(f: Fault) -> Self {
-        match f {
-            Fault::Task(e) | Fault::Env(e) => e,
-        }
-    }
-}
-
-pub trait Classify<T> {
-    fn task(self) -> Result<T, Fault>;
-    fn env(self) -> Result<T, Fault>;
-}
-
-impl<T, E: Into<anyhow::Error>> Classify<T> for Result<T, E> {
-    fn task(self) -> Result<T, Fault> {
-        self.map_err(|e| Fault::Task(e.into()))
-    }
-    fn env(self) -> Result<T, Fault> {
-        self.map_err(|e| Fault::Env(e.into()))
-    }
-}
-
 /// A branch-safe slug from the first few words of the task text.
 pub fn slug(task: &str) -> String {
     let mut out = String::new();
@@ -132,66 +108,6 @@ pub fn slug(task: &str) -> String {
         .collect::<String>()
         .trim_end_matches('-')
         .to_string()
-}
-
-/// When an operation started: unix seconds for the row, an `Instant` for
-/// the elapsed time, taken together so they always agree.
-pub(crate) struct Timer {
-    pub(crate) started_at: i64,
-    pub(crate) start: Instant,
-}
-
-impl Timer {
-    pub(crate) fn now() -> Self {
-        Self {
-            started_at: unix_now(),
-            start: Instant::now(),
-        }
-    }
-}
-
-/// One operation row, kernel or user; `task_id` stays a separate parameter
-/// of `op` since it is never part of the row's own identity.
-pub(crate) struct OpRow<'a> {
-    pub(crate) seq: i64,
-    pub(crate) name: &'a str,
-    pub(crate) kernel: bool,
-    pub(crate) ok: bool,
-    pub(crate) exit: Option<i32>,
-    pub(crate) detail: &'a str,
-    pub(crate) attempt_id: Option<i64>,
-    pub(crate) output: &'a str,
-}
-
-/// Record one operation row, kernel or user.
-pub(crate) fn op(f: &Forge, task_id: i64, timer: &Timer, row: OpRow) -> Result<(), Fault> {
-    f.store
-        .insert_op(&Op {
-            task_id,
-            seq: row.seq,
-            name: row.name.into(),
-            kernel: row.kernel,
-            started_at: timer.started_at,
-            ms: timer.start.elapsed().as_millis() as i64,
-            ok: row.ok,
-            exit: row.exit,
-            detail: row.detail.into(),
-            attempt_id: row.attempt_id,
-            output: row.output.into(),
-            ..Default::default()
-        })
-        .env()?;
-    f.report.emit(
-        task_id,
-        Event::Op {
-            name: row.name,
-            kernel: row.kernel,
-            ok: row.ok,
-            ms: timer.start.elapsed().as_millis(),
-            detail: row.detail,
-        },
-    );
-    Ok(())
 }
 
 /// The backend can change under a queued task: leave it blocked with the
