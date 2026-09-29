@@ -93,7 +93,7 @@ RestartMaxDelaySec=900\n\
 WantedBy=default.target\n",
         home = env_line("FORGE_HOME", &display(home))?,
         path = env_line("PATH", path)?,
-        exec = exec_line(&[&display(forge_bin), "work", "--jobs", "4"])?,
+        exec = exec_line(&[&display(forge_bin), "work"])?,
     ))
 }
 
@@ -143,7 +143,7 @@ fn by_hand(home: &Path, forge_bin: &Path, web_bin: &Path) -> StepResult {
         false,
         format!(
             "no systemd on this platform; run the worker and web client by hand:\n  \
-             FORGE_HOME={home} {forge_bin} work --jobs 4\n  \
+             FORGE_HOME={home} {forge_bin} work\n  \
              FORGE_HOME={home} FORGE_BIN={forge_bin} {web_bin} --bind 127.0.0.1:7788",
             home = crate::sandbox::shell_quote(&home.display().to_string()),
             forge_bin = crate::sandbox::shell_quote(&forge_bin.display().to_string()),
@@ -723,7 +723,7 @@ mod tests {
         let quoted = format!("'{}'", home.display());
         assert_eq!(
             lines[1],
-            format!("FORGE_HOME={quoted} '/opt/forge/forge' work --jobs 4")
+            format!("FORGE_HOME={quoted} '/opt/forge/forge' work")
         );
         assert_eq!(
             lines[2],

@@ -30,7 +30,8 @@ RUST_TEST_THREADS = "4"
 The default machine capacity is one slot. An omitted `project_slots` allows
 an uncapped project to fill the machine budget. All slot counts must be
 positive. `forge work --jobs N` overrides the machine count for that process;
-remove an old `--jobs 4` from the service's `ExecStart` once to use configuration.
+new `forge init` units omit the flag. Remove an old `--jobs 4` from the
+service's `ExecStart` once (or regenerate it with `forge init`) to use configuration.
 A successor reads the current config and does not inherit that override.
 SIGHUP or the config watcher reloads settings before the next claim. Reducing
 capacity does not kill running work; claims wait until usage falls below both
