@@ -15,7 +15,7 @@ mod usage_limit;
 use crate::sandbox::Phase;
 use chat::run_chat;
 pub(super) use chat::truncated_first_line;
-use claude::{claude_argv, run_claude};
+use claude::{apply_claude_result, claude_argv, run_claude};
 use codex::{apply_codex_event, run_codex};
 use copilot::{CopilotTally, apply_copilot_event, run_copilot};
 use inputs::{AgentRun, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
@@ -86,6 +86,8 @@ pub struct Outcome {
     /// result frame ever arrived. A directive job step quotes this in its
     /// failure tail instead of the bare exit code.
     pub subtype: Option<String>,
+    /// The CLI’s terminal diagnosis, including exhausted structured-output retries.
+    pub terminal_reason: Option<String>,
     /// Everything the agent wrote to stderr across the run. A directive job
     /// step's failure tail quotes the last lines of this.
     pub stderr_text: String,
@@ -683,26 +685,7 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
                     }
                 }
                 Some("result") => {
-                    out.got_result = true;
-                    out.is_error = v["is_error"].as_bool().unwrap_or(false);
-                    if let Some(id) = v["session_id"].as_str() {
-                        out.session_id = Some(id.to_string());
-                    }
-                    out.subtype = v["subtype"].as_str().map(str::to_string);
-                    out.max_turns_hit = v["subtype"].as_str() == Some("error_max_turns");
-                    refusal::read_claude_error(&mut out, &v);
-                    out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
-                    out.cost_usd = v["total_cost_usd"].as_f64();
-                    out.input_tokens = v["usage"]["input_tokens"].as_i64();
-                    out.output_tokens = v["usage"]["output_tokens"].as_i64();
-                    out.cache_read_input_tokens = v["usage"]["cache_read_input_tokens"].as_i64();
-                    out.cache_creation_input_tokens =
-                        v["usage"]["cache_creation_input_tokens"].as_i64();
-                    out.result_text = v["result"].as_str().unwrap_or("").to_string();
-                    out.structured = match &v["structured_output"] {
-                        Value::Null => None,
-                        other => Some(other.to_string()),
-                    };
+                    apply_claude_result(&mut out, &v);
                 }
                 Some("rate_limit_event") => {
                     let w = &v["rate_limit_info"]["unifiedWindows"];
