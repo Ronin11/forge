@@ -651,7 +651,13 @@ fn relay_detect_strips_deleted_suffix() {
     // than racing their cleanup or changing the parent test process's state.
     const CHILD: &str = "FORGE_TEST_RELAY_DETECT_CHILD";
     if std::env::var_os(CHILD).is_none() {
+        use std::os::unix::fs::PermissionsExt;
         let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let bwrap = bin.join("bwrap");
+        std::fs::write(&bwrap, "#!/bin/sh\necho 'bubblewrap 0.9.0'\n").unwrap();
+        std::fs::set_permissions(&bwrap, std::fs::Permissions::from_mode(0o755)).unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -660,7 +666,8 @@ fn relay_detect_strips_deleted_suffix() {
             ])
             .env_clear()
             .env("HOME", home.path())
-            .env("PATH", "/usr/bin:/bin")
+            .env("PATH", bin)
+            .env("FORGE_BIN", "/opt/forge/forge (deleted)")
             .env(CHILD, "1")
             .output()
             .unwrap();
@@ -672,11 +679,8 @@ fn relay_detect_strips_deleted_suffix() {
         );
         return;
     }
-    if resolve_binary("bwrap").is_err() {
-        return;
-    }
     let root = tempfile::tempdir().unwrap();
-    let sb = Sandbox::detect_with_relay(
+    let sb = Sandbox::detect(
         "/bin/sh",
         &crate::config::SandboxPaths {
             ro: Vec::new(),
@@ -686,7 +690,6 @@ fn relay_detect_strips_deleted_suffix() {
         root.path().to_path_buf(),
         Vec::new(),
         Vec::new(),
-        PathBuf::from("/opt/forge/forge (deleted)"),
     )
     .unwrap();
     assert_eq!(sb.relay_exe, Path::new("/opt/forge/forge"));

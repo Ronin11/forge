@@ -341,24 +341,6 @@ impl Sandbox {
         extra_ro: Vec<PathBuf>,
         extra_rw: Vec<PathBuf>,
     ) -> Result<Sandbox> {
-        Self::detect_with_relay(
-            agent_bin,
-            paths,
-            forge_home,
-            extra_ro,
-            extra_rw,
-            crate::binary::launch_path()?,
-        )
-    }
-
-    fn detect_with_relay(
-        agent_bin: &str,
-        paths: &crate::config::SandboxPaths,
-        forge_home: PathBuf,
-        extra_ro: Vec<PathBuf>,
-        extra_rw: Vec<PathBuf>,
-        relay_exe: PathBuf,
-    ) -> Result<Sandbox> {
         let Ok((bwrap, _)) = resolve_binary("bwrap") else {
             bail!(
                 "bwrap not found; install bubblewrap, or declare [execution] backend = \"host\" to run unsandboxed"
@@ -402,7 +384,7 @@ impl Sandbox {
         }
         let (config_dir, codex_dir, copilot_dir) = provider_dirs(&home, |k| std::env::var_os(k));
         // The relay is this binary, so its directory has to be visible.
-        let relay_exe = crate::binary::without_deleted_suffix(&relay_exe);
+        let relay_exe = crate::binary::without_deleted_suffix(&crate::binary::launch_path()?);
         let relay_dir = relay_exe.parent().map(Path::to_path_buf);
         let extra_ro: Vec<PathBuf> = paths
             .ro
