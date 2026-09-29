@@ -3,6 +3,7 @@
 //! the trusted base commit so the branch under test cannot change what it
 //! is verified against. `<FORGE_HOME>/config.toml` is the operator's.
 
+pub(crate) mod capacity;
 mod home;
 mod measure;
 mod providers;
@@ -15,8 +16,8 @@ pub use home::{
 pub use measure::{ExploreRole, Measure};
 pub use providers::ROLES;
 pub use repo::{
-    Config, Execution, in_scope, is_protected, load_at, load_working, load_working_checks,
-    load_working_egress, load_working_execution,
+    Config, Execution, in_scope, is_protected, load_at, load_working, load_working_build_env,
+    load_working_checks, load_working_egress, load_working_execution,
 };
 pub use trust::{TrustEgress, TrustPolicies, TrustPolicy};
 

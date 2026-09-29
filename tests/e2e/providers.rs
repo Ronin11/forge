@@ -3,12 +3,31 @@
 //! records its runner/provider/model on the attempt.
 
 use crate::support::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 fn codex_fake(name: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fakes")
         .join(name)
+}
+
+/// Keep the provider capped until the test explicitly expires its sample.
+/// A three-second fake window can elapse during worktree setup on a busy host.
+fn capped_worker(e: &Env, codex: &str) -> (Worker, PathBuf) {
+    let source = codex_fake("ratelimited.sh");
+    let fake = e.home.join("held-provider.sh");
+    let script = std::fs::read_to_string(&source).unwrap();
+    assert!(script.contains("+ 3"));
+    std::fs::write(&fake, script.replace("+ 3", "+ 3600")).unwrap();
+    std::fs::set_permissions(&fake, std::fs::metadata(source).unwrap().permissions()).unwrap();
+    let log = e.home.join("provider-worker.log");
+    let output = std::fs::File::create(&log).unwrap();
+    let mut cmd = e.cmd(fake.to_str().unwrap());
+    cmd.env("FORGE_CODEX_BIN", codex_fake(codex));
+    cmd.args(["work", "--once"]);
+    cmd.stdout(output.try_clone().unwrap()).stderr(output);
+    (Worker::spawn(&mut cmd), log)
 }
 
 /// Write the operator config the test needs *before* any `forge` command
@@ -351,16 +370,16 @@ fn a_task_routed_to_another_provider_runs_while_anthropics_window_is_at_its_cap(
     let anthropic_task = e.add(&["--no-land"]);
     let other_task = e.add(&["--no-land", "--provider", "fake-codex"]);
 
-    let mut cmd = e.cmd("ratelimited.sh");
-    cmd.env("FORGE_CODEX_BIN", codex_fake("codex-ok.sh"));
-    cmd.args(["work", "--once"]);
-    let o = cmd.output().expect("forge work");
-    eprintln!(
-        "--- forge work --once (anthropic capped, fake-codex free) ---\n{}{}",
-        String::from_utf8_lossy(&o.stdout),
-        String::from_utf8_lossy(&o.stderr)
+    let (mut worker, log) = capped_worker(&e, "codex-ok.sh");
+    assert!(
+        wait_until(
+            || e.task(other_task).0 == "succeeded",
+            Duration::from_secs(60)
+        ),
+        "the unrelated provider should finish while anthropic remains capped: {}",
+        std::fs::read_to_string(&log).unwrap()
     );
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(worker.wait().success());
 
     assert_eq!(e.task(anthropic_task).0, "succeeded");
     assert_eq!(
@@ -419,52 +438,53 @@ fn a_task_routed_by_role_runs_while_anthropics_window_is_at_its_cap() {
     let anthropic_task = e.add(&["--no-land"]);
     let planned_task = e.add(&["--no-land", "--workflow", "planned"]);
 
-    let log_path = e.home.join("role-worker.log");
-    let mut cmd = e.cmd("ratelimited-held.sh");
-    cmd.env("FORGE_CODEX_BIN", codex_fake("codex-plan-ok.sh"));
-    // Hold the window until the test observes the plan and requeue, rather
-    // than racing the fake's three-second reset.
-    cmd.args(["work", "--once"]);
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::fs::File::create(&log_path).unwrap());
-    let mut worker = Worker::spawn(&mut cmd);
+    let (mut worker, log) = capped_worker(&e, "codex-plan-ok.sh");
     assert!(
         wait_until(
             || {
                 e.task(planned_task).0 == "queued"
-                    && std::fs::read_to_string(&log_path)
-                        .unwrap_or_default()
+                    && std::fs::read_to_string(&log)
+                        .unwrap()
                         .contains("; holding,")
             },
-            std::time::Duration::from_secs(120)
+            Duration::from_secs(120)
         ),
-        "the plan never requeued behind the held provider"
+        "the planned task should reach its held code step: {}",
+        std::fs::read_to_string(&log).unwrap()
     );
+    let held_log = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        held_log.contains(&format!("task {planned_task} queued")),
+        "the plan must run before releasing anthropic's window: {held_log}"
+    );
+    assert_eq!(e.task(planned_task).0, "queued");
     let resets: i64 = e
         .db()
         .query_row(
-            "SELECT rl_five_hour_resets FROM attempts WHERE task_id=?1 ORDER BY id LIMIT 1",
+            "SELECT rl_five_hour_resets FROM attempts WHERE task_id=?1 AND provider='anthropic' ORDER BY id LIMIT 1",
             [anthropic_task],
             |r| r.get(0),
         )
         .unwrap();
+    // Release only after observing the plan run and the code step requeue.
+    // SIGHUP wakes the claim loop so this test never sleeps out the window.
     e.db()
         .execute(
             "UPDATE attempts SET rl_five_hour_resets=0 WHERE provider='anthropic'",
             [],
         )
         .unwrap();
-    // Wake the worker from its wait on the old reset timestamp.
     worker.signal(libc::SIGHUP);
     assert!(
         wait_until(
             || e.task(planned_task).0 == "succeeded",
-            std::time::Duration::from_secs(120)
+            Duration::from_secs(120)
         ),
-        "the task did not resume after the window was released"
+        "the planned task should finish after the hold is released: {}",
+        std::fs::read_to_string(&log).unwrap()
     );
     assert!(worker.wait().success());
-    let stderr = std::fs::read_to_string(&log_path).unwrap();
+    let stderr = std::fs::read_to_string(&log).unwrap();
 
     assert_eq!(e.task(anthropic_task).0, "succeeded");
     assert_eq!(

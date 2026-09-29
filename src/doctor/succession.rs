@@ -22,7 +22,7 @@ pub(super) fn check_succession(paths: &Paths, store: &Store) -> Option<Check> {
     };
     let draining = held(&mut old.iter().copied());
     let claiming = held(&mut live.iter().filter(|w| w.version == newest.version));
-    let slots = live.iter().map(|w| w.slots).max().unwrap_or(0);
+    let slots = newest.slots;
     let staged = crate::release::pointed_at(&crate::release::root(&paths.home), "staged")
         .unwrap_or_else(|| newest.version.clone());
     let (status, share, fix) = slot_share(draining, claiming, slots);
@@ -88,7 +88,7 @@ fn slot_share(predecessor: i64, successor: i64, slots: usize) -> (Status, String
         (
             Status::Warn,
             share,
-            "the box runs more attempts than `forge work --jobs` allows until the predecessor drains; a successor claims only the slots the predecessor is not using, so a worker from before that rule is still running",
+            "running work exceeds the current worker capacity; new claims wait for it to drain",
         )
     } else {
         (Status::Ok, share, "")

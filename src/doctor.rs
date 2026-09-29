@@ -7,6 +7,7 @@ use crate::{agent, config, sandbox, unix_now, worker, workflows};
 use anyhow::Result;
 use serde::Serialize;
 
+mod capacity;
 mod login;
 mod providers;
 
@@ -1245,7 +1246,11 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     out.extend(check_plugins(&paths, &store));
     out.extend(check_presence(&paths, &store));
     out.extend(check_learning(&paths, &store));
-    out.extend(check_worker(&paths, &store));
+    out.extend(capacity::describe(
+        &paths,
+        &store,
+        check_worker(&paths, &store),
+    ));
     out.extend(check_queue(&store));
     out.extend(check_deliveries(&store, unix_now()));
     out.extend(check_worktrees(&store));
