@@ -386,6 +386,102 @@ fn a_successor_takes_the_unit_over_and_honours_a_stop_job_that_arrives_while_it_
     assert_eq!(e.task(second).0, "queued", "claimed under a stop job");
 }
 
+/// REVIEW-4 E2-3: a successor that takes the unit over and then exits
+/// cleanly (a stop job, not a crash) must not hand the claim back to a
+/// predecessor still draining a running attempt of its own.
+#[test]
+fn a_successor_that_stops_cleanly_after_taking_over_does_not_return_the_claim() {
+    let e = Env::new();
+    let root = e.home.join("bin");
+    for id in ["old", "new"] {
+        let dir = root.join("releases").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let built = std::path::Path::new(env!("CARGO_BIN_EXE_forge"))
+            .parent()
+            .unwrap();
+        for bin in ["forge", "forge-repomap"] {
+            std::fs::copy(built.join(bin), dir.join(bin)).unwrap();
+        }
+    }
+    std::os::unix::fs::symlink("releases/old", root.join("current")).unwrap();
+    let (path, state) = fake_systemctl(&e);
+    let sock_path = e.home.join("notify.sock");
+    let _sock = std::os::unix::net::UnixDatagram::bind(&sock_path).unwrap();
+
+    let first = e.add(&["--retries", "0"]);
+    let mut cmd = std::process::Command::new(root.join("releases/old/forge"));
+    cmd.envs(
+        e.cmd("slow-ok.sh")
+            .get_envs()
+            .filter_map(|(k, v)| Some((k, v?))),
+    )
+    .env("PATH", &path)
+    .env("NOTIFY_SOCKET", &sock_path)
+    .args(["work", "--jobs", "2", "--poll", "1"]);
+    let mut old = Worker::spawn(&mut cmd);
+    let _reap = Reap(e.home.clone());
+    assert!(
+        wait_until(|| running_pid(&e, first).is_some(), Duration::from_secs(30)),
+        "the old worker never claimed task {first}"
+    );
+    let old_pid = running_pid(&e, first).unwrap();
+    assert_eq!(old_pid, i64::from(old.id()));
+
+    std::os::unix::fs::symlink("releases/new", root.join("staged")).unwrap();
+    let new_pid = std::cell::Cell::new(None);
+    assert!(
+        wait_until(
+            || {
+                new_pid.set(
+                    std::fs::read_to_string(root.join("successor-capable"))
+                        .ok()
+                        .and_then(|s| s.trim().parse::<i64>().ok())
+                        .filter(|p| *p != old_pid),
+                );
+                new_pid.get().is_some()
+            },
+            Duration::from_secs(30)
+        ),
+        "the successor never took the unit over"
+    );
+    let new_pid = new_pid.get().unwrap();
+
+    // The operator's own stop or restart, before the successor claims
+    // anything of its own: it sees the unit deactivating and drains.
+    std::fs::write(&state, "deactivating\n").unwrap();
+    assert!(
+        wait_until(
+            || e.db()
+                .query_row(
+                    "SELECT stopped_at IS NOT NULL FROM workers WHERE pid=?1",
+                    [new_pid],
+                    |r| r.get(0),
+                )
+                .unwrap_or(false),
+            Duration::from_secs(30)
+        ),
+        "the predecessor never closed the successor's row"
+    );
+
+    // The predecessor still holds `first`; a task queued now must find
+    // nobody claiming it, even though no newer worker is live any more.
+    let third = e.add(&["--retries", "0"]);
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(
+        e.task(third).0,
+        "queued",
+        "the predecessor claimed after the successor's clean exit"
+    );
+    assert_eq!(
+        running_pid(&e, first),
+        Some(old_pid),
+        "the predecessor's own attempt is still running"
+    );
+
+    assert!(old.stop().success());
+    assert_eq!(e.task(third).0, "queued", "still nobody claimed it");
+}
+
 #[test]
 fn doctor_fails_the_worker_row_when_the_unit_is_deactivating_with_a_claiming_worker() {
     let e = Env::new();
