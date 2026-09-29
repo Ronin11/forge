@@ -247,6 +247,111 @@ fn allow_protected_records_the_decision_and_verifies() {
     );
 }
 
+/// The incident this guards against: an adoption of a one-line forge.toml
+/// change with `--allow-protected` blocks on an unrelated check failure;
+/// `forge retry` must still carry `--allow-protected` forward so landing
+/// does not refuse it on `forge.toml-untouched` a second time.
+#[test]
+fn retrying_an_adopted_branch_carries_allow_protected_to_a_landing() {
+    let e = Env::new();
+    git(&e.repo, &["push", "-q", "origin", "main"]);
+    let before = origin_sha(&e, "main");
+    let toml = "[checks]\nanswer = [\"bash\", \"-c\", \"test -f answer.txt && grep -qx 42 answer.txt\"]\nshell = [\"bash\", \"-n\", \"hello.sh\"]\n# shared-target-on\n";
+    hand_branch(
+        &e.repo,
+        "toggle",
+        &[("answer.txt", "41\n"), ("forge.toml", toml)],
+    );
+    let o = adopt(&e, &["toggle", "--allow-protected"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "blocked");
+    assert!(reason.contains("answer"), "{reason}");
+    assert_eq!(origin_sha(&e, "main"), before, "nothing landed yet");
+    let d = e.decisions_json();
+    assert!(
+        d.to_string().contains("allowed (--allow-protected)"),
+        "the protected-path allowance is recorded even though the check failed: {d}"
+    );
+
+    // Fixed by hand, as an unrelated failure would be; the retry carries
+    // --allow-protected forward on its own and lands.
+    git(&e.repo, &["checkout", "-q", "toggle"]);
+    std::fs::write(e.repo.join("answer.txt"), "42\n").unwrap();
+    git(&e.repo, &["commit", "-qam", "fix by hand"]);
+    let fixed = git(&e.repo, &["rev-parse", "HEAD"]);
+    git(&e.repo, &["checkout", "-q", "main"]);
+    let o = e.forge("neverrun.sh", &["retry", "1"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(
+        text(&o).contains("carrying --allow-protected from task 1"),
+        "{}",
+        text(&o)
+    );
+    assert_eq!(origin_sha(&e, "main"), fixed);
+    let (state, _, pushed) = e.task(2);
+    assert_eq!(state, "succeeded");
+    assert!(pushed);
+    let allow_protected: i64 = e
+        .db()
+        .query_row("SELECT allow_protected FROM tasks WHERE id=2", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(allow_protected, 1, "the retry inherited allow_protected");
+    let d = e.decisions_json();
+    let allowed = d
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|x| {
+            x["answer"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("allowed (--allow-protected)")
+        })
+        .count();
+    assert!(
+        allowed >= 2,
+        "both the original adoption and its retry record the allowance: {d}"
+    );
+}
+
+/// Rule (2): a retry gains `--allow-protected` for an adoption that was
+/// refused without it, never touching a check.
+#[test]
+fn forge_retry_allow_protected_lands_what_the_original_adoption_was_refused_for() {
+    let e = Env::new();
+    git(&e.repo, &["push", "-q", "origin", "main"]);
+    let before = origin_sha(&e, "main");
+    let toml = "[checks]\nanswer = [\"bash\", \"-c\", \"test -f answer.txt && grep -qx 42 answer.txt\"]\nshell = [\"bash\", \"-n\", \"hello.sh\"]\n# shared-target-on\n";
+    let sha = hand_branch(
+        &e.repo,
+        "toggle2",
+        &[("answer.txt", "42\n"), ("forge.toml", toml)],
+    );
+    let o = adopt(&e, &["toggle2"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    let (state, _, _) = e.task(1);
+    assert_eq!(state, "failed");
+    assert_eq!(
+        origin_sha(&e, "main"),
+        before,
+        "refused before any check ran"
+    );
+
+    let o = e.forge("neverrun.sh", &["retry", "1", "--allow-protected"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(
+        text(&o).contains("--allow-protected added; task 1 did not have it"),
+        "{}",
+        text(&o)
+    );
+    assert_eq!(origin_sha(&e, "main"), sha);
+    let d = e.decisions_json();
+    assert!(d.to_string().contains("allowed (--allow-protected)"), "{d}");
+}
+
 #[test]
 fn an_adopted_branch_that_conflicts_with_the_moved_base_is_blocked_and_nothing_lands() {
     let e = Env::new();

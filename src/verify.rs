@@ -1035,8 +1035,7 @@ pub async fn verify_integration(s: &Subject<'_>) -> Result<Verdict> {
             overlay_note(dirty, &s.cfg.namespace)
         ),
     ));
-    let touched =
-        !s.allow_protected && changed.iter().any(|p| p == s.cfg.config_path.as_str());
+    let touched = !s.allow_protected && changed.iter().any(|p| p == s.cfg.config_path.as_str());
     v.checks.push(l0(
         Rule::ConfigUntouched,
         !touched,
@@ -1815,7 +1814,11 @@ mod tests {
     #[tokio::test]
     async fn verify_integration_refuses_a_forge_toml_change_unless_allow_protected() {
         let (dir, base) = commit_fixture().await;
-        std::fs::write(dir.path().join("forge.toml"), "[checks]\nshell = [\"true\"]\n").unwrap();
+        std::fs::write(
+            dir.path().join("forge.toml"),
+            "[checks]\nshell = [\"true\"]\n",
+        )
+        .unwrap();
         crate::git::commit_all(dir.path(), "merge carrying a forge.toml change")
             .await
             .unwrap();

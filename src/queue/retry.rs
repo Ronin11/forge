@@ -172,7 +172,10 @@ mod tests {
 
         let t = task(0);
         let req = retry_request(&t, &RetryOverrides::none(), true, vec![], None);
-        assert!(!req.allow_protected, "neither the task nor the flag allow it");
+        assert!(
+            !req.allow_protected,
+            "neither the task nor the flag allow it"
+        );
 
         let o = RetryOverrides {
             allow_protected: true,
