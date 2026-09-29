@@ -655,12 +655,15 @@ if [ \"$has_schema\" = \"1\" ]; then\n\
     const NUDGE_FAKE_HEADER: &str = "#!/bin/sh\n\
 has_schema=0\n\
 has_resume=0\n\
+has_mcp_override=0\n\
 for a in \"$@\"; do\n\
   case \"$a\" in\n\
     --output-schema) has_schema=1 ;;\n\
     resume) has_resume=1 ;;\n\
+    mcp_servers={}) has_mcp_override=1 ;;\n\
   esac\n\
-done\n";
+done\n\
+test \"$has_mcp_override\" = 1 || exit 91\n";
 
     #[tokio::test]
     async fn a_phase_one_with_only_reads_triggers_one_nudge_that_edits_and_commits() {

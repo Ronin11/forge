@@ -732,10 +732,9 @@ impl Sandbox {
             cmd.arg("--bind").arg(s).arg(egress::SANDBOX_SOCKET);
         }
         cmd.arg("--bind").arg(worktree).arg(worktree);
-        // A private copy of the claude CLI's credentials and settings, and
-        // of codex's login and config: seeded from the operator's real
-        // files by `prepare` (read, never bound into a sandbox themselves),
-        // then bound writable here at the paths each CLI expects. The directory is
+        // Private logins and kernel-built settings are bound writable at
+        // the paths each CLI expects. Only logins are read from the host.
+        // The directory is
         // the step's (see `provider_dir_for`): the seed files are
         // refreshed on every launch, everything else the CLIs wrote there
         // (session transcripts above all) is kept, so a resumed attempt and
@@ -815,6 +814,9 @@ impl Sandbox {
         cmd
     }
 }
+
+#[cfg(test)]
+mod seeding;
 
 #[cfg(test)]
 mod tests {
