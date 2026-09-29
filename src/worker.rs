@@ -17,7 +17,6 @@ use crate::unix_now;
 use crate::workflows;
 use crate::{config, git};
 use anyhow::{Context, Result, bail};
-use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -933,7 +932,6 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut env_error: Option<anyhow::Error> = None;
     let mut claimed = 0u32;
     let mut hold_until: Option<i64> = None;
-    let mut announced_holds: HashSet<i64> = HashSet::new();
     let mut refusals = RefusalLog::default();
 
     loop {
@@ -971,7 +969,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     stopping = true;
                     break;
                 };
-                for line in new_holds(&f, &held, &mut announced_holds) {
+                for line in new_holds(&f, &held) {
                     eprintln!("{line}");
                 }
                 if let Some(t) = claim::task(&f, &opts, pid, &held, |t| {

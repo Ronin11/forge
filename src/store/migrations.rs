@@ -837,6 +837,20 @@ ALTER TABLE tasks ADD COLUMN deploy_id INTEGER REFERENCES deploys(id);
     "
 ALTER TABLE tasks ADD COLUMN supersedes INTEGER;
 ",
+    // Which initiatives currently have an announced hold, and with what
+    // reason (src/worker/holds.rs): a row survives across worker
+    // processes, so a successor started by a self-deploy (whose in-memory
+    // `announced` set starts empty) reads it instead of repeating the
+    // announcement a predecessor already made. A row is deleted the
+    // moment its hold leaves `held`, so a later, separate hold on the
+    // same initiative — even with the same reason — is announced again.
+    "
+CREATE TABLE initiative_holds (
+  initiative_id INTEGER PRIMARY KEY,
+  reason TEXT NOT NULL,
+  announced_at INTEGER NOT NULL
+);
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs
