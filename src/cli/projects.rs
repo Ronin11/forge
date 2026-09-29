@@ -703,9 +703,10 @@ async fn dispatch_initiative(cmd: Cmd) -> Result<()> {
                 workflow,
                 budget,
                 stop_after,
+                priority,
             } => {
                 initiative_new(
-                    project, outcome, from, provider, workflow, budget, stop_after,
+                    project, outcome, from, provider, workflow, budget, stop_after, priority,
                 )
                 .await
             }
@@ -715,7 +716,8 @@ async fn dispatch_initiative(cmd: Cmd) -> Result<()> {
                 budget,
                 stop_after,
                 outcome,
-            } => initiative_set(id, budget, stop_after, outcome),
+                priority,
+            } => initiative_set(id, budget, stop_after, outcome, priority),
             InitiativeCmd::List { project, json } => initiative_list(project, json),
             InitiativeCmd::Show { id, json } => initiative_show(id, json),
             InitiativeCmd::Report { id, json } => initiative_report(id, json),

@@ -347,6 +347,7 @@ pub async fn answer_proposal(f: &Forge, id: i64, text: &str, by: &str) -> Result
             Some(&t.repo),
             None,
             None,
+            None,
         )
         .await?;
         t.proposal_answer = Some("yes".to_string());

@@ -22,6 +22,8 @@ pub struct TaskEdit {
     pub checks: Option<Vec<String>>,
     /// Route every role of the task to this provider by hand.
     pub provider: Option<String>,
+    /// See `store::priority`.
+    pub priority: Option<i64>,
 }
 
 impl TaskEdit {
@@ -85,7 +87,7 @@ async fn after_fits(f: &Forge, id: i64, after: &[i64]) -> Result<Vec<i64>> {
 pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String>> {
     if edit.is_empty() {
         bail!(
-            "nothing to set: pass --budget, --max-turns, --timeout-secs, --retries, --text, --text-file, --workflow, --after/--no-after, --check/--no-checks or --provider"
+            "nothing to set: pass --budget, --max-turns, --timeout-secs, --retries, --text, --text-file, --workflow, --after/--no-after, --check/--no-checks, --provider or --priority"
         );
     }
     if let Some(b) = edit.budget
@@ -150,6 +152,10 @@ pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String
         let was = Some(old.provider.as_str()).filter(|p| !p.is_empty());
         changes.push(format!("provider {} → {name}", was.unwrap_or("by role")));
         up.provider = Some(name.clone());
+    }
+    if let Some(p) = edit.priority {
+        changes.push(format!("priority {} → {p}", old.priority));
+        up.priority = Some(p);
     }
     let repo = PathBuf::from(&old.repo);
     let cfg = config::load_working(&repo).await?;

@@ -74,6 +74,10 @@ pub struct TaskRequest {
     pub show_checks: bool,
     pub no_land: bool,
     pub after: Vec<i64>,
+    /// 0 (lowest) to 7 (highest); `None` takes `store::PRIORITY_DEFAULT`
+    /// (see `store::priority`). A retry or a refile (`retry_request`)
+    /// names the task it re-queues' own value here instead.
+    pub priority: Option<i64>,
     /// Whether the request said `--journal` (`Some(true)`) or
     /// `--no-journal` (`Some(false)`) itself; `None` when it said
     /// neither, leaving the arm to the operator's control fraction (see
@@ -204,6 +208,15 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         && b <= 0.0
     {
         bail!("budget must be positive");
+    }
+    if let Some(p) = args.priority
+        && !(crate::store::PRIORITY_MIN..=crate::store::PRIORITY_MAX).contains(&p)
+    {
+        bail!(
+            "priority must be between {} and {}",
+            crate::store::PRIORITY_MIN,
+            crate::store::PRIORITY_MAX
+        );
     }
     let repo = args.repo.canonicalize().context("repo path")?;
     if !repo.join(".git").exists() {
@@ -392,6 +405,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         model_source: model_source.to_string(),
         workflow_source: workflow_source.to_string(),
         trust,
+        priority: args.priority.unwrap_or(crate::store::PRIORITY_DEFAULT),
         ..Default::default()
     };
     for &dep in &t.after {

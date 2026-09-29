@@ -120,6 +120,11 @@ pub struct TaskArgs {
     /// Run only after this task has landed (repeatable); blocked if it ends otherwise
     #[arg(long = "after")]
     after: Vec<i64>,
+    /// Claim order: 0 (lowest) to 7 (highest), or low, normal, high,
+    /// urgent (default: normal). Among claimable tasks, higher claims
+    /// first.
+    #[arg(long, value_parser = crate::store::parse_priority)]
+    priority: Option<i64>,
     /// Show the agents the journal of earlier attempts, overriding the
     /// operator's control-arm fraction for this task
     #[arg(long, conflicts_with = "no_journal")]
@@ -763,6 +768,7 @@ impl From<&TaskArgs> for crate::queue::TaskRequest {
             show_checks: a.show_checks,
             no_land: a.no_land,
             after: a.after.clone(),
+            priority: a.priority,
             journal_choice: if a.journal {
                 Some(true)
             } else if a.no_journal {

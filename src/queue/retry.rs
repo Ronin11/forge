@@ -120,5 +120,38 @@ pub fn retry_request(
         trust: Some(t.trust.as_str().to_string()),
         after,
         blocked: None,
+        // A retry or a refile keeps the priority of the task it
+        // re-queues; it is never drawn or defaulted again.
+        priority: Some(t.priority),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(priority: i64) -> Task {
+        Task {
+            repo: "/r".into(),
+            task: "do it".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 2,
+            timeout_secs: 1,
+            priority,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn retry_request_inherits_the_predecessors_priority() {
+        let t = task(7);
+        let req = retry_request(&t, &RetryOverrides::none(), true, vec![], None);
+        assert_eq!(req.priority, Some(7));
+
+        let t = task(0);
+        let req = retry_request(&t, &RetryOverrides::none(), false, vec![], None);
+        assert_eq!(req.priority, Some(0));
     }
 }

@@ -491,6 +491,22 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// `forge initiative set --priority`: reprioritize every task of this
+    /// initiative that is still queued (a running or finished task keeps
+    /// what it already had; a task filed into this initiative later gets
+    /// whatever `forge initiative new`/`forge add` gave it, not this).
+    /// Returns how many rows changed.
+    pub fn set_priority_for_queued_initiative_tasks(
+        &self,
+        initiative: i64,
+        priority: i64,
+    ) -> Result<i64> {
+        Ok(self.lock().retry_execute(
+            "UPDATE tasks SET priority=?2 WHERE initiative=?1 AND state='queued'",
+            params![initiative, priority],
+        )? as i64)
+    }
+
     pub fn initiative(&self, id: i64) -> Result<Option<Initiative>> {
         Ok(self
             .lock()
