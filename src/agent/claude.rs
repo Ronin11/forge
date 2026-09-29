@@ -68,6 +68,30 @@ pub(super) fn claude_argv(bin: &str, l: &Launch<'_>) -> Vec<String> {
     argv
 }
 
+/// Read the CLI result independently of the process exit status.
+pub(super) fn apply_claude_result(out: &mut Outcome, v: &Value) {
+    out.got_result = true;
+    out.is_error = v["is_error"].as_bool().unwrap_or(false);
+    if let Some(id) = v["session_id"].as_str() {
+        out.session_id = Some(id.to_string());
+    }
+    out.subtype = v["subtype"].as_str().map(str::to_string);
+    out.terminal_reason = v["terminal_reason"].as_str().map(str::to_string);
+    out.max_turns_hit = v["subtype"].as_str() == Some("error_max_turns");
+    refusal::read_claude_error(out, v);
+    out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
+    out.cost_usd = v["total_cost_usd"].as_f64();
+    out.input_tokens = v["usage"]["input_tokens"].as_i64();
+    out.output_tokens = v["usage"]["output_tokens"].as_i64();
+    out.cache_read_input_tokens = v["usage"]["cache_read_input_tokens"].as_i64();
+    out.cache_creation_input_tokens = v["usage"]["cache_creation_input_tokens"].as_i64();
+    out.result_text = v["result"].as_str().unwrap_or("").to_string();
+    out.structured = match &v["structured_output"] {
+        Value::Null => None,
+        other => Some(other.to_string()),
+    };
+}
+
 pub(super) async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
     // The binary itself, never a version-manager shim: a shim inside the
     // sandbox reaches for state the sandbox does not have (a global tool
