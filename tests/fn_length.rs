@@ -93,12 +93,6 @@ const ALLOWLIST: &[(&str, &str, usize, &str)] = &[
         "existing function awaiting a focused split",
     ),
     (
-        "src/engine/worktree.rs",
-        "prepare_worktree",
-        149,
-        "existing function awaiting a focused split",
-    ),
-    (
         "src/engine/step.rs",
         "run_directive_step",
         538,

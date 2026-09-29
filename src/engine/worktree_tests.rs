@@ -25,9 +25,15 @@ async fn checkout_case(conflict: bool, landed: bool, refile: bool) {
         .await
         .unwrap()
         .unwrap();
-    git::update_ref(repo.path(), "refs/heads/prior", &tip)
-        .await
-        .unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["branch", "prior", &tip])
+            .status()
+            .unwrap()
+            .success()
+    );
     if !landed {
         git::reset_hard(repo.path(), &base).await.unwrap();
     }
@@ -47,6 +53,7 @@ async fn checkout_case(conflict: bool, landed: bool, refile: bool) {
         ..Default::default()
     };
     parent.id = f.store.insert_task(&parent).unwrap();
+    f.store.update_task(&parent).unwrap();
     let mut child = Task {
         repo: parent.repo.clone(),
         base_sha: current.clone(),
@@ -55,6 +62,7 @@ async fn checkout_case(conflict: bool, landed: bool, refile: bool) {
         ..Default::default()
     };
     child.id = f.store.insert_task(&child).unwrap();
+    f.store.update_task(&child).unwrap();
     if refile {
         let d = f
             .store
