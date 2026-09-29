@@ -1518,6 +1518,11 @@ pub(crate) struct SelfDeploy {
     pub(crate) bins: std::path::PathBuf,
     fakehome: std::path::PathBuf,
     path: String,
+    /// The id of the release `current` starts out naming: a real commit
+    /// (origin's initial "workspace" commit), since the older-than-live
+    /// guard now refuses a live id that does not resolve to one
+    /// (docs/REVIEW-4.md, E3-11).
+    pub(crate) old: String,
 }
 
 impl SelfDeploy {
@@ -1545,10 +1550,11 @@ impl SelfDeploy {
         git(&e.repo, &["add", "-A"]);
         git(&e.repo, &["commit", "-qm", "workspace"]);
         git(&e.repo, &["push", "-q", "origin", "main"]);
+        let old = git(&e.repo, &["rev-parse", "HEAD"]);
 
         let bins = e.home.join("bin");
-        let old = bins.join("releases/old");
-        std::fs::create_dir_all(&old).unwrap();
+        let old_dir = bins.join(format!("releases/{old}"));
+        std::fs::create_dir_all(&old_dir).unwrap();
         for b in [
             "forge",
             "forge-web",
@@ -1556,9 +1562,9 @@ impl SelfDeploy {
             "forge-repomap",
             "forge-tui",
         ] {
-            write_fake(&old.join(b), "#!/bin/sh\n# old\n");
+            write_fake(&old_dir.join(b), "#!/bin/sh\n# old\n");
         }
-        std::os::unix::fs::symlink("releases/old", bins.join("current")).unwrap();
+        std::os::unix::fs::symlink(format!("releases/{old}"), bins.join("current")).unwrap();
 
         let o = e.forge(
             "ok.sh",
@@ -1598,6 +1604,7 @@ impl SelfDeploy {
             bins,
             fakehome,
             path,
+            old,
         }
     }
 
@@ -1706,12 +1713,12 @@ fn deploy_self_stages_a_release_flips_current_and_restarts_web_and_portal_then_t
     let rel = format!("releases/{good}");
     assert_eq!(s.link("staged"), rel);
     assert_eq!(s.link("current"), rel);
-    assert_eq!(s.link("previous"), "releases/old");
+    assert_eq!(s.link("previous"), format!("releases/{}", s.old));
     for b in ["forge", "forge-web", "forge-portal", "forge-test"] {
         assert!(s.binary(b).contains("good"), "{b}: {}", s.binary(b));
     }
     assert!(
-        std::fs::read_to_string(s.bins.join("releases/old/forge"))
+        std::fs::read_to_string(s.bins.join(format!("releases/{}/forge", s.old)))
             .unwrap()
             .contains("old")
     );
@@ -1828,7 +1835,7 @@ fn deploy_self_puts_the_pointers_back_and_leaves_the_worker_alone_when_the_check
     // The release was live for the check, then flipped back: what runs is
     // what ran before, the failed release is gone, and the units were
     // restarted onto the old one.
-    assert_eq!(s.link("current"), "releases/old");
+    assert_eq!(s.link("current"), format!("releases/{}", s.old));
     assert_eq!(s.link("staged"), "");
     assert_eq!(s.link("previous"), "");
     assert!(!s.bins.join(format!("releases/{bad}")).exists());
@@ -1910,7 +1917,7 @@ fn deploy_self_never_stages_a_release_whose_own_doctor_fails() {
 
     let o = s.deploy(&bad);
     assert!(!o.status.success());
-    assert_eq!(s.link("current"), "releases/old");
+    assert_eq!(s.link("current"), format!("releases/{}", s.old));
     assert_eq!(s.link("staged"), "");
     assert!(!s.bins.join(format!("releases/{bad}")).exists());
     let calls = s.calls();
@@ -1946,7 +1953,7 @@ fn deploy_self_refuses_a_release_whose_migration_fails_on_a_store_with_a_row() {
         String::from_utf8_lossy(&o.stdout),
         String::from_utf8_lossy(&o.stderr)
     );
-    assert_eq!(s.link("current"), "releases/old");
+    assert_eq!(s.link("current"), format!("releases/{}", s.old));
     assert_eq!(s.link("staged"), "");
     assert!(!s.bins.join(format!("releases/{bad}")).exists());
     let calls = s.calls();
