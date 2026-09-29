@@ -415,6 +415,33 @@ pub enum Host {
     Usable(Creds),
 }
 
+/// What a write-back attempt did. `false` used to stand for "nothing to do"
+/// and "failed" alike, so a failed write-back was as silent as one that had
+/// nothing to offer; a private copy could hold the only live refresh token
+/// right up to the moment something deleted it (docs/REVIEW-4.md #1.9).
+#[derive(Debug)]
+pub enum Outcome {
+    /// The private login replaced the host file.
+    Done,
+    /// No host file, no usable private copy, no recorded seed, or the
+    /// private copy is not later than the host's: there was nothing to
+    /// write back.
+    Nothing,
+    /// The private copy was later and judged genuine, but writing it to the
+    /// host file failed.
+    Failed(std::io::Error),
+}
+
+impl Outcome {
+    pub fn wrote(&self) -> bool {
+        matches!(self, Outcome::Done)
+    }
+
+    pub fn failed(&self) -> bool {
+        matches!(self, Outcome::Failed(_))
+    }
+}
+
 impl Shape {
     /// Read a login file's text. Never fails: text that is not the CLI's
     /// JSON is an unusable login that expires at 0.
@@ -492,7 +519,7 @@ impl Shape {
             return;
         };
         for copy in self.private_copies(worktree) {
-            let _ = self.write_back_locked(dir, state, &copy);
+            self.write_back_locked(dir, state, &copy);
             let Some(provider_dir) = copy.parent().and_then(Path::parent) else {
                 continue;
             };
@@ -511,48 +538,64 @@ impl Shape {
     }
 
     /// `write_back` for a caller that holds the lock. `state` is FORGE_HOME,
-    /// where the seed of `private` was recorded.
-    pub fn write_back_locked(
-        &self,
-        dir: &Path,
-        state: &Path,
-        private: &Path,
-    ) -> std::io::Result<bool> {
+    /// where the seed of `private` was recorded. Prints a `login` note when
+    /// the write itself fails, so a failure is never as quiet as having
+    /// nothing to write back (docs/REVIEW-4.md #1.9).
+    pub fn write_back_locked(&self, dir: &Path, state: &Path, private: &Path) -> Outcome {
         if !self.rotates() {
-            return Ok(false);
+            return Outcome::Nothing;
         }
         let host = dir.join(self.file);
         let Ok(host_text) = std::fs::read_to_string(&host) else {
             // Logged out (or never in): a stale copy does not undo that.
-            return Ok(false);
+            return Outcome::Nothing;
         };
         let Some(text) = read_private(private) else {
-            return Ok(false);
+            return Outcome::Nothing;
         };
         let now = unix_ms();
         let Some(seed) = Seed::load(state, private) else {
-            return Ok(false);
+            return Outcome::Nothing;
         };
         if !should_write_back(self.parse(&host_text), self.parse(&text), now)
             || !seed.could_have_produced(self, &text, now)
         {
-            return Ok(false);
+            return Outcome::Nothing;
         }
-        replace_atomic(&dir.join(self.prev()), host_text.as_bytes())?;
-        replace_atomic(&host, text.as_bytes())?;
-        let _ = replace_atomic(&dir.join(MARK), crate::unix_now().to_string().as_bytes());
-        Ok(true)
+        let wrote = replace_atomic(&dir.join(self.prev()), host_text.as_bytes())
+            .and_then(|()| replace_atomic(&host, text.as_bytes()));
+        let outcome = match wrote {
+            Ok(()) => {
+                let _ = replace_atomic(&dir.join(MARK), crate::unix_now().to_string().as_bytes());
+                Outcome::Done
+            }
+            Err(e) => Outcome::Failed(e),
+        };
+        if let Outcome::Failed(e) = &outcome {
+            eprintln!(
+                "login: write-back of {} to {} failed: {e}",
+                self.cli,
+                host.display()
+            );
+        }
+        outcome
     }
 
     /// Copy `private`'s login back over the host file in `dir` when it is a
-    /// later one the CLI could have made from its seed. Whether it did.
-    pub async fn write_back(
-        &self,
-        dir: &Path,
-        state: &Path,
-        private: &Path,
-    ) -> std::io::Result<bool> {
+    /// later one the CLI could have made from its seed.
+    pub async fn write_back(&self, dir: &Path, state: &Path, private: &Path) -> Outcome {
         let _lock = lock(dir).await;
+        self.write_back_locked(dir, state, private)
+    }
+
+    /// `write_back` for a caller that cannot await the lock: used where a
+    /// provider directory is about to be removed from a synchronous call
+    /// site (`sandbox::discard_provider_state`'s callers include a `Drop`
+    /// impl and plain `#[test]` functions, neither of which can hold an
+    /// executor). Blocks the calling thread on the lock, the same trade the
+    /// CLI itself makes.
+    pub fn write_back_sync(&self, dir: &Path, state: &Path, private: &Path) -> Outcome {
+        let _lock = lock_sync(dir);
         self.write_back_locked(dir, state, private)
     }
 
@@ -587,6 +630,35 @@ impl Shape {
             _ => {
                 Seed::forget(state, private);
                 let _ = std::fs::remove_file(private);
+            }
+        }
+    }
+}
+
+/// Write back every private copy found directly under `worktrees`, once, for
+/// every rotating shape (docs/REVIEW-4.md #1.9): run at worker start, since
+/// a launch aborted by the second signal never reaches its own write-back
+/// (`refusal.rs`'s `guarded_claude`), and a copy left holding the only live
+/// refresh token would otherwise sit unwritten until something removes it.
+pub fn write_back_all_private_copies(state: &Path, worktrees: &Path) {
+    let Ok(entries) = std::fs::read_dir(worktrees) else {
+        return;
+    };
+    for provider_dir in entries.flatten().map(|e| e.path()) {
+        let is_provider = provider_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with("-provider"));
+        if !is_provider {
+            continue;
+        }
+        for shape in SHAPES {
+            let private = provider_dir.join(shape.cli).join(shape.file);
+            let Some(host) = shape.config_dir() else {
+                continue;
+            };
+            if is_regular_file(&private) {
+                shape.write_back_sync(&host, state, &private);
             }
         }
     }
@@ -688,6 +760,23 @@ async fn lock_named(dir: &Path, name: &str) -> Lock {
                 _ => break,
             }
         }
+    }
+    Lock(file)
+}
+
+/// `lock`, for a caller with no executor to await one (a `Drop` impl, a
+/// plain `#[test]`): blocks the thread in the kernel, the ordinary `flock`
+/// trade every other process makes. Never reached from a tokio worker.
+fn lock_sync(dir: &Path) -> Lock {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(LOCK))
+        .ok();
+    if let Some(f) = &file {
+        // SAFETY: the descriptor is open for the life of `f`.
+        unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) };
     }
     Lock(file)
 }

@@ -296,18 +296,65 @@ fn write_back_replaces_only_with_a_later_login() {
         let host = t.dir.join(s.file);
         std::fs::write(&t.private, f.good("new-a", "new-r", far() + 1000)).unwrap();
         assert!(
-            block_on(s.write_back(&t.dir, &t.state, &t.private)).unwrap(),
+            block_on(s.write_back(&t.dir, &t.state, &t.private)).wrote(),
             "{}",
             s.cli
         );
         assert!(std::fs::read_to_string(&host).unwrap().contains("new-r"));
         assert!(last_write_back(&t.dir).is_some());
         // The same login again is not later: nothing to do.
-        assert!(!block_on(s.write_back(&t.dir, &t.state, &t.private)).unwrap());
+        assert!(!block_on(s.write_back(&t.dir, &t.state, &t.private)).wrote());
         // An older one never goes back over a newer.
         std::fs::write(&t.private, f.good("older-a", "older-r", far() - 1000)).unwrap();
-        assert!(!block_on(s.write_back(&t.dir, &t.state, &t.private)).unwrap());
+        assert!(!block_on(s.write_back(&t.dir, &t.state, &t.private)).wrote());
         assert!(std::fs::read_to_string(&host).unwrap().contains("new-r"));
+    }
+}
+
+/// docs/REVIEW-4.md #1.9: `false` used to stand for "nothing to do" and
+/// "failed" alike; the outcome is now three-valued, and each is reached on
+/// its own.
+#[test]
+fn write_back_reaches_all_three_outcomes() {
+    for f in rotating() {
+        let s = f.shape;
+        let seed_text = f.login("old-a", "old-r", far());
+        let t = seeded(s, &seed_text);
+
+        // Nothing to do: the private copy is not later than the host's.
+        assert!(matches!(
+            block_on(s.write_back(&t.dir, &t.state, &t.private)),
+            Outcome::Nothing
+        ));
+
+        // Done: a later, genuine private login replaces the host's.
+        std::fs::write(&t.private, f.good("new-a", "new-r", far() + 1000)).unwrap();
+        assert!(matches!(
+            block_on(s.write_back(&t.dir, &t.state, &t.private)),
+            Outcome::Done
+        ));
+
+        // Failed: a later, genuine login, but the host directory refuses
+        // the write (read-only: the CLI's own login there would fail the
+        // same way, so this is what an unwritable config directory or a
+        // full disk looks like).
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(&t.private, f.good("newer-a", "newer-r", far() + 2000)).unwrap();
+        std::fs::set_permissions(&t.dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let outcome = block_on(s.write_back(&t.dir, &t.state, &t.private));
+        std::fs::set_permissions(&t.dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        match outcome {
+            Outcome::Failed(e) => assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied),
+            other => panic!("{}: expected Failed, got {other:?}", s.cli),
+        }
+        // The host file is unchanged: the write never happened.
+        assert!(
+            std::fs::read_to_string(t.dir.join(s.file))
+                .unwrap()
+                .contains("new-r"),
+            "{}",
+            s.cli
+        );
     }
 }
 
@@ -319,7 +366,7 @@ fn an_accepted_rotation_keeps_the_login_it_replaced_once_and_privately() {
         let seed_text = f.login("a0", "r0", far());
         let t = seeded(s, &seed_text);
         std::fs::write(&t.private, f.good("a1", "r1", far() + 1000)).unwrap();
-        assert!(block_on(s.write_back(&t.dir, &t.state, &t.private)).unwrap());
+        assert!(block_on(s.write_back(&t.dir, &t.state, &t.private)).wrote());
         let prev = t.dir.join(s.prev());
         assert_eq!(std::fs::read_to_string(&prev).unwrap(), seed_text);
         assert_eq!(
@@ -327,7 +374,7 @@ fn an_accepted_rotation_keeps_the_login_it_replaced_once_and_privately() {
             0o600
         );
         std::fs::write(&t.private, f.good("a2", "r2", far() + 2000)).unwrap();
-        assert!(block_on(s.write_back(&t.dir, &t.state, &t.private)).unwrap());
+        assert!(block_on(s.write_back(&t.dir, &t.state, &t.private)).wrote());
         assert!(
             std::fs::read_to_string(&prev).unwrap().contains("r1"),
             "one copy: the latest replaced"
@@ -342,7 +389,7 @@ fn offered(shape: &Shape, seed_text: &str, forged: impl FnOnce(&Path)) -> (bool,
     let t = seeded(shape, seed_text);
     std::fs::remove_file(&t.private).unwrap();
     forged(&t.private);
-    let took = block_on(shape.write_back(&t.dir, &t.state, &t.private)).unwrap();
+    let took = block_on(shape.write_back(&t.dir, &t.state, &t.private)).wrote();
     assert_eq!(
         t.dir.join(shape.prev()).exists(),
         took,
@@ -556,7 +603,7 @@ fn a_private_login_with_no_recorded_seed_is_rejected() {
         let t = seeded(f.shape, &f.login("a0", "r0", far()));
         std::fs::remove_dir_all(&t.state).unwrap();
         std::fs::write(&t.private, f.good("a1", "r1", far() + 1000)).unwrap();
-        assert!(!block_on(f.shape.write_back(&t.dir, &t.state, &t.private)).unwrap());
+        assert!(!block_on(f.shape.write_back(&t.dir, &t.state, &t.private)).wrote());
     }
 }
 
@@ -584,7 +631,7 @@ fn write_back_does_not_resurrect_a_logged_out_host() {
         let t = seeded(f.shape, &f.login("a0", "r0", far()));
         std::fs::remove_file(t.dir.join(f.shape.file)).unwrap();
         std::fs::write(&t.private, f.good("a1", "r1", far())).unwrap();
-        assert!(!block_on(f.shape.write_back(&t.dir, &t.state, &t.private)).unwrap());
+        assert!(!block_on(f.shape.write_back(&t.dir, &t.state, &t.private)).wrote());
         assert!(!t.dir.join(f.shape.file).exists());
     }
 }
@@ -629,7 +676,7 @@ fn a_login_that_cannot_rotate_is_seeded_without_a_record_and_never_written_back(
         assert!(!Seed::path(&t.state, &t.private).exists());
         let later = copilot_raw(&format!("gho_{:x<36}", "planted"), "", 0);
         std::fs::write(&t.private, &later).unwrap();
-        assert!(!block_on(s.write_back(&t.dir, &t.state, &t.private)).unwrap());
+        assert!(!block_on(s.write_back(&t.dir, &t.state, &t.private)).wrote());
         block_on(s.seed(&t.dir, &t.state, &t.worktree, &t.private));
         assert_eq!(std::fs::read_to_string(t.dir.join(s.file)).unwrap(), text);
         assert_eq!(std::fs::read_to_string(&t.private).unwrap(), text);
@@ -747,7 +794,7 @@ fn each_login_keeps_its_own_lock_mark_and_backup_beside_its_file() {
     let t = seeded(&CODEX, &codex_raw("a0", "r0", far()));
     let good = codex_raw("a1", &format!("rt.1.{:x<40}", "r1"), far() + 1000);
     std::fs::write(&t.private, good).unwrap();
-    assert!(block_on(CODEX.write_back(&t.dir, &t.state, &t.private)).unwrap());
+    assert!(block_on(CODEX.write_back(&t.dir, &t.state, &t.private)).wrote());
     for name in [LOCK, MARK, "auth.json.forge-prev"] {
         assert!(t.dir.join(name).exists(), "{name}");
     }
