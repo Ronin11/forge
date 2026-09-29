@@ -37,10 +37,7 @@ fn review_provider_state_is_separate_and_discarded_with_the_coders() {
     assert!(args_of(&cmd).contains(&review.join("claude").display().to_string()));
     assert!(!args_of(&cmd).contains(&coder.join("claude").display().to_string()));
     assert!(!review.join("claude/projects").exists());
-    assert_eq!(
-        std::fs::read_to_string(review.join("claude/settings.json")).unwrap(),
-        "settings"
-    );
+    assert!(!review.join("claude/settings.json").exists());
     discard_provider_state(&worktree);
     assert!(!coder.exists());
     assert!(!review.exists());
@@ -104,7 +101,11 @@ fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::create_dir_all(&codex_dir).unwrap();
     std::fs::create_dir_all(&copilot_dir).unwrap();
-    std::fs::write(copilot_dir.join("config.json"), "login").unwrap();
+    std::fs::write(
+        copilot_dir.join("config.json"),
+        r#"{"copilotTokens":{"github":"login"}}"#,
+    )
+    .unwrap();
     std::fs::write(config_dir.join(".credentials.json"), CREDS).unwrap();
     std::fs::write(config_dir.join("settings.json"), "settings").unwrap();
     std::fs::write(codex_dir.join("auth.json"), CODEX_AUTH).unwrap();
@@ -121,7 +122,6 @@ fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
         forge_home: root.path().join("forge-home"),
         codex_dir: codex_dir.clone(),
         copilot_dir: copilot_dir.clone(),
-        claude_json_seed: PathBuf::from("/home/real/.claude.json"),
         extra_ro: vec![PathBuf::from("/opt/toolchain")],
         extra_rw: vec![npm_cache.clone()],
         overlay: true,
@@ -151,7 +151,6 @@ fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
     let tmpfs_home = pos("--tmpfs", "/home/attempt");
     let ro_agent = pos("--ro-bind-try", "/opt/agent");
     let ro_extra = pos("--ro-bind-try", "/opt/toolchain");
-    let ro_seed = pos("--ro-bind-try", "/home/real/.claude.json");
     let worktree_bind = pos("--bind", worktree.to_str().unwrap());
     let overlay_src = pos("--overlay-src", npm_cache.to_str().unwrap());
     let tmp_overlay = pos("--tmp-overlay", npm_cache.to_str().unwrap());
@@ -166,10 +165,6 @@ fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
     assert!(
         ro_extra < worktree_bind,
         "extra ro binds must precede the worktree bind"
-    );
-    assert!(
-        ro_seed < worktree_bind,
-        "the claude.json seed ro bind must precede the worktree bind"
     );
     assert!(
         worktree_bind < overlay_src,
@@ -216,42 +211,26 @@ fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
     );
     assert_eq!(
         std::fs::read_to_string(copilot_priv.join("config.json")).unwrap(),
-        "login"
+        r#"{"copilotTokens":{"github":"login"}}"#
     );
     assert_eq!(
         std::fs::read_to_string(claude_priv.join(".credentials.json")).unwrap(),
         CREDS
     );
-    assert_eq!(
-        std::fs::read_to_string(claude_priv.join("settings.json")).unwrap(),
-        "settings"
-    );
+    assert!(!claude_priv.join("settings.json").exists());
     assert_eq!(
         std::fs::read_to_string(codex_priv.join("auth.json")).unwrap(),
         CODEX_AUTH
     );
     assert_eq!(
         std::fs::read_to_string(codex_priv.join("config.toml")).unwrap(),
-        "cfg"
+        ""
     );
 
-    // The seed is bound read-only at a neutral path, never at the real
-    // `.claude.json` path: nothing binds that path read-write anymore.
-    assert!(
-        !args.iter().any(|a| a == "/home/attempt/.claude.json"),
-        "the sandbox must never bind the host file at the real .claude.json path: {args:?}"
-    );
-    let seed_dest_pos = args
-        .windows(2)
-        .position(|w| w[0] == "/home/real/.claude.json")
-        .map(|i| i + 1)
-        .expect("seed source arg present");
-    assert_eq!(
-        args[seed_dest_pos], "/run/forge/seed/claude.json",
-        "seed must land at the neutral in-sandbox path"
-    );
+    assert!(!args.iter().any(|a| a == "/home/attempt/.claude.json"));
+    assert!(!args.iter().any(|a| a == "/home/real/.claude.json"));
 
-    // The sandboxed command is a copy-then-exec wrapper around the real
+    // The sandboxed command is a seed-then-exec wrapper around the real
     // argv, not the real argv directly: `true` must not appear as argv[0].
     let dash_dash = args
         .iter()
@@ -261,13 +240,13 @@ fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
     assert_eq!(tail[0], "/bin/sh");
     assert_eq!(tail[1], "-c");
     assert!(
-        tail[2].contains("/run/forge/seed/claude.json"),
-        "wrapper must copy from the seed path: {}",
+        tail[2].contains(CLAUDE_JSON_SEED),
+        "wrapper must write the kernel-built seed: {}",
         tail[2]
     );
     assert!(
         tail[2].contains("/home/attempt/.claude.json"),
-        "wrapper must copy to $HOME/.claude.json: {}",
+        "wrapper must write to $HOME/.claude.json: {}",
         tail[2]
     );
     assert!(
@@ -363,7 +342,6 @@ fn test_sandbox(model: &str) -> Sandbox {
         forge_home: PathBuf::from("/home/attempt/forge-home"),
         codex_dir: PathBuf::from("/home/attempt/.codex"),
         copilot_dir: PathBuf::from("/home/attempt/.copilot"),
-        claude_json_seed: PathBuf::from("/home/real/.claude.json"),
         extra_ro: vec![],
         extra_rw: vec![],
         overlay: true,

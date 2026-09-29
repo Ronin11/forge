@@ -1,7 +1,7 @@
 #!/bin/bash
-# Assert the Agent launch still gets its settings and inherited provider keys.
+# Assert the Agent launch gets inherited provider keys without host settings.
 set -eu
-test "$(cat "$CLAUDE_CONFIG_DIR/settings.json")" = operator-settings
+test ! -e "$CLAUDE_CONFIG_DIR/settings.json"
 test ! -e "$CLAUDE_CONFIG_DIR/real-secret.txt"
 test "$ANTHROPIC_API_KEY" = operator-anthropic
 test "$CODEX_API_KEY" = operator-codex

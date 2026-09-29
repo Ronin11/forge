@@ -116,7 +116,7 @@ fn an_attempt_runs_sandboxed_when_bwrap_is_present() {
     assert!(out.contains("sandboxed"), "{out}");
 }
 
-/// Agents retain their private settings and provider environment; repository
+/// Agents retain their private logins and provider environment; repository
 /// operations get empty provider directories and no inherited provider variables.
 #[test]
 fn the_operators_config_directory_is_seeded_not_bound_into_the_sandbox() {
@@ -126,8 +126,8 @@ fn the_operators_config_directory_is_seeded_not_bound_into_the_sandbox() {
         return;
     }
     assert!(e.forge("ok.sh", &["workflows"]).status.success());
-    // Stands in for the operator's real claude config directory: one file
-    // an attempt needs, one it must never see.
+    // Neither settings nor unrelated files in the operator's config
+    // directory may reach the attempt.
     let fake_config = e.home.join("fake-claude-config");
     std::fs::create_dir_all(&fake_config).unwrap();
     std::fs::write(fake_config.join("settings.json"), "operator-settings").unwrap();

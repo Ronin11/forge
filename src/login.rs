@@ -123,9 +123,6 @@ pub struct Shape {
     shaped: fn(&Value) -> bool,
     /// The furthest ahead a freshly rotated login may expire.
     max_lifetime_ms: i64,
-    /// The file holds the CLI's settings as well as its login: it is seeded
-    /// even with no token in it.
-    settings_too: bool,
 }
 
 pub const CLAUDE: Shape = Shape {
@@ -145,7 +142,6 @@ pub const CLAUDE: Shape = Shape {
     shaped: claude_shaped,
     // The CLI's tokens live hours; a day leaves room and no more.
     max_lifetime_ms: 24 * 3600 * 1000,
-    settings_too: false,
 };
 
 pub const CODEX: Shape = Shape {
@@ -166,7 +162,6 @@ pub const CODEX: Shape = Shape {
     shaped: codex_shaped,
     // The access token lives ten days; one more leaves room and no more.
     max_lifetime_ms: 11 * 24 * 3600 * 1000,
-    settings_too: false,
 };
 
 pub const COPILOT: Shape = Shape {
@@ -181,7 +176,6 @@ pub const COPILOT: Shape = Shape {
     rotating: &[],
     shaped: |_| false,
     max_lifetime_ms: 0,
-    settings_too: true,
 };
 
 /// Every login the sandboxes are seeded with.
@@ -599,12 +593,22 @@ impl Shape {
         self.write_back_locked(dir, state, private)
     }
 
+    /// Copilot combines login and user settings. Only tokens cross the boundary.
+    fn login_seed(&self, text: &str) -> String {
+        if self.cli == "copilot" {
+            let v = json(text).unwrap_or_default();
+            serde_json::json!({"copilotTokens": v["copilotTokens"]}).to_string()
+        } else {
+            text.to_string()
+        }
+    }
+
     /// Everything a launch does to the login before a sandbox starts, under
     /// one lock: write back any later private login (this task's own, from
     /// the attempt before, or another task's still running), then seed
     /// `private` from the host file, recording in `state` (FORGE_HOME) what
-    /// was seeded. An unusable host file seeds nothing (unless it holds the
-    /// CLI's settings too), and a copy left from an earlier launch is removed
+    /// was seeded. An unusable host file seeds nothing, and a copy left
+    /// from an earlier launch is removed
     /// with it, so an attempt never starts on a dead login. A refresh
     /// probe running on the host is waited out first (see `probe_lock`).
     pub async fn seed(&self, dir: &Path, state: &Path, worktree: &Path, private: &Path) {
@@ -613,7 +617,8 @@ impl Shape {
         self.write_back_private_copies_locked(dir, state, worktree);
         let seeded = std::fs::read_to_string(dir.join(self.file))
             .ok()
-            .filter(|t| self.settings_too || self.parse(t).usable);
+            .filter(|t| self.parse(t).usable)
+            .map(|t| self.login_seed(&t));
         // The record is made before the copy, so a copy that could rotate
         // never exists without the record that judges it. One that cannot
         // (no refresh token: an API key, copilot's) has no record, and is
@@ -706,14 +711,6 @@ pub fn replace_atomic(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// plant in a directory it writes) is not, whatever it points at.
 pub fn is_regular_file(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
-}
-
-/// Seed `dest`, a path the sandbox can write, with the bytes of the host
-/// file `from`. The bytes go to a fresh sibling that is renamed over `dest`:
-/// the rename replaces a planted symlink and never follows it, where
-/// `std::fs::copy` would open the symlink's target and truncate it.
-pub fn seed_copy(from: &Path, dest: &Path) -> std::io::Result<()> {
-    replace_atomic(dest, &std::fs::read(from)?)
 }
 
 /// An exclusive lock on the host login, released on drop. `flock` locks the
