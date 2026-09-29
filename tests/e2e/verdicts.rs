@@ -327,12 +327,12 @@ fn a_suite_exit_that_names_only_a_visible_test_is_refused_and_the_step_goes_on()
 }
 
 #[test]
-fn no_structured_result_fails_l0() {
+fn no_structured_result_with_commits_is_verified() {
     let e = Env::new();
-    assert!(!e.run("noenvelope.sh", &["--retries", "0"]).status.success());
+    assert!(e.run("noenvelope.sh", &["--retries", "0"]).status.success());
     let a = e.attempts(1);
-    assert_eq!(a[0].2, "L0 failed: result-structured");
-    assert_eq!(check(&a[0].4, "L1", "answer"), None);
+    assert_eq!(a[0].1, "succeeded");
+    assert_eq!(check(&a[0].4, "L1", "answer"), Some(true));
 }
 
 #[test]

@@ -144,6 +144,41 @@ mod tests {
     use super::super::tests::test_launch;
     use super::*;
 
+    #[test]
+    fn envelope_retry_exhaustion_is_classified_from_the_result_frame() {
+        let frame = serde_json::json!({
+            "type": "result",
+            "is_error": true,
+            "subtype": "error_max_structured_output_retries",
+            "terminal_reason": "structured_output_retry_exhausted",
+            "num_turns": 21
+        });
+        // Either diagnosis is sufficient across CLI versions.
+        for omit in [None, Some("subtype"), Some("terminal_reason")] {
+            let mut frame = frame.clone();
+            if let Some(key) = omit {
+                frame.as_object_mut().unwrap().remove(key);
+            }
+            let mut out = Outcome {
+                exit_code: Some(1),
+                ..Default::default()
+            };
+            apply_claude_result(&mut out, &frame);
+            assert!(out.got_result && out.is_error);
+            assert!(!out.max_turns_hit);
+            assert_eq!(out.num_turns, 21);
+            assert!(out.structured.is_none());
+            assert_eq!(
+                crate::directive::failure(&out),
+                Some(crate::directive::Failure::StructuredOutput)
+            );
+            assert_eq!(
+                crate::directive::agent_failure(&out).as_deref(),
+                Some("structured_output_retry_exhausted: envelope missing")
+            );
+        }
+    }
+
     /// `StructuredOutput` tool `--json-schema` itself forces into the run,
     /// so the model could never submit its answer and the run always ended
     /// at its turn cap (reproduced by hand against the real CLI: exit 1,

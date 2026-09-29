@@ -239,24 +239,16 @@ fn a_run_the_provider_refuses_does_not_count_and_waits_for_the_window() {
 }
 
 #[test]
-fn a_coder_that_commits_then_runs_out_of_turns_leaves_checked_code_for_a_human() {
+fn a_coder_that_commits_then_runs_out_of_turns_is_verified_by_checks() {
     let e = Env::new();
     let o = e.run("cappedcommit.sh", &["--retries", "0"]);
-    assert!(!o.status.success());
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(
-        err.contains("capped   ran out of turns after committing; the checks pass"),
-        "{err}"
-    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let (state, reason, pushed) = e.task(1);
-    assert_eq!(state, "unverified", "{reason}");
-    assert!(
-        reason.starts_with("ran out of turns after committing; the checks pass"),
-        "{reason}"
-    );
+    assert_eq!(state, "succeeded", "{reason}");
     assert!(pushed, "the checked branch is not thrown away");
-    let show = String::from_utf8_lossy(&e.forge("ok.sh", &["show", "1"]).stdout).to_string();
-    assert!(show.contains("nothing vouches for what it did"), "{show}");
+    let attempts = e.attempts(1);
+    assert_eq!(attempts[0].1, "succeeded");
+    assert_eq!(check(&attempts[0].4, "L1", "answer"), Some(true));
 }
 
 #[test]
@@ -354,7 +346,7 @@ fn the_fresh_continuation_arm_launches_without_resume_and_carries_a_handoff() {
         "git diff --stat",
         "step.txt",
         "What the checks found so far",
-        "found:   agent exit 1",
+        "found:   L1 failed: answer",
         "src/notes.txt",
         "Reached max turns (30)",
         "The task:\\nwrite 42 to answer.txt",

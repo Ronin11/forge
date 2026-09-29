@@ -14,6 +14,7 @@ mod deploy_errors;
 mod deploy_lock;
 mod drafts;
 mod economist;
+mod envelope_recovery;
 mod environment;
 mod event_cursors;
 mod execution;

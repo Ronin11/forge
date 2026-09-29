@@ -1181,8 +1181,12 @@ pub async fn verify_directive(
         question.as_ref().map(|(k, q)| (*k, q.as_str())),
         contract.verifies_work(),
     );
-    if recovered && v.state == AttemptState::Succeeded {
-        v.envelope.as_mut().unwrap().summary = "envelope missing; verified by checks".into();
+    if recovered {
+        if v.state == AttemptState::Succeeded {
+            v.envelope.as_mut().unwrap().summary = "envelope missing; verified by checks".into();
+        } else {
+            v.envelope = None;
+        }
     }
     Ok(v)
 }
