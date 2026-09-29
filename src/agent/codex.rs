@@ -172,7 +172,7 @@ fn phase_one_needs_real_input(out: &Outcome) -> bool {
 /// while it worked, so this is the first it hears of the shape its answer
 /// must take. Named fields match `envelope::SCHEMA` so the model has enough
 /// to go on without having seen the schema itself.
-const CODEX_REPORT_PROMPT: &str = "Do no further work. Report the structured \
+pub(super) const CODEX_REPORT_PROMPT: &str = "Do no further work. Report the structured \
 result for everything done in this thread so far: schema_version, summary, \
 checks_run, claims, and needs_input if you stopped for a reason \
 before finishing, matching the schema you were given exactly.";
@@ -183,6 +183,7 @@ async fn run_codex_phase(args: RunCodexPhase<'_>) -> Result<(Option<i32>, bool, 
     let RunCodexPhase {
         l,
         argv,
+        prompt,
         extra_env,
         start,
         log,
@@ -200,6 +201,7 @@ async fn run_codex_phase(args: RunCodexPhase<'_>) -> Result<(Option<i32>, bool, 
     run_json_phase(RunJsonPhase {
         l,
         argv,
+        prompt,
         extra_env,
         start,
         log,
@@ -219,9 +221,8 @@ async fn run_codex_phase(args: RunCodexPhase<'_>) -> Result<(Option<i32>, bool, 
 /// prompt with no schema attached, and only once that run ends — with or
 /// without a plain final message — does phase two resume the same thread
 /// with `--output-schema` and a short fixed prompt asking only for the
-/// structured report `run_codex` parses as the attempt's result. Stdin is
-/// always closed in both phases: codex blocks forever reading it otherwise,
-/// unlike the claude CLI, which takes the prompt on stdin.
+/// structured report `run_codex` parses as the attempt's result. Each phase passes `-`
+/// as the prompt argument and writes the prompt to stdin, closing it at EOF.
 pub(super) async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
     let bin = crate::executor::agent_bin(l.sandbox, l.worktree, codex_bin_for(l.step));
     // The schema is text (`envelope::SCHEMA`), but codex takes a file, and
@@ -268,11 +269,12 @@ pub(super) async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
         argv1.push("resume".into());
         argv1.push(id.to_string());
     }
-    argv1.push(l.prompt.to_string());
+    argv1.push("-".into());
 
     let (exit1, timed_out1, mut stderr_text) = run_codex_phase(RunCodexPhase {
         l: &l,
         argv: &argv1,
+        prompt: l.prompt,
         extra_env: &extra_env,
         start: &start,
         log: &mut log,
@@ -334,11 +336,12 @@ pub(super) async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
             argv_n.extend(l.provider.extra_args.iter().cloned());
             argv_n.push("resume".into());
             argv_n.push(thread_id);
-            argv_n.push(prompt.to_string());
+            argv_n.push("-".into());
 
             let (exit_n, timed_out_n, stderr_n) = run_codex_phase(RunCodexPhase {
                 l: &l,
                 argv: &argv_n,
+                prompt,
                 extra_env: &extra_env,
                 start: &start,
                 log: &mut log,
@@ -381,11 +384,12 @@ pub(super) async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
         argv2.push(thread_id);
         argv2.push("--output-schema".into());
         argv2.push(schema_path.display().to_string());
-        argv2.push(CODEX_REPORT_PROMPT.to_string());
+        argv2.push("-".into());
 
         let (exit2, timed_out2, stderr2) = run_codex_phase(RunCodexPhase {
             l: &l,
             argv: &argv2,
+            prompt: CODEX_REPORT_PROMPT,
             extra_env: &extra_env,
             start: &start,
             log: &mut log,

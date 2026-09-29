@@ -6,6 +6,7 @@ use super::*;
 pub(super) struct RunCodexPhase<'a> {
     pub(super) l: &'a Launch<'a>,
     pub(super) argv: &'a [String],
+    pub(super) prompt: &'a str,
     pub(super) extra_env: &'a [(String, String)],
     pub(super) start: &'a Instant,
     pub(super) log: &'a mut File,
@@ -33,6 +34,7 @@ pub(super) struct AgentRun<'a> {
 pub(super) struct RunJsonPhase<'a> {
     pub(super) l: &'a Launch<'a>,
     pub(super) argv: &'a [String],
+    pub(super) prompt: &'a str,
     pub(super) extra_env: &'a [(String, String)],
     pub(super) start: &'a Instant,
     pub(super) log: &'a mut File,
@@ -46,6 +48,7 @@ pub(super) struct RunJsonPhase<'a> {
 pub(super) struct RunCopilotPhase<'a> {
     pub(super) l: &'a Launch<'a>,
     pub(super) argv: &'a [String],
+    pub(super) prompt: &'a str,
     pub(super) extra_env: &'a [(String, String)],
     pub(super) start: &'a Instant,
     pub(super) log: &'a mut File,

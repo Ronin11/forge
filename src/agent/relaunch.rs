@@ -227,6 +227,7 @@ mod tests {
         let (code, timed_out, stderr) = run_json_phase(RunJsonPhase {
             l: &l,
             argv: &argv,
+            prompt: l.prompt,
             extra_env: &[],
             start: &Instant::now(),
             log: log.as_file_mut(),

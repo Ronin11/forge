@@ -10,6 +10,8 @@ mod codex;
 mod copilot;
 mod inputs;
 mod jev;
+#[cfg(test)]
+mod prompt_tests;
 pub mod refusal;
 mod relaunch;
 mod usage_limit;
@@ -868,6 +870,7 @@ async fn run_json_phase(args: RunJsonPhase<'_>) -> Result<(Option<i32>, bool, St
     let RunJsonPhase {
         l,
         argv,
+        prompt,
         extra_env,
         start,
         log,
@@ -881,6 +884,7 @@ async fn run_json_phase(args: RunJsonPhase<'_>) -> Result<(Option<i32>, bool, St
         let (code, timed_out, stderr) = run_json_phase_once(RunJsonPhase {
             l,
             argv,
+            prompt,
             extra_env,
             start,
             log: &mut *log,
@@ -908,6 +912,7 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
     let RunJsonPhase {
         l,
         argv,
+        prompt,
         extra_env,
         start,
         log,
@@ -924,7 +929,7 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
             extra_env,
             Phase::Agent,
         ));
-        c.stdin(Stdio::null())
+        c.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
@@ -932,6 +937,14 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
     })
     .await
     .with_context(|| format!("spawning {}", argv[0]))?;
+
+    let mut stdin = child.stdin.take().context("agent stdin")?;
+    let write_prompt = async {
+        // Drain output concurrently: a CLI may write before reading the prompt.
+        // An early CLI exit can close the pipe; its status/stderr explain why.
+        let _ = stdin.write_all(prompt.as_bytes()).await;
+        drop(stdin);
+    };
 
     let stderr = child.stderr.take().context("agent stderr")?;
     let stderr_task = tokio::spawn(async move {
@@ -980,7 +993,15 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
 
     let mut timed_out = false;
     let mut exit_code = None;
-    match tokio::time::timeout_at(deadline, read).await {
+    match tokio::time::timeout_at(deadline, async {
+        tokio::pin!(read);
+        tokio::select! {
+            result = &mut read => result,
+            _ = write_prompt => read.await,
+        }
+    })
+    .await
+    {
         Ok(r) => {
             r?;
             if tripped_this_phase {
