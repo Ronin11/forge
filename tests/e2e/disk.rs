@@ -102,3 +102,37 @@ fn low_disk_holds_worker_claims_and_doctor_reports_failure() {
             .any(|r| r["name"] == "disk" && r["status"] == "fail")
     );
 }
+
+#[test]
+fn gc_caches_reports_freed_bytes_and_preserves_dirty_sources() {
+    let e = Env::new();
+    let id = e.add(&[]);
+    let tree = e.home.join(format!("worktrees/{id}"));
+    std::fs::create_dir_all(tree.join("target")).unwrap();
+    std::fs::write(tree.join("target/data"), vec![1; 8192]).unwrap();
+    std::fs::write(tree.join("uncommitted.txt"), "keep").unwrap();
+    e.db()
+        .execute(
+            "UPDATE tasks SET worktree=?1 WHERE id=?2",
+            rusqlite::params![tree.to_string_lossy(), id],
+        )
+        .unwrap();
+    let out = e.forge("ok.sh", &["gc", "--caches", "--dry-run"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("would free"));
+    assert!(tree.join("target/data").exists());
+    let out = e.forge("ok.sh", &["gc", "--caches"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("freed"));
+    assert!(!tree.join("target").exists());
+    assert!(tree.join("uncommitted.txt").exists());
+    assert_eq!(e.task(id).0, "queued");
+}

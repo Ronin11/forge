@@ -149,14 +149,12 @@ pub enum Event<'a> {
         state: &'a str,
         cost_usd: f64,
     },
-    /// A provider's agent login was refused: it is held, and every task on
-    /// it waits, until a probe answers or the operator runs `forge doctor`
-    /// after logging in (src/login_hold.rs). Emitted once per hold, never
-    /// once per refused attempt.
+    /// Free space fell below the worker threshold; one event per episode.
     DiskHeld {
         reason: &'a str,
         audience: &'a str,
     },
+    /// A provider's agent login was refused: emitted once per hold.
     ProviderHeld {
         provider: &'a str,
         reason: &'a str,

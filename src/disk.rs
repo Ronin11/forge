@@ -308,10 +308,17 @@ mod store_tests {
     fn sweep_includes_finished_jobs_but_preserves_running_jobs() {
         use crate::store::{Job, JobState};
         let (_dir, f) = fixture();
+        f.store
+            .create_project(&crate::store::Project {
+                name: "cache-test".into(),
+                ..Default::default()
+            })
+            .unwrap();
         for state in [JobState::Running, JobState::Failed] {
             let id = f
                 .store
                 .create_job(&Job {
+                    project: "cache-test".into(),
                     state,
                     ..Default::default()
                 })

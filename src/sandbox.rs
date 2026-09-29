@@ -855,10 +855,10 @@ impl Sandbox {
         if let Some(dir) = self.cache_dir_for(worktree) {
             cmd.arg("--bind-try").arg(&dir).arg(&dir);
         }
-        cmd.arg("--chdir").arg(worktree).arg("--");
         if let Some(target) = self.targets.lock().unwrap().get(worktree) {
             cmd.arg("--bind").arg(target).arg(target);
         }
+        cmd.arg("--chdir").arg(worktree).arg("--");
         let script = self.wrapper_script(
             socket.is_some(),
             egress::refused_path(worktree).as_deref(),
