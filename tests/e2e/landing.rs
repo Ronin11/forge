@@ -337,8 +337,7 @@ fn a_task_is_judged_by_the_hidden_suite_that_matches_its_base_not_one_that_grew_
     git(&e.repo, &["commit", "-qam", "acceptance layout"]);
     // B snapshots its base, then waits until A has landed.
     let child = e
-        .cmd("addfile.sh")
-        .env("FAKE_GATE", "1")
+        .cmd("gated-addfile.sh")
         .args([
             "run",
             e.repo.to_str().unwrap(),

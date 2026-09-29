@@ -420,11 +420,10 @@ fn a_task_routed_by_role_runs_while_anthropics_window_is_at_its_cap() {
     let planned_task = e.add(&["--no-land", "--workflow", "planned"]);
 
     let log_path = e.home.join("role-worker.log");
-    let mut cmd = e.cmd("ratelimited.sh");
+    let mut cmd = e.cmd("ratelimited-held.sh");
     cmd.env("FORGE_CODEX_BIN", codex_fake("codex-plan-ok.sh"));
     // Hold the window until the test observes the plan and requeue, rather
     // than racing the fake's three-second reset.
-    cmd.env("FAKE_RESET_SECS", "3600");
     cmd.args(["work", "--once"]);
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::fs::File::create(&log_path).unwrap());
