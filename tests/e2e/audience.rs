@@ -12,7 +12,7 @@ fn executable(path: &Path, text: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-fn events(e: &Env) -> Vec<Value> {
+pub(crate) fn events(e: &Env) -> Vec<Value> {
     let out = e.forge("ok.sh", &["events", "--since", "0:0"]);
     assert!(out.status.success());
     String::from_utf8(out.stdout)
@@ -24,7 +24,7 @@ fn events(e: &Env) -> Vec<Value> {
 
 /// Replay the real CLI event stream through a finite transport, so there
 /// is no subscription race or arbitrary sleep before a task finishes.
-fn notify(e: &Env, rows: &[Value], config: &str, state: &Path) -> Vec<String> {
+pub(crate) fn notify(e: &Env, rows: &[Value], config: &str, state: &Path) -> Vec<String> {
     fs::create_dir_all(state).unwrap();
     fs::write(state.join("config"), config).unwrap();
     fs::write(state.join("cursor"), "0:0").unwrap();

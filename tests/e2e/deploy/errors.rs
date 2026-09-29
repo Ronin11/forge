@@ -282,4 +282,26 @@ fn an_error_before_a_rollback_is_recorded_finishes_the_row_and_asks() {
     assert_eq!(state, "blocked");
     assert!(reason.contains("not rolled back"), "{reason}");
     assert!(reason.contains(&bad[..8]), "{reason}");
+
+    let (id, recipient): (i64, Option<String>) = e
+        .db()
+        .query_row(
+            "SELECT id, question_to FROM tasks WHERE deploy_id=?1",
+            [failed["id"].as_i64().unwrap()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(recipient, None, "the question is for the operator");
+    let rows = crate::audience::events(&e);
+    let done: Vec<_> = rows
+        .iter()
+        .filter(|v| v["type"] == "task_done" && v["task"] == id)
+        .collect();
+    assert_eq!(done.len(), 1, "the deploy question is announced once");
+    assert_eq!(done[0]["audience"], "person");
+    assert_eq!(done[0]["state"], "blocked");
+    assert_eq!(done[0]["reason"], reason);
+    let hits = crate::audience::notify(&e, &rows, "", &e._dir.path().join("notify"));
+    assert_eq!(hits.len(), 1, "the operator receives one message: {hits:?}");
+    assert!(hits[0].starts_with(&format!("{id}|blocked|needs input:")));
 }
