@@ -27,11 +27,6 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
         "Existing module awaiting a focused split",
     ),
     (
-        "src/job.rs",
-        2970,
-        "Existing module awaiting a focused split",
-    ),
-    (
         "src/verify.rs",
         2308,
         "Existing module awaiting a focused split",

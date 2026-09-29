@@ -117,13 +117,13 @@ const ALLOWLIST: &[(&str, &str, usize, &str)] = &[
         "test fixture",
     ),
     (
-        "src/job.rs",
+        "src/job/fixture.rs",
         "bench",
         143,
         "existing function awaiting a focused split",
     ),
     (
-        "src/job.rs",
+        "src/job/directive.rs",
         "run_directive",
         155,
         "existing function awaiting a focused split",
