@@ -302,6 +302,7 @@ pub fn agent_bin_for(step: &str) -> String {
 /// the sandbox, so a name on this `PATH` runs inside it too.
 fn path_with_bin_dir(path: &str) -> String {
     let dir = std::env::current_exe()
+        .map(|p| crate::binary::without_deleted_suffix(&p))
         .ok()
         .and_then(|p| p.parent().map(|d| d.display().to_string()));
     match dir {
@@ -809,7 +810,7 @@ async fn run_with_relaunch(args: AgentRun<'_>) -> Result<(Outcome, String)> {
 
 pub async fn run(l: Launch<'_>) -> Result<Outcome> {
     l.sandbox.map_or(Ok(()), |sb| sb.check_socket(l.worktree))?;
-    match l.provider.runner {
+    let outcome = match l.provider.runner {
         Runner::ClaudeCli => refusal::guarded_claude(l).await,
         Runner::CodexCli => {
             if l.no_tools {
@@ -846,7 +847,19 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
             run_chat(l).await
         }
         Runner::Jev => jev::run(l).await,
+    }?;
+    check_relay_start(outcome)
+}
+
+fn check_relay_start(outcome: Outcome) -> Result<Outcome> {
+    if outcome.exit_code == Some(125)
+        && outcome
+            .stderr_text
+            .contains(crate::sandbox::RELAY_START_FAILED)
+    {
+        anyhow::bail!("{}", outcome.stderr_text.trim());
     }
+    Ok(outcome)
 }
 
 /// One spawn of an agent CLI phase to exit or timeout, writing every raw
@@ -1312,5 +1325,45 @@ mod tests {
         assert_eq!(Runner::Chat.as_str(), "chat");
         let err = "bogus".parse::<Runner>().unwrap_err();
         assert!(err.contains("chat"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod relay_tests {
+    use super::*;
+    use crate::engine::{Classify, Fault};
+
+    #[test]
+    fn relay_start_failure_is_an_environment_fault() {
+        let outcome = Outcome {
+            exit_code: Some(125),
+            stderr_text: format!(
+                "{}\nmissing relay binary",
+                crate::sandbox::RELAY_START_FAILED
+            ),
+            ..Outcome::default()
+        };
+        let classified = check_relay_start(outcome).env();
+        assert!(
+            matches!(classified, Err(Fault::Env(e)) if e.to_string().contains("missing relay binary"))
+        );
+    }
+
+    #[test]
+    fn relay_classification_requires_both_exit_code_and_diagnostic() {
+        for (code, text) in [
+            (125, "unrelated agent failure"),
+            (1, crate::sandbox::RELAY_START_FAILED),
+            (0, crate::sandbox::RELAY_START_FAILED),
+        ] {
+            assert!(
+                check_relay_start(Outcome {
+                    exit_code: Some(code),
+                    stderr_text: text.into(),
+                    ..Outcome::default()
+                })
+                .is_ok()
+            );
+        }
     }
 }

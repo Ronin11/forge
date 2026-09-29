@@ -643,3 +643,57 @@ async fn check_phase_never_seeds_or_binds_agent_state() {
     assert_eq!(std::fs::read_to_string(&login).unwrap(), "agent-login");
     assert!(!provider.join("claude/settings.json").exists());
 }
+
+#[test]
+fn relay_detect_strips_deleted_suffix() {
+    if resolve_binary("bwrap").is_err() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let sb = Sandbox::detect_with_relay(
+        "/bin/sh",
+        &crate::config::SandboxPaths {
+            ro: Vec::new(),
+            rw: Vec::new(),
+            dependency_cache: None,
+        },
+        root.path().to_path_buf(),
+        Vec::new(),
+        Vec::new(),
+        PathBuf::from("/opt/forge/forge (deleted)"),
+    )
+    .unwrap();
+    assert_eq!(sb.relay_exe, Path::new("/opt/forge/forge"));
+    assert!(sb.extra_ro.contains(&PathBuf::from("/opt/forge")));
+}
+
+#[test]
+fn relay_missing_executable_stops_before_launching_agent() {
+    let root = tempfile::tempdir().unwrap();
+    let mut sb = test_sandbox("api.example.com");
+    sb.relay_exe = root.path().join("missing-relay");
+    // Exercise the actual wrapper with a private run directory, without
+    // requiring permission to create a network namespace on the test host.
+    let script = sb
+        .wrapper_script(true, None, Phase::Check)
+        .replace("/run/forge", &root.path().to_string_lossy());
+    let began = std::time::Instant::now();
+    let output = std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            &script,
+            "wrapper",
+            "/bin/sh",
+            "-c",
+            "echo agent-started",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(125));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(RELAY_START_FAILED), "{stderr}");
+    assert!(stderr.contains("missing-relay"), "relay stderr: {stderr}");
+    assert!(output.stdout.is_empty(), "the agent must not run");
+    assert!(began.elapsed() >= std::time::Duration::from_secs(5));
+    assert!(began.elapsed() < std::time::Duration::from_secs(15));
+}
