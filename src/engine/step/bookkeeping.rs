@@ -2,20 +2,17 @@
 use super::*;
 
 pub(super) async fn rewind_tests(
-    args: RunDirectiveStep<'_>,
+    args: &mut RunDirectiveStep<'_>,
     a: &crate::store::Attempt,
     verdict: &verify::Verdict,
 ) -> Result<Option<StepFlow>, Fault> {
-    let RunDirectiveStep {
-        f,
-        t,
-        cfg,
-        resolved,
-        run,
-        step,
-        seq,
-        ..
-    } = args;
+    let f = args.f;
+    let t = &mut *args.t;
+    let cfg = args.cfg;
+    let resolved = args.resolved;
+    let run = &mut *args.run;
+    let step = args.step;
+    let seq = args.seq;
     let id = t.id;
     // A check that failed only inside the verification namespace
     // is the test author's failure, not the coder's: the coder

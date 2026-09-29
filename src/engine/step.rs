@@ -210,234 +210,47 @@ fn refusal_exhausted() -> End {
 /// the directive stops short, what that means for the task: a capped
 /// coder's clean commit goes to a human if the checks pass, a reviewer
 /// that never ruled leaves the branch unverified, a question blocks.
-pub(super) async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Fault> {
-    let RunDirectiveStep {
-        f,
-        t,
-        cfg,
-        resolved,
-        run,
-        step,
-        seq,
-        attempt_no,
-        task_cap,
-        repo,
-        wt,
-        remote_url,
-        wait,
-    } = args;
-    let id = t.id;
-    if run.done.contains(&seq) && !run.owed.contains_key(&seq) {
-        f.report.emit(
-            id,
+pub(super) async fn run_directive_step(mut args: RunDirectiveStep<'_>) -> Result<StepFlow, Fault> {
+    if args.run.done.contains(&args.seq) && !args.run.owed.contains_key(&args.seq) {
+        args.f.report.emit(
+            args.t.id,
             Event::Note {
-                text: &format!("step     {} already verified; resuming", step.action.name),
+                text: &format!(
+                    "step     {} already verified; resuming",
+                    args.step.action.name
+                ),
             },
         );
         return Ok(StepFlow::Next);
     }
-    // Per-step parameters (the workflow's override, else the action's
-    // default, else the task's), the provider this step's role runs
-    // under, and the routing record for it.
-    let role = step.action.contract.as_str();
-    let mut feedback: Option<String> = run.owed.remove(&seq);
-    let mut resume: Option<Resume> = None;
-    let mut step_ok = false;
-    // How the directive's last attempt ended, for the step's End.
-    let mut last = AttemptState::Running;
-    let mut last_reason = String::new();
-    // Who a blocking question is addressed to, from the
-    // envelope's `needs_input.to`; `None` means the operator.
-    let mut last_to: Option<String> = None;
-    // The last attempt's own rows, so the reason built after
-    // the loop can name the L0 rules that actually failed
-    // rather than rely on `last_reason` alone.
-    let mut last_checks: Vec<CheckResult> = Vec::new();
-    // The last attempt ran out of turns after committing, tree
-    // clean, no result: the checks can still judge the code.
-    let mut capped_committed = false;
-    let mut consecutive_refusals = 0u32;
-    // A placeholder `needs_input` question (see
-    // `envelope::is_placeholder_question`) gets exactly one nudge to
-    // finish rather than blocking the operator on it: `nudged` stops a
-    // second one from getting the same treatment, and `nudge_pending`
-    // grants the round that spends it even on what would otherwise be
-    // the directive's last attempt (task 1069, 2026-09-28: a one-letter
-    // question after 49 turns and 3 commits sat blocked for want of
-    // exactly this).
-    let mut nudged = false;
-    let mut nudge_pending = false;
-    while run.used_at(seq) < t.max_attempts || nudge_pending {
-        nudge_pending = false;
-        if let Some(flow) = provider_hold::before_attempt(f, t, role, wait).await? {
-            if let Some(fb) = feedback {
-                run.owed.insert(seq, fb);
-            }
-            return Ok(flow);
-        }
-        let ts = per_step_task(f, t, step, role)?;
-        // Would the next attempt cross the cap? A decision for a human,
-        // not a failure: see `check_cap`.
-        if let Some(end) = check_cap(f, t, resolved, &run.done, task_cap, wt).await? {
-            return Ok(StepFlow::End(end));
-        }
-        *run.used.entry(seq).or_insert(0) += 1;
-        let n = run.used[&seq];
-        *attempt_no += 1;
-        f.report.emit(
-            id,
-            Event::AttemptStarted {
-                n,
-                of: t.max_attempts,
-            },
-        );
-        f.report.emit(
-            id,
-            Event::Note {
-                text: &format!("step     {} ({})", step.action.name, step.via.join(" → ")),
-            },
-        );
-        let timer = Timer::now();
-        let (a, verdict, outcome) = crate::attempt::run_attempt(crate::attempt::RunAttempt {
-            f,
-            t: &ts,
-            cfg,
-            step,
-            seq,
-            attempt_no: *attempt_no,
-            feedback: feedback.as_deref(),
-            resume: resume.as_ref(),
-            cursor: Some(run.cursor(t, *attempt_no).after(*attempt_no)),
-        })
-        .await?;
-        // `forge withdraw --abort` stopped this attempt (see
-        // `attempt::launch`): the task ends here, not on its verdict.
-        if let Some(end) = check_abort(f, t)? {
-            return Ok(StepFlow::End(end));
-        }
-        attempts::record_verification(f, id, seq, &timer, &a, &verdict)?;
-        last = a.state;
-        last_reason = a.reason.clone();
-        last_checks = verdict.checks.clone();
-        last_to = verdict
-            .envelope
-            .as_ref()
-            .and_then(|e| e.needs_input.as_ref())
-            .and_then(|q| crate::envelope::addressee(q.to.as_deref()));
-        // The provider refused the run: not an attempt the agent
-        // spent. The hold at the top of the loop waits for the
-        // window, or for a refused login to answer a probe; the same
-        // feedback and session go again.
-        if outcome.rate_limited && a.state != AttemptState::Unverified {
-            if outcome.login_refused {
-                crate::login_hold::hold(f, &ts.provider, &outcome, id).env()?;
-            }
-            consecutive_refusals += 1;
-            if consecutive_refusals > REFUSAL_LIMIT {
-                return Ok(StepFlow::End(refusal_exhausted()));
-            }
-            f.report.emit(
-                id,
-                Event::Note {
-                    text: "rate     the provider refused this run; it does not count as an attempt",
-                },
-            );
-            run.refund(f, seq, a.id)?;
-            continue;
-        }
-        consecutive_refusals = 0;
-        // An environment need the policy covers (a refused host, a host cache) is
-        // applied and rerun without counting; anything else falls through.
-        match environment_after(f, t, cfg, &a, &verdict).await? {
-            Environment::Applied => {
-                run.refund(f, seq, a.id)?;
-                continue;
-            }
-            Environment::Ask(reason) => return Ok(blocked_on(reason)),
-            Environment::Left => {}
-        }
-        if reask_reproduction(f, step, &a, &verdict, run, seq, &mut feedback)? {
-            continue;
-        }
-        if let Some(flow) = bookkeeping::rewind_tests(
-            RunDirectiveStep {
-                f,
-                t,
-                cfg,
-                resolved,
-                run,
-                step,
-                seq,
-                attempt_no,
-                task_cap,
-                repo,
-                wt,
-                wait,
-                remote_url,
-            },
-            &a,
-            &verdict,
-        )
-        .await?
-        {
-            return Ok(flow);
-        }
-        match a.state {
-            AttemptState::Succeeded => {
-                if let Some(flow) =
-                    success::record_success(f, t, step, repo, remote_url, &verdict).await?
-                {
-                    return Ok(flow);
-                }
-                step_ok = true;
-                break;
-            }
-            AttemptState::NeedsInput => {
-                // A placeholder question is the agent stopping early with
-                // nothing left to ask, not a question for the operator:
-                // one nudge, in the same session, before it can block.
-                if !nudged
-                    && let Some((r, fb)) = nudge_placeholder_question(t, &a, &verdict, &outcome)
-                {
-                    nudged = true;
-                    nudge_pending = true;
-                    f.report.emit(
-                        id,
-                        Event::Note {
-                            text: "resume   the question was not really one; nudging the session to finish instead of blocking",
-                        },
-                    );
-                    resume = Some(r);
-                    feedback = Some(fb);
-                } else {
-                    // The interview's confirmation turn writes
-                    // the brief alongside the question that
-                    // asks the person to confirm it; every
-                    // other contract's question stops here
-                    // with nothing recorded as a plan.
-                    if step.action.name == "interview"
-                        && let Some(summary) = verdict
-                            .envelope
-                            .as_ref()
-                            .map(|e| e.summary.trim().to_string())
-                        && !summary.is_empty()
-                    {
-                        t.plan = summary;
-                        f.store.update_task(t).env()?;
-                    }
-                    break;
-                }
-            }
-            AttemptState::Unverified => break,
-            AttemptState::ChecksFailed | AttemptState::AgentFailed => {
-                (resume, feedback, capped_committed) =
-                    continuation::after_failure(f, t, &ts, &a, &verdict, &outcome);
-            }
-            AttemptState::Running => {
-                unreachable!("attempt returned in running state")
-            }
-        }
+    let mut state = attempts::AttemptLoop {
+        feedback: args.run.owed.remove(&args.seq),
+        ..Default::default()
+    };
+    if let Some(flow) = attempts::run_attempt_loop(&mut args, &mut state).await? {
+        return Ok(flow);
     }
+    let RunDirectiveStep {
+        f,
+        t,
+        cfg,
+        run,
+        step,
+        seq,
+        repo,
+        wt,
+        ..
+    } = args;
+    let id = t.id;
+    let attempts::AttemptLoop {
+        step_ok,
+        last,
+        last_reason,
+        last_to,
+        last_checks,
+        capped_committed,
+        ..
+    } = state;
     if step_ok {
         run.done.insert(seq);
         return Ok(StepFlow::Next);
