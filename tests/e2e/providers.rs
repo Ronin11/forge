@@ -455,6 +455,8 @@ fn a_task_routed_by_role_runs_while_anthropics_window_is_at_its_cap() {
             [],
         )
         .unwrap();
+    // Wake the worker from its wait on the old reset timestamp.
+    worker.signal(libc::SIGHUP);
     assert!(
         wait_until(
             || e.task(planned_task).0 == "succeeded",
