@@ -2,7 +2,7 @@
 use crate::{
     config,
     egress::{Policy, Rule},
-    sandbox::Sandbox,
+    sandbox::{Phase, Sandbox},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -71,6 +71,7 @@ pub trait Executor {
         argv: &[String],
         env: &[(String, String)],
         egress: &Policy,
+        phase: Phase,
     ) -> Command;
 }
 pub struct Host;
@@ -84,6 +85,7 @@ impl Executor for Host {
         argv: &[String],
         env: &[(String, String)],
         _: &Policy,
+        _: Phase,
     ) -> Command {
         let mut cmd = Command::new(&argv[0]);
         cmd.args(&argv[1..])
@@ -103,8 +105,9 @@ impl Executor for Sandbox {
         argv: &[String],
         env: &[(String, String)],
         egress: &Policy,
+        phase: Phase,
     ) -> Command {
-        self.command(worktree, argv, env, egress)
+        self.command(worktree, argv, env, egress, phase)
     }
 }
 
@@ -269,7 +272,13 @@ impl Execution {
         let backend = cfg.declared.unwrap_or(self.fallback);
         (backend, self.guarantees_of(backend))
     }
-    pub fn command(&self, path: &Path, argv: &[String], env: &[(String, String)]) -> Command {
+    pub fn command(
+        &self,
+        path: &Path,
+        argv: &[String],
+        env: &[(String, String)],
+        phase: Phase,
+    ) -> Command {
         let policy = self
             .bwrap
             .as_ref()
@@ -284,10 +293,10 @@ impl Execution {
             return ssh_command(destination, path, argv, env);
         }
         if self.backend(path) == Backend::Host {
-            return Host.command(path, argv, env, &policy);
+            return Host.command(path, argv, env, &policy, phase);
         }
         match &self.bwrap {
-            Ok(sb) => Executor::command(sb, path, argv, env, &policy),
+            Ok(sb) => Executor::command(sb, path, argv, env, &policy, phase),
             Err(error) => {
                 let mut cmd = Command::new("/bin/sh");
                 cmd.args([
@@ -303,11 +312,11 @@ impl Execution {
     /// What a launch in `path` with `env` does before its `command` is
     /// built: a bwrap launch seeds its private logins (see
     /// `Sandbox::prepare`); any other has nothing to prepare.
-    pub async fn prepare(&self, path: &Path, env: &[(String, String)]) {
+    pub async fn prepare(&self, path: &Path, env: &[(String, String)], phase: Phase) {
         if let Ok(sb) = &self.bwrap
             && self.backend(path) == Backend::Bwrap
         {
-            sb.prepare(path, env).await;
+            sb.prepare(path, env, phase).await;
         }
     }
     /// Fails, naming the socket, when a bwrap launch in `path` would bind
@@ -430,7 +439,7 @@ mod tests {
             ("EXPECTED".into(), dir.path().display().to_string()),
         ];
         let output = Host
-            .command(dir.path(), &argv, &env, &Policy::new([]))
+            .command(dir.path(), &argv, &env, &Policy::new([]), Phase::Agent)
             .output()
             .unwrap();
         assert!(output.status.success());
@@ -449,7 +458,7 @@ mod tests {
         let argv = vec!["/bin/true".into()];
         assert!(
             !execution
-                .command(dir.path(), &argv, &[])
+                .command(dir.path(), &argv, &[], Phase::Agent)
                 .output()
                 .unwrap()
                 .status
@@ -458,7 +467,7 @@ mod tests {
         execution.set_backend(dir.path(), Backend::Host);
         assert!(
             execution
-                .command(dir.path(), &argv, &[])
+                .command(dir.path(), &argv, &[], Phase::Agent)
                 .output()
                 .unwrap()
                 .status
@@ -482,7 +491,7 @@ mod tests {
         assert!(!execution.guarantees(dir.path()).egress_bounded);
         assert!(
             execution
-                .command(dir.path(), &argv, &[])
+                .command(dir.path(), &argv, &[], Phase::Agent)
                 .output()
                 .unwrap()
                 .status
@@ -498,7 +507,7 @@ mod tests {
         );
         assert!(
             !execution
-                .command(dir.path(), &argv, &[])
+                .command(dir.path(), &argv, &[], Phase::Agent)
                 .output()
                 .unwrap()
                 .status

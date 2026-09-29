@@ -36,6 +36,7 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod recovery;
 pub mod review;
 
 /// Overlay refs for a human: a pinned forge-verify commit reads as
@@ -1066,12 +1067,12 @@ pub async fn verify_directive(
             .flatten();
         return Ok(verdict);
     }
-    let agent_reason = crate::directive::agent_failure(agent);
     let notes = match contract {
         Contract::Review => review::capture_notes(s).await?,
         _ => Vec::new(),
     };
-    let common = common_l0(s, agent).await?;
+    let mut common = common_l0(s, agent).await?;
+    let (agent_reason, recovered) = recovery::resolve(s, agent, &mut common).await?;
     let mut v = Verdict::open(&common.facts);
     let mut question: Option<(Kind, String)> = None;
     if agent_reason.is_none() {
@@ -1189,6 +1190,13 @@ pub async fn verify_directive(
         question.as_ref().map(|(k, q)| (*k, q.as_str())),
         contract.verifies_work(),
     );
+    if recovered {
+        if v.state == AttemptState::Succeeded {
+            v.envelope.as_mut().unwrap().summary = "envelope missing; verified by checks".into();
+        } else {
+            v.envelope = None;
+        }
+    }
     Ok(v)
 }
 
