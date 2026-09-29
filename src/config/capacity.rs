@@ -92,3 +92,37 @@ pub fn merge_env(
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capacity_config_parses_projects_defaults_and_rejects_invalid_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[worker]\nslots = 8\nproject_slots = 2\nmax_load = 1.5\n[projects.forge]\nslots = 1\n[sandbox.env]\nCARGO_BUILD_JOBS = '2'\n").unwrap();
+        let cfg = crate::config::load_home(dir.path()).unwrap();
+        assert_eq!(cfg.worker.slots, 8);
+        assert_eq!(cfg.worker.project_cap("forge", 8), 1);
+        assert_eq!(cfg.worker.project_cap("game", 8), 2);
+        assert_eq!(cfg.build_env["CARGO_BUILD_JOBS"], "2");
+        for text in [
+            "[worker]\nslots = 0",
+            "[worker]\nproject_slots = 0",
+            "[projects.forge]\nslots = 0",
+            "[worker]\nmax_load = -1",
+            "[sandbox.env]\nTOKEN = 'secret'",
+        ] {
+            std::fs::write(&path, text).unwrap();
+            assert!(crate::config::load_home(dir.path()).is_err(), "{text}");
+        }
+        assert!(
+            validate_env(&BTreeMap::from([(
+                "NODE_OPTIONS".into(),
+                "bad\0value".into()
+            )]))
+            .is_err()
+        );
+    }
+}

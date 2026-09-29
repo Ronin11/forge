@@ -345,6 +345,14 @@ pub async fn load_at(repo: &Path, show_dir: &Path, rev: &str) -> Result<Config> 
     parse(repo, &text, &format!("{config_path} at {rev}"), config_path).await
 }
 
+/// Build tuning in an archived tree, without asking it for Git metadata.
+pub fn load_working_build_env(dir: &Path) -> Result<BTreeMap<String, String>> {
+    let (path, _, text) = read_working(dir)?;
+    let raw: Raw = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    super::capacity::validate_env(&raw.sandbox.env)?;
+    Ok(raw.sandbox.env)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -498,12 +506,4 @@ mod tests {
             assert!(err.contains("egress"), "{err}");
         }
     }
-}
-
-/// Build tuning in an archived tree, without asking it for Git metadata.
-pub fn load_working_build_env(dir: &Path) -> Result<BTreeMap<String, String>> {
-    let (path, _, text) = read_working(dir)?;
-    let raw: Raw = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-    super::capacity::validate_env(&raw.sandbox.env)?;
-    Ok(raw.sandbox.env)
 }

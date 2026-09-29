@@ -55,3 +55,39 @@ pub fn recorded_env(home: &Path, worktree: &Path) -> Option<BTreeMap<String, Str
     crate::config::capacity::validate_env(&env).ok()?;
     Some(env)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capacity_build_environment_is_per_worktree_and_reaches_agent_commands() {
+        let home = tempfile::tempdir().unwrap();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let operator = BTreeMap::from([("CARGO_BUILD_JOBS".into(), "2".into())]);
+        configure_env(home.path(), first.path(), &operator, &BTreeMap::new());
+        configure_env(
+            home.path(),
+            second.path(),
+            &operator,
+            &BTreeMap::from([("CARGO_BUILD_JOBS".into(), "1".into())]),
+        );
+        let argv = [
+            "sh".into(),
+            "-c".into(),
+            "printf '%s' \"$CARGO_BUILD_JOBS\"".into(),
+        ];
+        for (tree, expected) in [(first.path(), "2"), (second.path(), "1")] {
+            let output = crate::agent::command_in(None, tree, &argv, &[])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+            assert_eq!(
+                recorded_env(home.path(), tree).unwrap()["CARGO_BUILD_JOBS"],
+                expected
+            );
+        }
+    }
+}
