@@ -214,8 +214,12 @@ fn three_messages_and_one_question_render_as_one_thread_in_order() {
     let snap = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/conversation.txt");
     if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
         std::fs::write(&snap, &section).unwrap();
+        return;
     }
-    let want = std::fs::read_to_string(&snap).unwrap_or_default();
+    // Cached test binaries can outlive the checkout they were built in.
+    // Keep their expected snapshot with the binary instead of reading an
+    // absolute build-time path that may no longer exist.
+    let want = include_str!("snapshots/conversation.txt");
     assert_eq!(
         section, want,
         "the conversation snapshot changed; re-run with UPDATE_SNAPSHOTS=1 if that is intended"
