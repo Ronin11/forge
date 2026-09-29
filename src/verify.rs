@@ -1820,11 +1820,9 @@ mod tests {
         crate::git::commit_all(dir.path(), "remove overlay")
             .await
             .unwrap();
-        assert!(
-            crate::git::changed_paths(dir.path(), &base)
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            crate::git::changed_paths(dir.path(), &base).await.unwrap(),
+            vec!["real.txt"],
         );
         let mut cfg = test_cfg();
         cfg.namespace = vec!["tests/acceptance/".into()];
