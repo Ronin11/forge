@@ -35,7 +35,7 @@ fn every_outcome_is_totaled_with_its_task_count_and_cost() {
         )
         .unwrap();
 
-    let in_progress = e.add(&[]);
+    let _in_progress = e.add(&[]);
 
     let withdrawn = e.add(&[]);
     set(&e, withdrawn, "withdrawn", "stale description");
