@@ -103,7 +103,7 @@ pub(super) async fn run(args: OperationStep<'_>) -> Result<Ran> {
         scratch,
         &env,
         timeout,
-        f.sandbox.as_ref(),
+        restricted.then_some(f.sandbox.as_ref()).flatten(),
         restricted.then_some(&grant.egress),
     )
     .await
