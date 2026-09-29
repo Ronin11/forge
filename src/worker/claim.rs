@@ -15,6 +15,10 @@ pub fn task(
     held: &[i64],
     blocked: impl Fn(&Task) -> bool,
 ) -> Result<Option<Task>> {
+    if crate::disk::check_claim(f)? {
+        return Ok(None);
+    }
+
     if capacity::load_holds(&f.worker, capacity::load_per_core()) {
         return Ok(None);
     }
@@ -48,6 +52,10 @@ pub fn task(
 }
 
 pub fn job(f: &Forge, opts: &WorkOpts) -> Result<Option<Job>> {
+    if crate::disk::check_claim(f)? {
+        return Ok(None);
+    }
+
     if capacity::load_holds(&f.worker, capacity::load_per_core()) {
         return Ok(None);
     }
