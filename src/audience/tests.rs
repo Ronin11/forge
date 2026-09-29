@@ -95,6 +95,25 @@ fn a_dependency_without_a_live_followup_asks_and_a_superseded_block_does_not() {
 }
 
 #[test]
+fn a_withdrawn_prerequisite_only_handles_a_block_while_its_followup_is_live() {
+    let (_dir, s) = fixture();
+    let parent = task(&s, TaskState::Withdrawn, None);
+    let mut dependent = task(&s, TaskState::Blocked, None);
+    dependent.after = vec![parent.id];
+    dependent.reason = format!("waits on task {}", parent.id);
+    s.update_task(&dependent).unwrap();
+    assert_eq!(classify(&s, &dependent).unwrap(), "person");
+
+    let mut retry = task(&s, TaskState::Queued, Some(parent.id));
+    decision(&s, &parent, "mechanic-ratchet", Some(retry.id));
+    assert_eq!(classify(&s, &dependent).unwrap(), "none");
+
+    retry.state = TaskState::Withdrawn;
+    s.update_task(&retry).unwrap();
+    assert_eq!(classify(&s, &dependent).unwrap(), "person");
+}
+
+#[test]
 fn successful_transitions_do_not_ask_a_person() {
     let (_dir, s) = fixture();
     let t = task(&s, TaskState::Succeeded, None);

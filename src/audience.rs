@@ -40,7 +40,6 @@ pub(crate) fn classify(store: &Store, ended: &Task) -> Result<&'static str> {
         for dep in &current.after {
             let live = store.task(*dep)?.is_some_and(|t| {
                 matches!(t.state, TaskState::Queued | TaskState::Running)
-                    || t.state == TaskState::Withdrawn
                     || (t.state == TaskState::Succeeded && (!t.land || !t.landed_sha.is_empty()))
             });
             if !live && !live_followup(store, *dep)? {
