@@ -2016,13 +2016,6 @@ fn deploy_self_after_a_passing_deploy_rolls_a_failing_one_back_to_it() {
 #[test]
 fn a_landing_on_forge_stages_the_landed_sha() {
     let s = SelfDeploy::new();
-    // Keep the staged release available for a live worker to take over.
-    // Without this marker deployment may immediately activate it instead.
-    std::fs::write(
-        s.bins.join("successor-capable"),
-        format!("{}\n", std::process::id()),
-    )
-    .unwrap();
     let repo_s = s.e.repo.to_str().unwrap();
     let o =
         s.e.cmd("ok.sh")
