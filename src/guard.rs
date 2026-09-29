@@ -54,7 +54,21 @@ pub fn ensure_token(home: &Path) -> Result<String> {
 /// different or missing hook is reported as the guard being absent, even
 /// if some other hook happens to sit there.
 pub fn installed(bare: &Path) -> bool {
-    std::fs::read_to_string(bare.join("hooks/pre-receive"))
+    // Use Git's effective hook path, as installation does, including
+    // absolute and repository-relative core.hooksPath settings.
+    let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(bare)
+        .args(["rev-parse", "--git-path", "hooks/pre-receive"])
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let path = String::from_utf8_lossy(&output.stdout);
+    std::fs::read_to_string(bare.join(path.trim()))
         .ok()
         .as_deref()
         == Some(HOOK)
@@ -219,7 +233,15 @@ mod tests {
     fn installed_is_false_until_the_hook_matches() {
         let dir = tempfile::tempdir().unwrap();
         let bare = dir.path().join("origin.git");
-        std::fs::create_dir_all(bare.join("hooks")).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--bare"])
+                .arg(&bare)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
         assert!(!installed(&bare));
         std::fs::write(bare.join("hooks/pre-receive"), HOOK).unwrap();
         assert!(installed(&bare));

@@ -138,16 +138,41 @@ fn deleting_the_base_branch_is_rejected_too() {
 
 #[test]
 fn forge_project_guard_installs_the_hook_and_the_integrators_landing_succeeds() {
-    assert_guard_landing(false);
+    assert_guard_landing(false, None);
 }
 
 #[test]
 fn a_relative_origin_is_guarded_and_reported_and_accepts_integrator_landings() {
-    assert_guard_landing(true);
+    assert_guard_landing(true, None);
 }
 
-fn assert_guard_landing(relative: bool) {
+#[test]
+fn a_relative_hooks_path_guard_is_reported_and_accepts_integrator_landings() {
+    assert_guard_landing(false, Some(false));
+}
+
+#[test]
+fn an_absolute_hooks_path_guard_is_reported_and_accepts_integrator_landings() {
+    assert_guard_landing(false, Some(true));
+}
+
+fn assert_guard_landing(relative: bool, absolute_hooks: Option<bool>) {
     let e = Env::new();
+    let hooks = if let Some(absolute) = absolute_hooks {
+        let path = e.origin.join("custom hooks");
+        std::fs::create_dir_all(&path).unwrap();
+        let setting = if absolute {
+            path.to_str().unwrap()
+        } else {
+            "custom hooks"
+        };
+        git(&e.origin, &["config", "core.hooksPath", setting]);
+        // A stale default hook must not hide a missing effective hook.
+        std::fs::write(e.origin.join("hooks/pre-receive"), HOOK).unwrap();
+        path
+    } else {
+        e.origin.join("hooks")
+    };
     if relative {
         git(&e.repo, &["remote", "set-url", "origin", "../origin.git"]);
     }
@@ -173,7 +198,7 @@ fn assert_guard_landing(relative: bool) {
     assert!(o.status.success(), "{}", text(&o));
     let doc = text(&e.forge("ok.sh", &["doctor"]));
     assert!(!doc.contains("no landing guard: guarded"), "{doc}");
-    let hook = e.origin.join("hooks/pre-receive");
+    let hook = hooks.join("pre-receive");
     assert_eq!(std::fs::read_to_string(&hook).unwrap(), HOOK);
     let mode = std::fs::metadata(&hook).unwrap().permissions().mode();
     assert_eq!(mode & 0o111, 0o111, "the hook is executable");
