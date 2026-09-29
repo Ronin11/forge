@@ -40,6 +40,7 @@ mod journal;
 mod landing;
 mod login;
 mod login_hold;
+mod mechanic;
 mod operation;
 mod plugins;
 mod pricing;

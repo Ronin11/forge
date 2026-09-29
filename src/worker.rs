@@ -161,6 +161,10 @@ pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
             }
             Ok(TaskState::Blocked)
         }
+        Ok(TaskState::Failed) => {
+            on_failed(&f, id).await;
+            Ok(TaskState::Failed)
+        }
         Ok(state) => Ok(state),
         Err(Fault::Task(e)) => {
             f.report.emit(
@@ -177,6 +181,7 @@ pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
                 f.store.update_task(&t)?;
                 engine::finish_fault(&f, &t)?;
             }
+            on_failed(&f, id).await;
             Ok(TaskState::Failed)
         }
         Err(Fault::Env(e)) => {
@@ -189,6 +194,20 @@ pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
                 "worker cannot run task {id}; it is back in the queue"
             )))
         }
+    }
+}
+
+/// The kernel's follow-up rule for a task that just ended `Failed`
+/// (`src/mechanic.rs`): a retry, a guided refile, or an operator decision.
+/// Its own failure is a note, never the task's.
+async fn on_failed(f: &Forge, id: i64) {
+    if let Err(e) = crate::mechanic::act(f, id).await {
+        f.report.emit(
+            id,
+            Event::Note {
+                text: &format!("mechanic error: {e:#}"),
+            },
+        );
     }
 }
 

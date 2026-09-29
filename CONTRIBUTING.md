@@ -106,7 +106,7 @@ The kernel's top-level modules sit in layers, bottom up, and each imports only
 what is below it: **foundation** (git, egress, sandbox, executor, pricing,
 envelope, checks, config), **store**, **agent**, **kernel** (attempt, verify,
 operation, landing, engine, queue, worker, job, supervisor, environment,
-handoff, journal), **analysis** (audit, experiment, profile, render, stats),
+handoff, journal, mechanic), **analysis** (audit, experiment, profile, render, stats),
 **view**, and **cli** (cli, init). `tests/layers.rs` derives each module's
 imports from its `crate::` references (including multi-line and nested `use`
 groups) and fails any edge that points up a layer or closes a cycle within one.
