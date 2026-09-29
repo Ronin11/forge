@@ -26,6 +26,7 @@ mod jobs;
 mod messages;
 mod migrations;
 mod owners;
+mod priority;
 mod projects;
 mod questions;
 mod record;
@@ -48,6 +49,7 @@ pub use job_resolutions::JobResolution;
 pub use jobs::{Job, JobEffect, JobStat, JobState, JobStep, PerDayRefused};
 pub use messages::{Direction, InsertMessage, Message, MessageFilter};
 pub use owners::{Caller, Owner, start_of};
+pub use priority::{PRIORITY_DEFAULT, PRIORITY_MAX, PRIORITY_MIN, parse_priority};
 pub use projects::{
     BacklogItem, Initiative, InitiativeUpdate, Project, ProjectDefaults, ProjectRepo, ProjectStat,
     ProjectTaskStats, is_placeholder_purpose,
@@ -149,6 +151,8 @@ pub struct TaskSummary {
     pub project: Option<String>,
     pub initiative: Option<i64>,
     pub trust: String,
+    /// See `store::priority`.
+    pub priority: i64,
     /// `"agent"`, or `"adopted"` for a hand-made branch `forge adopt`
     /// landed (see `Origin`).
     pub origin: String,
@@ -263,6 +267,7 @@ const TASK_COLUMNS: &[&str] = &[
     "handoff",
     "origin",
     "adoption_json",
+    "priority",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -365,6 +370,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
             Origin::try_from(r.get::<_, String>("origin")?.as_str()),
         )?,
         adoption: adoption::from_column(&r.get::<_, String>("adoption_json")?),
+        priority: r.get("priority")?,
     })
 }
 
@@ -554,6 +560,7 @@ impl Store {
                     (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id) AS cost,
                     t.workflow AS workflow, t.created_at AS created_at, t.finished_at AS finished_at,
                     t.project AS project, t.initiative AS initiative, t.trust AS trust, t.origin AS origin,
+                    t.priority AS priority,
                     CASE WHEN ?9 IS NULL THEN NULL WHEN {touched} THEN 'changes' ELSE 'text' END AS touch,
                     CASE WHEN ?5 IS NULL THEN NULL WHEN {by_text} THEN 'text' WHEN {by_title} THEN 'title'
                          WHEN {by_plan} THEN 'plan' ELSE 'summary' END AS matched
@@ -598,6 +605,7 @@ impl Store {
                     project: r.get("project")?,
                     initiative: r.get("initiative")?,
                     trust: r.get("trust")?,
+                    priority: r.get("priority")?,
                     origin: r.get("origin")?,
                     touch: r.get("touch")?,
                     matched: r.get("matched")?,
