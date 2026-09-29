@@ -115,7 +115,7 @@ pub(crate) fn launches(counter: &std::path::Path) -> u32 {
 mod tests {
     use super::*;
     use crate::agent::{
-        Launch, Outcome, Provider, Runner, Watch, inputs::RunJsonPhase, run_json_phase,
+        CappedLog, Launch, Outcome, Provider, Runner, Watch, inputs::RunJsonPhase, run_json_phase,
     };
     use crate::config::EarlyEnding;
     use serde_json::Value;
