@@ -102,12 +102,12 @@ fn withdraw(id: i64, reason: String, by: String, abort: bool) -> Result<()> {
     Ok(())
 }
 
-async fn run(args: TaskArgs) -> Result<()> {
+async fn run(args: RunArgs) -> Result<()> {
     let f = Arc::new(Forge::open(true, false)?);
     if let Some(msg) = worker::day_budget_reached(&f)? {
         bail!("{msg}");
     }
-    let t = enqueue(&f, &args).await?;
+    let t = enqueue(&f, &args.task).await?;
     if !f.store.claim(t.id, std::process::id() as i64)? {
         bail!(
             "task {} was claimed by another worker before this one could start it",
@@ -115,7 +115,7 @@ async fn run(args: TaskArgs) -> Result<()> {
         );
     }
     eprintln!("task     {}", t.id);
-    if worker::drive(f, t.id).await? != TaskState::Succeeded {
+    if worker::drive_with_wait(f, t.id, !args.no_wait).await? != TaskState::Succeeded {
         // `exit` skips destructors: remove the proxy directory here.
         drop(crate::egress::MadeDirGuard);
         std::process::exit(1);

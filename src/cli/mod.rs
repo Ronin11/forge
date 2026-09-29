@@ -147,10 +147,19 @@ pub struct TaskArgs {
     trust: Option<String>,
 }
 
+#[derive(Args)]
+struct RunArgs {
+    #[command(flatten)]
+    task: TaskArgs,
+    /// Requeue on a provider hold instead of redrawing or waiting in the foreground
+    #[arg(long)]
+    no_wait: bool,
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Run one task now
-    Run(TaskArgs),
+    Run(RunArgs),
     /// Queue a task for `forge work`
     Add {
         #[command(flatten)]

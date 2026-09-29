@@ -31,6 +31,7 @@ pub(super) struct RunDirectiveStep<'a> {
     pub(super) task_cap: f64,
     pub(super) repo: &'a Path,
     pub(super) wt: &'a Path,
+    pub(super) wait: bool,
     pub(super) remote_url: &'a Option<String>,
 }
 
@@ -217,6 +218,7 @@ pub(super) async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<Ste
         repo,
         wt,
         remote_url,
+        wait,
     } = args;
     let id = t.id;
     if run.done.contains(&seq) && !run.owed.contains_key(&seq) {
@@ -232,7 +234,6 @@ pub(super) async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<Ste
     // default, else the task's), the provider this step's role runs
     // under, and the routing record for it.
     let role = step.action.contract.as_str();
-    let ts = per_step_task(f, t, step, role)?;
     let mut feedback: Option<String> = run.owed.remove(&seq);
     let mut resume: Option<Resume> = None;
     let mut step_ok = false;
@@ -262,17 +263,13 @@ pub(super) async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<Ste
     let mut nudge_pending = false;
     while run.used_at(seq) < t.max_attempts || nudge_pending {
         nudge_pending = false;
-        // A subscription window at its cap: give up the slot rather than
-        // sleep it out here, deaf to shutdown, for as long as an hour at a
-        // turn. The claim loop's own hold logic (`worker::first_role`,
-        // read against this same record) waits for the reset and claims
-        // this task again once it is free.
-        if let Some((msg, _)) = crate::worker::window_hold(f, &ts.provider).env()? {
+        if let Some(flow) = super::provider_hold::before_attempt(f, t, role, wait).await? {
             if let Some(fb) = feedback {
                 run.owed.insert(seq, fb);
             }
-            return Ok(StepFlow::Requeue(msg));
+            return Ok(flow);
         }
+        let ts = per_step_task(f, t, step, role)?;
         // Would the next attempt cross the cap? A decision for a human,
         // not a failure: see `check_cap`.
         if let Some(end) = check_cap(f, t, resolved, &run.done, task_cap, wt).await? {
