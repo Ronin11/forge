@@ -271,9 +271,7 @@ fn a_portal_token_answers_only_its_own_projects_blocked_question() {
     assert!(task_text.contains("alice's answer"), "{task_text}");
 }
 
-#[test]
-fn portal_tokens_scope_proposal_answers_before_any_write() {
-    let e = Env::new();
+fn create_portal_proposals(e: &Env) -> (Vec<String>, Vec<i64>) {
     let repo = e.repo.to_str().unwrap();
     let mut projects = Vec::new();
     let mut ids = Vec::new();
@@ -312,6 +310,13 @@ fn portal_tokens_scope_proposal_answers_before_any_write() {
         e.db().execute("UPDATE tasks SET state='blocked', reason='needs input: Automate quotes?', question_to='customer', proposal_json=?1 WHERE id=?2", rusqlite::params![proposal.to_string(), id]).unwrap();
         ids.push(id);
     }
+    (projects, ids)
+}
+
+#[test]
+fn portal_tokens_scope_proposal_answers_before_any_write() {
+    let e = Env::new();
+    let (projects, ids) = create_portal_proposals(&e);
     for (caller, target) in [(0, 1), (1, 0)] {
         let before = e.task(ids[target]);
         let denied = e.forge(
