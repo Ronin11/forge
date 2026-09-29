@@ -346,7 +346,7 @@ fn the_fresh_continuation_arm_launches_without_resume_and_carries_a_handoff() {
         "git diff --stat",
         "step.txt",
         "What the checks found so far",
-        "found:   L1 failed: answer",
+        "found:   L1 answer:",
         "src/notes.txt",
         "Reached max turns (30)",
         "The task:\\nwrite 42 to answer.txt",
