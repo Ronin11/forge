@@ -341,7 +341,11 @@ pub fn agent_env(phase: Phase) -> Vec<(String, String)> {
 }
 
 /// The phase's inherited environment plus explicit values and build limits.
-fn env_with(worktree: &Path, extra_env: &[(String, String)], phase: Phase) -> Vec<(String, String)> {
+fn env_with(
+    worktree: &Path,
+    extra_env: &[(String, String)],
+    phase: Phase,
+) -> Vec<(String, String)> {
     let mut env = agent_env(phase);
     env.extend(extra_env.iter().cloned());
     env.extend(build_env::worktree_env(worktree));

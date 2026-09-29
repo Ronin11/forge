@@ -61,6 +61,7 @@ pub fn recorded_env(home: &Path, worktree: &Path) -> Option<BTreeMap<String, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::Phase;
 
     #[test]
     fn capacity_build_environment_survives_pending_and_recreated_worktrees() {
@@ -83,6 +84,7 @@ mod tests {
                     "printf '%s' \"$CARGO_BUILD_JOBS\"".into(),
                 ],
                 &[],
+                Phase::Check,
             )
             .output()
             .unwrap();
@@ -111,11 +113,13 @@ mod tests {
             "printf '%s' \"$CARGO_BUILD_JOBS\"".into(),
         ];
         for (tree, expected) in [(first.path(), "2"), (second.path(), "1")] {
-            let output = crate::agent::command_in(None, tree, &argv, &[])
-                .output()
-                .unwrap();
-            assert!(output.status.success());
-            assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+            for phase in [Phase::Agent, Phase::Check] {
+                let output = crate::agent::command_in(None, tree, &argv, &[], phase)
+                    .output()
+                    .unwrap();
+                assert!(output.status.success());
+                assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+            }
             assert_eq!(
                 recorded_env(home.path(), tree).unwrap()["CARGO_BUILD_JOBS"],
                 expected
