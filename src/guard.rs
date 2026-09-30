@@ -166,10 +166,18 @@ pub async fn install_for_project(
         let Some(remote) = crate::init::origin_remote(repo) else {
             continue;
         };
-        let base_branch = config::load_working(repo)
-            .await
-            .map(|c| c.base_branch)
-            .unwrap_or_else(|_| "main".to_string());
+        let base_branch = match config::load_working(repo).await {
+            Ok(c) => c.base_branch,
+            Err(e)
+                if e.downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                // Match config's default when no Forge configuration exists.
+                // A detached HEAD is ambiguous and must fail, not guard main.
+                git::current_branch(repo).await?
+            }
+            Err(e) => return Err(e),
+        };
         for bare in bare_destinations_sync(repo, &remote) {
             let changed = install(&bare, home, &r.repo, &base_branch).await?;
             steps.push(GuardStep {

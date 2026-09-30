@@ -510,3 +510,38 @@ fn doctor_checks_the_configured_remote_and_respects_disabled_pushes() {
         assert!(!production.join("hooks/pre-receive").exists());
     }
 }
+
+#[test]
+fn a_repository_without_config_guards_its_master_branch() {
+    let e = Env::new();
+    std::fs::remove_file(e.repo.join("forge.toml")).unwrap();
+    git(&e.repo, &["checkout", "-q", "-b", "master"]);
+    git(&e.repo, &["add", "-A"]);
+    git(&e.repo, &["commit", "-qm", "remove Forge configuration"]);
+    git(&e.repo, &["push", "-q", "origin", "master"]);
+    git(&e.origin, &["symbolic-ref", "HEAD", "refs/heads/master"]);
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "project",
+            "new",
+            "guarded",
+            "--purpose",
+            "Protect master",
+            "--repo",
+            e.repo.to_str().unwrap(),
+        ],
+    );
+    assert!(o.status.success(), "{}", text(&o));
+    let o = e.forge("ok.sh", &["project", "guard", "guarded"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(git(&e.origin, &["config", "forge.base-branch"]), "master");
+    let before = origin_sha(&e, "master");
+    git(&e.repo, &["commit", "--allow-empty", "-qm", "hand work"]);
+    let o = push(&e.repo, &["origin", "master"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains(&format!("forge adopt {} master", e.repo.display())));
+    assert_eq!(origin_sha(&e, "master"), before);
+    let o = push(&e.repo, &["origin", "HEAD:refs/heads/hand-work"]);
+    assert!(o.status.success(), "{}", text(&o));
+}
