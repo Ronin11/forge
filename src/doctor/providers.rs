@@ -4,11 +4,8 @@
 use super::{Check, Status, check};
 use crate::agent;
 
-/// The `providers` row of each jev provider: the variables its key (and,
-/// while Cloudflare is in use, its account id and token) are read from must
-/// be set, or every judgment it is routed fails. Doctor runs in the
-/// operator's shell, not the worker's, so a missing one is a warning: the
-/// worker's credentials drop-in may still set it.
+/// Check the same references and store as the worker. Environment credentials
+/// remain shell-dependent; secret references do not depend on the shell.
 pub(super) fn check_jev_providers(
     home: &std::path::Path,
     providers: &std::collections::BTreeMap<String, agent::Provider>,
@@ -16,6 +13,29 @@ pub(super) fn check_jev_providers(
     let mut out = Vec::new();
     for (name, p) in providers {
         if p.runner != agent::Runner::Jev {
+            if let Some(reference) = p.api_key.as_deref() {
+                let available =
+                    crate::secret_store::resolve_at(home, Some(reference), None).is_ok();
+                let mut row = check(
+                    "providers",
+                    if available { Status::Ok } else { Status::Warn },
+                    format!(
+                        "{name}: {reference} {}",
+                        if available {
+                            "set"
+                        } else {
+                            "not set or unavailable"
+                        }
+                    ),
+                    if available {
+                        ""
+                    } else {
+                        "use forge secret set NAME"
+                    },
+                );
+                row.provider = Some(name.clone());
+                out.push(row);
+            }
             continue;
         }
         let var = |v: &Option<String>, d: &str| v.clone().unwrap_or_else(|| d.to_string());
@@ -82,4 +102,34 @@ pub(super) fn check_jev_providers(
         out.push(c);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn secret_provider_checks_use_the_worker_store_and_name_missing_secrets() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join("secrets")).unwrap();
+        std::fs::write(home.path().join("secrets/config.toml"), "backend = 'file'").unwrap();
+        let provider = agent::Provider {
+            runner: agent::Runner::Jev,
+            jev_backend: agent::JevBackend::TypeSafe,
+            api_key: Some("secret:TYPESAFE_TEST".into()),
+            ..Default::default()
+        };
+        let providers = [("test".into(), provider)].into();
+        let missing = serde_json::to_string(&check_jev_providers(home.path(), &providers)).unwrap();
+        assert!(missing.contains("secret:TYPESAFE_TEST"));
+        assert!(missing.contains("not set"));
+        assert!(!missing.contains("TYPESAFE_API_KEY"));
+        let value = "doctor-never-prints-this-value";
+        crate::secret_store::Store::open(home.path())
+            .unwrap()
+            .set("TYPESAFE_TEST", value.into())
+            .unwrap();
+        let found = serde_json::to_string(&check_jev_providers(home.path(), &providers)).unwrap();
+        assert!(!found.contains("not set"));
+        assert!(!found.contains(value));
+    }
 }

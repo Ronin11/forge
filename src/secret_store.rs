@@ -31,7 +31,7 @@ pub fn validate_name(name: &str) -> Result<()> {
         || name.len() > 128
         || !name
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_- .".contains(&b) && b != b' ')
+            .all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b))
     {
         bail!(
             "secret names must contain only letters, digits, underscores, dots or hyphens (1–128 characters)"
@@ -72,31 +72,43 @@ impl Store {
             bail!("lock failed");
         }
         let config = dir.join("config.toml");
-        let backend = if config.exists() {
+        let requested = if config.exists() {
             toml::from_str::<Config>(&fs::read_to_string(&config)?)?.backend
+        } else if cfg!(target_os = "macos") {
+            "auto".into()
         } else {
             // Linux must work before login, even if setup runs in an unlocked desktop.
-            let backend = if cfg!(target_os = "macos")
-                && keychain(&dir)
-                    .and_then(|e| {
-                        e.set_password("{}")?;
-                        e.get_password()
-                    })
-                    .is_ok()
+            "file".into()
+        };
+        let selecting = !config.exists() || requested == "auto";
+        let backend = if requested == "auto" {
+            if keychain(&dir)
+                .and_then(|entry| match entry.get_password() {
+                    Ok(value) => Ok(value),
+                    Err(keyring::Error::NoEntry) => {
+                        entry.set_password("{}")?;
+                        entry.get_password()
+                    }
+                    Err(e) => Err(e),
+                })
+                .is_ok()
             {
-                "keychain"
+                "keychain".into()
             } else {
-                "file"
-            };
+                "file".into()
+            }
+        } else {
+            requested
+        };
+        if selecting {
             crate::login::replace_atomic(
                 &config,
                 toml::to_string(&Config {
-                    backend: backend.into(),
+                    backend: backend.clone(),
                 })?
                 .as_bytes(),
             )?;
-            backend.into()
-        };
+        }
         if backend != "file" && backend != "keychain" {
             bail!("unknown secret backend");
         }
@@ -221,4 +233,106 @@ pub fn resolve_at(home: &Path, secret: Option<&str>, env: Option<&str>) -> Resul
 }
 pub fn resolve(secret: Option<&str>, env: Option<&str>) -> Result<Option<String>> {
     resolve_at(&crate::ctx::Paths::compute_home()?, secret, env)
+}
+
+/// Scrub provider echoes before they reach logs or downstream prompts.
+pub fn redact_text(text: &str, values: &[Option<&str>]) -> String {
+    let mut out = text.to_owned();
+    for value in values.iter().flatten().filter(|v| !v.is_empty()) {
+        out = out.replace(value, "[redacted]");
+        if let Ok(escaped) = serde_json::to_string(value) {
+            out = out.replace(&escaped[1..escaped.len() - 1], "[redacted]");
+        }
+    }
+    out
+}
+pub fn redact_value(value: serde_json::Value, secrets: &[Option<&str>]) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::String(s) => Value::String(redact_text(&s, secrets)),
+        Value::Array(a) => Value::Array(a.into_iter().map(|v| redact_value(v, secrets)).collect()),
+        Value::Object(o) => Value::Object(
+            o.into_iter()
+                .map(|(k, v)| (redact_text(&k, secrets), redact_value(v, secrets)))
+                .collect(),
+        ),
+        v => v,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn secret_file_round_trip_permissions_and_safe_failures() {
+        let home = tempfile::tempdir().unwrap();
+        fs::create_dir(home.path().join("secrets")).unwrap();
+        fs::write(
+            home.path().join("secrets/config.toml"),
+            "backend = 'file'\n",
+        )
+        .unwrap();
+        let value = "sentinel-credential-DO-NOT-PRINT";
+        {
+            let store = Store::open(home.path()).unwrap();
+            store.set("TEST_KEY", value.into()).unwrap();
+            assert_eq!(store.get("TEST_KEY").unwrap(), value);
+            let listed = store.list().unwrap();
+            assert_eq!(listed[0].0, "TEST_KEY");
+            assert!(listed[0].1 > 0);
+            assert!(!format!("{listed:?}").contains(value));
+        }
+        assert_eq!(
+            resolve_at(
+                home.path(),
+                Some("secret:TEST_KEY"),
+                Some("IGNORED_UNSET_VARIABLE")
+            )
+            .unwrap()
+            .as_deref(),
+            Some(value)
+        );
+        for file in ["key", "values.enc"] {
+            let path = home.path().join("secrets").join(file);
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert!(
+                !fs::read(&path)
+                    .unwrap()
+                    .windows(value.len())
+                    .any(|w| w == value.as_bytes())
+            );
+        }
+        let store = Store::open(home.path()).unwrap();
+        store.set("TEST_KEY", "replacement".into()).unwrap();
+        assert_eq!(store.get("TEST_KEY").unwrap(), "replacement");
+        store.remove("TEST_KEY").unwrap();
+        assert!(store.list().unwrap().is_empty());
+        let error = store.get("TEST_KEY").unwrap_err().to_string();
+        assert!(error.contains("TEST_KEY"));
+        assert!(!error.contains(value));
+        fs::write(home.path().join("secrets/values.enc"), value).unwrap();
+        let error = format!("{:#}", store.list().unwrap_err());
+        assert!(!error.contains(value));
+        assert!(store.set("NEXT", "another-value".into()).is_err());
+    }
+    #[test]
+    fn secret_echoes_are_redacted_in_json_and_errors() {
+        let secret = "abc\"def\\ghi";
+        let v = serde_json::json!({"nested": [secret], secret: secret});
+        let clean = redact_value(v, &[Some(secret)]).to_string();
+        assert!(!clean.contains("abc"));
+        assert!(
+            !redact_text(&serde_json::to_string(secret).unwrap(), &[Some(secret)]).contains("abc")
+        );
+        assert!(
+            reference("literal-credential")
+                .unwrap_err()
+                .to_string()
+                .find("literal-credential")
+                .is_none()
+        );
+    }
 }

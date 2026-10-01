@@ -25,19 +25,24 @@ async fn chat_once(
     if let Some(key) = api_key {
         req = req.bearer_auth(key);
     }
-    let resp = req.send().await.context("sending the chat request")?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|_| anyhow::anyhow!("sending the chat request failed"))?;
     let status = resp.status();
     let text = resp
         .text()
         .await
-        .context("reading the chat response body")?;
+        .map_err(|_| anyhow::anyhow!("reading the chat response body failed"))?;
     if !status.is_success() {
         anyhow::bail!(
             "chat endpoint returned {status}: {}",
-            truncated_first_line(&text)
+            truncated_first_line(&crate::secret_store::redact_text(&text, &[api_key]))
         );
     }
-    serde_json::from_str(&text).context("parsing the chat response as JSON")
+    serde_json::from_str::<Value>(&text)
+        .map(|v| crate::secret_store::redact_value(v, &[api_key]))
+        .map_err(|_| anyhow::anyhow!("invalid chat response JSON"))
 }
 
 /// The first line of `text`, bounded to a sane length: a non-2xx response
@@ -93,10 +98,23 @@ pub(super) async fn run_chat(l: Launch<'_>) -> Result<Outcome> {
         }
     };
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let api_key = crate::secret_store::resolve(
+    let api_key = match crate::secret_store::resolve(
         l.provider.api_key.as_deref(),
         l.provider.api_key_env.as_deref(),
-    )?;
+    ) {
+        Ok(key) => key,
+        Err(e) => {
+            out.exit_code = Some(1);
+            out.stderr_text = e.to_string();
+            out.wall_ms = start.elapsed().as_millis();
+            writeln!(
+                log,
+                "{{\"type\":\"forge_stderr\",\"text\":{}}}",
+                serde_json::to_string(&out.stderr_text)?
+            )?;
+            return Ok(out);
+        }
+    };
 
     let system = if l.system.is_empty() {
         UNTRUSTED_DATA_SENTENCE

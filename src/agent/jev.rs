@@ -308,6 +308,7 @@ pub struct Endpoint {
     pub url: String,
     pub key: String,
     pub model: String,
+    account_id: Option<String>,
 }
 
 impl std::fmt::Debug for Endpoint {
@@ -321,8 +322,16 @@ impl std::fmt::Debug for Endpoint {
 /// The endpoint `provider` posts to on `backend` (never `Auto`; see
 /// `backend_for`), from the environment variables it names.
 pub fn endpoint(provider: &super::Provider, backend: JevBackend) -> Result<Endpoint> {
+    endpoint_at(provider, backend, &crate::ctx::Paths::compute_home()?)
+}
+
+fn endpoint_at(
+    provider: &super::Provider,
+    backend: JevBackend,
+    home: &std::path::Path,
+) -> Result<Endpoint> {
     let var = |secret: Option<&str>, env: &str| -> Result<String> {
-        crate::secret_store::resolve(secret, Some(env))?
+        crate::secret_store::resolve_at(home, secret, Some(env))?
             .ok_or_else(|| anyhow::anyhow!("missing provider credential"))
     };
     if backend == JevBackend::Cloudflare {
@@ -330,21 +339,22 @@ pub fn endpoint(provider: &super::Provider, backend: JevBackend) -> Result<Endpo
             .cloudflare_url
             .clone()
             .unwrap_or_else(|| JEV_CLOUDFLARE_URL.to_string());
+        let mut account_id = None;
         if url.contains("{account_id}") {
             let id_var = provider
                 .account_id_env
                 .as_deref()
                 .unwrap_or(JEV_DEFAULT_ACCOUNT_ENV);
-            url = url.replace(
-                "{account_id}",
-                &var(provider.account_id.as_deref(), id_var)?,
-            );
+            let id = var(provider.account_id.as_deref(), id_var)?;
+            url = url.replace("{account_id}", &id);
+            account_id = Some(id);
         }
         let key_var = provider
             .cloudflare_key_env
             .as_deref()
             .unwrap_or(JEV_CLOUDFLARE_KEY_ENV);
         return Ok(Endpoint {
+            account_id,
             backend,
             url,
             key: var(provider.cloudflare_api_key.as_deref(), key_var)?,
@@ -359,6 +369,7 @@ pub fn endpoint(provider: &super::Provider, backend: JevBackend) -> Result<Endpo
         .as_deref()
         .unwrap_or(JEV_DEFAULT_KEY_ENV);
     Ok(Endpoint {
+        account_id: None,
         backend: JevBackend::TypeSafe,
         url: provider
             .base_url
@@ -446,7 +457,7 @@ pub async fn call(
         );
         let mut tries = 0;
         let response = loop {
-            match post_json(&client, &ep.url, &ep.key, &sent, timeout).await {
+            match post_json(&client, &ep, &sent, timeout).await {
                 Ok(v) => break v,
                 Err(PostError::Status(429 | 529, _)) if tries < RETRIES => {
                     tokio::time::sleep(backoff(tries)).await;
@@ -584,34 +595,37 @@ enum PostError {
 /// One JSON POST with a bearer token, the response parsed as JSON on a 2xx.
 async fn post_json(
     client: &reqwest::Client,
-    url: &str,
-    key: &str,
+    ep: &Endpoint,
     body: &Value,
     timeout: Duration,
 ) -> std::result::Result<Value, PostError> {
     let resp = client
-        .post(url)
-        .bearer_auth(key)
+        .post(&ep.url)
+        .bearer_auth(&ep.key)
         .json(body)
         .timeout(timeout)
         .send()
         .await
-        .context("sending the jev request")
+        .map_err(|_| anyhow::anyhow!("sending the jev request failed"))
         .map_err(PostError::Other)?;
     let status = resp.status();
     let text = resp
         .text()
         .await
-        .context("reading the jev response body")
+        .map_err(|_| anyhow::anyhow!("reading the jev response body failed"))
         .map_err(PostError::Other)?;
     if !status.is_success() {
         return Err(PostError::Status(
             status.as_u16(),
-            truncated_first_line(&text),
+            truncated_first_line(&crate::secret_store::redact_text(
+                &text,
+                &[Some(&ep.key), ep.account_id.as_deref()],
+            )),
         ));
     }
-    serde_json::from_str(&text)
-        .context("parsing the jev response as JSON")
+    serde_json::from_str::<Value>(&text)
+        .map(|v| crate::secret_store::redact_value(v, &[Some(&ep.key), ep.account_id.as_deref()]))
+        .map_err(|_| anyhow::anyhow!("invalid jev response JSON"))
         .map_err(PostError::Other)
 }
 
@@ -624,6 +638,43 @@ mod tests {
         let text = "name = \"triage\"\nkind = \"directive\"\ncontract = \"plan\"\ndescription = \"Route the email.\"\nconfidence_below = { 0.6 = \"uncertain\" }\n[outcomes]\nreply = \"a person needs an answer\"\nignore = \"newsletters and noise\"\n";
         crate::workflows::parse_action(std::path::Path::new("triage.toml"), text, "h".into())
             .unwrap()
+    }
+
+    #[test]
+    fn secret_provider_endpoints_resolve_without_exporting_credentials() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join("secrets")).unwrap();
+        std::fs::write(home.path().join("secrets/config.toml"), "backend = 'file'").unwrap();
+        {
+            let store = crate::secret_store::Store::open(home.path()).unwrap();
+            for (name, value) in [
+                ("TS", "typesafe-test-token"),
+                ("CF", "cloudflare-test-token"),
+                ("ACCOUNT", "private-account"),
+            ] {
+                store.set(name, value.into()).unwrap();
+            }
+        }
+        std::fs::write(
+            home.path().join("config.toml"),
+            r#"
+[providers.secret-test]
+runner = "jev"
+api_key = "secret:TS"
+cloudflare_api_key = "secret:CF"
+account_id = "secret:ACCOUNT"
+"#,
+        )
+        .unwrap();
+        let config = crate::config::load_home(home.path()).unwrap();
+        let p = &config.providers["secret-test"];
+        let ts = endpoint_at(p, JevBackend::TypeSafe, home.path()).unwrap();
+        assert_eq!(ts.key, "typesafe-test-token");
+        let cf = endpoint_at(p, JevBackend::Cloudflare, home.path()).unwrap();
+        assert_eq!(cf.key, "cloudflare-test-token");
+        assert!(cf.url.contains("private-account"));
+        assert!(!format!("{cf:?}").contains("private-account"));
+        assert!(super::super::inputs::provider_env(p).is_empty());
     }
 
     #[test]

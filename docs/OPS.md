@@ -646,3 +646,89 @@ Use `forge adopt` when the change is already written and you only want Forge
 to check and land it. File a task (`forge add`) when you want an agent to do
 or change the work — including resolving a conflict with the base, which an
 adoption hands back to you.
+
+## Provider secrets (macOS and Linux)
+
+Use `forge secret set NAME` to enter a credential at a hidden, paste-friendly
+prompt. The value is never echoed and is not a command argument. Non-terminal
+stdin is accepted for scripts; one trailing LF or CRLF is removed. For example,
+pipe output from a password manager directly into `forge secret set NAME` rather
+than writing the value into shell history. `forge secret set NAME --from-clipboard`
+uses `pbpaste`/`pbcopy` on macOS or `wl-paste`/`wl-copy`, then `xclip`, on Linux.
+It clears the clipboard after reading; a failed clear aborts the command.
+Clipboard managers may retain their own history. `forge secret list` prints only
+names and the time each was last set (Unix seconds). `forge secret rm NAME`
+deletes one. There is deliberately no command to print a value.
+
+The machine's backend choice is recorded in
+`$FORGE_HOME/secrets/config.toml`. macOS initially tries the native Keychain and
+falls back to the encrypted file when it cannot use it. Linux defaults to the
+file: a lingering worker starts before login, when Secret Service is commonly
+locked or absent, even if the setup shell has an unlocked desktop keyring.
+For a desktop-only Linux worker, before storing any secrets, create that config
+with `backend = "auto"` to try Secret Service (gnome-keyring or a KWallet offering
+the Secret Service API) and select file storage if unavailable. Selection writes
+`backend = "keychain"` or `backend = "file"`; readers never independently choose a
+different backend. Do not change the backend on a populated store. A selected
+keychain that later locks fails closed; it cannot make its existing values
+available before login. Use the file backend for unattended boot operation.
+
+The keychain backend holds the credential map in an OS keychain entry scoped to
+this Forge home. The file backend uses authenticated XChaCha20-Poly1305 encryption
+with a fresh random nonce on every update. Its ciphertext `secrets/values.enc`
+and random key `secrets/key` both have mode 0600; the directory is 0700. Updates
+are locked and atomic. Back up both files together. Losing the key makes the
+ciphertext unreadable; corrupt stores are rejected rather than overwritten.
+
+For worker HTTP providers (`runner = "jev"` or `runner = "chat"`), use
+`api_key = "secret:NAME"`. Jev also accepts `cloudflare_api_key = "secret:NAME"`
+and `account_id = "secret:NAME"`. The corresponding `api_key_env`,
+`cloudflare_api_key_env` and `account_id_env` settings still work for CI and
+experiments. A secret reference takes precedence over its environment setting,
+including when that secret is missing: there is no silent credential fallback.
+Doctor checks the same store and reference as the worker and names missing
+secrets, so a shell without `TYPESAFE_API_KEY` does not produce a false warning
+for a provider configured with a secret reference.
+
+This keeps provider keys out of unit files, configuration values, process
+environments and sandboxed agents' reach, with one command on both platforms.
+The worker resolves credentials at call time, puts API keys only in HTTP
+authorization headers, and never exports these secrets to agent environments.
+CLI agent providers cannot use secret references, because their authentication
+would require handing credentials to the agent. Request errors omit credential
+URLs, and credential echoes are redacted before provider responses are logged.
+This does **not** protect against the same user account: it can read the file
+and its key or access its unlocked keychain. An unsandboxed process running as
+that user has the same access. This is storage and exposure hygiene, not a new
+security boundary against the account owner.
+
+### Moving Jev credentials out of a systemd drop-in
+
+The operator performs this migration; Forge does not inspect, import, edit or
+remove the existing drop-in. In the same `FORGE_HOME` used by the worker, run:
+
+```sh
+forge secret set TYPESAFE_API_KEY
+forge secret set CLOUDFLARE_API_TOKEN
+forge secret set CLOUDFLARE_ACCOUNT_ID
+```
+
+Paste each current value into its hidden prompt. In the existing Jev provider
+table in `$FORGE_HOME/config.toml`, replace the credential environment settings
+with references (retain its current model, backend and endpoint settings):
+
+```toml
+[providers.jev]
+runner = "jev"
+api_key = "secret:TYPESAFE_API_KEY"
+cloudflare_api_key = "secret:CLOUDFLARE_API_TOKEN"
+account_id = "secret:CLOUDFLARE_ACCOUNT_ID"
+```
+
+Run `forge secret list` and `forge doctor` to check the names. Then manually
+remove the three credential assignments from the worker's systemd drop-in (or
+delete it if it contains nothing else), reload user units with
+`systemctl --user daemon-reload`, and restart the worker's user service. Restarting
+clears the old credentials from that process environment and loads the provider
+references. On macOS there is no systemd step: restart the worker through its
+normal launcher after updating provider configuration.
