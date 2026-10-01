@@ -56,6 +56,7 @@ mod reload;
 mod render;
 mod report;
 mod sandbox;
+mod secret_store;
 #[path = "job/secrets.rs"]
 mod secrets;
 mod store;

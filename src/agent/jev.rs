@@ -302,7 +302,7 @@ pub fn probabilities(runner: super::Runner, envelope: &Value) -> String {
 
 /// Where one call through a `jev` provider goes: its host, the URL, the
 /// bearer token and the model that host names Jev by.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Endpoint {
     pub backend: JevBackend,
     pub url: String,
@@ -310,16 +310,20 @@ pub struct Endpoint {
     pub model: String,
 }
 
+impl std::fmt::Debug for Endpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Endpoint")
+            .field("backend", &self.backend)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The endpoint `provider` posts to on `backend` (never `Auto`; see
 /// `backend_for`), from the environment variables it names.
 pub fn endpoint(provider: &super::Provider, backend: JevBackend) -> Result<Endpoint> {
-    let name = &provider.name;
-    let var = |var: &str, what: &str| {
-        std::env::var(var).map_err(|_| {
-            anyhow::anyhow!(
-                "provider {name:?}: ${var} is not set ({what} names the environment variable that holds it, never the value itself)"
-            )
-        })
+    let var = |secret: Option<&str>, env: &str| -> Result<String> {
+        crate::secret_store::resolve(secret, Some(env))?
+            .ok_or_else(|| anyhow::anyhow!("missing provider credential"))
     };
     if backend == JevBackend::Cloudflare {
         let mut url = provider
@@ -331,7 +335,10 @@ pub fn endpoint(provider: &super::Provider, backend: JevBackend) -> Result<Endpo
                 .account_id_env
                 .as_deref()
                 .unwrap_or(JEV_DEFAULT_ACCOUNT_ENV);
-            url = url.replace("{account_id}", &var(id_var, "account_id_env")?);
+            url = url.replace(
+                "{account_id}",
+                &var(provider.account_id.as_deref(), id_var)?,
+            );
         }
         let key_var = provider
             .cloudflare_key_env
@@ -340,7 +347,7 @@ pub fn endpoint(provider: &super::Provider, backend: JevBackend) -> Result<Endpo
         return Ok(Endpoint {
             backend,
             url,
-            key: var(key_var, "cloudflare_api_key_env")?,
+            key: var(provider.cloudflare_api_key.as_deref(), key_var)?,
             model: provider
                 .cloudflare_model
                 .clone()
@@ -357,7 +364,7 @@ pub fn endpoint(provider: &super::Provider, backend: JevBackend) -> Result<Endpo
             .base_url
             .clone()
             .unwrap_or_else(|| JEV_DEFAULT_URL.to_string()),
-        key: var(key_var, "api_key_env")?,
+        key: var(provider.api_key.as_deref(), key_var)?,
         model: provider
             .model
             .clone()

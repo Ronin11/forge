@@ -16,6 +16,9 @@ pub(super) struct ProviderRaw {
     base_url: Option<String>,
     /// The environment variable that holds this provider's API key; see
     /// `agent::Provider::api_key_env`. Never the key itself.
+    api_key: Option<String>,
+    account_id: Option<String>,
+    cloudflare_api_key: Option<String>,
     api_key_env: Option<String>,
     /// The environment variable holding the Cloudflare account id, for the
     /// jev runner; see `agent::Provider::account_id_env`.
@@ -94,6 +97,15 @@ pub(super) fn build_providers(
             None if name == "anthropic" => Runner::ClaudeCli,
             None => bail!("providers.{name}: needs a `runner`"),
         };
+        for reference in [&p.api_key, &p.account_id, &p.cloudflare_api_key]
+            .into_iter()
+            .flatten()
+        {
+            crate::secret_store::reference(reference)?;
+            if !matches!(runner, Runner::Chat | Runner::Jev) {
+                bail!("secret references require a worker HTTP provider (chat or jev)");
+            }
+        }
         let jev_backend = jev::settle(&name, runner == Runner::Jev, &mut p)?;
         providers.insert(
             name.clone(),
@@ -102,6 +114,9 @@ pub(super) fn build_providers(
                 runner,
                 model: p.model,
                 base_url: p.base_url,
+                api_key: p.api_key,
+                account_id: p.account_id,
+                cloudflare_api_key: p.cloudflare_api_key,
                 api_key_env: p.api_key_env,
                 account_id_env: p.account_id_env,
                 jev_backend,

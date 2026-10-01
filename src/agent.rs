@@ -169,6 +169,9 @@ pub struct Provider {
     /// `Runner::Chat`'s `Authorization` header — never the key itself,
     /// which stays out of the config file and the record (see
     /// `run_chat`). `None` for a provider that needs none (a local model).
+    pub api_key: Option<String>,
+    pub account_id: Option<String>,
+    pub cloudflare_api_key: Option<String>,
     pub api_key_env: Option<String>,
     /// Names the variable holding a jev provider's Cloudflare account id.
     pub account_id_env: Option<String>,
@@ -218,6 +221,9 @@ impl Default for Provider {
             runner: Runner::ClaudeCli,
             model: Some("sonnet".into()),
             base_url: None,
+            api_key: None,
+            account_id: None,
+            cloudflare_api_key: None,
             api_key_env: None,
             account_id_env: None,
             jev_backend: JevBackend::Auto,

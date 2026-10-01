@@ -10,6 +10,7 @@ use crate::agent;
 /// operator's shell, not the worker's, so a missing one is a warning: the
 /// worker's credentials drop-in may still set it.
 pub(super) fn check_jev_providers(
+    home: &std::path::Path,
     providers: &std::collections::BTreeMap<String, agent::Provider>,
 ) -> Vec<Check> {
     let mut out = Vec::new();
@@ -21,22 +22,31 @@ pub(super) fn check_jev_providers(
         let mut needed = Vec::new();
         let backend = agent::backend_for(p);
         if p.jev_backend != agent::JevBackend::Cloudflare {
-            needed.push(var(&p.api_key_env, agent::JEV_DEFAULT_KEY_ENV));
+            needed.push((
+                p.api_key.as_deref(),
+                var(&p.api_key_env, agent::JEV_DEFAULT_KEY_ENV),
+            ));
         }
         if backend == agent::JevBackend::Cloudflare {
-            needed.push(var(&p.cloudflare_key_env, agent::JEV_CLOUDFLARE_KEY_ENV));
+            needed.push((
+                p.cloudflare_api_key.as_deref(),
+                var(&p.cloudflare_key_env, agent::JEV_CLOUDFLARE_KEY_ENV),
+            ));
             if p.cloudflare_url
                 .as_deref()
                 .unwrap_or(agent::JEV_CLOUDFLARE_URL)
                 .contains("{account_id}")
             {
-                needed.push(var(&p.account_id_env, agent::JEV_DEFAULT_ACCOUNT_ENV));
+                needed.push((
+                    p.account_id.as_deref(),
+                    var(&p.account_id_env, agent::JEV_DEFAULT_ACCOUNT_ENV),
+                ));
             }
         }
         let missing: Vec<String> = needed
             .iter()
-            .filter(|v| std::env::var_os(v).is_none())
-            .map(|v| format!("${v}"))
+            .filter(|(s, v)| crate::secret_store::resolve_at(home, *s, Some(v)).is_err())
+            .map(|(s, v)| s.map_or_else(|| format!("${v}"), str::to_owned))
             .collect();
         let host = match (p.jev_backend, backend) {
             (agent::JevBackend::Auto, agent::JevBackend::Cloudflare) => {
@@ -54,7 +64,7 @@ pub(super) fn check_jev_providers(
                     "{name}: jev on {host}; {} set",
                     needed
                         .iter()
-                        .map(|v| format!("${v}"))
+                        .map(|(s, v)| s.map_or_else(|| format!("${v}"), str::to_owned))
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
@@ -65,7 +75,7 @@ pub(super) fn check_jev_providers(
                 "providers",
                 Status::Warn,
                 format!("{name}: jev on {host}; {} not set", missing.join(", ")),
-                "set it in the worker's credentials drop-in; its judgments fail without it",
+                "set the named secret with forge secret set, or supply the configured environment variable",
             )
         };
         c.provider = Some(name.clone());

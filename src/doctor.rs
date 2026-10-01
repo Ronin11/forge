@@ -1191,7 +1191,7 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     out.extend(check_cache(&paths));
     out.extend(check_config(&paths));
     if let Ok(home) = config::load_home(&paths.home) {
-        out.extend(providers::check_jev_providers(&home.providers));
+        out.extend(providers::check_jev_providers(&paths.home, &home.providers));
     }
 
     let store = match Store::open(&paths.home.join("forge.db")) {

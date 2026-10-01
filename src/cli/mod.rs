@@ -34,6 +34,7 @@ mod initiatives;
 mod jobs;
 mod project_targets;
 mod projects;
+mod secret;
 mod statistics;
 mod stats;
 mod task_records;
@@ -165,6 +166,11 @@ struct RunArgs {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Manage machine-local provider credentials.
+    Secret {
+        #[command(subcommand)]
+        cmd: secret::SecretCmd,
+    },
     /// Run one task now
     Run(RunArgs),
     /// Queue a task for `forge work`
@@ -756,6 +762,7 @@ enum Cmd {
 pub async fn main() -> Result<()> {
     let cmd = Cli::parse().cmd;
     match cmd {
+        Cmd::Secret { cmd } => secret::run(cmd),
         Cmd::Run(..)
         | Cmd::Add { .. }
         | Cmd::Work { .. }

@@ -93,27 +93,10 @@ pub(super) async fn run_chat(l: Launch<'_>) -> Result<Outcome> {
         }
     };
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let api_key = match &l.provider.api_key_env {
-        Some(var) => match std::env::var(var) {
-            Ok(k) => Some(k),
-            Err(_) => {
-                out.exit_code = Some(1);
-                out.stderr_text = format!(
-                    "provider {:?}: ${var} is not set (api_key_env names the environment \
-                     variable that holds the key, never the key itself)",
-                    l.provider.name
-                );
-                out.wall_ms = start.elapsed().as_millis();
-                writeln!(
-                    log,
-                    "{{\"type\":\"forge_stderr\",\"text\":{}}}",
-                    serde_json::to_string(&out.stderr_text)?
-                )?;
-                return Ok(out);
-            }
-        },
-        None => None,
-    };
+    let api_key = crate::secret_store::resolve(
+        l.provider.api_key.as_deref(),
+        l.provider.api_key_env.as_deref(),
+    )?;
 
     let system = if l.system.is_empty() {
         UNTRUSTED_DATA_SENTENCE
