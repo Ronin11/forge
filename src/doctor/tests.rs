@@ -193,3 +193,68 @@ fn check_initiatives_warns_for_a_held_initiative_and_names_it() {
         checks[0].hint
     );
 }
+
+/// A project whose repository path is gone (the worktree was cleaned up
+/// out from under it) gets one clear `projects.<name>` row naming `forge
+/// project retire`, and `executors` skips it rather than FAILing.
+#[test]
+fn a_project_with_a_missing_repo_gets_one_stale_row_and_executors_skips_it() {
+    let (_dir, f) = fixture();
+    f.store
+        .create_project(&crate::store::Project {
+            name: "gone".into(),
+            purpose: "p".into(),
+            created_at: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    f.store
+        .register_repo("gone", "/no/such/repository/anywhere", None)
+        .unwrap();
+
+    let stale = check_stale_projects(&f.store);
+    assert_eq!(stale.len(), 1);
+    assert_eq!(stale[0].name, "projects.gone");
+    assert!(stale[0].status == Status::Warn);
+    assert!(
+        stale[0].hint.contains("forge project retire gone"),
+        "{}",
+        stale[0].hint
+    );
+
+    let executors = check_executors(&f.store, &f.paths);
+    assert!(
+        !executors
+            .iter()
+            .any(|c| c.name == "executors" && c.status == Status::Fail),
+        "{:?}",
+        executors.iter().map(|c| &c.detail).collect::<Vec<_>>()
+    );
+}
+
+/// `forge project retire` leaves a retired project out of
+/// `check_stale_projects` (and every other active-only pass), even though
+/// its repository path is still gone: a retired project's absent
+/// repository is no longer anyone's problem to report.
+#[test]
+fn a_retired_project_with_a_missing_repo_is_not_reported_stale() {
+    let (_dir, f) = fixture();
+    f.store
+        .create_project(&crate::store::Project {
+            name: "gone".into(),
+            purpose: "p".into(),
+            created_at: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    f.store
+        .register_repo("gone", "/no/such/repository/anywhere", None)
+        .unwrap();
+    assert!(f.store.retire_project("gone", crate::unix_now()).unwrap());
+
+    assert!(check_stale_projects(&f.store).is_empty());
+    // Still reachable by name, with its repo and history intact.
+    let kept = f.store.project("gone").unwrap().unwrap();
+    assert!(kept.retired_at.is_some());
+    assert_eq!(f.store.project_repos("gone").unwrap().len(), 1);
+}

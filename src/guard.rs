@@ -194,7 +194,7 @@ pub async fn install_for_project(
 /// `forge init` does unconditionally, alongside `--mirror`.
 pub async fn install_for_every_project(home: &Path, store: &Store) -> Result<Vec<GuardStep>> {
     let mut steps = Vec::new();
-    for p in store.list_projects()? {
+    for p in store.list_active_projects()? {
         steps.extend(install_for_project(home, store, &p.name).await?);
     }
     Ok(steps)

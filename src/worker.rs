@@ -545,7 +545,7 @@ struct TickRun {
 /// Every project's run workflows for this pass, in project order.
 async fn tick_run_workflows(f: &Forge) -> Result<Vec<TickRun>> {
     let mut runs = Vec::new();
-    for project in f.store.list_projects()? {
+    for project in f.store.list_active_projects()? {
         for (name, wf, source, landed_sha) in
             project_run_workflows(f, &project.name, "worker tick").await
         {

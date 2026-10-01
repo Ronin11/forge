@@ -20,6 +20,11 @@ pub struct Project {
     /// (see `config::ROLES`); a role missing here falls to the operator's
     /// `[roles]` table. Set with `forge project set --role <role>=<provider>`.
     pub role_providers: BTreeMap<String, String>,
+    /// When `forge project retire` retired this project; `None` while it
+    /// is active. A retired project keeps its row, repos and history, but
+    /// `list_active_projects` leaves it out of every operational pass:
+    /// worker scheduling, guard installs, and doctor's per-project checks.
+    pub retired_at: Option<i64>,
 }
 
 /// Whether `purpose` is the placeholder the migration and
@@ -141,6 +146,7 @@ pub(super) const PROJECT_COLUMNS: &[&str] = &[
     "supervisor_per_lineage",
     "protected_json",
     "role_providers_json",
+    "retired_at",
 ];
 
 pub(super) const PROJECT_REPO_COLUMNS: &[&str] = &["project", "repo", "scope_json"];
@@ -173,6 +179,7 @@ fn project_from_row(r: &Row) -> rusqlite::Result<Project> {
         role_providers: role_providers_json
             .map(|j| serde_json::from_str(&j).unwrap_or_default())
             .unwrap_or_default(),
+        retired_at: r.get("retired_at")?,
     })
 }
 
@@ -238,7 +245,9 @@ impl Store {
             .optional()?)
     }
 
-    /// Every project, alphabetically.
+    /// Every project, alphabetically, retired or not: what `forge project
+    /// list`/`show` draw on, so a retired project's history stays
+    /// reachable by name.
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let c = self.lock();
         let mut stmt = c.prepare(&format!(
@@ -247,6 +256,37 @@ impl Store {
         ))?;
         let rows = stmt.query_map([], project_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Every project not retired, alphabetically: what every operational
+    /// pass draws on instead of `list_projects` — worker scheduling,
+    /// guard installs, and doctor's per-project checks — so a retired
+    /// project (`forge project retire`) is skipped everywhere but its own
+    /// history.
+    pub fn list_active_projects(&self) -> Result<Vec<Project>> {
+        Ok(self
+            .list_projects()?
+            .into_iter()
+            .filter(|p| p.retired_at.is_none())
+            .collect())
+    }
+
+    /// Retire a project: refuses while it has a queued or running task
+    /// (`forge project retire`). `Ok(false)` if there is no such project
+    /// or it is already retired; its repos, backlog and task history are
+    /// left exactly as they were.
+    pub fn retire_project(&self, name: &str, at: i64) -> Result<bool> {
+        let stats = self.project_task_stats(name)?;
+        anyhow::ensure!(
+            stats.queued == 0 && stats.running == 0,
+            "project {name} has {} queued and {} running task(s); let them finish or withdraw them first",
+            stats.queued,
+            stats.running
+        );
+        Ok(self.lock().retry_execute(
+            "UPDATE projects SET retired_at=?2 WHERE name=?1 AND retired_at IS NULL",
+            params![name, at],
+        )? > 0)
     }
 
     /// Apply `forge project set`'s changes: only the columns given (not
@@ -897,6 +937,58 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
+    }
+
+    #[test]
+    fn retire_project_refuses_a_queued_or_running_task_and_keeps_history_once_retired() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "stale");
+        s.register_repo("stale", "/no/such/repo", None).unwrap();
+
+        let base = || Task {
+            repo: "/no/such/repo".into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 1,
+            timeout_secs: 1,
+            state: TaskState::Queued,
+            created_at: 1,
+            workflow: "direct".into(),
+            workflow_hash: "h1".into(),
+            project: Some("stale".into()),
+            ..Default::default()
+        };
+        let mut t = base();
+        t.id = s.insert_task(&t).unwrap();
+        s.update_task(&t).unwrap();
+
+        let err = s.retire_project("stale", 2).unwrap_err().to_string();
+        assert!(err.contains("1 queued"), "{err}");
+
+        t.state = TaskState::Succeeded;
+        t.started_at = Some(1);
+        t.finished_at = Some(2);
+        s.update_task(&t).unwrap();
+
+        assert!(s.retire_project("stale", 3).unwrap());
+        let p = s.project("stale").unwrap().unwrap();
+        assert_eq!(p.retired_at, Some(3));
+        // Repos and history are untouched.
+        assert_eq!(s.project_repos("stale").unwrap().len(), 1);
+        assert_eq!(s.project_tasks("stale").unwrap().len(), 1);
+        // list_projects still has it; list_active_projects does not.
+        assert!(s.list_projects().unwrap().iter().any(|p| p.name == "stale"));
+        assert!(
+            !s.list_active_projects()
+                .unwrap()
+                .iter()
+                .any(|p| p.name == "stale")
+        );
+        // Already retired: no-op, not an error.
+        assert!(!s.retire_project("stale", 4).unwrap());
     }
 
     #[test]

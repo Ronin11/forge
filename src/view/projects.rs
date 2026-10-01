@@ -55,6 +55,9 @@ pub struct ProjectRow {
     pub supervisor_per_lineage: Option<i64>,
     pub protected: Vec<String>,
     pub role_providers: std::collections::BTreeMap<String, String>,
+    /// When `forge project retire` retired this project; `None` while
+    /// active.
+    pub retired_at: Option<i64>,
     /// The escalator's proposals made on this project, newest first, and
     /// how each was answered (see docs/INTAKE.md, "The escalator").
     pub proposals: Vec<ProposalRow>,
@@ -124,6 +127,7 @@ pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
         supervisor_per_lineage: p.supervisor_per_lineage,
         protected: p.protected.clone().unwrap_or_default(),
         role_providers: p.role_providers.clone(),
+        retired_at: p.retired_at,
         proposals,
     })
 }

@@ -228,44 +228,74 @@ fn check_egress(paths: &Paths, store: &Store) -> Vec<Check> {
             None => check("dependency_cache", Status::Ok, "not configured", ""),
         });
     }
-    let projects = match store.list_projects() {
+    let projects = match store.list_active_projects() {
         Ok(p) => p,
         Err(_) => return out,
     };
     for p in projects {
-        let repos = store.project_repos(&p.name).unwrap_or_default();
-        let mut allowed = Vec::new();
-        let mut broken = None;
-        for r in &repos {
-            match config::load_working_egress(std::path::Path::new(&r.repo)) {
-                Ok(rules) => allowed.extend(rules.iter().map(|r| r.to_string())),
-                Err(e) => broken = Some(format!("{}: {e:#}", r.repo)),
-            }
+        if let Some(row) = project_egress_row(store, &p, sandbox_off) {
+            out.push(row);
         }
-        allowed.sort();
-        allowed.dedup();
-        out.push(match broken {
-            Some(e) => check(
-                &format!("egress.{}", p.name),
-                Status::Warn,
-                e,
-                "fix [sandbox] egress in the repository's forge.toml",
-            ),
-            None if allowed.is_empty() => check(
-                &format!("egress.{}", p.name),
-                if sandbox_off { Status::Warn } else { Status::Ok },
-                "the model endpoint only",
-                "a repository whose checks install packages declares its registries: [sandbox] egress = [\"registry.npmjs.org\"]",
-            ),
-            None => check(
-                &format!("egress.{}", p.name),
-                if sandbox_off { Status::Warn } else { Status::Ok },
-                format!("the model endpoint and {}", allowed.join(", ")),
-                "",
-            ),
-        });
     }
     out
+}
+
+/// One project's `egress.<name>` row: the repositories' declared
+/// registries, sorted and deduped, or `None` when every repository's path
+/// is gone (`check_stale_projects` already makes that row, naming the
+/// retire command; a missing repository showing up here too as a
+/// config-load error would say nothing actionable).
+fn project_egress_row(
+    store: &Store,
+    p: &crate::store::Project,
+    sandbox_off: bool,
+) -> Option<Check> {
+    let repos = store.project_repos(&p.name).unwrap_or_default();
+    let existing: Vec<&crate::store::ProjectRepo> = repos
+        .iter()
+        .filter(|r| std::path::Path::new(&r.repo).exists())
+        .collect();
+    if existing.is_empty() {
+        return None;
+    }
+    let mut allowed = Vec::new();
+    let mut broken = None;
+    for r in &existing {
+        match config::load_working_egress(std::path::Path::new(&r.repo)) {
+            Ok(rules) => allowed.extend(rules.iter().map(|r| r.to_string())),
+            Err(e) => broken = Some(format!("{}: {e:#}", r.repo)),
+        }
+    }
+    allowed.sort();
+    allowed.dedup();
+    Some(match broken {
+        Some(e) => check(
+            &format!("egress.{}", p.name),
+            Status::Warn,
+            e,
+            "fix [sandbox] egress in the repository's forge.toml",
+        ),
+        None if allowed.is_empty() => check(
+            &format!("egress.{}", p.name),
+            if sandbox_off {
+                Status::Warn
+            } else {
+                Status::Ok
+            },
+            "the model endpoint only",
+            "a repository whose checks install packages declares its registries: [sandbox] egress = [\"registry.npmjs.org\"]",
+        ),
+        None => check(
+            &format!("egress.{}", p.name),
+            if sandbox_off {
+                Status::Warn
+            } else {
+                Status::Ok
+            },
+            format!("the model endpoint and {}", allowed.join(", ")),
+            "",
+        ),
+    })
 }
 
 /// Add to the egress row how many dead workers' proxy directories were swept.
@@ -759,7 +789,7 @@ fn check_deliveries(store: &Store, now: i64) -> Vec<Check> {
 /// `forge project show` and the portal already hide it, but the operator
 /// should still know it needs `forge project set --purpose`.
 fn check_project_purposes(store: &Store) -> Vec<Check> {
-    let projects = match store.list_projects() {
+    let projects = match store.list_active_projects() {
         Ok(p) => p,
         Err(e) => return vec![check("purposes", Status::Fail, format!("{e:#}"), "")],
     };
@@ -1084,12 +1114,53 @@ pub fn run_only(names: &[String]) -> Result<Vec<Check>> {
     Ok(checks)
 }
 
+/// Every active project with a repository path that no longer exists on
+/// disk (a Claude Code agent worktree that was cleaned up, say): one row
+/// per project naming `forge project retire`, instead of each of
+/// `executors` and `egress` FAILing or warning per repository for a
+/// project that is not coming back.
+fn check_stale_projects(store: &Store) -> Vec<Check> {
+    let projects = match store.list_active_projects() {
+        Ok(p) => p,
+        Err(e) => return vec![check("projects", Status::Fail, format!("{e:#}"), "")],
+    };
+    let mut out = Vec::new();
+    for p in projects {
+        let repos = store.project_repos(&p.name).unwrap_or_default();
+        let missing: Vec<&str> = repos
+            .iter()
+            .map(|r| r.repo.as_str())
+            .filter(|r| !std::path::Path::new(r).exists())
+            .collect();
+        if missing.is_empty() {
+            continue;
+        }
+        out.push(check(
+            &format!("projects.{}", p.name),
+            Status::Warn,
+            format!(
+                "{}: repository path(s) gone: {}",
+                p.name,
+                missing.join(", ")
+            ),
+            format!("if this project is done, forge project retire {}", p.name),
+        ));
+    }
+    out
+}
+
 fn check_executors(store: &Store, paths: &Paths) -> Vec<Check> {
     use crate::executor::Backend;
     let mut backends = std::collections::BTreeSet::new();
     let mut out = Vec::new();
-    for project in store.list_projects().unwrap_or_default() {
+    for project in store.list_active_projects().unwrap_or_default() {
         for repo in store.project_repos(&project.name).unwrap_or_default() {
+            if !std::path::Path::new(&repo.repo).exists() {
+                // `check_stale_projects` already reports this one row;
+                // the execution backend of a repository that is not there
+                // is not an executor failure.
+                continue;
+            }
             match config::load_working_execution(std::path::Path::new(&repo.repo)) {
                 Ok(execution) => {
                     backends.insert(execution.backend());
@@ -1191,7 +1262,7 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     out.extend(check_cache(&paths));
     out.extend(check_config(&paths));
     if let Ok(home) = config::load_home(&paths.home) {
-        out.extend(providers::check_jev_providers(&paths.home, &home.providers));
+        out.extend(providers::check_jev_providers(&paths, &home.providers));
     }
 
     let store = match Store::open(&paths.home.join("forge.db")) {
@@ -1207,6 +1278,7 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
         }
     };
     out.extend(check_schema(&store));
+    out.extend(check_stale_projects(&store));
     out.extend(check_executors(&store, &paths));
     out.extend(check_project_purposes(&store));
     out.extend(check_guard(&store));

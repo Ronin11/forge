@@ -9,7 +9,7 @@ use crate::store::Store;
 /// machine but lacks the landing guard hook: a hand push straight to the
 /// base branch would go through unnoticed there.
 pub(super) fn check_guard(store: &Store) -> Vec<Check> {
-    let projects = match store.list_projects() {
+    let projects = match store.list_active_projects() {
         Ok(p) => p,
         Err(e) => return vec![check("guard", Status::Fail, format!("{e:#}"), "")],
     };

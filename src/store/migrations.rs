@@ -851,6 +851,14 @@ CREATE TABLE initiative_holds (
   announced_at INTEGER NOT NULL
 );
 ",
+    // `forge project retire`: when a project was retired, NULL while it is
+    // still active. A retired project keeps its row, repos and history —
+    // only `forge project new` refusing to reuse its name and every
+    // operational pass (worker scheduling, guard installs, doctor's
+    // checks) skipping it change.
+    "
+ALTER TABLE projects ADD COLUMN retired_at INTEGER;
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

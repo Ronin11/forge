@@ -49,7 +49,7 @@ fn details(paths: &Paths, store: &Store) -> anyhow::Result<String> {
     for name in settings.projects.keys() {
         projects.entry(name.clone()).or_default();
     }
-    for p in store.list_projects()? {
+    for p in store.list_active_projects()? {
         projects.entry(p.name).or_default();
     }
     let mut parts = vec![format!("{} of {total} slots", used.values().sum::<usize>())];

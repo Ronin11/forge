@@ -172,6 +172,13 @@ pub(super) enum ProjectCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Retire a project: it keeps its repos, backlog and task history,
+    /// reachable by name (`forge project show`), but every operational
+    /// pass — worker scheduling, guard installs, doctor's per-project
+    /// checks — skips it from here on. Refused while it has a queued or
+    /// running task. Use this for a project whose repository is gone
+    /// (doctor's `projects` row names it).
+    Retire { name: String },
     /// Install the landing guard into this project's bare origin(s): a
     /// pre-receive hook that rejects a push to the base branch (or its
     /// deletion) unless it carries the integrator's own push option (see
@@ -226,6 +233,9 @@ fn print_project_row(r: &crate::view::ProjectRow) {
     out!("name       {}", r.name);
     out!("purpose    {}", r.purpose);
     out!("created_at {}", render::utc(r.created_at));
+    if let Some(at) = r.retired_at {
+        out!("retired_at {}", render::utc(at));
+    }
     if r.repos.is_empty() {
         out!("repos      none");
     }
@@ -490,6 +500,18 @@ fn project_list(json: bool) -> Result<()> {
     Ok(())
 }
 
+fn project_retire(name: String) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    f.store
+        .project(&name)?
+        .with_context(|| format!("no project {name}"))?;
+    if !f.store.retire_project(&name, unix_now())? {
+        bail!("project {name} is already retired");
+    }
+    out!("retired project {name}");
+    Ok(())
+}
+
 fn project_show(name: String, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let p = f
@@ -715,6 +737,7 @@ async fn dispatch_project(cmd: Cmd) -> Result<()> {
                 ProjectWebhookCmd::Revoke { project, name } => webhook_revoke(project, name),
                 ProjectWebhookCmd::List { project, json } => webhook_list(project, json),
             },
+            ProjectCmd::Retire { name } => project_retire(name),
             ProjectCmd::Portal { name, revoke } => project_portal(name, revoke),
             ProjectCmd::View { name, json } => project_view(name, json),
             ProjectCmd::ResolveToken { token, json } => project_resolve_token(token, json),

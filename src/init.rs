@@ -559,7 +559,7 @@ async fn install_mirror_hook(bare: &Path, mirror: &str) -> Result<bool> {
 async fn install_mirrors(home: &Path, mirror: &str) -> Result<Vec<StepResult>> {
     let store = crate::store::Store::open(&home.join("forge.db"))?;
     let mut bares = std::collections::BTreeSet::new();
-    for p in store.list_projects()? {
+    for p in store.list_active_projects()? {
         for r in store.project_repos(&p.name)? {
             let repo = Path::new(&r.repo);
             let Some(remote) = origin_remote(repo) else {
