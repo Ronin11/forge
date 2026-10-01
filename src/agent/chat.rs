@@ -257,6 +257,26 @@ mod tests {
         (url, rx)
     }
 
+    #[tokio::test]
+    async fn secret_http_echoes_never_reach_responses_or_errors() {
+        let secret = "secret-http-sentinel";
+        let (url, _requests) = fake_chat_server(vec![
+            (200, serde_json::json!({"echo": secret}).to_string()),
+            (401, format!("rejected credential {secret}")),
+        ]);
+        let client = reqwest::Client::new();
+        let body = serde_json::json!({});
+        let response = chat_once(&client, &url, Some(secret), &body, Duration::from_secs(3))
+            .await
+            .unwrap();
+        assert!(!response.to_string().contains(secret));
+        let error = chat_once(&client, &url, Some(secret), &body, Duration::from_secs(3))
+            .await
+            .unwrap_err();
+        assert!(!format!("{error:#}").contains(secret));
+        assert!(error.to_string().contains("401"));
+    }
+
     fn chat_provider(base_url: &str) -> Provider {
         Provider {
             runner: Runner::Chat,

@@ -868,6 +868,12 @@ impl Sandbox {
         if let Some(target) = self.targets.lock().unwrap().get(worktree) {
             cmd.arg("--bind").arg(target).arg(target);
         }
+        // Mask the credential store last, even when a broad cache grant or
+        // custom FORGE_HOME made its parent reachable through another bind.
+        let secrets = self.forge_home.join("secrets");
+        if secrets.exists() {
+            cmd.arg("--tmpfs").arg(&secrets);
+        }
         cmd.arg("--chdir").arg(worktree).arg("--");
         let script = self.wrapper_script(
             socket.is_some() && self.relay,
