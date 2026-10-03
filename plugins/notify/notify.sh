@@ -9,6 +9,8 @@ set -u
 # and rollbacks are the ones worth a notification on their own.
 # NOTIFY_DEPLOY_OK=1 in `plugins/notify/config` turns successes on too.
 NOTIFY_DEPLOY_OK=0
+# Unset: kernel audience policy. Explicit states opt into the old firehose.
+NOTIFY_ON=person
 
 config="$FORGE_PLUGIN_DIR/config"
 if [ -f "$config" ]; then
@@ -19,6 +21,7 @@ if [ -f "$config" ]; then
         key=${cfgline%%=*}
         val=${cfgline#*=}
         case "$key" in
+            NOTIFY_ON) NOTIFY_ON=$val ;;
             NOTIFY_DEPLOY_OK) NOTIFY_DEPLOY_OK=$val ;;
         esac
     done <"$config"
@@ -63,13 +66,35 @@ while IFS= read -r line; do
     if [ "$type" = task_done ]; then
         task=$(printf '%s\n' "$line" | sed -n 's/.*"task":\([0-9]*\).*/\1/p')
         state=$(printf '%s\n' "$line" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
+        audience=$(printf '%s\n' "$line" | json_str audience)
+        send=0
+        case " $NOTIFY_ON " in
+            *" $state "*) send=1 ;;
+            *" person "*) [ "$audience" = person ] && send=1 ;;
+        esac
         # `events` prints each line's keys sorted, so "state" always
         # follows "reason"; the reason is JSON-escaped, so a real newline
         # is the two bytes `\n`, and cutting there keeps just its first line.
         reason=$(printf '%s\n' "$line" |
             sed -n 's/.*"reason":"\(.*\)","state":.*/\1/p' | sed 's/\\n.*//')
+        if [ "$send" = 1 ]; then
+            printf '%s' "$line" |
+                sh "$FORGE_PLUGIN_DIR/command" "$task" "$state" "$reason" || true
+        fi
+    elif [ "$type" = notification_digest ]; then
+        day=$(printf '%s\n' "$line" | sed -n 's/.*"day":\([0-9]*\).*/\1/p')
+        sent=$(cat "$FORGE_PLUGIN_STATE/digest-day" 2>/dev/null || true)
+        if [ -n "$day" ] && [ "$day" -gt "${sent:-0}" ]; then
+            text=$(printf '%s\n' "$line" | json_str text)
+            if printf '%s' "$line" | sh "$FORGE_PLUGIN_DIR/command" digest "$day" "$text"; then
+                printf '%s\n' "$day" >"$FORGE_PLUGIN_STATE/digest-day.tmp"
+                mv -f "$FORGE_PLUGIN_STATE/digest-day.tmp" "$FORGE_PLUGIN_STATE/digest-day"
+            fi
+        fi
+    elif [ "$type" = disk_held ]; then
+        reason=$(printf '%s\n' "$line" | json_str reason)
         printf '%s' "$line" |
-            sh "$FORGE_PLUGIN_DIR/command" "$task" "$state" "$reason" || true
+            sh "$FORGE_PLUGIN_DIR/command" disk held "$reason" || true
     elif [ "$type" = provider_held ]; then
         # Once per hold, however many attempts the refused login met.
         provider=$(printf '%s\n' "$line" | json_str provider)

@@ -821,6 +821,44 @@ ALTER TABLE tasks ADD COLUMN adoption_json TEXT NOT NULL DEFAULT '';
     "
 ALTER TABLE workers ADD COLUMN start TEXT NOT NULL DEFAULT '';
 ",
+    // Task priority (see `store::priority`): 0 (lowest) to 7 (highest),
+    // 2 ("normal") by default and for every existing row. Among
+    // otherwise-claimable tasks, the claim order is priority descending,
+    // then id ascending (`Store::queued_unblocked`).
+    "
+ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 2 CHECK (priority BETWEEN 0 AND 7);
+",
+    // Deploy failure questions own their task instead of blocking landed work.
+    "
+ALTER TABLE tasks ADD COLUMN deploy_id INTEGER REFERENCES deploys(id);
+",
+    // `forge add --supersedes`: the earlier failed or blocked task this
+    // one replaces (src/store/supersede.rs). Additive, like `retry_of`.
+    "
+ALTER TABLE tasks ADD COLUMN supersedes INTEGER;
+",
+    // Which initiatives currently have an announced hold, and with what
+    // reason (src/worker/holds.rs): a row survives across worker
+    // processes, so a successor started by a self-deploy (whose in-memory
+    // `announced` set starts empty) reads it instead of repeating the
+    // announcement a predecessor already made. A row is deleted the
+    // moment its hold leaves `held`, so a later, separate hold on the
+    // same initiative — even with the same reason — is announced again.
+    "
+CREATE TABLE initiative_holds (
+  initiative_id INTEGER PRIMARY KEY,
+  reason TEXT NOT NULL,
+  announced_at INTEGER NOT NULL
+);
+",
+    // `forge project retire`: when a project was retired, NULL while it is
+    // still active. A retired project keeps its row, repos and history —
+    // only `forge project new` refusing to reuse its name and every
+    // operational pass (worker scheduling, guard installs, doctor's
+    // checks) skipping it change.
+    "
+ALTER TABLE projects ADD COLUMN retired_at INTEGER;
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

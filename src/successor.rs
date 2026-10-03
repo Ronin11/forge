@@ -63,7 +63,6 @@ pub struct Succession {
     daemon: bool,
     version: String,
     id: i64,
-    jobs: usize,
     poll: Option<u64>,
     max_tasks: Option<u32>,
     /// The spawned successor, the release it runs, and its `workers` row.
@@ -86,7 +85,8 @@ impl Succession {
         let pid = std::process::id() as i64;
         let id = if daemon {
             let id = f.store.register_worker(pid, &version)?;
-            f.store.set_worker_slots(id, opts.jobs.max(1))?;
+            f.store
+                .set_worker_slots(id, crate::worker::capacity::slots(f, opts))?;
             id
         } else {
             0
@@ -106,7 +106,6 @@ impl Succession {
             daemon,
             version,
             id,
-            jobs: opts.jobs,
             poll: opts.poll,
             max_tasks: opts.max_tasks,
             child: None,
@@ -240,7 +239,7 @@ impl Succession {
     fn spawn(&self, paths: &Paths, id: &str) -> Result<Child> {
         let bin = release::release_dir(&release::root(&paths.home), id).join("forge");
         let mut cmd = Command::new(&bin);
-        cmd.arg("work").args(["--jobs", &self.jobs.to_string()]);
+        cmd.arg("work");
         if let Some(poll) = self.poll {
             cmd.args(["--poll", &poll.to_string()]);
         }
@@ -880,7 +879,6 @@ mod tests {
             daemon: true,
             version: version.into(),
             id: store.register_worker(pid, version).unwrap(),
-            jobs: 1,
             poll: Some(1),
             max_tasks: None,
             child: None,

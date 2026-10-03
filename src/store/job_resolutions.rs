@@ -46,14 +46,35 @@ impl Store {
             .optional()?)
     }
 
-    /// Settle a blocked task as `succeeded` with `reason`: the end of a
-    /// task no attempt ever ran (a `job question`). Atomic on state, like
-    /// `withdraw`. Returns whether it changed anything.
-    pub fn settle_blocked_task(&self, id: i64, reason: &str) -> Result<bool> {
-        let n = self.lock().retry_execute(
-            "UPDATE tasks SET state='succeeded', reason=?2, finished_at=?3 WHERE id=?1 AND state='blocked'",
-            params![id, reason, crate::unix_now()],
+    /// Atomically close a no-work question and record its answer. Deploy
+    /// questions are withdrawn; job questions retain their succeeded state.
+    pub fn answer_blocked_question(&self, args: InsertDecisionBy<'_>, reason: &str) -> Result<i64> {
+        let mut c = self.lock();
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let now = crate::unix_now();
+        let n = tx.retry_execute(
+            "UPDATE tasks SET state=CASE WHEN deploy_id IS NULL THEN 'succeeded' ELSE 'withdrawn' END,
+             reason=?2, finished_at=?3 WHERE id=?1 AND state='blocked'
+             AND NOT EXISTS (SELECT 1 FROM attempts WHERE task_id=?1)",
+            params![args.task_id, reason, now],
         )?;
-        Ok(n == 1)
+        if n != 1 {
+            anyhow::bail!(
+                "task {} changed state before it could be answered",
+                args.task_id
+            );
+        }
+        tx.retry_execute(
+            "INSERT INTO decisions (task_id, repo, question, answer, created_at, answered_by, citations, answered_for, retry_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?1)",
+            params![args.task_id, args.repo, args.question, args.answer, now, args.answered_by, args.citations, args.answered_for],
+        )?;
+        let decision = tx.last_insert_rowid();
+        tx.commit()?;
+        drop(c);
+        if let Some(task) = self.task(args.task_id)? {
+            crate::disk::task_caches(&task.worktree)?;
+        }
+        Ok(decision)
     }
 }

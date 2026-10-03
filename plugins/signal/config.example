@@ -36,8 +36,9 @@ POLL_SECONDS=30
 TARGET_REPO=/path/to/repo
 WORKFLOW=reviewed
 
-# Task states worth a Signal message, space-separated.
-NOTIFY_ON=blocked failed
+# Default: only tasks the kernel says need a person. Explicit task states
+# (e.g. NOTIFY_ON=blocked failed) restore the old per-task firehose.
+NOTIFY_ON=person
 
 # A deploy that passes its check is quiet by default: a failed or
 # rolled-back deploy always sends a message. Set to 1 to also message on

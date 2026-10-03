@@ -7,6 +7,7 @@ use crate::{agent, config, sandbox, unix_now, worker, workflows};
 use anyhow::Result;
 use serde::Serialize;
 
+mod capacity;
 mod login;
 mod providers;
 
@@ -130,12 +131,18 @@ pub(crate) fn ymd(unix_secs: i64) -> String {
 
 mod binaries;
 use binaries::check_binaries;
+mod guard;
+use guard::{check_guard, check_guard_overrides};
 mod plugins;
 use plugins::check_plugins;
 mod presence;
 use presence::check_presence;
 mod succession;
 use succession::check_succession;
+mod dangling;
+use dangling::check_dangling;
+mod worktrees;
+use worktrees::check_worktrees;
 
 /// What an attempt can reach: whether bwrap can give it a network namespace
 /// at all, the model endpoints that are always allowed, and each project's
@@ -221,44 +228,74 @@ fn check_egress(paths: &Paths, store: &Store) -> Vec<Check> {
             None => check("dependency_cache", Status::Ok, "not configured", ""),
         });
     }
-    let projects = match store.list_projects() {
+    let projects = match store.list_active_projects() {
         Ok(p) => p,
         Err(_) => return out,
     };
     for p in projects {
-        let repos = store.project_repos(&p.name).unwrap_or_default();
-        let mut allowed = Vec::new();
-        let mut broken = None;
-        for r in &repos {
-            match config::load_working_egress(std::path::Path::new(&r.repo)) {
-                Ok(rules) => allowed.extend(rules.iter().map(|r| r.to_string())),
-                Err(e) => broken = Some(format!("{}: {e:#}", r.repo)),
-            }
+        if let Some(row) = project_egress_row(store, &p, sandbox_off) {
+            out.push(row);
         }
-        allowed.sort();
-        allowed.dedup();
-        out.push(match broken {
-            Some(e) => check(
-                &format!("egress.{}", p.name),
-                Status::Warn,
-                e,
-                "fix [sandbox] egress in the repository's forge.toml",
-            ),
-            None if allowed.is_empty() => check(
-                &format!("egress.{}", p.name),
-                if sandbox_off { Status::Warn } else { Status::Ok },
-                "the model endpoint only",
-                "a repository whose checks install packages declares its registries: [sandbox] egress = [\"registry.npmjs.org\"]",
-            ),
-            None => check(
-                &format!("egress.{}", p.name),
-                if sandbox_off { Status::Warn } else { Status::Ok },
-                format!("the model endpoint and {}", allowed.join(", ")),
-                "",
-            ),
-        });
     }
     out
+}
+
+/// One project's `egress.<name>` row: the repositories' declared
+/// registries, sorted and deduped, or `None` when every repository's path
+/// is gone (`check_stale_projects` already makes that row, naming the
+/// retire command; a missing repository showing up here too as a
+/// config-load error would say nothing actionable).
+fn project_egress_row(
+    store: &Store,
+    p: &crate::store::Project,
+    sandbox_off: bool,
+) -> Option<Check> {
+    let repos = store.project_repos(&p.name).unwrap_or_default();
+    let existing: Vec<&crate::store::ProjectRepo> = repos
+        .iter()
+        .filter(|r| std::path::Path::new(&r.repo).exists())
+        .collect();
+    if existing.is_empty() {
+        return None;
+    }
+    let mut allowed = Vec::new();
+    let mut broken = None;
+    for r in &existing {
+        match config::load_working_egress(std::path::Path::new(&r.repo)) {
+            Ok(rules) => allowed.extend(rules.iter().map(|r| r.to_string())),
+            Err(e) => broken = Some(format!("{}: {e:#}", r.repo)),
+        }
+    }
+    allowed.sort();
+    allowed.dedup();
+    Some(match broken {
+        Some(e) => check(
+            &format!("egress.{}", p.name),
+            Status::Warn,
+            e,
+            "fix [sandbox] egress in the repository's forge.toml",
+        ),
+        None if allowed.is_empty() => check(
+            &format!("egress.{}", p.name),
+            if sandbox_off {
+                Status::Warn
+            } else {
+                Status::Ok
+            },
+            "the model endpoint only",
+            "a repository whose checks install packages declares its registries: [sandbox] egress = [\"registry.npmjs.org\"]",
+        ),
+        None => check(
+            &format!("egress.{}", p.name),
+            if sandbox_off {
+                Status::Warn
+            } else {
+                Status::Ok
+            },
+            format!("the model endpoint and {}", allowed.join(", ")),
+            "",
+        ),
+    })
 }
 
 /// Add to the egress row how many dead workers' proxy directories were swept.
@@ -752,7 +789,7 @@ fn check_deliveries(store: &Store, now: i64) -> Vec<Check> {
 /// `forge project show` and the portal already hide it, but the operator
 /// should still know it needs `forge project set --purpose`.
 fn check_project_purposes(store: &Store) -> Vec<Check> {
-    let projects = match store.list_projects() {
+    let projects = match store.list_active_projects() {
         Ok(p) => p,
         Err(e) => return vec![check("purposes", Status::Fail, format!("{e:#}"), "")],
     };
@@ -779,40 +816,6 @@ fn check_project_purposes(store: &Store) -> Vec<Check> {
             ),
             "forge project set <name> --purpose <text>",
         )
-    }]
-}
-
-fn check_worktrees(store: &Store) -> Vec<Check> {
-    let tasks = match store.tasks_with_worktrees() {
-        Ok(t) => t,
-        Err(e) => return vec![check("worktrees", Status::Fail, format!("{e:#}"), "")],
-    };
-    let held: Vec<_> = tasks
-        .into_iter()
-        .filter(|t| t.state != TaskState::Running && t.state != TaskState::Queued)
-        .collect();
-    let retained: Vec<i64> = held.iter().map(|t| t.id).collect();
-    let oldest_days = held
-        .iter()
-        .filter_map(|t| t.finished_at)
-        .min()
-        .map(|fin| (unix_now() - fin).max(0) / 86_400);
-    vec![if retained.is_empty() {
-        check("worktrees", Status::Ok, "none retained", "")
-    } else {
-        let mut c = check(
-            "worktrees",
-            Status::Warn,
-            format!(
-                "{} retained: {:?}, oldest {}d",
-                retained.len(),
-                retained,
-                oldest_days.unwrap_or(0)
-            ),
-            "forge gc removes the published ones and explains the rest",
-        );
-        c.worktree_ids = Some(retained);
-        c
     }]
 }
 
@@ -1111,12 +1114,53 @@ pub fn run_only(names: &[String]) -> Result<Vec<Check>> {
     Ok(checks)
 }
 
+/// Every active project with a repository path that no longer exists on
+/// disk (a Claude Code agent worktree that was cleaned up, say): one row
+/// per project naming `forge project retire`, instead of each of
+/// `executors` and `egress` FAILing or warning per repository for a
+/// project that is not coming back.
+fn check_stale_projects(store: &Store) -> Vec<Check> {
+    let projects = match store.list_active_projects() {
+        Ok(p) => p,
+        Err(e) => return vec![check("projects", Status::Fail, format!("{e:#}"), "")],
+    };
+    let mut out = Vec::new();
+    for p in projects {
+        let repos = store.project_repos(&p.name).unwrap_or_default();
+        let missing: Vec<&str> = repos
+            .iter()
+            .map(|r| r.repo.as_str())
+            .filter(|r| !std::path::Path::new(r).exists())
+            .collect();
+        if missing.is_empty() {
+            continue;
+        }
+        out.push(check(
+            &format!("projects.{}", p.name),
+            Status::Warn,
+            format!(
+                "{}: repository path(s) gone: {}",
+                p.name,
+                missing.join(", ")
+            ),
+            format!("if this project is done, forge project retire {}", p.name),
+        ));
+    }
+    out
+}
+
 fn check_executors(store: &Store, paths: &Paths) -> Vec<Check> {
     use crate::executor::Backend;
     let mut backends = std::collections::BTreeSet::new();
     let mut out = Vec::new();
-    for project in store.list_projects().unwrap_or_default() {
+    for project in store.list_active_projects().unwrap_or_default() {
         for repo in store.project_repos(&project.name).unwrap_or_default() {
+            if !std::path::Path::new(&repo.repo).exists() {
+                // `check_stale_projects` already reports this one row;
+                // the execution backend of a repository that is not there
+                // is not an executor failure.
+                continue;
+            }
             match config::load_working_execution(std::path::Path::new(&repo.repo)) {
                 Ok(execution) => {
                     backends.insert(execution.backend());
@@ -1218,7 +1262,7 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     out.extend(check_cache(&paths));
     out.extend(check_config(&paths));
     if let Ok(home) = config::load_home(&paths.home) {
-        out.extend(providers::check_jev_providers(&home.providers));
+        out.extend(providers::check_jev_providers(&paths, &home.providers));
     }
 
     let store = match Store::open(&paths.home.join("forge.db")) {
@@ -1234,8 +1278,11 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
         }
     };
     out.extend(check_schema(&store));
+    out.extend(check_stale_projects(&store));
     out.extend(check_executors(&store, &paths));
     out.extend(check_project_purposes(&store));
+    out.extend(check_guard(&store));
+    out.extend(check_guard_overrides(&store));
     out.extend(check_egress(&paths, &store));
     out.extend(login::anthropic(&paths));
     out.extend(login::others());
@@ -1245,9 +1292,15 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     out.extend(check_plugins(&paths, &store));
     out.extend(check_presence(&paths, &store));
     out.extend(check_learning(&paths, &store));
-    out.extend(check_worker(&paths, &store));
+    out.extend(capacity::describe(
+        &paths,
+        &store,
+        check_worker(&paths, &store),
+    ));
     out.extend(check_queue(&store));
     out.extend(check_deliveries(&store, unix_now()));
+    out.extend(capacity::disk(&paths, &store));
+    out.extend(check_dangling(&store));
     out.extend(check_worktrees(&store));
     out.extend(check_logs(&paths));
 
@@ -1260,235 +1313,4 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn check_worktrees_is_ok_with_no_retained_worktrees() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(&dir.path().join("forge.db")).unwrap();
-        let checks = check_worktrees(&store);
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].name, "worktrees");
-        assert!(checks[0].status == Status::Ok);
-        assert_eq!(checks[0].detail, "none retained");
-    }
-
-    /// A finished task whose worktree is still on disk: WARN, and the
-    /// structured `worktree_ids` a client (the doctor page's gc control)
-    /// reads instead of parsing the `{:?}`-formatted list out of `detail`.
-    #[test]
-    fn check_worktrees_warns_and_carries_the_retained_ids() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(&dir.path().join("forge.db")).unwrap();
-        let mut t = fixture_task(TaskState::Failed, "", 0, Some(crate::unix_now()));
-        t.worktree = "/wt/1".into();
-        t.id = store.insert_task(&t).unwrap();
-        store.update_task(&t).unwrap();
-
-        let checks = check_worktrees(&store);
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].name, "worktrees");
-        assert!(checks[0].status == Status::Warn);
-        assert_eq!(checks[0].worktree_ids, Some(vec![t.id]));
-        assert!(
-            checks[0].detail.contains(&t.id.to_string()),
-            "{}",
-            checks[0].detail
-        );
-    }
-
-    /// `events.dropped` naming one task and two jobs: `logs` reports each
-    /// count on its own, since a job's drops are marked `job:<id>` and must
-    /// not collapse into (or be missed by) the task tally.
-    #[test]
-    fn check_logs_counts_task_and_job_drops_separately() {
-        let (_dir, f) = fixture();
-        std::fs::write(f.paths.home.join("events.jsonl"), b"{}\n").unwrap();
-        std::fs::write(f.paths.home.join("events.dropped"), b"1\njob:2\njob:3\n").unwrap();
-
-        let checks = check_logs(&f.paths);
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].name, "logs");
-        assert!(checks[0].status == Status::Warn);
-        assert!(
-            checks[0].detail.contains("1 task(s) lost log lines"),
-            "{}",
-            checks[0].detail
-        );
-        assert!(
-            checks[0].detail.contains("2 job(s) lost log lines"),
-            "{}",
-            checks[0].detail
-        );
-    }
-
-    /// A `Forge` over a fresh, empty store in a throwaway home (the same
-    /// fixture shape `view.rs`'s tests use).
-    fn fixture() -> (tempfile::TempDir, Forge) {
-        use crate::ctx::Paths;
-
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().join("home");
-        let paths = Paths {
-            worktrees: home.join("worktrees"),
-            logs: home.join("logs"),
-            home,
-        };
-        std::fs::create_dir_all(&paths.worktrees).unwrap();
-        std::fs::create_dir_all(&paths.logs).unwrap();
-        let store = Store::open(&paths.home.join("forge.db")).unwrap();
-        let f = Forge::open_with(paths, store).unwrap();
-        (dir, f)
-    }
-
-    fn fixture_task(
-        state: TaskState,
-        reason: &str,
-        initiative: i64,
-        finished_at: Option<i64>,
-    ) -> crate::store::Task {
-        crate::store::Task {
-            repo: "/repo".into(),
-            task: "do the thing".into(),
-            base_branch: "main".into(),
-            model: "sonnet".into(),
-            max_turns: 10,
-            max_attempts: 1,
-            timeout_secs: 60,
-            state,
-            reason: reason.into(),
-            finished_at,
-            created_at: crate::unix_now(),
-            workflow: "direct".into(),
-            project: Some("demo".into()),
-            initiative: Some(initiative),
-            ..Default::default()
-        }
-    }
-
-    /// One workflow measured on two providers, 0/10 on one and 8/10 on the
-    /// other: the learning check warns once, for the first, naming it, and
-    /// says nothing about the second (averaged, 8/20 would have read as
-    /// failing for both).
-    #[test]
-    fn check_learning_warns_per_provider_not_on_the_average() {
-        let (_dir, f) = fixture();
-        let hash = workflows::load_all(&f.paths.home)
-            .unwrap()
-            .into_iter()
-            .find(|w| w.name == "direct")
-            .unwrap()
-            .hash;
-        for (provider, landed) in [("local", 0), ("anthropic", 8)] {
-            for i in 0..10 {
-                let state = if i < landed {
-                    TaskState::Succeeded
-                } else {
-                    TaskState::Failed
-                };
-                let mut t = fixture_task(state, "", 0, Some(crate::unix_now()));
-                t.provider = provider.into();
-                t.workflow_hash = hash.clone();
-                t.started_at = Some(crate::unix_now());
-                t.id = f.store.insert_task(&t).unwrap();
-                f.store.update_task(&t).unwrap();
-            }
-        }
-
-        let checks = check_learning(&f.paths, &f.store);
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].name, "learning");
-        assert!(checks[0].status == Status::Warn, "{}", checks[0].detail);
-        let warned: Vec<&str> = checks[0].detail.split("; ").collect();
-        assert_eq!(warned.len(), 1, "{}", checks[0].detail);
-        assert!(
-            warned[0].starts_with("direct verifies 0/10 on local"),
-            "{}",
-            checks[0].detail
-        );
-        assert!(
-            !checks[0].detail.contains("anthropic"),
-            "{}",
-            checks[0].detail
-        );
-    }
-
-    #[test]
-    fn check_initiatives_is_ok_with_none_held() {
-        let (_dir, f) = fixture();
-        let checks = check_initiatives(&f);
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].name, "initiatives");
-        assert!(checks[0].status == Status::Ok);
-        assert_eq!(checks[0].detail, "none held");
-    }
-
-    /// A held initiative (its trailing same-rule failures reached its
-    /// stop rule) with one task still queued behind the hold: WARN,
-    /// naming the initiative, the rule and streak, the queued count, and
-    /// a fix line naming `forge initiative set <id>`.
-    #[test]
-    fn check_initiatives_warns_for_a_held_initiative_and_names_it() {
-        let (_dir, f) = fixture();
-        f.store
-            .create_project(&crate::store::Project {
-                name: "demo".into(),
-                purpose: "p".into(),
-                created_at: 1,
-                ..Default::default()
-            })
-            .unwrap();
-        let ini_id = f
-            .store
-            .create_initiative(&crate::store::Initiative {
-                project: "demo".into(),
-                outcome: "o".into(),
-                stop_after_same_rule: 2,
-                created_at: 1,
-                ..Default::default()
-            })
-            .unwrap();
-
-        for _ in 0..2 {
-            let mut t = fixture_task(
-                TaskState::Failed,
-                "L0 failed: has-commits (after 1 attempt(s))",
-                ini_id,
-                Some(crate::unix_now()),
-            );
-            t.id = f.store.insert_task(&t).unwrap();
-            f.store.update_task(&t).unwrap();
-        }
-        let mut queued = fixture_task(TaskState::Queued, "", ini_id, None);
-        queued.id = f.store.insert_task(&queued).unwrap();
-        f.store.update_task(&queued).unwrap();
-
-        let checks = check_initiatives(&f);
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].name, "initiatives");
-        assert!(checks[0].status == Status::Warn);
-        assert!(
-            checks[0].detail.contains(&format!("initiative {ini_id}")),
-            "{}",
-            checks[0].detail
-        );
-        assert!(
-            checks[0].detail.contains("stop rule: has-commits"),
-            "{}",
-            checks[0].detail
-        );
-        assert!(
-            checks[0].detail.contains("1 task(s) queued"),
-            "{}",
-            checks[0].detail
-        );
-        assert!(
-            checks[0]
-                .hint
-                .contains(&format!("forge initiative set {ini_id}")),
-            "{}",
-            checks[0].hint
-        );
-    }
-}
+mod tests;

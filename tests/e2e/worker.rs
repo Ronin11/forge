@@ -116,9 +116,8 @@ fn an_attempt_runs_sandboxed_when_bwrap_is_present() {
     assert!(out.contains("sandboxed"), "{out}");
 }
 
-/// The operator's claude config directory (`CLAUDE_CONFIG_DIR`) is seeded
-/// into the sandbox with only what the CLI needs — the settings file — and
-/// nothing else it holds is visible at that path (src/sandbox.rs, `command`).
+/// Agents retain their private logins and provider environment; repository
+/// operations get empty provider directories and no inherited provider variables.
 #[test]
 fn the_operators_config_directory_is_seeded_not_bound_into_the_sandbox() {
     let e = Env::new();
@@ -127,8 +126,8 @@ fn the_operators_config_directory_is_seeded_not_bound_into_the_sandbox() {
         return;
     }
     assert!(e.forge("ok.sh", &["workflows"]).status.success());
-    // Stands in for the operator's real claude config directory: one file
-    // an attempt needs, one it must never see.
+    // Neither settings nor unrelated files in the operator's config
+    // directory may reach the attempt.
     let fake_config = e.home.join("fake-claude-config");
     std::fs::create_dir_all(&fake_config).unwrap();
     std::fs::write(fake_config.join("settings.json"), "operator-settings").unwrap();
@@ -137,9 +136,23 @@ fn the_operators_config_directory_is_seeded_not_bound_into_the_sandbox() {
         "never-leaves-the-operator",
     )
     .unwrap();
+    let check = format!(
+        r#"set -eu
+output=$(env; ls ~/.claude)
+printf '%s\n' "$output"
+if printf '%s\n' "$output" | grep -E '^(ANTHROPIC_|CODEX_|COPILOT_|CLAUDE_CONFIG_DIR=)'; then exit 1; fi
+test -z "$(ls -A ~/.claude)"
+test -z "$(ls -A '{}')"
+test ! -e ~/.claude.json
+test ! -e /run/forge/seed/claude.json"#,
+        fake_config.display()
+    );
     std::fs::write(
         e.home.join("workflows/actions/canary.toml"),
-        "name = \"canary\"\nkind = \"operation\"\ndescription = \"d\"\nconsumes = [\"branch\"]\nrun = [\"bash\", \"-c\", \"set -e; test \\\"$(cat \\\"$CLAUDE_CONFIG_DIR/settings.json\\\")\\\" = operator-settings; test ! -e \\\"$CLAUDE_CONFIG_DIR/real-secret.txt\\\"\"]\n",
+        format!(
+            "name = \"canary\"\nkind = \"operation\"\ndescription = \"d\"\nconsumes = [\"branch\"]\nrun = {}\n",
+            serde_json::to_string(&["bash", "-c", &check]).unwrap()
+        ),
     )
     .unwrap();
     std::fs::write(
@@ -147,8 +160,13 @@ fn the_operators_config_directory_is_seeded_not_bound_into_the_sandbox() {
         "name = \"canary-wf\"\ndescription = \"d\"\nsteps = [{ action = \"setup\" }, { action = \"code\" }, { action = \"canary\" }]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n",
     )
     .unwrap();
-    let mut cmd = e.cmd("ok.sh");
-    cmd.env("CLAUDE_CONFIG_DIR", &fake_config);
+    let mut cmd = e.cmd("provider-state.sh");
+    cmd.env("CLAUDE_CONFIG_DIR", &fake_config)
+        .env("CODEX_HOME", e.home.join("operator-codex"))
+        .env("COPILOT_HOME", e.home.join("operator-copilot"))
+        .env("ANTHROPIC_API_KEY", "operator-anthropic")
+        .env("CODEX_API_KEY", "operator-codex")
+        .env("COPILOT_GITHUB_TOKEN", "operator-copilot");
     let o = cmd
         .args([
             "run",

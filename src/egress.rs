@@ -839,7 +839,21 @@ fn note_refused(path: &Path, host: &str, port: u16) {
 /// The refusals recorded for `dir`, one per host and port with the counts
 /// summed, most refused first.
 pub fn read_refused(dir: &Path) -> Vec<Refused> {
-    let Some(text) = refused_path(dir).and_then(|p| std::fs::read_to_string(p).ok()) else {
+    let Some(text) = refused_path(dir).and_then(|p| {
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(p)
+            .ok()?;
+        if !file.metadata().ok()?.is_file() {
+            return None;
+        }
+        let mut text = String::new();
+        file.take(256 << 10).read_to_string(&mut text).ok()?;
+        Some(text)
+    }) else {
         return Vec::new();
     };
     let mut counts: BTreeMap<(String, u16), u64> = BTreeMap::new();

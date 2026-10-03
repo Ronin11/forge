@@ -79,6 +79,7 @@ forge version                                               # print the crate ve
 forge workflows                                             # list the workflows a task can run, with declared metadata and measured outcomes
 forge trace <id>                                            # everything about one task: every step's inputs, outputs, verdict rows, and a diagnosis
 forge requests                                              # blocked tasks: questions for the operator and workflow requests
+forge audit [--since 24h]                                   # every task lineage since the time, by outcome, with dangling tips named
 forge stats                                                 # outcomes per workflow version and per step
 forge events                                                # the event log as JSON lines: a client's subscription
 forge snapshot                                              # tasks, requests, the worker, and the event offset to subscribe from, as one JSON object
@@ -233,6 +234,24 @@ use. `per_task_usd` stops a task's retries; `per_day_usd` stops the worker
 claiming once the rolling 24-hour spend reaches it. `--budget` overrides
 the task cap for one task.
 
+Before each task or job claim, the worker checks free space on `FORGE_HOME`.
+`[worker] min_free_gb` in `config.toml` defaults to 50 GiB (0 disables the
+hold). `FORGE_MIN_FREE_GB` overrides that threshold for a process; the e2e
+harness sets it to 0 so small temporary filesystems can run fixture tasks.
+Below the threshold, claims pause, doctor reports FAIL, and one operator event
+per hold names the free space and the bytes `forge gc --caches` can reclaim.
+That command deletes `target/`, `node_modules/.cache`, and `.godot/` from
+non-running task and job worktrees; `--dry-run` reports without deleting.
+Finished tasks also discard these caches immediately, retaining their source
+worktrees. Doctor reports total worktree disk usage and the ten largest.
+
+A repository may opt into `[sandbox] shared_target = true` in its trusted
+`forge.toml` (off by default). Agents and checks then receive
+`CARGO_TARGET_DIR=FORGE_HOME/cache/<repository-key>/target`, where the key is
+the existing stable hash of the repository path. This kernel-selected
+directory is bound read-write in the sandbox and survives task cleanup.
+Cargo's own target-directory lock serializes concurrent builds.
+
 The same file's `[sandbox]` section lists what the sandbox exposes beyond
 the attempt's own holes. `ro_paths` (default `~/.local/share/mise`) are
 toolchains bound read-only, since `$HOME` is otherwise empty in there and
@@ -272,6 +291,7 @@ src/binary.rs       stable forge launch paths across binary replacement
 src/argument_policy_tests.rs  require reasons above argument-count allowances
 src/assess.rs       the assess directive: a read-only score of a landed diff's maintainability
 src/attempt.rs      one attempt of a directive: prompt, launch, verdict, the row
+src/audience.rs     task notification audience after recovery and daily digest events
 src/audit.rs        diagnosis for a terminal failure; cost anti-patterns
 src/builtins/       built-in actions, operations, and workflows, as TOML
 src/chat/           Ask Forge: forge chat's fixed tools, the confirm gate in front of the writes, the redactor, and the turn loop (docs/CHAT.md)
@@ -292,6 +312,7 @@ src/envelope.rs     the result contract: schema and parser
 src/experiment.rs   the economist: experiment.toml's weighted draw and its weekly rebalance
 src/git.rs          the few git operations Forge performs
 src/graph.rs        forge graph: the module graph as data, from forge-repomap edges
+src/guard.rs        the landing guard: a pre-receive hook rejecting hand pushes to the base branch, and the emergency override
 src/handoff.rs      the fresh continuation arm: a handoff built from git, the journal and the log
 src/init.rs         forge init: data directory, config template, committed workflow catalog, web.token, systemd units
 src/unit_path.rs    the PATH the systemd units carry: composed at init, read back from the unit by doctor and the worker
@@ -300,6 +321,7 @@ src/job.rs          forge job start: the executor for operation-only run workflo
 src/journal.rs      what earlier attempts in a piece of work said, and what the kernel found
 src/landing.rs      the integrator: merge base in, re-verify, push, fast-forward
 src/adopt.rs        forge adopt: a hand-made branch verified as it is and landed through the integrator, no agent run
+src/lineage.rs      forge audit's pure lineage walk: tip-of, classify, report
 src/main.rs         entry, unix_now
 src/operation.rs    a workflow step that is a command, not an agent
 src/plugins.rs      plugins: directories named for their plugin.toml, one broken manifest never stops the rest
@@ -312,16 +334,21 @@ src/reload.rs       config reloads between claims: re-read, re-validate, keep th
 src/render.rs       text rendering for documents: first sentence, path-like tokens stripped, word-boundary cuts
 src/report.rs       typed events; the stderr printer is one consumer
 src/executor.rs     executor contract, backend selection, and guarantees
+src/disk.rs         free-space claim holds, worktree sizes, and build-cache sweeping
 src/sandbox.rs      bubblewrap
+src/secret_store.rs machine-local credentials: persistent backend selection, OS keychain or encrypted file storage, and secret references
+src/job/secrets.rs      [secrets] names, a run step's declared secrets and egress hosts, and the redaction of their values
 src/login.rs        the agent login: a refreshed token written back over the host file, an empty one never seeded
 src/login_hold.rs   a provider whose agent login was refused, held until a probe answers; the worker's ten-minute probe and doctor's
 src/successor.rs     the successor worker: a staged release starts forge work on it, the old worker drains
 src/store/          SQLite, forward-only migrations by user_version, one file per table family (workers.rs: the registered workers and their releases; owners.rs: a running row's owner, pid plus start time, and orphan detection)
   mod.rs            types, column lists, open, schema_version, the migration runner
   migrations.rs     MIGRATIONS: every forward-only schema migration, in order
+  notifications.rs  durable daily counts of follow-ups, retries, answered questions, and superseded blocks
   retry.rs          statement retries for SQLite busy and locked errors, with backoff up to one minute
   run_cursor.rs     the task's stored run cursor (tasks.run_json): the step a requeued or orphaned run resumes at
   tasks.rs          tasks: claim, queue, dependents, lineage
+  priority.rs       task priority (0-7, default 2): the claim-order query and parse_priority's CLI aliases
   adoption.rs       a task's origin (agent or adopted), the adopted branch and commit, and the manual count in forge stats
   arms.rs           insert_task_armed: insert a task and draw its journal/explore arms in one transaction
   attempts.rs       attempts and ops: insert, finish, rate limits, tool facts
@@ -330,11 +357,14 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   job_runs.rs       recovered job run numbers and cumulative step costs
   deploys.rs        deploys, deploy_targets, assessments
   descendants.rs    the live tasks below and beside a task in its retry lineage, and the `withdraw --abort` decision a worker reads
+  lineage.rs        task_ids_since/roots_since: which lineage roots had activity in a window, for forge audit and doctor's dangling row
+  supersede.rs      tasks.supersedes: the newest task that superseded one, and the check that reopens a blocked task once its re-pointed `--after` is past blocking
   projects.rs       projects, project_repos, backlog, initiatives, portal_tokens
   record.rs         decisions, task_refs, plugins
   chat.rs           chat_sessions and chat_turns: every turn of Ask Forge, its tool calls and cost
   messages.rs       messages: one row per inbound/outbound message on a channel, so a rule can ask "has this contact replied since"
   holds.rs          provider_holds and provider_probes: a provider held for a refused login, and every probe of it with its cost
+  initiative_holds.rs  initiative_holds: which initiative holds have been announced and with what reason, so a successor worker never repeats one a predecessor already made
   webhooks.rs       webhook_tokens: per-hook tokens (only their hashes) that let `forge job fire` start a webhook-triggered job
   events.rs         event_cursors: per project and run workflow, the events.jsonl offset its event trigger has examined up to
   schedule.rs       schedule_refusals: the schedules a per_day cap holds back, which the worker's tick records and `forge job list` prints
@@ -343,13 +373,13 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   factors.rs        forge stats --factors: factor levels, the main-effects fit, size classes
   stats_tests.rs    stats.rs's #[cfg(test)] mod, split out to keep stats.rs under the line bound
   daily.rs          StatsDoc.daily: landings and spend per UTC day, the /stats chart's kernel query
-src/supervisor.rs   the rung between a blocked task and the human
+src/supervisor.rs   the rung between a blocked task and the human; mechanic.rs: the same rung for a task that ends failed
 src/tools.rs        what an attempt ran, read back from its stream
 src/release.rs      releases as directories under FORGE_HOME/bin, the atomic current/previous pointers
 src/upgrade.rs      forge upgrade: verify, backup, unpack a release, flip current, migrate, restart
 src/verify.rs       L0/L1/L2, the claim rule, and the pure verdict table
 src/view.rs         shapes behind `log`, `requests`, `decisions`: text and JSON from one struct
-src/worker.rs       drive, the queue loop, signals; worker/schedule.rs: the schedule tick and its refusal log
+src/worker.rs       drive, the queue loop, signals; worker/schedule.rs: the schedule tick and its refusal log; worker/tests.rs: worker unit tests
 src/workflows.rs    the workflow and action tables, loaded as one Catalog
 tests/e2e/          the real binary against fake agents in tests/fakes/
 

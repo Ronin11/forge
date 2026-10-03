@@ -275,6 +275,7 @@ async fn never_live(f: &Forge, run: &FinishedRun<'_>, tail: &str) -> Result<bool
         f,
         run.project,
         &run.target.repo,
+        run.deploy_id,
         format!("{reason}:\n{tail}"),
     )?;
     Ok(false)
@@ -405,6 +406,7 @@ fn record_deploy_error(
             f,
             project,
             repo,
+            deploy_id,
             format!(
                 "the deploy of {} failed with an error and was not rolled back; it may still be live:\n{reason}",
                 short(sha)
@@ -414,51 +416,25 @@ fn record_deploy_error(
     e
 }
 
-/// Mark the project's most recent terminal task for `repo` as blocked
-/// with `reason`, or file a new no-work task in that state when there is
-/// none: the human rung docs/DEPLOY.md ends every failed deploy at.
-fn ask(f: &Forge, project: &str, repo: &str, reason: String) -> Result<()> {
-    let existing = f
-        .store
-        .project_tasks(project)?
-        .into_iter()
-        .filter(|t| {
-            t.repo == repo
-                && matches!(
-                    t.state,
-                    TaskState::Succeeded
-                        | TaskState::Failed
-                        | TaskState::Unverified
-                        | TaskState::Withdrawn
-                        | TaskState::Blocked
-                )
-        })
-        .max_by_key(|t| t.id);
-    let t = match existing {
-        Some(mut t) => {
-            t.state = TaskState::Blocked;
-            t.reason = reason;
-            t
-        }
-        None => {
-            let mut t = Task {
-                repo: repo.to_string(),
-                task: "deploy question".to_string(),
-                base_branch: String::new(),
-                state: TaskState::Blocked,
-                reason,
-                created_at: unix_now(),
-                workflow: "direct".to_string(),
-                project: Some(project.to_string()),
-                land: false,
-                ..Default::default()
-            };
-            t.id = f.store.insert_task(&t)?;
-            t
-        }
+/// File a separate no-work question for a failed deploy. Landed work is
+/// terminal; answering this question must never retry that work.
+fn ask(f: &Forge, project: &str, repo: &str, deploy_id: i64, reason: String) -> Result<()> {
+    let mut question = Task {
+        repo: repo.to_string(),
+        task: "deploy question".to_string(),
+        state: TaskState::Blocked,
+        reason: format!("needs input: {reason}"),
+        question_to: None, // Deploy failures are addressed to the operator.
+        deploy_id: Some(deploy_id),
+        created_at: unix_now(),
+        workflow: "direct".to_string(),
+        project: Some(project.to_string()),
+        land: false,
+        priority: crate::store::PRIORITY_DEFAULT,
+        ..Default::default()
     };
-    f.store.update_task(&t)?;
-    Ok(())
+    question.id = f.store.insert_task(&question)?;
+    crate::audience::emit_ended(f, &question)
 }
 
 /// The last, human-shaped step (see docs/DEPLOY.md, "The deploy look"):
@@ -702,6 +678,7 @@ pub async fn run(
                 f,
                 project,
                 &target.repo,
+                deploy_id,
                 format!("{reason}; here is the check's output:\n{}", r.tail),
             )?;
             return Ok(false);
@@ -758,7 +735,7 @@ pub async fn run(
                 rb.tail
             )
         };
-        ask(f, project, &target.repo, question)?;
+        ask(f, project, &target.repo, deploy_id, question)?;
         Ok(false)
     }
     .await;

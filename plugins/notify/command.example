@@ -4,6 +4,9 @@
 cat >/dev/null
 
 case "$1" in
+digest)
+    notify-send --urgency=low "forge daily" "$3"
+    ;;
 deploy)
     project="$2"
     target="$3"
@@ -14,6 +17,9 @@ deploy)
     *) urgency=critical ;;
     esac
     notify-send --urgency="$urgency" "forge deploy $project/$target" "$sha: $status"
+    ;;
+disk)
+    notify-send --urgency=critical "forge: disk $2" "$3"
     ;;
 provider)
     notify-send --urgency=critical "forge: $2 $3" "$4"

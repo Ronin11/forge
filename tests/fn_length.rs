@@ -93,15 +93,9 @@ const ALLOWLIST: &[(&str, &str, usize, &str)] = &[
         "existing function awaiting a focused split",
     ),
     (
-        "src/engine/worktree.rs",
-        "prepare_worktree",
-        149,
-        "existing function awaiting a focused split",
-    ),
-    (
         "src/engine/step.rs",
         "run_directive_step",
-        538,
+        173,
         "existing function awaiting a focused split",
     ),
     (
@@ -183,7 +177,7 @@ const ALLOWLIST: &[(&str, &str, usize, &str)] = &[
         "existing function awaiting a focused split",
     ),
     (
-        "src/sandbox.rs",
+        "src/sandbox/tests.rs",
         "command_binds_tmpfs_home_before_ro_dirs_before_the_worktree",
         204,
         "existing function awaiting a focused split",
@@ -231,13 +225,13 @@ const ALLOWLIST: &[(&str, &str, usize, &str)] = &[
         "existing function awaiting a focused split",
     ),
     (
-        "src/verify.rs",
+        "src/verify/l0_checks.rs",
         "common_l0",
         160,
         "existing function awaiting a focused split",
     ),
     (
-        "src/verify.rs",
+        "src/verify/directive.rs",
         "verify_directive",
         176,
         "existing function awaiting a focused split",

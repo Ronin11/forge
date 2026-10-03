@@ -265,7 +265,7 @@ pub(super) fn log(args: LogArgs, json: bool) -> Result<()> {
             .collect::<String>()
             .replace('\n', " ");
         out!(
-            "{:<5} {:<11} {:<8} {:<7} {:<3} {:<8} {:<20} {:<18} {}{}{}{}{}",
+            "{:<5} {:<11} {:<8} {:<7} {:<3} {:<8} {:<20} {:<18} {}{}{}{}{}{}",
             s.id,
             s.state,
             s.trust,
@@ -275,6 +275,11 @@ pub(super) fn log(args: LogArgs, json: bool) -> Result<()> {
             render::utc(s.created_at),
             repo_name,
             task_short,
+            if s.priority != crate::store::PRIORITY_DEFAULT {
+                format!(" (priority {})", s.priority)
+            } else {
+                String::new()
+            },
             if s.origin == "adopted" {
                 " (manual)"
             } else {
@@ -357,6 +362,25 @@ fn print_origin(t: &crate::store::Task) {
     }
 }
 
+/// Only away from the default (2): see `store::priority`.
+fn print_priority(t: &crate::store::Task) {
+    if t.priority != crate::store::PRIORITY_DEFAULT {
+        out!("priority   {}", t.priority);
+    }
+}
+
+/// "supersedes M" on a task that replaces one (`forge add --supersedes`),
+/// "superseded by N" on the one it replaced.
+fn print_supersede(f: &Forge, t: &crate::store::Task) -> Result<()> {
+    if let Some(s) = t.supersedes {
+        out!("supersedes {s}");
+    }
+    if let Some(n) = f.store.superseded_by(t.id)? {
+        out!("superseded by {n}");
+    }
+    Ok(())
+}
+
 pub(super) fn show(id: i64, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let Some(t) = f.store.task(id)? else {
@@ -382,6 +406,7 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
     print_resume(&f, &t)?;
     print_origin(&t);
     out!("trust      {}", t.trust.as_str());
+    print_priority(&t);
     if let Some(to) = &task.to {
         out!(
             "asked      {to}, {}",
@@ -516,6 +541,7 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
     if let Some(r) = task.retry_of {
         out!("retry of   {r}");
     }
+    print_supersede(&f, &t)?;
     if !task.live_descendants.is_empty() {
         out!(
             "live       {}",
@@ -606,95 +632,7 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
     }
     out!("text       {}", task.text);
     for a in &doc.attempts {
-        out!();
-        out!(
-            "attempt {} [{}]  {}{}  {}  {} turns  {} tools  {:.1}s  {}  {} commit(s)  {} file(s){}",
-            a.attempt_no,
-            a.step,
-            a.state,
-            if a.reason.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", a.reason)
-            },
-            if a.timed_out {
-                "TIMED OUT".to_string()
-            } else {
-                format!(
-                    "exit {}",
-                    a.agent_exit.map_or("-".into(), |v| v.to_string())
-                )
-            },
-            a.num_turns,
-            a.tool_calls,
-            a.agent_ms as f64 / 1000.0,
-            a.cost_usd.map_or("-".into(), |c| format!("${c:.4}")),
-            a.commits,
-            a.files_changed,
-            if a.dirty { "  DIRTY" } else { "" }
-        );
-        out!("  log     {}", a.log_path);
-        out!("  agent   runner={} provider={}", a.runner, a.provider);
-        if let Ok(o) = serde_json::from_value::<audit::Outputs>(a.outputs.clone())
-            && let Some(t) = o.tools
-        {
-            out!("  ran     {}", t.line());
-        }
-        if let Ok(checks) =
-            serde_json::from_value::<Vec<crate::checks::CheckResult>>(a.verdict.clone())
-        {
-            for c in checks {
-                out!(
-                    "  {} {} {} ({:.1}s){}",
-                    if c.ok { "✓" } else { "✗" },
-                    c.level,
-                    c.name,
-                    c.ms as f64 / 1000.0,
-                    if c.failing_tests.is_empty() {
-                        String::new()
-                    } else {
-                        format!("  failing: {}", c.failing_tests.join(", "))
-                    }
-                );
-            }
-        }
-        let envelope: Option<crate::envelope::Envelope> = if a.envelope.is_null() {
-            None
-        } else {
-            serde_json::from_value(a.envelope.clone()).ok()
-        };
-        if let Some(e) = envelope {
-            out!(
-                "  reported {} change(s), {} check(s) run, {} claim(s)",
-                e.changes.len(),
-                e.checks_run.len(),
-                e.claims.len()
-            );
-            for c in &e.claims {
-                out!("    claim   {} [{}]", c.claim, c.evidence);
-            }
-            print_question(&e);
-        }
-        if a.rate_limits.five_hour.is_some() || a.rate_limits.seven_day.is_some() {
-            out!(
-                "  usage   5h {} · 7d {}",
-                a.rate_limits
-                    .five_hour
-                    .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
-                a.rate_limits
-                    .seven_day
-                    .map_or("-".into(), |u| format!("{:.0}%", u * 100.0))
-            );
-        }
-        if !a.result_text.is_empty() {
-            let first: String = a
-                .result_text
-                .lines()
-                .take(3)
-                .collect::<Vec<_>>()
-                .join(" / ");
-            out!("  result  {}", first.chars().take(200).collect::<String>());
-        }
+        print_attempt(a);
     }
     for dgn in &doc.diagnosis {
         out!();
@@ -702,4 +640,114 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
         out!("action     {}", dgn.action);
     }
     Ok(())
+}
+
+/// An attempt's summary line, its log path and agent, and the tools it ran.
+fn print_attempt_header(a: &crate::view::TraceAttempt) {
+    out!();
+    out!(
+        "attempt {} [{}]  {}{}  {}  {} turns  {} tools  {:.1}s  {}  {} commit(s)  {} file(s){}",
+        a.attempt_no,
+        a.step,
+        a.state,
+        if a.reason.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", a.reason)
+        },
+        if a.timed_out {
+            "TIMED OUT".to_string()
+        } else {
+            format!(
+                "exit {}",
+                a.agent_exit.map_or("-".into(), |v| v.to_string())
+            )
+        },
+        a.num_turns,
+        a.tool_calls,
+        a.agent_ms as f64 / 1000.0,
+        a.cost_usd.map_or("-".into(), |c| format!("${c:.4}")),
+        a.commits,
+        a.files_changed,
+        if a.dirty { "  DIRTY" } else { "" }
+    );
+    out!("  log     {}", a.log_path);
+    out!("  agent   runner={} provider={}", a.runner, a.provider);
+    if let Ok(o) = serde_json::from_value::<audit::Outputs>(a.outputs.clone())
+        && let Some(t) = o.tools
+    {
+        out!("  ran     {}", t.line());
+    }
+}
+
+/// An attempt's L2 check verdicts, one line each.
+fn print_attempt_checks(a: &crate::view::TraceAttempt) {
+    if let Ok(checks) = serde_json::from_value::<Vec<crate::checks::CheckResult>>(a.verdict.clone())
+    {
+        for c in checks {
+            out!(
+                "  {} {} {} ({:.1}s){}",
+                if c.ok { "✓" } else { "✗" },
+                c.level,
+                c.name,
+                c.ms as f64 / 1000.0,
+                if c.failing_tests.is_empty() {
+                    String::new()
+                } else {
+                    format!("  failing: {}", c.failing_tests.join(", "))
+                }
+            );
+        }
+    }
+}
+
+/// An attempt's reported envelope (changes, checks run, claims and any
+/// question), its rate-limit usage, and the first lines of its result text.
+fn print_attempt_envelope(a: &crate::view::TraceAttempt) {
+    let envelope: Option<crate::envelope::Envelope> = if a.envelope.is_null() {
+        None
+    } else {
+        serde_json::from_value(a.envelope.clone()).ok()
+    };
+    if let Some(e) = envelope {
+        out!(
+            "  reported {} change(s), {} check(s) run, {} claim(s)",
+            e.changes.len(),
+            e.checks_run.len(),
+            e.claims.len()
+        );
+        for c in &e.claims {
+            out!("    claim   {} [{}]", c.claim, c.evidence);
+        }
+        print_question(&e);
+    }
+    if a.rate_limits.five_hour.is_some() || a.rate_limits.seven_day.is_some() {
+        out!(
+            "  usage   5h {} · 7d {}",
+            a.rate_limits
+                .five_hour
+                .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
+            a.rate_limits
+                .seven_day
+                .map_or("-".into(), |u| format!("{:.0}%", u * 100.0))
+        );
+    }
+    if !a.result_text.is_empty() {
+        let first: String = a
+            .result_text
+            .lines()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" / ");
+        out!("  result  {}", first.chars().take(200).collect::<String>());
+    }
+}
+
+/// One attempt's block in `forge show`: its summary line, then whatever
+/// it recorded (tools run, check verdicts, the envelope it reported, rate
+/// limits, the first lines of its result text).
+fn print_attempt(a: &crate::view::TraceAttempt) {
+    print_attempt_header(a);
+    print_attempt_checks(a);
+    print_attempt_envelope(a);
 }

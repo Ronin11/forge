@@ -15,14 +15,17 @@ use std::path::PathBuf;
 
 mod answer;
 mod arms;
+mod dependencies;
 mod duplicates;
 mod edit;
 mod initiative;
 mod job_question;
 mod retry;
+mod supersede;
 mod trust;
 pub use answer::answer;
 use arms::{assign_explore, assign_journal_arm};
+use dependencies::{dependency_fits, waits_on};
 pub use duplicates::{refuse_live_descendant, withdraw_abort};
 pub use edit::{TaskEdit, edit_task};
 pub use initiative::{
@@ -74,6 +77,10 @@ pub struct TaskRequest {
     pub show_checks: bool,
     pub no_land: bool,
     pub after: Vec<i64>,
+    /// 0 (lowest) to 7 (highest); `None` takes `store::PRIORITY_DEFAULT`
+    /// (see `store::priority`). A retry or a refile (`retry_request`)
+    /// names the task it re-queues' own value here instead.
+    pub priority: Option<i64>,
     /// Whether the request said `--journal` (`Some(true)`) or
     /// `--no-journal` (`Some(false)`) itself; `None` when it said
     /// neither, leaving the arm to the operator's control fraction (see
@@ -94,6 +101,9 @@ pub struct TaskRequest {
     /// answer (see docs/REVIEW-3.md, defect 1). `None` inserts `Queued`,
     /// as every other request does.
     pub blocked: Option<BlockedInit>,
+    /// `--supersedes`: the earlier failed or blocked task this one
+    /// replaces (see `store::supersede`); `None` for every other request.
+    pub supersedes: Option<i64>,
 }
 
 /// See `TaskRequest::blocked`.
@@ -171,32 +181,20 @@ fn workflow_fits(
     Ok((wf, resolved))
 }
 
-/// What `--after DEP` must hold, at enqueue and at edit: the task exists
-/// and will land. A dependency means only "wait for that task to reach a
-/// terminal state; block if it failed" (see `Store::queued_unblocked` and
-/// `Store::block_dependents`, both keyed on the dependency's id and state
-/// alone), so it carries across repositories: a task on one repository
-/// may wait on a task in another.
-async fn dependency_fits(f: &Forge, dep: i64) -> Result<()> {
-    let Some(d) = f.store.task(dep)? else {
-        bail!("--after {dep}: no such task");
-    };
-    if !d.land && d.state != TaskState::Succeeded {
+/// `args.priority`, defaulted and range-checked: `store::parse_priority`
+/// already does this for the CLI's own `--priority`, but a priority
+/// reaching `enqueue` any other way (a retry, a refile, an initiative's
+/// default) gets the same guarantee here.
+fn resolve_priority(p: Option<i64>) -> Result<i64> {
+    let p = p.unwrap_or(crate::store::PRIORITY_DEFAULT);
+    if !(crate::store::PRIORITY_MIN..=crate::store::PRIORITY_MAX).contains(&p) {
         bail!(
-            "--after {dep}: that task will not land (--no-land), so nothing built on it could see its work"
+            "priority must be between {} and {}",
+            crate::store::PRIORITY_MIN,
+            crate::store::PRIORITY_MAX
         );
     }
-    // A repository with no push remote never lands anything either
-    // (engine::land skips it, leaving `landed_sha` empty), so a
-    // dependent would wait on landing that never comes.
-    let cfg = config::load_working(std::path::Path::new(&d.repo)).await?;
-    if cfg.push_remote.is_none() {
-        bail!(
-            "--after {dep}: {} has no push remote, so nothing built on it could see its work",
-            d.repo
-        );
-    }
-    Ok(())
+    Ok(p)
 }
 
 pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Result<Task> {
@@ -205,6 +203,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
     {
         bail!("budget must be positive");
     }
+    let priority = resolve_priority(args.priority)?;
     let repo = args.repo.canonicalize().context("repo path")?;
     if !repo.join(".git").exists() {
         bail!("{} is not a git repository", repo.display());
@@ -383,6 +382,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         context_enabled: !args.no_context,
         resume_on_failure: args.resume_on_failure,
         retry_of,
+        supersedes: args.supersedes,
         project: Some(project_name),
         initiative: initiative.as_ref().map(|i| i.id),
         shape_text_len: shape.text_len,
@@ -392,10 +392,14 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         model_source: model_source.to_string(),
         workflow_source: workflow_source.to_string(),
         trust,
+        priority,
         ..Default::default()
     };
     for &dep in &t.after {
         dependency_fits(f, dep).await?;
+    }
+    if let Some(s) = t.supersedes {
+        supersede::supersede_fits(&f.store, s)?;
     }
     // The operator's `experiment.toml` (piece 4, docs/ECONOMIST.md, "What
     // is built") draws a provider per role for a task that pins no
@@ -431,6 +435,9 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
     t.journal_arm = arm;
     t.explore = explore;
     record_over_trust_cap(f, &t, over_cap)?;
+    if t.state == TaskState::Blocked {
+        crate::audience::emit_ended(f, &t)?;
+    }
     f.report.emit(
         t.id,
         Event::TaskQueued {
@@ -439,17 +446,10 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         },
     );
     if let Some(old) = retry_of {
-        // Whatever waited on the task this one retries now waits on this
-        // one; a dependent swept into blocked when the old task ended is
-        // queued again.
-        for d in f.store.reroute_dependents(old, t.id)? {
-            f.report.emit(
-                d,
-                Event::Note {
-                    text: &format!("waits on task {} now (a retry of task {old})", t.id),
-                },
-            );
-        }
+        supersede::reroute(f, old, &t, "a retry of")?;
+    }
+    if let Some(old) = t.supersedes {
+        supersede::reroute(f, old, &t, "a supersede of")?;
     }
     Ok(t)
 }
@@ -505,13 +505,13 @@ pub fn withdraw(f: &Forge, id: i64, reason: &str, by: &str) -> Result<i64> {
         crate::view::maybe_settle_initiative(f, id, iid)?;
     }
     // A dependent already blocked on this task (its after list re-pointed
-    // here while it waited) is released now that this one is terminal;
-    // one still queued is picked up by `block_dependents` instead.
+    // here while it waited) gets the withdrawal reason; one still queued
+    // is picked up by `block_dependents` instead.
     for d in f.store.release_dependents_of(id)? {
         f.report.emit(
             d,
             Event::Note {
-                text: "unblocked: its dependencies landed or were withdrawn",
+                text: "unblocked: its dependencies succeeded",
             },
         );
     }

@@ -5,6 +5,66 @@ and what to do when it does not, plus how a release is built and installed.
 docs/CHECKS.md covers the standing checks (doctor, drift); `backup-daily`
 below is the job that guards the data.*
 
+## Worker capacity and per-attempt builds
+
+Set capacity in `FORGE_HOME/config.toml`, so changing it does not require
+editing the unit or draining a worker:
+
+```toml
+[worker]
+slots = 8
+project_slots = 2 # default cap for projects without their own slots setting
+max_load = 1.5   # optional: one-minute load average per online CPU
+
+[projects.forge]
+slots = 2
+
+[projects.game]
+slots = 4
+
+[sandbox.env]
+CARGO_BUILD_JOBS = "2"
+RUST_TEST_THREADS = "4"
+```
+
+The default machine capacity is one slot. An omitted `project_slots` allows
+an uncapped project to fill the machine budget. All slot counts must be
+positive. `forge work --jobs N` overrides the machine count for that process;
+new `forge init` units omit the flag. Remove an old `--jobs 4` from the
+service's `ExecStart` once (or regenerate it with `forge init`) to use configuration.
+A successor reads the current config and does not inherit that override.
+SIGHUP or the config watcher reloads settings before the next claim. Reducing
+capacity does not kill running work; claims wait until usage falls below both
+limits. Invalid config edits leave the last valid settings in force.
+
+Tasks and jobs consume the same budget. A project at its cap is skipped so
+another project can run. Claims and capacity accounting share a database
+transaction, including during the predecessor/successor handoff (task 938).
+This changes capacity only, preserving existing task ordering.
+
+An optional positive `max_load` pauses claims while the one-minute load
+average divided by online CPU count is above the limit. This is load average,
+not CPU utilization. Each continuous hold logs once. A missing load sample
+allows claims; omitting the setting disables load awareness.
+
+Build tuning is separate from slots: every configured worktree launch,
+including agents, setup, verification checks, and job operations, receives
+its merged environment through the shared agent command environment. The
+repository can declare the same `[sandbox.env]` table in `forge.toml` (or
+`.forge/forge.toml`); repository values win for their own keys. Task settings
+come from the trusted base, not edits in the attempt, and active attempts
+keep their original operator configuration when the worker reloads.
+Only `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS`, `MAKEFLAGS`, `NODE_OPTIONS`,
+`GOMAXPROCS`, and `npm_config_jobs` are accepted. Unknown keys are rejected;
+this table is for build tuning, not credentials or secrets. Values are passed
+literally, without shell expansion.
+
+`forge doctor` adds machine usage, per-project usage/caps, merged build tuning,
+and load-cap status to its worker row. Slots limit simultaneous attempts;
+build tuning limits parallelism inside each attempt. For example, two Forge
+slots with `CARGO_BUILD_JOBS = "2"` can coexist with game work without adding
+another unrestricted workspace compile.
+
 ## When the event log cannot be written
 
 `FORGE_HOME/events.jsonl` (the record `forge job show` and every client's
@@ -62,8 +122,8 @@ who holds the pointer: **the store and every running binary agree.**
   compares `bin/staged` with the release it runs (`FORGE_RELEASE`, else the
   `releases/<id>` its executable sits in, else `current`) on every pass,
   including while every slot is busy. A different, runnable release with
-  no live worker starts `releases/<id>/forge work` with the same
-  arguments and `FORGE_HOME`, in its own process group, and records it in
+  no live worker starts `releases/<id>/forge work` with the same poll and
+  task-count arguments and `FORGE_HOME`, but no inherited `--jobs` override, in its own process group, and records it in
   `workers` (pid, version, registration order, and the registering
   process's start identity, so a pid the table still calls live because
   nothing closed the row is not mistaken for a worker that pid was
@@ -153,8 +213,8 @@ who holds the pointer: **the store and every running binary agree.**
   exceeds M. It FAILs when `staged` names a release that is not `current`
   and no worker runs it or is starting on it: remove `staged`, or start
   the worker so a successor takes it over.
-- **Slots are one budget per machine.** Each worker records its `--jobs`
-  in the `workers` table, and a successor claims `jobs` less the attempts
+- **Slots are one budget per machine.** Each worker records its effective slot count
+  in the `workers` table, and a successor claims that count less the attempts
   the other live workers still run, re-read every pass, so a draining
   predecessor's attempts are not added to the successor's full count.
 
@@ -514,6 +574,34 @@ The operator widens what needs no asking by widening the `[environment]`
 table in `config.toml` (above); that table is never consulted by the
 supervisor's judgement, only read by code.
 
+## The landing guard
+
+A repository Forge owns rejects a push straight to its base branch (and a
+deletion of it), so hand work cannot bypass the checks by accident:
+`forge init`, and `forge project guard <project>` for a project registered
+afterward, installs `deploy/pre-receive.guard` as `hooks/pre-receive` in the
+bare origin of every registered repository whose push remote is a bare
+repository on this machine (the same reach as `--mirror`'s hook), sets
+`receive.advertisePushOptions true` there, and records what the hook cannot
+otherwise know as its own git config: `forge.home`, `forge.repo` (named in
+its rejection message) and `forge.base-branch`. A plain push to the base is
+rejected with:
+
+```
+master is landed by Forge: push your branch and run forge adopt <repo> <branch>
+```
+
+Every other branch is unaffected. The integrator's own landing push carries
+the push option `-o forge-integrator=<token>`, a per-home secret at
+`FORGE_HOME/forge-integrator.token` (mode 0600, provisioned on first use) that
+only the hook and the integrator ever read; a push to a repository the guard
+has not been installed on carries no such option and pushes exactly as it
+always has. An emergency push straight to the base is still possible with
+`-o forge-override=<reason>` in place of the token: it is accepted, logged as
+a decision (the pusher and the reason), and `forge doctor` reports it for the
+next 24 hours (`guard_overrides`). `forge doctor` also reports
+(`guard`) each project with a repository whose bare origin lacks the hook.
+
 ## Landing hand-made work
 
 A branch written by hand, outside Forge, still lands through the integrator:
@@ -558,3 +646,89 @@ Use `forge adopt` when the change is already written and you only want Forge
 to check and land it. File a task (`forge add`) when you want an agent to do
 or change the work — including resolving a conflict with the base, which an
 adoption hands back to you.
+
+## Provider secrets (macOS and Linux)
+
+Use `forge secret set NAME` to enter a credential at a hidden, paste-friendly
+prompt. The value is never echoed and is not a command argument. Non-terminal
+stdin is accepted for scripts; one trailing LF or CRLF is removed. For example,
+pipe output from a password manager directly into `forge secret set NAME` rather
+than writing the value into shell history. `forge secret set NAME --from-clipboard`
+uses `pbpaste`/`pbcopy` on macOS or `wl-paste`/`wl-copy`, then `xclip`, on Linux.
+It clears the clipboard after reading; a failed clear aborts the command.
+Clipboard managers may retain their own history. `forge secret list` prints only
+names and the time each was last set (Unix seconds). `forge secret rm NAME`
+deletes one. There is deliberately no command to print a value.
+
+The machine's backend choice is recorded in
+`$FORGE_HOME/secrets/config.toml`. macOS initially tries the native Keychain and
+falls back to the encrypted file when it cannot use it. Linux defaults to the
+file: a lingering worker starts before login, when Secret Service is commonly
+locked or absent, even if the setup shell has an unlocked desktop keyring.
+For a desktop-only Linux worker, before storing any secrets, create that config
+with `backend = "auto"` to try Secret Service (gnome-keyring or a KWallet offering
+the Secret Service API) and select file storage if unavailable. Selection writes
+`backend = "keychain"` or `backend = "file"`; readers never independently choose a
+different backend. Do not change the backend on a populated store. A selected
+keychain that later locks fails closed; it cannot make its existing values
+available before login. Use the file backend for unattended boot operation.
+
+The keychain backend holds the credential map in an OS keychain entry scoped to
+this Forge home. The file backend uses authenticated XChaCha20-Poly1305 encryption
+with a fresh random nonce on every update. Its ciphertext `secrets/values.enc`
+and random key `secrets/key` both have mode 0600; the directory is 0700. Updates
+are locked and atomic. Back up both files together. Losing the key makes the
+ciphertext unreadable; corrupt stores are rejected rather than overwritten.
+
+For worker HTTP providers (`runner = "jev"` or `runner = "chat"`), use
+`api_key = "secret:NAME"`. Jev also accepts `cloudflare_api_key = "secret:NAME"`
+and `account_id = "secret:NAME"`. The corresponding `api_key_env`,
+`cloudflare_api_key_env` and `account_id_env` settings still work for CI and
+experiments. A secret reference takes precedence over its environment setting,
+including when that secret is missing: there is no silent credential fallback.
+Doctor checks the same store and reference as the worker and names missing
+secrets, so a shell without `TYPESAFE_API_KEY` does not produce a false warning
+for a provider configured with a secret reference.
+
+This keeps provider keys out of unit files, configuration values, process
+environments and sandboxed agents' reach, with one command on both platforms.
+The worker resolves credentials at call time, puts API keys only in HTTP
+authorization headers, and never exports these secrets to agent environments.
+CLI agent providers cannot use secret references, because their authentication
+would require handing credentials to the agent. Request errors omit credential
+URLs, and credential echoes are redacted before provider responses are logged.
+This does **not** protect against the same user account: it can read the file
+and its key or access its unlocked keychain. An unsandboxed process running as
+that user has the same access. This is storage and exposure hygiene, not a new
+security boundary against the account owner.
+
+### Moving Jev credentials out of a systemd drop-in
+
+The operator performs this migration; Forge does not inspect, import, edit or
+remove the existing drop-in. In the same `FORGE_HOME` used by the worker, run:
+
+```sh
+forge secret set TYPESAFE_API_KEY
+forge secret set CLOUDFLARE_API_TOKEN
+forge secret set CLOUDFLARE_ACCOUNT_ID
+```
+
+Paste each current value into its hidden prompt. In the existing Jev provider
+table in `$FORGE_HOME/config.toml`, replace the credential environment settings
+with references (retain its current model, backend and endpoint settings):
+
+```toml
+[providers.jev]
+runner = "jev"
+api_key = "secret:TYPESAFE_API_KEY"
+cloudflare_api_key = "secret:CLOUDFLARE_API_TOKEN"
+account_id = "secret:CLOUDFLARE_ACCOUNT_ID"
+```
+
+Run `forge secret list` and `forge doctor` to check the names. Then manually
+remove the three credential assignments from the worker's systemd drop-in (or
+delete it if it contains nothing else), reload user units with
+`systemctl --user daemon-reload`, and restart the worker's user service. Restarting
+clears the old credentials from that process environment and loads the provider
+references. On macOS there is no systemd step: restart the worker through its
+normal launcher after updating provider configuration.

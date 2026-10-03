@@ -146,6 +146,8 @@ pub fn legacy_home_migration() -> Option<(PathBuf, PathBuf)> {
 }
 
 pub struct Forge {
+    pub worker: crate::config::capacity::Settings,
+    pub build_env: BTreeMap<String, String>,
     pub paths: Paths,
     pub store: Store,
     pub budget: Budget,
@@ -164,6 +166,9 @@ pub struct Forge {
     pub roles: std::collections::BTreeMap<String, String>,
     /// A project's secrets, by project name (see `config::load_home`).
     pub project_secrets: BTreeMap<String, BTreeMap<String, String>>,
+    /// `[secrets]`: name to the worker's environment variable (see
+    /// `crate::secrets`).
+    pub secrets: BTreeMap<String, String>,
     /// `[environment]`: what a failed attempt's environment need may be
     /// granted automatically (see `environment`).
     pub environment: crate::environment::Policy,
@@ -195,7 +200,8 @@ impl Forge {
         let sandbox = if need_agent {
             // Forge's own tools (forge-repomap) live beside the binary.
             let mut extra_ro = Vec::new();
-            if let Ok(exe) = std::env::current_exe()
+            if let Ok(exe) =
+                std::env::current_exe().map(|p| crate::binary::without_deleted_suffix(&p))
                 && let Some(dir) = exe.parent()
             {
                 extra_ro.push(dir.to_path_buf());
@@ -212,6 +218,8 @@ impl Forge {
         };
         let report = Reporter::new(prefix, Some(paths.home.join("events.jsonl")));
         Ok(Forge {
+            worker: home.worker,
+            build_env: home.build_env,
             paths,
             store,
             budget: home.budget,
@@ -223,6 +231,7 @@ impl Forge {
             providers: home.providers,
             roles: home.roles,
             project_secrets: home.project_secrets,
+            secrets: home.secrets,
             environment: home.environment,
             plugin_dirs: home.plugin_dirs,
             sandbox,
@@ -250,6 +259,8 @@ impl Forge {
         let home = config::load_home(&paths.home)?;
         let report = Reporter::new(false, Some(paths.home.join("events.jsonl")));
         Ok(Forge {
+            worker: home.worker,
+            build_env: home.build_env,
             paths,
             store,
             budget: home.budget,
@@ -261,6 +272,7 @@ impl Forge {
             providers: home.providers,
             roles: home.roles,
             project_secrets: home.project_secrets,
+            secrets: home.secrets,
             environment: home.environment,
             plugin_dirs: home.plugin_dirs,
             sandbox: None,
@@ -283,6 +295,15 @@ impl Forge {
         trust: crate::store::Trust,
         provider: Option<&str>,
     ) {
+        crate::agent::build_env::configure_env(
+            &self.paths.home,
+            worktree,
+            &self.build_env,
+            &cfg.build_env,
+        );
+        if cfg.shared_target {
+            self.shared_target(worktree, &cfg.repo_path);
+        }
         if let Some(sandbox) = &self.sandbox {
             sandbox.configure(worktree, &cfg.execution);
             // A level whose egress is `model` reaches the model endpoints
@@ -353,6 +374,20 @@ impl Forge {
     /// (`FORGE_CACHE_DIR`): `paths.home/cache/<hash of repo's path>`, so
     /// two repositories never share a directory and one cannot poison or
     /// read what the other cached.
+    pub fn shared_target(&self, worktree: &Path, repo: &Path) {
+        let cache = self.cache_dir(repo);
+        let target = cache.join("target");
+        // Creation errors surface again at launch/build; never fall back to
+        // allocating a private target directory.
+        if let Err(error) = std::fs::create_dir_all(&target) {
+            eprintln!("shared Cargo target {}: {error}", target.display());
+        }
+        crate::agent::build_env::set_target(worktree, &target);
+        if let Some(sandbox) = &self.sandbox {
+            sandbox.set_target_dir(worktree, target);
+        }
+    }
+
     pub fn cache_dir(&self, repo: &Path) -> PathBuf {
         let key = crate::job::sha256_hex(repo.to_string_lossy().as_bytes());
         self.paths.home.join("cache").join(&key[..16])

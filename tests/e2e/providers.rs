@@ -3,12 +3,31 @@
 //! records its runner/provider/model on the attempt.
 
 use crate::support::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 fn codex_fake(name: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fakes")
         .join(name)
+}
+
+/// Keep the provider capped until the test explicitly expires its sample.
+/// A three-second fake window can elapse during worktree setup on a busy host.
+fn capped_worker(e: &Env, codex: &str) -> (Worker, PathBuf) {
+    let source = codex_fake("ratelimited.sh");
+    let fake = e.home.join("held-provider.sh");
+    let script = std::fs::read_to_string(&source).unwrap();
+    assert!(script.contains("+ 3"));
+    std::fs::write(&fake, script.replace("+ 3", "+ 3600")).unwrap();
+    std::fs::set_permissions(&fake, std::fs::metadata(source).unwrap().permissions()).unwrap();
+    let log = e.home.join("provider-worker.log");
+    let output = std::fs::File::create(&log).unwrap();
+    let mut cmd = e.cmd(fake.to_str().unwrap());
+    cmd.env("FORGE_CODEX_BIN", codex_fake(codex));
+    cmd.args(["work", "--once"]);
+    cmd.stdout(output.try_clone().unwrap()).stderr(output);
+    (Worker::spawn(&mut cmd), log)
 }
 
 /// Write the operator config the test needs *before* any `forge` command
@@ -351,16 +370,16 @@ fn a_task_routed_to_another_provider_runs_while_anthropics_window_is_at_its_cap(
     let anthropic_task = e.add(&["--no-land"]);
     let other_task = e.add(&["--no-land", "--provider", "fake-codex"]);
 
-    let mut cmd = e.cmd("ratelimited.sh");
-    cmd.env("FORGE_CODEX_BIN", codex_fake("codex-ok.sh"));
-    cmd.args(["work", "--once"]);
-    let o = cmd.output().expect("forge work");
-    eprintln!(
-        "--- forge work --once (anthropic capped, fake-codex free) ---\n{}{}",
-        String::from_utf8_lossy(&o.stdout),
-        String::from_utf8_lossy(&o.stderr)
+    let (mut worker, log) = capped_worker(&e, "codex-ok.sh");
+    assert!(
+        wait_until(
+            || e.task(other_task).0 == "succeeded",
+            Duration::from_secs(60)
+        ),
+        "the unrelated provider should finish while anthropic remains capped: {}",
+        std::fs::read_to_string(&log).unwrap()
     );
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(worker.wait().success());
 
     assert_eq!(e.task(anthropic_task).0, "succeeded");
     assert_eq!(
@@ -419,14 +438,53 @@ fn a_task_routed_by_role_runs_while_anthropics_window_is_at_its_cap() {
     let anthropic_task = e.add(&["--no-land"]);
     let planned_task = e.add(&["--no-land", "--workflow", "planned"]);
 
-    let mut cmd = e.cmd("ratelimited.sh");
-    cmd.env("FORGE_CODEX_BIN", codex_fake("codex-plan-ok.sh"));
-    cmd.args(["work", "--once"]);
-    let o = cmd.output().expect("forge work");
-    let stdout = String::from_utf8_lossy(&o.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-    eprintln!("--- forge work --once (role-routed plan step) ---\n{stdout}{stderr}");
-    assert!(o.status.success(), "{stderr}");
+    let (mut worker, log) = capped_worker(&e, "codex-plan-ok.sh");
+    assert!(
+        wait_until(
+            || {
+                e.task(planned_task).0 == "queued"
+                    && std::fs::read_to_string(&log)
+                        .unwrap()
+                        .contains("; holding,")
+            },
+            Duration::from_secs(120)
+        ),
+        "the planned task should reach its held code step: {}",
+        std::fs::read_to_string(&log).unwrap()
+    );
+    let held_log = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        held_log.contains(&format!("task {planned_task} queued")),
+        "the plan must run before releasing anthropic's window: {held_log}"
+    );
+    assert_eq!(e.task(planned_task).0, "queued");
+    let resets: i64 = e
+        .db()
+        .query_row(
+            "SELECT rl_five_hour_resets FROM attempts WHERE task_id=?1 AND provider='anthropic' ORDER BY id LIMIT 1",
+            [anthropic_task],
+            |r| r.get(0),
+        )
+        .unwrap();
+    // Release only after observing the plan run and the code step requeue.
+    // SIGHUP wakes the claim loop so this test never sleeps out the window.
+    e.db()
+        .execute(
+            "UPDATE attempts SET rl_five_hour_resets=0 WHERE provider='anthropic'",
+            [],
+        )
+        .unwrap();
+    worker.signal(libc::SIGHUP);
+    assert!(
+        wait_until(
+            || e.task(planned_task).0 == "succeeded",
+            Duration::from_secs(120)
+        ),
+        "the planned task should finish after the hold is released: {}",
+        std::fs::read_to_string(&log).unwrap()
+    );
+    assert!(worker.wait().success());
+    let stderr = std::fs::read_to_string(&log).unwrap();
 
     assert_eq!(e.task(anthropic_task).0, "succeeded");
     assert_eq!(
@@ -465,14 +523,6 @@ fn a_task_routed_by_role_runs_while_anthropics_window_is_at_its_cap() {
         .query_row(
             "SELECT started_at FROM attempts WHERE task_id=?1 ORDER BY id LIMIT 1",
             [planned_task],
-            |r| r.get(0),
-        )
-        .unwrap();
-    let resets: i64 = e
-        .db()
-        .query_row(
-            "SELECT rl_five_hour_resets FROM attempts WHERE task_id=?1 AND provider='anthropic' ORDER BY id LIMIT 1",
-            [anthropic_task],
             |r| r.get(0),
         )
         .unwrap();
@@ -639,8 +689,7 @@ fn a_task_on_a_copilot_provider_runs_end_to_end_and_prices_premium_requests() {
             assert!(argv.contains(&flag.to_string()), "{flag}: {argv:?}");
         }
         assert!(argv.contains(&"copilot-fake-model".to_string()), "{argv:?}");
-        // The prompt follows `-p` last; the fake drops the prompt itself.
-        assert_eq!(argv.last().map(String::as_str), Some("-p"), "{argv:?}");
+        assert!(!argv.iter().any(|arg| arg == "-p"), "{argv:?}");
     }
     assert!(
         !phase_one.contains(&"--resume".to_string()),
@@ -702,4 +751,43 @@ fn an_unpriced_claude_provider_keeps_the_clis_figure() {
         .unwrap();
     assert_eq!(cost, 0.01);
     assert_eq!(cli, None);
+}
+
+#[test]
+fn a_codex_nudge_does_not_execute_clone_fsmonitor() {
+    let e = Env::new();
+    git(&e.repo, &["config", "user.name", "Registered Author"]);
+    git(&e.repo, &["config", "user.email", "registered@example.com"]);
+    write_config(
+        &e,
+        "[providers.fake-codex]\nrunner = \"codex-cli\"\nmodel = \"codex-fake-model\"\nnudges = 2\n",
+    );
+    let o = e
+        .cmd("ok.sh")
+        .env_remove("GIT_CONFIG_COUNT")
+        .env("FORGE_CODEX_BIN", codex_fake("codex-nudge-metadata.sh"))
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--provider",
+            "fake-codex",
+            "--no-land",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .expect("forge run");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    let log = e.log_text(1, 1);
+    assert_eq!(log.matches("\"type\":\"forge_nudge\"").count(), 1, "{log}");
+    assert!(log.contains("\"reason\":\"uncommitted\""), "{log}");
+    assert!(
+        !e.home
+            .join("worktrees/host-nudge-fsmonitor-marker")
+            .exists(),
+        "the host executed the clone's fsmonitor before verification"
+    );
 }

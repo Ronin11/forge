@@ -3,18 +3,24 @@
 //! first. Numbers Forge records come from the CLI's accounting or Forge's
 //! own clock, never from the model's prose.
 
+mod bounded;
+pub(crate) mod build_env;
+use bounded::{BoundedLines, CappedLog, read_stderr};
 mod chat;
 mod claude;
 mod codex;
 mod copilot;
 mod inputs;
 mod jev;
+#[cfg(test)]
+mod prompt_tests;
 pub mod refusal;
 mod relaunch;
 mod usage_limit;
+use crate::sandbox::Phase;
 use chat::run_chat;
 pub(super) use chat::truncated_first_line;
-use claude::{claude_argv, run_claude};
+use claude::{apply_claude_result, claude_argv, run_claude};
 use codex::{apply_codex_event, run_codex};
 use copilot::{CopilotTally, apply_copilot_event, run_copilot};
 use inputs::{AgentRun, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
@@ -29,12 +35,11 @@ use crate::report::{Event, Reporter};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::HashSet;
-use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 #[derive(Default, Debug)]
@@ -85,6 +90,8 @@ pub struct Outcome {
     /// result frame ever arrived. A directive job step quotes this in its
     /// failure tail instead of the bare exit code.
     pub subtype: Option<String>,
+    /// The CLI’s terminal diagnosis, including exhausted structured-output retries.
+    pub terminal_reason: Option<String>,
     /// Everything the agent wrote to stderr across the run. A directive job
     /// step's failure tail quotes the last lines of this.
     pub stderr_text: String,
@@ -109,7 +116,7 @@ pub enum Runner {
     #[default]
     ClaudeCli,
     CodexCli,
-    /// GitHub Copilot CLI, `copilot -p`; see `run_copilot`.
+    /// GitHub Copilot CLI with piped prompts; see `run_copilot`.
     CopilotCli,
     Chat,
     /// TypeSafe's Jev: typed judgment, one HTTP call, never text; see
@@ -162,6 +169,9 @@ pub struct Provider {
     /// `Runner::Chat`'s `Authorization` header — never the key itself,
     /// which stays out of the config file and the record (see
     /// `run_chat`). `None` for a provider that needs none (a local model).
+    pub api_key: Option<String>,
+    pub account_id: Option<String>,
+    pub cloudflare_api_key: Option<String>,
     pub api_key_env: Option<String>,
     /// Names the variable holding a jev provider's Cloudflare account id.
     pub account_id_env: Option<String>,
@@ -211,6 +221,9 @@ impl Default for Provider {
             runner: Runner::ClaudeCli,
             model: Some("sonnet".into()),
             base_url: None,
+            api_key: None,
+            account_id: None,
+            cloudflare_api_key: None,
             api_key_env: None,
             account_id_env: None,
             jev_backend: JevBackend::Auto,
@@ -299,6 +312,7 @@ pub fn agent_bin_for(step: &str) -> String {
 /// the sandbox, so a name on this `PATH` runs inside it too.
 fn path_with_bin_dir(path: &str) -> String {
     let dir = std::env::current_exe()
+        .map(|p| crate::binary::without_deleted_suffix(&p))
         .ok()
         .and_then(|p| p.parent().map(|d| d.display().to_string()));
     match dir {
@@ -307,25 +321,25 @@ fn path_with_bin_dir(path: &str) -> String {
     }
 }
 
-/// The environment the agent and the checks see, sandboxed or not. This is
-/// the one list; the sandbox overrides HOME on top of it.
-pub fn agent_env() -> Vec<(String, String)> {
+/// Which inherited variables a launch may receive. Explicit check
+/// configuration is appended separately, after this filter.
+fn inherited_env_allowed(key: &str, phase: Phase) -> bool {
+    matches!(
+        key,
+        "PATH" | "HOME" | "LANG" | "TERM" | "FAKE_SLEEP" | "FAKE_SLEEP_SECS"
+    ) || key.starts_with("LC_")
+        || (phase == Phase::Agent
+            && (key == "CLAUDE_CONFIG_DIR"
+                || ["ANTHROPIC_", "CODEX_", "COPILOT_"]
+                    .iter()
+                    .any(|prefix| key.starts_with(prefix))))
+}
+
+/// The inherited environment for this phase, sandboxed or not. The
+/// sandbox overrides HOME on top of it.
+pub fn agent_env(phase: Phase) -> Vec<(String, String)> {
     std::env::vars()
-        .filter(|(k, _)| {
-            matches!(
-                k.as_str(),
-                "PATH"
-                    | "HOME"
-                    | "LANG"
-                    | "TERM"
-                    | "CLAUDE_CONFIG_DIR"
-                    | "CODEX_HOME"
-                    | "FAKE_SLEEP"
-                    | "FAKE_SLEEP_SECS"
-            ) || ["LC_", "ANTHROPIC_", "CODEX_", "COPILOT_"]
-                .iter()
-                .any(|p| k.starts_with(p))
-        })
+        .filter(|(key, _)| inherited_env_allowed(key, phase))
         .map(|(k, v)| {
             if k == "PATH" {
                 (k, path_with_bin_dir(&v))
@@ -336,10 +350,15 @@ pub fn agent_env() -> Vec<(String, String)> {
         .collect()
 }
 
-/// The agent environment plus `extra_env`.
-fn env_with(extra_env: &[(String, String)]) -> Vec<(String, String)> {
-    let mut env = agent_env();
+/// The phase's inherited environment plus explicit values and build limits.
+fn env_with(
+    worktree: &Path,
+    extra_env: &[(String, String)],
+    phase: Phase,
+) -> Vec<(String, String)> {
+    let mut env = agent_env(phase);
     env.extend(extra_env.iter().cloned());
+    env.extend(build_env::worktree_env(worktree));
     env
 }
 
@@ -350,9 +369,11 @@ pub async fn prepare_in(
     sandbox: Option<&Execution>,
     worktree: &Path,
     extra_env: &[(String, String)],
+    phase: Phase,
 ) {
     if let Some(sb) = sandbox {
-        sb.prepare(worktree, &env_with(extra_env)).await;
+        sb.prepare(worktree, &env_with(worktree, extra_env, phase), phase)
+            .await;
     }
 }
 
@@ -364,16 +385,33 @@ pub fn command_in(
     worktree: &Path,
     argv: &[String],
     extra_env: &[(String, String)],
+    phase: Phase,
 ) -> std::process::Command {
-    let env = env_with(extra_env);
+    command_under(sandbox, worktree, argv, extra_env, None, phase)
+}
+
+/// Construct a command with an optional, exclusive per-command egress policy.
+pub fn command_under(
+    sandbox: Option<&Execution>,
+    worktree: &Path,
+    argv: &[String],
+    extra_env: &[(String, String)],
+    egress: Option<&crate::egress::Policy>,
+    phase: Phase,
+) -> std::process::Command {
+    let env = env_with(worktree, extra_env, phase);
     match sandbox {
-        Some(sb) => sb.command(worktree, argv, &env),
+        Some(sb) => match egress {
+            Some(policy) => sb.command_under(worktree, argv, &env, Some(policy), phase),
+            None => sb.command(worktree, argv, &env, phase),
+        },
         None => crate::executor::Executor::command(
             &crate::executor::Host,
             worktree,
             argv,
             &env,
             &crate::egress::Policy::new([]),
+            phase,
         ),
     }
 }
@@ -403,6 +441,8 @@ async fn spawn_retrying_etxtbsy(
 pub struct Launch<'a> {
     pub task_id: i64,
     pub worktree: &'a Path,
+    /// Resolved from trusted repository metadata before entering the runner.
+    pub identity: Vec<(String, String)>,
     pub prompt: &'a str,
     /// System-level content a runner with its own system channel
     /// (`Runner::Chat`) sends as a separate message ahead of `prompt`;
@@ -584,9 +624,9 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
         report,
         log,
     } = args;
-    prepare_in(sandbox, worktree, identity).await;
+    prepare_in(sandbox, worktree, identity, Phase::Agent).await;
     let mut child = spawn_retrying_etxtbsy(|| {
-        let mut c = Command::from(command_in(sandbox, worktree, argv, identity));
+        let mut c = Command::from(command_in(sandbox, worktree, argv, identity, Phase::Agent));
         c.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -604,11 +644,7 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
         let _ = stdin.shutdown().await;
     }
     let stderr = child.stderr.take().context("agent stderr")?;
-    let stderr_task = tokio::spawn(async move {
-        let mut s = String::new();
-        BufReader::new(stderr).read_to_string(&mut s).await.ok();
-        s
-    });
+    let stderr_task = tokio::spawn(read_stderr(stderr));
 
     let start = Instant::now();
     let deadline = tokio::time::Instant::now() + timeout;
@@ -616,14 +652,14 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
     let mut seen_tools: HashSet<String> = HashSet::new();
     let mut watch = Watch::new(early_ending);
     let stdout = child.stdout.take().context("agent stdout")?;
-    let mut lines = BufReader::new(stdout).lines();
+    let mut lines = BoundedLines::new(BufReader::new(stdout));
 
     let read = async {
-        while let Some(line) = lines.next_line().await? {
+        while let Some(line) = lines.next_uncut(log).await? {
             // The CLI's frames carry no clock; Forge stamps each with its
             // own, so a tool call and its result measure a duration.
             let Ok(mut v) = serde_json::from_str::<Value>(&line) else {
-                writeln!(log, "{line}")?;
+                log.line(&line, None)?;
                 continue;
             };
             if let Some(obj) = v.as_object_mut() {
@@ -632,7 +668,7 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
                     Value::from(start.elapsed().as_millis() as u64),
                 );
             }
-            writeln!(log, "{v}")?;
+            log.line(&v.to_string(), None)?;
             match v["type"].as_str() {
                 Some("assistant") => {
                     // The CLI repeats a message once per content block; count
@@ -678,26 +714,7 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
                     }
                 }
                 Some("result") => {
-                    out.got_result = true;
-                    out.is_error = v["is_error"].as_bool().unwrap_or(false);
-                    if let Some(id) = v["session_id"].as_str() {
-                        out.session_id = Some(id.to_string());
-                    }
-                    out.subtype = v["subtype"].as_str().map(str::to_string);
-                    out.max_turns_hit = v["subtype"].as_str() == Some("error_max_turns");
-                    refusal::read_claude_error(&mut out, &v);
-                    out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
-                    out.cost_usd = v["total_cost_usd"].as_f64();
-                    out.input_tokens = v["usage"]["input_tokens"].as_i64();
-                    out.output_tokens = v["usage"]["output_tokens"].as_i64();
-                    out.cache_read_input_tokens = v["usage"]["cache_read_input_tokens"].as_i64();
-                    out.cache_creation_input_tokens =
-                        v["usage"]["cache_creation_input_tokens"].as_i64();
-                    out.result_text = v["result"].as_str().unwrap_or("").to_string();
-                    out.structured = match &v["structured_output"] {
-                        Value::Null => None,
-                        other => Some(other.to_string()),
-                    };
+                    apply_claude_result(&mut out, &v);
                 }
                 Some("rate_limit_event") => {
                     let w = &v["rate_limit_info"]["unifiedWindows"];
@@ -821,7 +838,7 @@ async fn run_with_relaunch(args: AgentRun<'_>) -> Result<(Outcome, String)> {
 
 pub async fn run(l: Launch<'_>) -> Result<Outcome> {
     l.sandbox.map_or(Ok(()), |sb| sb.check_socket(l.worktree))?;
-    match l.provider.runner {
+    let outcome = match l.provider.runner {
         Runner::ClaudeCli => refusal::guarded_claude(l).await,
         Runner::CodexCli => {
             if l.no_tools {
@@ -858,7 +875,19 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
             run_chat(l).await
         }
         Runner::Jev => jev::run(l).await,
+    }?;
+    check_relay_start(outcome)
+}
+
+fn check_relay_start(outcome: Outcome) -> Result<Outcome> {
+    if outcome.exit_code == Some(125)
+        && outcome
+            .stderr_text
+            .contains(crate::sandbox::RELAY_START_FAILED)
+    {
+        anyhow::bail!("{}", outcome.stderr_text.trim());
     }
+    Ok(outcome)
 }
 
 /// One spawn of an agent CLI phase to exit or timeout, writing every raw
@@ -872,6 +901,7 @@ async fn run_json_phase(args: RunJsonPhase<'_>) -> Result<(Option<i32>, bool, St
     let RunJsonPhase {
         l,
         argv,
+        prompt,
         extra_env,
         start,
         log,
@@ -885,6 +915,7 @@ async fn run_json_phase(args: RunJsonPhase<'_>) -> Result<(Option<i32>, bool, St
         let (code, timed_out, stderr) = run_json_phase_once(RunJsonPhase {
             l,
             argv,
+            prompt,
             extra_env,
             start,
             log: &mut *log,
@@ -912,6 +943,7 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
     let RunJsonPhase {
         l,
         argv,
+        prompt,
         extra_env,
         start,
         log,
@@ -919,10 +951,16 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
         watch,
         apply,
     } = args;
-    prepare_in(l.sandbox, l.worktree, extra_env).await;
+    prepare_in(l.sandbox, l.worktree, extra_env, Phase::Agent).await;
     let mut child = spawn_retrying_etxtbsy(|| {
-        let mut c = Command::from(command_in(l.sandbox, l.worktree, argv, extra_env));
-        c.stdin(Stdio::null())
+        let mut c = Command::from(command_in(
+            l.sandbox,
+            l.worktree,
+            argv,
+            extra_env,
+            Phase::Agent,
+        ));
+        c.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
@@ -931,22 +969,25 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
     .await
     .with_context(|| format!("spawning {}", argv[0]))?;
 
+    let mut stdin = child.stdin.take().context("agent stdin")?;
+    let write_prompt = async {
+        // Drain output concurrently; early exits can close the input pipe.
+        let _ = stdin.write_all(prompt.as_bytes()).await;
+        drop(stdin);
+    };
+
     let stderr = child.stderr.take().context("agent stderr")?;
-    let stderr_task = tokio::spawn(async move {
-        let mut s = String::new();
-        BufReader::new(stderr).read_to_string(&mut s).await.ok();
-        s
-    });
+    let stderr_task = tokio::spawn(read_stderr(stderr));
 
     let deadline = tokio::time::Instant::now() + l.timeout;
     let stdout = child.stdout.take().context("agent stdout")?;
-    let mut lines = BufReader::new(stdout).lines();
+    let mut lines = BoundedLines::new(BufReader::new(stdout));
     let mut tripped_this_phase = false;
 
     let read = async {
-        while let Some(line) = lines.next_line().await? {
+        while let Some(line) = lines.next_uncut(log).await? {
             let Ok(mut v) = serde_json::from_str::<Value>(&line) else {
-                writeln!(log, "{line}")?;
+                log.line(&line, None)?;
                 continue;
             };
             if let Some(obj) = v.as_object_mut() {
@@ -955,7 +996,7 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
                     Value::from(start.elapsed().as_millis() as u64),
                 );
             }
-            writeln!(log, "{v}")?;
+            log.line(&v.to_string(), None)?;
             if let Some(text) = apply(&v, out, watch) {
                 writeln!(
                     log,
@@ -978,7 +1019,15 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
 
     let mut timed_out = false;
     let mut exit_code = None;
-    match tokio::time::timeout_at(deadline, read).await {
+    match tokio::time::timeout_at(deadline, async {
+        tokio::pin!(read);
+        tokio::select! {
+            result = &mut read => result,
+            _ = write_prompt => read.await,
+        }
+    })
+    .await
+    {
         Ok(r) => {
             r?;
             if tripped_this_phase {
@@ -1009,6 +1058,42 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn check_environment_excludes_provider_variables_but_accepts_explicit_values() {
+        for key in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BASE_URL",
+            "CODEX_HOME",
+            "CODEX_API_KEY",
+            "CODEX_OTHER",
+            "COPILOT_HOME",
+            "COPILOT_GITHUB_TOKEN",
+            "COPILOT_OTHER",
+            "CLAUDE_CONFIG_DIR",
+        ] {
+            assert!(inherited_env_allowed(key, Phase::Agent), "{key}");
+            assert!(!inherited_env_allowed(key, Phase::Check), "{key}");
+        }
+        for phase in [Phase::Agent, Phase::Check] {
+            assert!(inherited_env_allowed("PATH", phase));
+            assert!(inherited_env_allowed("LC_ALL", phase));
+            assert!(!inherited_env_allowed("UNRELATED_SECRET", phase));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let argv = vec!["/usr/bin/env".into()];
+        let extra = vec![("ANTHROPIC_API_KEY".into(), "explicit-check-key".into())];
+        let output = command_in(None, dir.path(), &argv, &extra, Phase::Check)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line == "ANTHROPIC_API_KEY=explicit-check-key")
+        );
+    }
+
     #[test]
     fn strict_schema_requires_every_key_of_every_object_and_keeps_the_rest() {
         let strict = inputs::strict_schema(crate::envelope::SCHEMA).unwrap();
@@ -1159,7 +1244,7 @@ mod tests {
         let script = dir.join("agent.sh");
         std::fs::write(&script, body).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut log = tempfile::NamedTempFile::new().unwrap();
+        let mut log = CappedLog::new(tempfile::tempfile().unwrap(), 64 << 20);
         let report = crate::report::Reporter::new(false, None);
         run_with_relaunch(AgentRun {
             sandbox: None,
@@ -1173,7 +1258,7 @@ mod tests {
             early_ending: thresholds(0, 0, 0, 0),
             task_id: 1,
             report: &report,
-            log: log.as_file_mut(),
+            log: &mut log,
         })
         .await
         .unwrap()
@@ -1243,6 +1328,7 @@ mod tests {
         Launch {
             task_id: 1,
             worktree,
+            identity: Vec::new(),
             prompt: "do the task",
             system: "",
             model: "sonnet",
@@ -1282,5 +1368,48 @@ mod tests {
         assert_eq!(Runner::Chat.as_str(), "chat");
         let err = "bogus".parse::<Runner>().unwrap_err();
         assert!(err.contains("chat"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod relay_tests {
+    use super::*;
+
+    #[test]
+    fn relay_start_failure_returns_the_relay_diagnostic() {
+        let outcome = Outcome {
+            exit_code: Some(125),
+            stderr_text: format!(
+                "{}\nmissing relay binary",
+                crate::sandbox::RELAY_START_FAILED
+            ),
+            ..Outcome::default()
+        };
+        let error = check_relay_start(outcome).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "{}\nmissing relay binary",
+                crate::sandbox::RELAY_START_FAILED
+            )
+        );
+    }
+
+    #[test]
+    fn relay_classification_requires_both_exit_code_and_diagnostic() {
+        for (code, text) in [
+            (125, "unrelated agent failure"),
+            (1, crate::sandbox::RELAY_START_FAILED),
+            (0, crate::sandbox::RELAY_START_FAILED),
+        ] {
+            assert!(
+                check_relay_start(Outcome {
+                    exit_code: Some(code),
+                    stderr_text: text.into(),
+                    ..Outcome::default()
+                })
+                .is_ok()
+            );
+        }
     }
 }

@@ -270,24 +270,23 @@ async fn file_proposal(
     Ok(n.id)
 }
 
-/// What answering an escalator proposal did: a "yes" filed an initiative
-/// (its id, and the tasks filed for it, one per quoted request's shape);
-/// a "no" just recorded the decision.
-pub enum ProposalAnswered {
-    Initiative { initiative: i64, tasks: Vec<i64> },
-    Declined,
-}
-
 /// Answer an escalator's proposal placeholder (see `file_proposal`):
 /// records the decision the same way any other answer does, then, on a
 /// yes, files an initiative on the project with the pattern's outcome and
 /// one task per quoted request's shape (the same machinery `forge
 /// initiative new --from` files a hand-written one with; here the
 /// paragraphs are the quoted requests' own texts, generated rather than
-/// read from a file). Unlike `queue::answer`, this placeholder never ran
-/// an agent turn, so there is no attempt to retry: the placeholder itself
+/// read from a file). Called by `queue::answer` after checking scope.
+/// This placeholder never ran an agent turn, so there is no attempt to
+/// retry: the placeholder itself
 /// is marked settled instead.
-pub async fn answer_proposal(f: &Forge, id: i64, text: &str, by: &str) -> Result<ProposalAnswered> {
+pub(crate) async fn answer_proposal(
+    f: &Forge,
+    id: i64,
+    text: &str,
+    by: &str,
+    citations: &str,
+) -> Result<(i64, crate::store::Task)> {
     let mut t = f.store.task(id)?.with_context(|| format!("no task {id}"))?;
     if t.state != TaskState::Blocked {
         bail!(
@@ -302,18 +301,18 @@ pub async fn answer_proposal(f: &Forge, id: i64, text: &str, by: &str) -> Result
     let p: crate::view::ProposalRecord = serde_json::from_str(&raw)
         .with_context(|| format!("task {id}'s proposal does not fit its own schema: {raw}"))?;
     let (_, question) = crate::view::request_kind(&t.reason);
-    f.store.insert_decision_by(crate::store::InsertDecisionBy {
+    let decision = f.store.insert_decision_by(crate::store::InsertDecisionBy {
         task_id: id,
         repo: &t.repo,
         question: &question,
         answer: text,
         answered_by: by,
-        citations: "",
+        citations,
         answered_for: t.question_to.as_deref(),
     })?;
 
     let yes = is_yes(text);
-    let result = if yes {
+    if yes {
         let project = t
             .project
             .clone()
@@ -347,24 +346,23 @@ pub async fn answer_proposal(f: &Forge, id: i64, text: &str, by: &str) -> Result
             Some(&t.repo),
             None,
             None,
+            None,
         )
         .await?;
         t.proposal_answer = Some("yes".to_string());
         t.proposal_initiative = Some(ini_id);
         t.state = TaskState::Succeeded;
-        t.reason = format!("proposal accepted: initiative {ini_id}");
-        ProposalAnswered::Initiative {
-            initiative: ini_id,
-            tasks: ids,
-        }
+        t.reason = format!(
+            "proposal accepted: filed initiative {ini_id} ({} task(s))",
+            ids.len()
+        );
     } else {
         t.proposal_answer = Some("no".to_string());
         t.state = TaskState::Succeeded;
         t.reason = "proposal declined".to_string();
-        ProposalAnswered::Declined
     };
     f.store.update_task(&t)?;
-    Ok(result)
+    Ok((decision, t))
 }
 
 /// A plain yes, tolerant of a trailing "please", punctuation or a leading

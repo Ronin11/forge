@@ -25,19 +25,24 @@ async fn chat_once(
     if let Some(key) = api_key {
         req = req.bearer_auth(key);
     }
-    let resp = req.send().await.context("sending the chat request")?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|_| anyhow::anyhow!("sending the chat request failed"))?;
     let status = resp.status();
     let text = resp
         .text()
         .await
-        .context("reading the chat response body")?;
+        .map_err(|_| anyhow::anyhow!("reading the chat response body failed"))?;
     if !status.is_success() {
         anyhow::bail!(
             "chat endpoint returned {status}: {}",
-            truncated_first_line(&text)
+            truncated_first_line(&crate::secret_store::redact_text(&text, &[api_key]))
         );
     }
-    serde_json::from_str(&text).context("parsing the chat response as JSON")
+    serde_json::from_str::<Value>(&text)
+        .map(|v| crate::secret_store::redact_value(v, &[api_key]))
+        .map_err(|_| anyhow::anyhow!("invalid chat response JSON"))
 }
 
 /// The first line of `text`, bounded to a sane length: a non-2xx response
@@ -66,8 +71,8 @@ pub(crate) fn truncated_first_line(text: &str) -> String {
 /// of its own answer.
 pub(super) async fn run_chat(l: Launch<'_>) -> Result<Outcome> {
     let start = Instant::now();
-    let mut log =
-        File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
+    let mut log = CappedLog::create(l.log_path)
+        .with_context(|| format!("creating {}", l.log_path.display()))?;
     writeln!(
         log,
         "{{\"type\":\"forge_prompt\",\"text\":{}}}",
@@ -93,26 +98,22 @@ pub(super) async fn run_chat(l: Launch<'_>) -> Result<Outcome> {
         }
     };
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let api_key = match &l.provider.api_key_env {
-        Some(var) => match std::env::var(var) {
-            Ok(k) => Some(k),
-            Err(_) => {
-                out.exit_code = Some(1);
-                out.stderr_text = format!(
-                    "provider {:?}: ${var} is not set (api_key_env names the environment \
-                     variable that holds the key, never the key itself)",
-                    l.provider.name
-                );
-                out.wall_ms = start.elapsed().as_millis();
-                writeln!(
-                    log,
-                    "{{\"type\":\"forge_stderr\",\"text\":{}}}",
-                    serde_json::to_string(&out.stderr_text)?
-                )?;
-                return Ok(out);
-            }
-        },
-        None => None,
+    let api_key = match crate::secret_store::resolve(
+        l.provider.api_key.as_deref(),
+        l.provider.api_key_env.as_deref(),
+    ) {
+        Ok(key) => key,
+        Err(e) => {
+            out.exit_code = Some(1);
+            out.stderr_text = e.to_string();
+            out.wall_ms = start.elapsed().as_millis();
+            writeln!(
+                log,
+                "{{\"type\":\"forge_stderr\",\"text\":{}}}",
+                serde_json::to_string(&out.stderr_text)?
+            )?;
+            return Ok(out);
+        }
     };
 
     let system = if l.system.is_empty() {
@@ -256,6 +257,26 @@ mod tests {
         (url, rx)
     }
 
+    #[tokio::test]
+    async fn secret_http_echoes_never_reach_responses_or_errors() {
+        let secret = "secret-http-sentinel";
+        let (url, _requests) = fake_chat_server(vec![
+            (200, serde_json::json!({"echo": secret}).to_string()),
+            (401, format!("rejected credential {secret}")),
+        ]);
+        let client = reqwest::Client::new();
+        let body = serde_json::json!({});
+        let response = chat_once(&client, &url, Some(secret), &body, Duration::from_secs(3))
+            .await
+            .unwrap();
+        assert!(!response.to_string().contains(secret));
+        let error = chat_once(&client, &url, Some(secret), &body, Duration::from_secs(3))
+            .await
+            .unwrap_err();
+        assert!(!format!("{error:#}").contains(secret));
+        assert!(error.to_string().contains("401"));
+    }
+
     fn chat_provider(base_url: &str) -> Provider {
         Provider {
             runner: Runner::Chat,
@@ -280,6 +301,7 @@ mod tests {
         Launch {
             task_id: 1,
             worktree,
+            identity: Vec::new(),
             prompt,
             system,
             model: "test-model",

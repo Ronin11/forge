@@ -281,8 +281,8 @@ checkout, and each a different shape a plugin can take.
 
 **notify** (`events`) is the reference plugin, and the one to copy. It is
 a shell script: it takes a snapshot, subscribes from its offset, and
-runs a command of the operator's choosing when a task blocks on a
-question, fails, or lands, and when a deploy finishes (see
+runs a command of the operator's choosing when a task needs a person,
+and when a deploy finishes (see
 docs/DEPLOY.md, "When a deploy runs"). It keeps its cursor in
 `FORGE_PLUGIN_STATE`, so a restart resumes where it stopped. Its
 configuration is `plugins/notify/command`, a script `notify.sh` runs
@@ -298,8 +298,36 @@ shells out to `notify-send` for a desktop notification, for each
 shapes. A deploy that passes its check is quiet by default; a failed or
 rolled-back one always runs the command. `NOTIFY_DEPLOY_OK=1` in
 `plugins/notify/config` (see `config.example`) turns a passing deploy's
-notification on too. It is a plugin in under a hundred lines and it
-imports nothing. Install with `forge plugin install plugins/notify`.
+notification on too. It imports nothing. Install with
+`forge plugin install plugins/notify`.
+
+For `task_done`, the kernel sets `audience` to `person` or `none` **after**
+the demotion, supervisor and retry rules have run. Unanswered operator or
+contact questions, job questions, dependencies without a live follow-up,
+and failures left without recovery reach a person. A demotion with a
+filed follow-up, a retried or refiled failure, and a superseded block have
+`audience=none`. Plugins do not infer this from reason text.
+An unchanged dependency block is announced once, even across worker
+restarts. Withdrawing its prerequisite keeps it blocked until an answer
+or a successful replacement resolves the dependency.
+
+Both **notify** and **signal** default to `NOTIFY_ON=person`. An explicit
+space-separated state list, such as `NOTIFY_ON=blocked failed`, preserves
+the old firehose, including handled transitions in those states. Remove
+that override or set `person` to adopt the quieter policy.
+
+A successful, non-dry-run `doctor-daily` job emits `notification_digest`
+with `day` (the previous UTC day's start timestamp) and `text`, for example
+`yesterday: 13 demotions followed up, 9 failures retried, 2 questions answered,
+0 blocks superseded`. Counts come from persisted decisions, not a plugin's
+uptime. A demotion's follow-up filing appears only here under the default
+policy; `task_queued` never sends a separate announcement. A later question
+from that follow-up is classified on its own merits. Each plugin persists
+the last delivered digest day and sends at most once for that day across
+job reruns and restarts. Notify invokes `command digest DAY TEXT`; Signal
+sends the digest to the operator. Failed or dry-run daily jobs do not emit
+a digest. Existing deploy and provider/initiative hold notifications keep
+their documented delivery rules.
 
 **github-issues** (`intake`, `events`) files a task for every open issue
 on a GitHub repository that carries a chosen label, quoting the issue

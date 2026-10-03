@@ -68,6 +68,30 @@ pub(super) fn claude_argv(bin: &str, l: &Launch<'_>) -> Vec<String> {
     argv
 }
 
+/// Read the CLI result independently of the process exit status.
+pub(super) fn apply_claude_result(out: &mut Outcome, v: &Value) {
+    out.got_result = true;
+    out.is_error = v["is_error"].as_bool().unwrap_or(false);
+    if let Some(id) = v["session_id"].as_str() {
+        out.session_id = Some(id.to_string());
+    }
+    out.subtype = v["subtype"].as_str().map(str::to_string);
+    out.terminal_reason = v["terminal_reason"].as_str().map(str::to_string);
+    out.max_turns_hit = v["subtype"].as_str() == Some("error_max_turns");
+    refusal::read_claude_error(out, v);
+    out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
+    out.cost_usd = v["total_cost_usd"].as_f64();
+    out.input_tokens = v["usage"]["input_tokens"].as_i64();
+    out.output_tokens = v["usage"]["output_tokens"].as_i64();
+    out.cache_read_input_tokens = v["usage"]["cache_read_input_tokens"].as_i64();
+    out.cache_creation_input_tokens = v["usage"]["cache_creation_input_tokens"].as_i64();
+    out.result_text = v["result"].as_str().unwrap_or("").to_string();
+    out.structured = match &v["structured_output"] {
+        Value::Null => None,
+        other => Some(other.to_string()),
+    };
+}
+
 pub(super) async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
     // The binary itself, never a version-manager shim: a shim inside the
     // sandbox reaches for state the sandbox does not have (a global tool
@@ -75,10 +99,10 @@ pub(super) async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
     // before the agent starts. Forge 1 learned this the same way.
     let bin = crate::executor::agent_bin(l.sandbox, l.worktree, agent_bin_for(l.step));
     let argv = claude_argv(&bin, &l);
-    let mut identity = crate::git::identity(&l.worktree.join(".git")).await;
+    let mut identity = l.identity.clone();
     identity.extend(inputs::provider_env(l.provider));
-    let mut log =
-        File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
+    let mut log = CappedLog::create(l.log_path)
+        .with_context(|| format!("creating {}", l.log_path.display()))?;
     writeln!(
         log,
         "{{\"type\":\"forge_prompt\",\"text\":{}}}",
@@ -119,6 +143,41 @@ pub(super) async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
 mod tests {
     use super::super::tests::test_launch;
     use super::*;
+
+    #[test]
+    fn envelope_retry_exhaustion_is_classified_from_the_result_frame() {
+        let frame = serde_json::json!({
+            "type": "result",
+            "is_error": true,
+            "subtype": "error_max_structured_output_retries",
+            "terminal_reason": "structured_output_retry_exhausted",
+            "num_turns": 21
+        });
+        // Either diagnosis is sufficient across CLI versions.
+        for omit in [None, Some("subtype"), Some("terminal_reason")] {
+            let mut frame = frame.clone();
+            if let Some(key) = omit {
+                frame.as_object_mut().unwrap().remove(key);
+            }
+            let mut out = Outcome {
+                exit_code: Some(1),
+                ..Default::default()
+            };
+            apply_claude_result(&mut out, &frame);
+            assert!(out.got_result && out.is_error);
+            assert!(!out.max_turns_hit);
+            assert_eq!(out.num_turns, 21);
+            assert!(out.structured.is_none());
+            assert_eq!(
+                crate::directive::failure(&out),
+                Some(crate::directive::Failure::StructuredOutput)
+            );
+            assert_eq!(
+                crate::directive::agent_failure(&out).as_deref(),
+                Some("structured_output_retry_exhausted: envelope missing")
+            );
+        }
+    }
 
     /// `StructuredOutput` tool `--json-schema` itself forces into the run,
     /// so the model could never submit its answer and the run always ended
