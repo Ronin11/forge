@@ -129,6 +129,9 @@ struct SandboxRaw {
     ro_paths: Option<Vec<String>>,
     rw_paths: Option<Vec<String>>,
     dependency_cache: Option<String>,
+    tmp_bytes: Option<u64>,
+    memory_max: Option<u64>,
+    tasks_max: Option<u64>,
 }
 
 /// What the sandbox exposes beyond the attempt's own holes: toolchains the
@@ -137,6 +140,7 @@ struct SandboxRaw {
 /// `sandbox::Sandbox::command`), so one attempt can never poison what
 /// another reads from these. Paths that do not exist are skipped.
 pub struct SandboxPaths {
+    pub limits: crate::sandbox::ResourceLimits,
     pub ro: Vec<PathBuf>,
     pub rw: Vec<PathBuf>,
     /// `[sandbox] dependency_cache`: a directory the operator warms with
@@ -251,12 +255,17 @@ per_task_usd = 2.0
 # per_day_usd = 20.0
 
 [sandbox]
+# Byte limits for /tmp and the systemd scope; HOME is 256 MiB, /run 64 MiB.
+# A scope is used when the systemd user manager supports resource controls.
+# memory_max also caps each file (rounded down to a 512-byte block).
+tmp_bytes = 1073741824
+memory_max = 8589934592
+tasks_max = 4096
 # Read-only inside the sandbox: toolchains the checks need (node, cargo, ...).
 # $HOME is otherwise empty in there, so anything installed under it goes here.
 ro_paths = [\"~/.local/share/mise\"]
-# Read-write inside the sandbox: package caches, shared across attempts. npm and
-# cargo verify content against the lockfile, so a poisoned cache cannot change
-# what installs.
+# Package caches: read through, with private disk-backed writes discarded
+# with the worktree. The operator's cache is never writable by an attempt.
 rw_paths = [\"~/.npm\", \"~/.cargo/registry\", \"~/.cargo/git\"]
 # Optional: a directory you warm with the repository's dependencies, bound
 # read-only into every attempt. A task at a trust level whose egress is
@@ -498,6 +507,16 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => HomeRaw::default(),
         Err(e) => return Err(e).context(format!("reading {}", path.display())),
     };
+    let defaults = crate::sandbox::ResourceLimits::default();
+    let limits = crate::sandbox::ResourceLimits {
+        tmp_bytes: raw.sandbox.tmp_bytes.unwrap_or(defaults.tmp_bytes),
+        memory_max: raw.sandbox.memory_max.unwrap_or(defaults.memory_max),
+        tasks_max: raw.sandbox.tasks_max.unwrap_or(defaults.tasks_max),
+    };
+    anyhow::ensure!(
+        limits.tmp_bytes >= 4096 && limits.memory_max >= 512 && limits.tasks_max > 0,
+        "sandbox limits require tmp_bytes >= 4096, memory_max >= 512, tasks_max > 0"
+    );
     let mut worker = raw.worker;
     if let Ok(value) = super::env("MIN_FREE_GB") {
         worker.min_free_gb = value
@@ -537,6 +556,7 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
         build_env: raw.sandbox.env,
         budget,
         sandbox: SandboxPaths {
+            limits,
             ro: ro.iter().map(|p| expand(p)).collect(),
             rw: rw.iter().map(|p| expand(p)).collect(),
             dependency_cache: raw.sandbox.dependency_cache.as_deref().map(expand),
@@ -595,6 +615,30 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandbox_resource_limits_defaults_overrides_and_validation() {
+        let home = tempfile::tempdir().unwrap();
+        let defaults = load_home(home.path()).unwrap().sandbox.limits;
+        assert_eq!(defaults.tmp_bytes, 1 << 30);
+        assert_eq!(defaults.memory_max, 8 << 30);
+        assert_eq!(defaults.tasks_max, 4096);
+        std::fs::write(
+            home.path().join("config.toml"),
+            "[sandbox]\ntmp_bytes = 1048576\nmemory_max = 2147483648\ntasks_max = 123\n",
+        )
+        .unwrap();
+        let limits = load_home(home.path()).unwrap().sandbox.limits;
+        assert_eq!(limits.tmp_bytes, 1048576);
+        assert_eq!(limits.memory_max, 2147483648);
+        assert_eq!(limits.tasks_max, 123);
+        std::fs::write(
+            home.path().join("config.toml"),
+            "[sandbox]\ntasks_max = 0\n",
+        )
+        .unwrap();
+        assert!(load_home(home.path()).is_err());
+    }
 
     #[test]
     fn home_config_defaults_and_overrides() {

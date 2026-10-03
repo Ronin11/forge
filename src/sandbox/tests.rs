@@ -115,6 +115,8 @@ fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
     let repo_cache = root.path().join("forge-home/cache/abc123");
 
     let sandbox = Sandbox {
+        limits: ResourceLimits::default(),
+        scope_runner: None,
         bwrap: PathBuf::from("/usr/bin/bwrap"),
         home: PathBuf::from("/home/attempt"),
         agent_dirs: vec![PathBuf::from("/opt/agent")],
@@ -155,7 +157,10 @@ fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
     let ro_extra = pos("--ro-bind-try", "/opt/toolchain");
     let worktree_bind = pos("--bind", worktree.to_str().unwrap());
     let overlay_src = pos("--overlay-src", npm_cache.to_str().unwrap());
-    let tmp_overlay = pos("--tmp-overlay", npm_cache.to_str().unwrap());
+    assert!(!args.iter().any(|a| a == "--tmp-overlay"));
+    let tmp_overlay = args.iter().position(|a| a == "--overlay").unwrap();
+    assert_eq!(args[tmp_overlay + 3], npm_cache.to_str().unwrap());
+    assert!(Path::new(&args[tmp_overlay + 1]).starts_with(overlay_state_dir(&worktree)));
     let cache_bind = pos("--bind-try", repo_cache.to_str().unwrap());
 
     assert!(tmpfs_home < ro_agent, "tmpfs $HOME must precede ro binds");
@@ -261,6 +266,10 @@ fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
 
     discard_provider_state(&worktree);
     assert!(!provider_dir.exists(), "provider state must be discarded");
+    assert!(
+        !overlay_state_dir(&worktree).exists(),
+        "disk uppers must be discarded"
+    );
 }
 
 #[test]
@@ -337,6 +346,8 @@ fn without_overlay_support_caches_are_not_bound() {
 /// caller never names gets none.
 fn test_sandbox(model: &str) -> Sandbox {
     let sb = Sandbox {
+        limits: ResourceLimits::default(),
+        scope_runner: None,
         bwrap: PathBuf::from("/usr/bin/bwrap"),
         home: PathBuf::from("/home/attempt"),
         agent_dirs: vec![],
@@ -729,4 +740,88 @@ fn relay_missing_executable_stops_before_launching_agent() {
     assert!(output.stdout.is_empty(), "the agent must not run");
     assert!(began.elapsed() >= std::time::Duration::from_secs(5));
     assert!(began.elapsed() < std::time::Duration::from_secs(15));
+}
+
+#[test]
+fn resource_limits_bound_every_tmpfs_and_wrap_the_launch() {
+    let root = tempfile::tempdir().unwrap();
+    let mut sandbox = Sandbox::with_bwrap("/usr/bin/bwrap".into(), root.path().join("home"));
+    let argv = ["true".to_string()];
+    let args = args_of(&sandbox.command_for_worktree(root.path(), &argv, &[]));
+    let mounts: Vec<_> = args
+        .windows(4)
+        .filter(|w| w[0] == "--size" && w[2] == "--tmpfs")
+        .collect();
+    assert_eq!(mounts.len(), 3);
+    assert_eq!(mounts[0][1], "1073741824");
+    assert_eq!(mounts[0][3], "/tmp");
+    assert_eq!(mounts[1][1], "67108864");
+    assert_eq!(mounts[1][3], "/run");
+    assert_eq!(mounts[2][1], "268435456");
+    assert_eq!(
+        args.iter().filter(|a| *a == "--tmpfs").count(),
+        mounts.len()
+    );
+    sandbox.limits = ResourceLimits {
+        tmp_bytes: 1048576,
+        memory_max: 2147483648,
+        tasks_max: 123,
+    };
+    sandbox.scope_runner = Some("/usr/bin/systemd-run".into());
+    let cmd = sandbox.command_for_worktree(root.path(), &argv, &[]);
+    assert_eq!(cmd.get_program(), "/usr/bin/systemd-run");
+    let args = args_of(&cmd);
+    assert_eq!(
+        &args[..7],
+        &[
+            "--user",
+            "--scope",
+            "--quiet",
+            "--property=MemoryMax=2147483648",
+            "--property=TasksMax=123",
+            "--",
+            "/usr/bin/bwrap"
+        ]
+    );
+    assert!(
+        args.windows(4)
+            .any(|w| w == ["--size", "1048576", "--tmpfs", "/tmp"])
+    );
+    for phase in [Phase::Agent, Phase::Check] {
+        let script = sandbox.wrapper_script(false, None, phase);
+        assert!(script.starts_with("ulimit -c 0 && ulimit -f 4194304 && ulimit -n 4096 || exit;"));
+        assert!(script.ends_with("exec \"$@\""));
+    }
+}
+
+/// Run the actual generated command, including its wrapper, against the kernel.
+#[test]
+fn resource_limits_tmpfs_exhaustion_is_enospc() {
+    if std::env::var("FORGE_TEST_NO_SANDBOX").as_deref() == Ok("1") {
+        return;
+    }
+    let (bwrap, _) =
+        resolve_binary("bwrap").expect("bwrap required; set FORGE_TEST_NO_SANDBOX=1 to opt out");
+    let root = tempfile::tempdir().unwrap();
+    let mut sandbox = Sandbox::with_bwrap(bwrap, PathBuf::from("/home/attempt"));
+    sandbox.limits.tmp_bytes = 1024 * 1024;
+    let output = sandbox
+        .command(
+            root.path(),
+            &[
+                "/bin/sh".into(),
+                "-c".into(),
+                "LC_ALL=C dd if=/dev/zero of=/tmp/full bs=65536 count=32".into(),
+            ],
+            &[],
+            &sandbox.policy_for(root.path()),
+            Phase::Check,
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("No space left on device"),
+        "{output:?}"
+    );
 }
