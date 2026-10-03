@@ -756,8 +756,50 @@ fn a_grant_for_a_worktree_reaches_its_registered_tests_and_red_siblings() {
     // A worktree never registered with any task keeps the old sibling
     // isolation: the grant does not leak to it.
     assert!(
-        !names(&sb.policy_for(Path::new("/work/2")))
-            .contains(&"registry.npmjs.org".to_string())
+        !names(&sb.policy_for(Path::new("/work/2"))).contains(&"registry.npmjs.org".to_string())
     );
 }
 
+#[test]
+fn registered_task_directories_share_declarations_and_cache_grants() {
+    let sb = test_sandbox("api.example.com");
+    let wt = PathBuf::from("/work/1");
+    let tests = PathBuf::from("/work/1-tests");
+    let red = PathBuf::from("/work/1-red");
+    let cache = PathBuf::from("/cache/repository");
+    let granted = PathBuf::from("/cache/operator");
+    sb.register_task(&wt, &[tests.clone(), red.clone()]);
+    sb.register_task(&wt, &[tests.clone(), red.clone()]);
+    sb.set_egress(&tests, &[Rule::parse("registry.npmjs.org").unwrap()]);
+    sb.set_cache_dir(&red, cache.clone());
+    assert!(sb.grant_ro(&tests, granted.clone()));
+    assert!(!sb.grant_ro(&wt, granted.clone()));
+    assert!(sb.grant_host(&red, Rule::parse("example.org").unwrap()));
+    assert!(!sb.grant_host(&tests, Rule::parse("example.org").unwrap()));
+    for dir in [&wt, &tests, &red, &red.join("nested")] {
+        let policy = sb.policy_for(dir);
+        let names: Vec<_> = policy.rules().iter().map(|r| r.to_string()).collect();
+        assert!(names.contains(&"registry.npmjs.org".to_string()));
+        assert!(names.contains(&"example.org".to_string()));
+        assert_eq!(sb.cache_dir_for(dir), Some(cache.clone()));
+        let cmd = sb.command(dir, &["true".into()], &[], &policy, Phase::Check);
+        assert!(args_of(&cmd).windows(3).any(|args| {
+            args == [
+                "--ro-bind-try",
+                granted.to_str().unwrap(),
+                granted.to_str().unwrap(),
+            ]
+        }));
+    }
+    let other = Path::new("/work/2");
+    assert!(sb.policy_for(other).rules().is_empty());
+    assert_eq!(sb.cache_dir_for(other), None);
+    let cmd = sb.command(
+        other,
+        &["true".into()],
+        &[],
+        &sb.policy_for(other),
+        Phase::Check,
+    );
+    assert!(!args_of(&cmd).contains(&granted.display().to_string()));
+}
