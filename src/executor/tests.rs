@@ -147,6 +147,8 @@ fn bwrap_in(dir: PathBuf) -> Execution {
 #[tokio::test]
 async fn a_removed_proxy_directory_is_rebuilt_before_the_next_check() {
     let root = tempfile::tempdir().unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let proxies = root.path().join("proxies");
     let execution = bwrap_in(proxies.clone());
     let wt = root.path().join("wt");

@@ -363,6 +363,8 @@ fn test_sandbox(model: &str) -> Sandbox {
 #[tokio::test]
 async fn a_missing_proxy_socket_is_recreated() {
     let root = tempfile::tempdir().unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let proxies = Proxies::in_dir(root.path().join("proxies"));
     let policy = Policy::new([]);
     let socket = proxies.socket_for(&policy).unwrap();
