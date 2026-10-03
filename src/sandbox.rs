@@ -20,6 +20,7 @@
 //! the host (`executor::default_backend`), and `forge doctor` warns what
 //! that forgoes; one that declares `backend = "bwrap"` still refuses.
 
+use crate::config::SandboxLimits as ResourceLimits;
 use crate::egress::{self, Policy, Proxies, Rule};
 use crate::workflows::Contract;
 use anyhow::{Context, Result, bail};
@@ -44,7 +45,49 @@ pub enum Phase {
     Check,
 }
 
+impl ResourceLimits {
+    fn scope_args(self, cmd: &mut Command) {
+        // A scope launcher (including the availability probe) must not
+        // report its status to the worker's Type=notify service socket.
+        cmd.env_remove("NOTIFY_SOCKET");
+        cmd.args(["--user", "--scope", "--quiet"])
+            .arg(format!("--property=MemoryMax={}", self.memory_max))
+            .arg(format!("--property=TasksMax={}", self.tasks_max))
+            .arg("--");
+    }
+
+    /// Check the manager and controller delegation, not just the executable.
+    pub fn scope_runner(self) -> Option<PathBuf> {
+        let (runner, _) = resolve_binary("systemd-run").ok()?;
+        let mut cmd = Command::new(&runner);
+        self.scope_args(&mut cmd);
+        let mut child = cmd
+            .arg("/bin/true")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => return status.success().then_some(runner),
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10))
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+        }
+    }
+}
+
 pub struct Sandbox {
+    limits: ResourceLimits,
+    scope_runner: Option<PathBuf>,
     bwrap: PathBuf,
     home: PathBuf,
     /// Directories holding the agent binary (as named and as resolved).
@@ -74,7 +117,7 @@ pub struct Sandbox {
     /// discarded with it (see `command`), so one attempt can never poison
     /// what another reads from the operator's real cache.
     extra_rw: Vec<PathBuf>,
-    /// Whether the bwrap found has `--overlay-src`/`--tmp-overlay` (0.10.0
+    /// Whether the bwrap found has `--overlay-src`/`--overlay` (0.10.0
     /// and later), probed once in `detect`. Without it the package caches
     /// are not bound at all.
     overlay: bool,
@@ -126,7 +169,7 @@ struct Granted {
     ro: Vec<PathBuf>,
 }
 
-/// The first bwrap with `--overlay-src` and `--tmp-overlay`.
+/// The first bwrap with `--overlay-src` and `--overlay`.
 pub const OVERLAY_MIN: (u64, u64, u64) = (0, 10, 0);
 
 /// A bwrap version: `major.minor.patch` plus an optional prerelease tag.
@@ -205,6 +248,11 @@ pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Kernel-owned disk uppers, never bound directly into an attempt.
+fn overlay_state_dir(worktree: &Path) -> PathBuf {
+    PathBuf::from(format!("{}-overlays", worktree.display()))
+}
+
 /// Where the attempts in `worktree` get their private copy of the claude
 /// and codex CLIs' state: a sibling of the worktree, under its parent, in
 /// the same style as `attempt::tests_clone_dir`. Created and seeded by the
@@ -259,6 +307,7 @@ fn discard_provider_state_in(
     state: Option<&Path>,
     host_dir: impl Fn(&crate::login::Shape) -> Option<PathBuf>,
 ) {
+    let _ = std::fs::remove_dir_all(overlay_state_dir(worktree));
     for contract in [None, Some(Contract::Review)] {
         let dir = provider_dir_for(worktree, contract);
         if let Some(state) = state {
@@ -417,6 +466,8 @@ impl Sandbox {
             [&config_dir, &codex_dir, &copilot_dir],
         )?;
         Ok(Sandbox {
+            limits: paths.limits,
+            scope_runner: paths.limits.scope_runner(),
             bwrap,
             home,
             agent_dirs,
@@ -619,6 +670,8 @@ impl Sandbox {
     #[cfg(test)]
     pub(crate) fn with_bwrap(bwrap: PathBuf, home: PathBuf) -> Sandbox {
         Sandbox {
+            limits: ResourceLimits::default(),
+            scope_runner: None,
             bwrap,
             config_dir: home.join(".claude"),
             forge_home: home.join("forge-home"),
@@ -707,7 +760,12 @@ impl Sandbox {
         } else {
             String::new()
         };
-        format!("{seed}{relay}exec \"$@\"")
+        // POSIX sh expresses RLIMIT_FSIZE in 512-byte blocks. With neither
+        // -S nor -H, these lower both limits; the attempt cannot raise them.
+        format!(
+            "ulimit -c 0 && ulimit -f {} && ulimit -n 4096 || exit; {seed}{relay}exec \"$@\"",
+            self.limits.memory_max / 512
+        )
     }
 
     /// Everything a launch in `worktree` with `env` does to the host before
@@ -816,6 +874,16 @@ impl Sandbox {
             "--dev",
             "/dev",
         ]);
+        // `--dev` mounts a tmpfs the size of host RAM: a write straight into
+        // `/dev` (not through a device node) is otherwise unbounded. Give
+        // `/dev/shm` its own sized tmpfs, over the plain directory `--dev`
+        // left there, then take the outer `/dev` back read-only; the device
+        // nodes `--dev` created are separate mounts or bind mounts of host
+        // device files, so neither loses function.
+        cmd.arg("--size")
+            .arg(self.limits.tmp_bytes.to_string())
+            .args(["--tmpfs", "/dev/shm"]);
+        cmd.args(["--remount-ro", "/dev"]);
         cmd.args([
             "--ro-bind",
             "/usr",
@@ -840,14 +908,17 @@ impl Sandbox {
                 _ => {}
             }
         }
-        cmd.args(["--tmpfs", "/tmp", "--tmpfs", "/run"]);
+        cmd.arg("--size")
+            .arg(self.limits.tmp_bytes.to_string())
+            .args(["--tmpfs", "/tmp"]);
+        cmd.args(["--size", "67108864", "--tmpfs", "/run"]);
         // systemd-resolved keeps the real resolv.conf under /run.
         cmd.args([
             "--ro-bind-try",
             "/run/systemd/resolve",
             "/run/systemd/resolve",
         ]);
-        cmd.arg("--tmpfs").arg(&self.home);
+        cmd.args(["--size", "268435456", "--tmpfs"]).arg(&self.home);
         // Order matters: everything under $HOME is bound after its tmpfs, and
         // the writable worktree after the read-only agent directory in case
         // one contains the other.
@@ -875,23 +946,7 @@ impl Sandbox {
         for d in under {
             cmd.arg("--ro-bind-try").arg(d).arg(d);
         }
-        // The operator's package caches: read through, an attempt's own
-        // writes going to an invisible tmpfs overlay that bwrap discards
-        // with the sandbox, so one attempt can never poison what another
-        // reads from the operator's real cache. `--overlay-src` has no
-        // `-try` form, so a cache the operator never populated is skipped
-        // rather than failing the launch. A bwrap without overlay support
-        // gets no cache bind at all (never read-write, which would let an
-        // attempt poison what another reads): a cold cache, launch proceeds.
-        let caches = if self.overlay {
-            &self.extra_rw[..]
-        } else {
-            &[]
-        };
-        for p in caches.iter().filter(|p| p.exists()) {
-            cmd.arg("--overlay-src").arg(p);
-            cmd.arg("--tmp-overlay").arg(p);
-        }
+        self.bind_overlay_caches(&mut cmd, worktree);
         if let Some(d) = &self.dependency_cache {
             cmd.arg("--ro-bind-try").arg(d).arg(d);
         }
@@ -919,6 +974,14 @@ impl Sandbox {
         if secrets.exists() {
             cmd.arg("--tmpfs").arg(&secrets);
         }
+        if self.scope_runner.is_some() {
+            cmd.args([
+                "--unsetenv",
+                "DBUS_SESSION_BUS_ADDRESS",
+                "--unsetenv",
+                "XDG_RUNTIME_DIR",
+            ]);
+        }
         cmd.arg("--chdir").arg(worktree).arg("--");
         let script = self.wrapper_script(
             socket.is_some() && self.relay,
@@ -943,7 +1006,64 @@ impl Sandbox {
             // node only honours the proxy variables when asked to.
             cmd.env("NODE_USE_ENV_PROXY", "1");
         }
-        cmd
+        self.wrap_in_scope(cmd)
+    }
+
+    /// Run `cmd` under `systemd-run --user --scope` when one was detected
+    /// (see `ResourceLimits::scope_runner`), bounding its aggregate memory
+    /// and process count; `cmd` unchanged when there is none.
+    fn wrap_in_scope(&self, cmd: Command) -> Command {
+        let Some(runner) = &self.scope_runner else {
+            return cmd;
+        };
+        let mut scope = Command::new(runner);
+        self.limits.scope_args(&mut scope);
+        scope
+            .arg(cmd.get_program())
+            .args(cmd.get_args())
+            .env_clear();
+        for (key, value) in cmd.get_envs() {
+            if let Some(value) = value {
+                scope.env(key, value);
+            }
+        }
+        // Only the host launcher needs access to the user manager.
+        for key in ["DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"] {
+            if let Some(value) = std::env::var_os(key) {
+                scope.env(key, value);
+            }
+        }
+        scope
+    }
+
+    /// Bind the operator's package caches, each attempt's writes going to a
+    /// fresh disk-backed overlay upper outside every writable sandbox bind,
+    /// discarded with the worktree: bwrap's `--tmp-overlay` upper is an
+    /// invisible tmpfs with no size bound, so a disk directory is used
+    /// instead. If disk setup fails, the launch proceeds with a cold cache
+    /// rather than the operator's writable one.
+    fn bind_overlay_caches(&self, cmd: &mut Command, worktree: &Path) {
+        if !self.overlay {
+            return;
+        }
+        let root = overlay_state_dir(worktree);
+        for p in self.extra_rw.iter().filter(|p| p.exists()) {
+            let upper = (|| -> std::io::Result<_> {
+                std::fs::create_dir_all(&root)?;
+                let dir = tempfile::tempdir_in(&root)?;
+                std::fs::create_dir(dir.path().join("upper"))?;
+                std::fs::create_dir(dir.path().join("work"))?;
+                Ok(dir.keep())
+            })();
+            if let Ok(dir) = upper {
+                cmd.arg("--overlay-src")
+                    .arg(p)
+                    .arg("--overlay")
+                    .arg(dir.join("upper"))
+                    .arg(dir.join("work"))
+                    .arg(p);
+            }
+        }
     }
 }
 

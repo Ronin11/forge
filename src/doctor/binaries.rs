@@ -112,3 +112,39 @@ pub(super) fn check_binaries() -> Vec<Check> {
     });
     out
 }
+
+pub(super) fn check_resource_limits(paths: &config::SandboxPaths) -> Check {
+    if config::env("SANDBOX").as_deref() == Ok("0") || sandbox::resolve_binary("bwrap").is_err() {
+        return check(
+            "sandbox.resources",
+            Status::Warn,
+            "host backend: sandbox resource limits are not in force",
+            "install bubblewrap and enable the sandbox",
+        );
+    }
+    let limits = paths.limits;
+    let scope = limits.scope_runner().is_some();
+    let detail = format!(
+        "bwrap launches: tmpfs /tmp={} bytes, HOME=268435456 bytes, /run=67108864 bytes; core=0, file={} bytes, nofile=4096; cache uppers on disk; {}",
+        limits.tmp_bytes,
+        limits.memory_max / 512 * 512,
+        if scope {
+            format!(
+                "user scope MemoryMax={} TasksMax={}",
+                limits.memory_max, limits.tasks_max
+            )
+        } else {
+            "user scope unavailable: aggregate memory and process limits are NOT in force".into()
+        }
+    );
+    check(
+        "sandbox.resources",
+        if scope { Status::Ok } else { Status::Warn },
+        detail,
+        if scope {
+            ""
+        } else {
+            "enable a systemd user manager with memory and pids controllers"
+        },
+    )
+}
