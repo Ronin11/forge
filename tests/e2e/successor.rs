@@ -675,7 +675,14 @@ fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_o
     std::fs::write(e.home.join("config.toml"), "[worker]\nslots = 2\n").unwrap();
     let root = e.home.join("bin");
     let run = e.home.join("run");
-    std::fs::create_dir_all(&run).unwrap();
+    // Match the private run directory created by proxy startup. A public
+    // fixture directory now correctly prevents sandboxed launches.
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&run)
+        .unwrap();
     for id in ["old", "new"] {
         let dir = root.join("releases").join(id);
         std::fs::create_dir_all(&dir).unwrap();
