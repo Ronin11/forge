@@ -116,6 +116,85 @@ fn an_attempt_runs_sandboxed_when_bwrap_is_present() {
     assert!(out.contains("sandboxed"), "{out}");
 }
 
+#[test]
+fn a_sandboxed_command_cannot_see_host_sysv_shared_memory() {
+    let e = Env::new();
+    if e.sandbox_disabled() {
+        eprintln!("FORGE_TEST_NO_SANDBOX=1: skipping, bwrap unavailable");
+        return;
+    }
+    struct Segment(i32);
+    impl Drop for Segment {
+        fn drop(&mut self) {
+            // This test owns the segment; remove it even when an assertion panics.
+            unsafe { libc::shmctl(self.0, libc::IPC_RMID, std::ptr::null_mut()) };
+        }
+    }
+    let output = std::process::Command::new("ipcmk")
+        .env("LC_ALL", "C")
+        .args(["-M", "4096"])
+        .output()
+        .expect("ipcmk must be installed for the IPC isolation test");
+    assert!(output.status.success(), "{output:?}");
+    let segment = Segment(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .split_whitespace()
+            .last()
+            .unwrap()
+            .parse()
+            .unwrap(),
+    );
+    let host = std::fs::read_to_string("/proc/sysvipc/shm").unwrap();
+    assert!(
+        host.lines().skip(1).any(|line| {
+            line.split_whitespace()
+                .nth(1)
+                .and_then(|id| id.parse::<i32>().ok())
+                == Some(segment.0)
+        }),
+        "host segment missing: {host}"
+    );
+
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    // A fresh IPC namespace has only the header, even while the host segment exists.
+    let check = "set -eu; cat /proc/sysvipc/shm; awk 'END { exit (NR != 1) }' /proc/sysvipc/shm";
+    std::fs::write(
+        e.home.join("workflows/actions/ipc-isolation.toml"),
+        format!(
+            "name = \"ipc-isolation\"\nkind = \"operation\"\ndescription = \"IPC isolation\"\nconsumes = [\"branch\"]\nrun = {}\n",
+            serde_json::to_string(&["/bin/sh", "-c", check]).unwrap()
+        ),
+    ).unwrap();
+    std::fs::write(
+        e.home.join("workflows/ipc-isolation-wf.toml"),
+        "name = \"ipc-isolation-wf\"\ndescription = \"IPC isolation\"\nsteps = [{ action = \"setup\" }, { action = \"code\" }, { action = \"ipc-isolation\" }]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n",
+    ).unwrap();
+    let output = e
+        .cmd("ok.sh")
+        .args([
+            "run",
+            "--no-land",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--workflow",
+            "ipc-isolation-wf",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let trace = e.trace_json("1");
+    let op = trace["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|op| op["name"] == "ipc-isolation")
+        .unwrap();
+    assert_eq!(op["ok"], true, "{op}");
+}
+
 /// Agents retain their private logins and provider environment; repository
 /// operations get empty provider directories and no inherited provider variables.
 #[test]
