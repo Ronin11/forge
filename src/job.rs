@@ -767,7 +767,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
             dry_run,
         });
         let started_at = unix_now();
-        let r = checks::run_one("OP", "setup", argv, &scratch, None, timeout, &env).await;
+        let r = checks::run_one("OP", "setup", argv, &scratch, None, timeout, &env).await?;
         let (tail, output_ref) = record_output(&idir, "setup", &r);
         f.store.append_job_step(&JobStep {
             run: 0,
@@ -815,7 +815,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
             secrets: &secrets,
             dry_run,
         });
-        let r = checks::run_one("L0", name, argv, &scratch, None, timeout, &env).await;
+        let r = checks::run_one("L0", name, argv, &scratch, None, timeout, &env).await?;
         if r.ok {
             let reason = r.stdout.lines().next().unwrap_or_default().to_string();
             let verdict = vec![checks::CheckResult {
@@ -1013,7 +1013,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
                     scratch.display().to_string(),
                 ),
             ];
-            let r = checks::run_one("L0", name, argv, &scratch, None, timeout, &env).await;
+            let r = checks::run_one("L0", name, argv, &scratch, None, timeout, &env).await?;
             if !r.ok {
                 ok = false;
             }

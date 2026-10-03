@@ -98,6 +98,7 @@ mod tests {
                 &[],
                 Phase::Check,
             )
+            .unwrap()
             .output()
             .unwrap();
             assert!(output.status.success());
@@ -127,6 +128,7 @@ mod tests {
         for (tree, expected) in [(first.path(), "2"), (second.path(), "1")] {
             for phase in [Phase::Agent, Phase::Check] {
                 let output = crate::agent::command_in(None, tree, &argv, &[], phase)
+                    .unwrap()
                     .output()
                     .unwrap();
                 assert!(output.status.success());

@@ -386,7 +386,7 @@ pub fn command_in(
     argv: &[String],
     extra_env: &[(String, String)],
     phase: Phase,
-) -> std::process::Command {
+) -> Result<std::process::Command> {
     command_under(sandbox, worktree, argv, extra_env, None, phase)
 }
 
@@ -398,21 +398,21 @@ pub fn command_under(
     extra_env: &[(String, String)],
     egress: Option<&crate::egress::Policy>,
     phase: Phase,
-) -> std::process::Command {
+) -> Result<std::process::Command> {
     let env = env_with(worktree, extra_env, phase);
     match sandbox {
         Some(sb) => match egress {
             Some(policy) => sb.command_under(worktree, argv, &env, Some(policy), phase),
             None => sb.command(worktree, argv, &env, phase),
         },
-        None => crate::executor::Executor::command(
+        None => Ok(crate::executor::Executor::command(
             &crate::executor::Host,
             worktree,
             argv,
             &env,
             &crate::egress::Policy::new([]),
             phase,
-        ),
+        )),
     }
 }
 
@@ -424,15 +424,15 @@ pub fn command_under(
 /// only the spawn to redo. `make` is called again on each attempt because
 /// a `Command` is consumed by `spawn`.
 async fn spawn_retrying_etxtbsy(
-    mut make: impl FnMut() -> tokio::process::Command,
-) -> std::io::Result<tokio::process::Child> {
+    mut make: impl FnMut() -> Result<tokio::process::Command>,
+) -> Result<tokio::process::Child> {
     const MAX_ATTEMPTS: u32 = 20;
     for attempt in 1..=MAX_ATTEMPTS {
-        match make().spawn() {
+        match make()?.spawn() {
             Err(e) if attempt < MAX_ATTEMPTS && e.raw_os_error() == Some(libc::ETXTBSY) => {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            result => return result,
+            result => return result.map_err(Into::into),
         }
     }
     unreachable!()
@@ -626,12 +626,12 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
     } = args;
     prepare_in(sandbox, worktree, identity, Phase::Agent).await;
     let mut child = spawn_retrying_etxtbsy(|| {
-        let mut c = Command::from(command_in(sandbox, worktree, argv, identity, Phase::Agent));
+        let mut c = Command::from(command_in(sandbox, worktree, argv, identity, Phase::Agent)?);
         c.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        c
+        Ok(c)
     })
     .await
     .with_context(|| format!("spawning {bin}"))?;
@@ -837,7 +837,6 @@ async fn run_with_relaunch(args: AgentRun<'_>) -> Result<(Outcome, String)> {
 }
 
 pub async fn run(l: Launch<'_>) -> Result<Outcome> {
-    l.sandbox.map_or(Ok(()), |sb| sb.check_socket(l.worktree))?;
     let outcome = match l.provider.runner {
         Runner::ClaudeCli => refusal::guarded_claude(l).await,
         Runner::CodexCli => {
@@ -959,12 +958,12 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
             argv,
             extra_env,
             Phase::Agent,
-        ));
+        )?);
         c.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        c
+        Ok(c)
     })
     .await
     .with_context(|| format!("spawning {}", argv[0]))?;
@@ -1084,6 +1083,7 @@ mod tests {
         let argv = vec!["/usr/bin/env".into()];
         let extra = vec![("ANTHROPIC_API_KEY".into(), "explicit-check-key".into())];
         let output = command_in(None, dir.path(), &argv, &extra, Phase::Check)
+            .unwrap()
             .output()
             .unwrap();
         assert!(output.status.success());

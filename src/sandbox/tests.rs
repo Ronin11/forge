@@ -26,14 +26,13 @@ fn review_provider_state_is_separate_and_discarded_with_the_coders() {
     sandbox.config_dir = root.path().join("host-claude");
     std::fs::create_dir_all(&sandbox.config_dir).unwrap();
     std::fs::write(sandbox.config_dir.join("settings.json"), "settings").unwrap();
-    let policy = Policy::new([]);
     prepared(&sandbox, &worktree, &[]);
-    let _ = sandbox.command(&worktree, &[], &[], &policy, Phase::Agent);
+    let _ = sandbox.command(&worktree, &[], &[], None, Phase::Agent);
     std::fs::create_dir_all(coder.join("claude/projects")).unwrap();
     std::fs::write(coder.join("claude/projects/session"), "coder transcript").unwrap();
     let env = vec![("FORGE_CONTRACT".into(), "review".into())];
     prepared(&sandbox, &worktree, &env);
-    let cmd = sandbox.command(&worktree, &[], &env, &policy, Phase::Agent);
+    let cmd = sandbox.command(&worktree, &[], &env, None, Phase::Agent);
     assert!(args_of(&cmd).contains(&review.join("claude").display().to_string()));
     assert!(!args_of(&cmd).contains(&coder.join("claude").display().to_string()));
     assert!(!review.join("claude/projects").exists());
@@ -362,18 +361,15 @@ fn test_sandbox(model: &str) -> Sandbox {
 }
 
 #[tokio::test]
-async fn a_missing_proxy_socket_error_names_the_socket() {
-    let sb = test_sandbox("api.example.com");
+async fn a_missing_proxy_socket_is_recreated() {
     let root = tempfile::tempdir().unwrap();
-    let worktree = root.path();
-    let socket = sb.proxies.socket_for(&sb.policy_for(worktree)).unwrap();
-    sb.check_socket(worktree).unwrap();
+    let proxies = Proxies::in_dir(root.path().join("proxies"));
+    let policy = Policy::new([]);
+    let socket = proxies.socket_for(&policy).unwrap();
     std::fs::remove_file(&socket).unwrap();
-    let error = sb.check_socket(worktree).unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        format!("egress proxy socket {} is missing", socket.display())
-    );
+    let healed = proxies.socket_for(&policy).unwrap();
+    assert!(healed.exists());
+    assert_ne!(socket, healed);
 }
 
 fn args_of(cmd: &Command) -> Vec<String> {
@@ -624,7 +620,7 @@ async fn check_phase_never_seeds_or_binds_agent_state() {
     std::fs::write(&login, "agent-login").unwrap();
     sandbox.prepare(&worktree, &[], Phase::Check).await;
     let argv = vec!["/bin/sh".into(), "-c".into(), "env; ls ~/.claude".into()];
-    let command = sandbox.command(&worktree, &argv, &[], &Policy::new([]), Phase::Check);
+    let command = sandbox.command(&worktree, &argv, &[], None, Phase::Check);
     let args = args_of(&command);
     for dir in [
         &sandbox.config_dir,
