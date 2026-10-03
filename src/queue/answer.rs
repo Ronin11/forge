@@ -41,8 +41,8 @@ fn check_answer_scope(
 /// what a supervisor's answer rests on. `scope` restricts the answer to
 /// one project and recipient (see `check_answer_scope`); pass `None` for
 /// the operator's own answers. Returns the decision and the new task. A
-/// job's `job question` has no attempt to retry: its answer settles the
-/// task and the job instead (`job_question`), returning that task itself.
+/// job or deploy question has no attempt to retry: its answer settles
+/// the question instead (`job_question`), returning that task itself.
 pub async fn answer(
     f: &Forge,
     id: i64,
@@ -60,8 +60,11 @@ pub async fn answer(
         old.question_to.as_deref(),
         scope,
     )?;
-    if job_question::is_job_question(f, &old)? {
-        return job_question::answer(f, &old, text, by);
+    if old.state == TaskState::Blocked && old.proposal_json.is_some() {
+        return crate::concierge::answer_proposal(f, id, text, by, citations).await;
+    }
+    if job_question::is_no_work_question(f, &old)? {
+        return job_question::answer(f, &old, text, by, citations);
     }
     let last = f
         .store

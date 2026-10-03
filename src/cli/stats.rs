@@ -263,9 +263,10 @@ fn events(since: Option<String>, follow: bool, task: Option<i64>) -> Result<()> 
 async fn dispatch_gc(cmd: Cmd) -> Result<()> {
     match cmd {
         Cmd::Gc {
+            caches,
             dry_run,
             older_than,
-        } => gc(dry_run, older_than).await,
+        } => gc(dry_run, older_than, caches).await,
         _ => unreachable!("command routed to the wrong family"),
     }
 }
@@ -353,6 +354,7 @@ async fn dispatch_stats(cmd: Cmd) -> Result<()> {
             by_step,
             factors,
             questions,
+            mechanic,
             days,
             project,
             initiative,
@@ -372,6 +374,7 @@ async fn dispatch_stats(cmd: Cmd) -> Result<()> {
                 by_step,
                 factors,
                 questions,
+                mechanic,
                 days,
                 project,
                 initiative,

@@ -13,7 +13,10 @@ on = "schedule"
 cron = "0 7 * * *"
 
 [assert]
-clean = ["bash", "-c", "! grep -q $'\\tFAIL:' \"$FORGE_EFFECT_LOG\""]
+# `grep -q` alone prints nothing either way, so a real FAIL row left this
+# assert exiting 1 with empty stdout and stderr — "no output captured" on
+# the job, naming no row. Print the offending line(s) first.
+clean = ["bash", "-c", "bad=$(grep $'\\tFAIL:' \"$FORGE_EFFECT_LOG\"); [ -z \"$bad\" ] && exit 0; echo \"$bad\"; exit 1"]
 
 [skip_if]
 already_ran = ["bash", "-c", "home=\"${FORGE_HOME:-$HOME/.local/share/forge}\"; marker=\"$home/doctor-daily/last-ok\"; [ -f \"$marker\" ] && [ \"$(cat \"$marker\")\" = \"$(date -u +%Y-%m-%d)\" ] && echo \"doctor already ran clean today\""]

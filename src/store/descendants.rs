@@ -62,10 +62,13 @@ mod tests {
         LineageRow {
             id,
             parent,
+            supersedes: None,
             state: state.into(),
             reason: String::new(),
             workflow: "w".into(),
             cost: 0.0,
+            land: true,
+            landed_sha: String::new(),
         }
     }
 

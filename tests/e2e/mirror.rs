@@ -125,8 +125,23 @@ fn forge_init_mirror_installs_the_hook_and_mirrors_main_and_v_tags_only() {
     git(&e.repo, &["tag", "v1.0.0"]);
     git(&e.repo, &["tag", "scratch"]);
     git(&e.repo, &["branch", "side"]);
-    let (o, _) = timed_push(&e.repo, &["origin", "main", "side", "v1.0.0", "scratch"]);
-    assert!(o.status.success());
+    // `forge init` also guards the base branch (see `guard`): a hand push
+    // of `main` needs the integrator's own token, which `forge init`
+    // provisioned at `FORGE_HOME/forge-integrator.token` alongside the hook.
+    let token = std::fs::read_to_string(e.home.join("forge-integrator.token")).unwrap();
+    let (o, _) = timed_push(
+        &e.repo,
+        &[
+            "origin",
+            "main",
+            "side",
+            "v1.0.0",
+            "scratch",
+            "-o",
+            &format!("forge-integrator={}", token.trim()),
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let head = git(&e.repo, &["rev-parse", "HEAD"]);
     assert!(
         wait_until(

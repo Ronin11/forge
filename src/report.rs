@@ -72,6 +72,7 @@ pub enum Event<'a> {
     },
     PushSkipped,
     TaskDone {
+        audience: &'a str,
         state: &'a str,
         attempts: usize,
         #[serde(rename = "cost_usd")]
@@ -149,10 +150,12 @@ pub enum Event<'a> {
         state: &'a str,
         cost_usd: f64,
     },
-    /// A provider's agent login was refused: it is held, and every task on
-    /// it waits, until a probe answers or the operator runs `forge doctor`
-    /// after logging in (src/login_hold.rs). Emitted once per hold, never
-    /// once per refused attempt.
+    /// Free space fell below the worker threshold; one event per episode.
+    DiskHeld {
+        reason: &'a str,
+        audience: &'a str,
+    },
+    /// A provider's agent login was refused: emitted once per hold.
     ProviderHeld {
         provider: &'a str,
         reason: &'a str,
@@ -170,6 +173,10 @@ pub enum Event<'a> {
     /// the plugins carry it to: always "person", since raising the stop
     /// rule or the budget, or fixing the rule, is a decision only a
     /// person makes.
+    NotificationDigest {
+        day: i64,
+        text: &'a str,
+    },
     InitiativeHeld {
         id: i64,
         project: &'a str,
@@ -204,9 +211,11 @@ pub const EVENT_TYPES: &[&str] = &[
     "project_created",
     "job_started",
     "job_finished",
+    "disk_held",
     "provider_held",
     "provider_released",
     "initiative_held",
+    "notification_digest",
 ];
 
 impl Event<'_> {
@@ -336,6 +345,8 @@ impl Event<'_> {
                 "job {job_id} ({project}/{workflow}) {state} ({})",
                 money(Some(*cost_usd))
             ),
+            Event::DiskHeld { reason, .. } => reason.to_string(),
+            Event::NotificationDigest { text, .. } => text.to_string(),
             Event::ProviderHeld { reason, .. } => format!("held {reason}"),
             Event::ProviderReleased { provider } => {
                 format!("released {provider}: its login answered")
@@ -654,6 +665,7 @@ fn render(ev: Event) -> Vec<String> {
             pushed,
             compare,
             remove_cmd,
+            ..
         } => {
             let mut v = vec![
                 String::new(),
@@ -703,8 +715,10 @@ fn render(ev: Event) -> Vec<String> {
         Event::ProjectCreated { .. } => vec![summary],
         Event::JobStarted { .. } => vec![summary],
         Event::JobFinished { .. } => vec![String::new(), summary],
-        Event::ProviderHeld { .. } | Event::ProviderReleased { .. } => vec![summary],
-        Event::InitiativeHeld { .. } => vec![summary],
+        Event::DiskHeld { .. } | Event::ProviderHeld { .. } | Event::ProviderReleased { .. } => {
+            vec![summary]
+        }
+        Event::InitiativeHeld { .. } | Event::NotificationDigest { .. } => vec![summary],
     }
 }
 
@@ -850,6 +864,7 @@ mod tests {
 
         assert_eq!(
             to_json(&Event::TaskDone {
+                audience: "none",
                 state: "success",
                 attempts: 2,
                 cost: 1.5,
@@ -860,7 +875,7 @@ mod tests {
                 remove_cmd: "rm -rf x",
             }),
             json!({
-                "type": "task_done", "state": "success", "attempts": 2, "cost_usd": 1.5,
+                "type": "task_done", "audience": "none", "state": "success", "attempts": 2, "cost_usd": 1.5,
                 "reason": "", "branch": "feat", "pushed": true, "compare": "http://x",
                 "text": "success",
             })
@@ -1058,6 +1073,7 @@ mod tests {
         // And the name the list carries is the one an event serializes under.
         assert_eq!(
             to_json(&Event::TaskDone {
+                audience: "none",
                 state: "succeeded",
                 attempts: 1,
                 cost: 0.0,
@@ -1073,9 +1089,8 @@ mod tests {
 
     #[test]
     fn test_event_log_rotation_keeps_two_generations() {
-        let temp_dir = std::env::temp_dir().join("forge_test_events_rotation");
-        let _ = fs::remove_dir_all(&temp_dir);
-        fs::create_dir_all(&temp_dir).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let temp_dir = dir.path().to_path_buf();
 
         let log_path = temp_dir.join("events.jsonl");
         let reporter = Reporter::new(false, Some(log_path.clone()));
@@ -1113,8 +1128,6 @@ mod tests {
         assert!(size_0 > 0, "events.jsonl should have content");
         assert!(size_1 > 0, "events.jsonl.1 should have content");
         assert!(size_2 > 0, "events.jsonl.2 should have content");
-
-        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     /// A log path under a directory this process cannot write to: many
@@ -1126,9 +1139,8 @@ mod tests {
     fn a_write_failure_notes_once_per_task_and_counts_for_doctor() {
         use std::os::unix::fs::PermissionsExt;
 
-        let temp_dir = std::env::temp_dir().join("forge_test_events_dropped");
-        let _ = fs::remove_dir_all(&temp_dir);
-        fs::create_dir_all(&temp_dir).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let temp_dir = dir.path().to_path_buf();
         let locked = temp_dir.join("locked");
         fs::create_dir_all(&locked).unwrap();
         let log_path = locked.join("events.jsonl");
@@ -1158,16 +1170,14 @@ mod tests {
         assert_eq!(dropped_log_task_count(&log_path), 2);
 
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
-        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
     fn a_second_reporter_does_not_renote_a_task_the_marker_already_names() {
         use std::os::unix::fs::PermissionsExt;
 
-        let temp_dir = std::env::temp_dir().join("forge_test_events_dropped_restart");
-        let _ = fs::remove_dir_all(&temp_dir);
-        fs::create_dir_all(&temp_dir).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let temp_dir = dir.path().to_path_buf();
         let locked = temp_dir.join("locked");
         fs::create_dir_all(&locked).unwrap();
         let log_path = locked.join("events.jsonl");
@@ -1201,7 +1211,6 @@ mod tests {
         assert_eq!(dropped_log_task_count(&log_path), 1);
 
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
-        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     /// Many threads appending at once, unbounded so no rotation muddies the
@@ -1211,9 +1220,8 @@ mod tests {
     /// inside a line, and this test's line count or its JSON parse fails.
     #[test]
     fn concurrent_appends_never_tear_a_line() {
-        let temp_dir = std::env::temp_dir().join("forge_test_events_concurrent_lines");
-        let _ = fs::remove_dir_all(&temp_dir);
-        fs::create_dir_all(&temp_dir).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let temp_dir = dir.path().to_path_buf();
         let log_path = temp_dir.join("events.jsonl");
         let reporter = std::sync::Arc::new(Reporter::new(false, Some(log_path.clone())));
 
@@ -1248,22 +1256,19 @@ mod tests {
                 "torn line is not valid JSON: {line}"
             );
         }
-
-        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     /// `write_log_line` must wait for the sibling `.lock` file rather than
     /// racing straight into the size check: with the lock held elsewhere,
-    /// a writer released 200ms later has still not touched the log, and
+    /// a writer observed while the lock is held has not touched the log, and
     /// only proceeds once the lock is freed. Without this, the size check,
     /// any rotation and the append are unguarded, and two writers can both
     /// see the log over the limit and both rotate — the second renaming
     /// the first's fresh `.1` over `.2`, discarding a whole generation.
     #[test]
     fn write_log_line_waits_for_the_sibling_lock_file() {
-        let temp_dir = std::env::temp_dir().join("forge_test_events_flock_blocks");
-        let _ = fs::remove_dir_all(&temp_dir);
-        fs::create_dir_all(&temp_dir).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let temp_dir = dir.path().to_path_buf();
         let log_path = temp_dir.join("events.jsonl");
 
         let held = std::fs::OpenOptions::new()
@@ -1279,17 +1284,22 @@ mod tests {
             write_log_line(&writer_path, "line\n", u64::MAX).unwrap();
         });
 
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        assert!(
-            fs::read_to_string(&log_path).unwrap_or_default().is_empty(),
-            "the writer must not touch the log while the lock file is held elsewhere"
-        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+        loop {
+            assert!(
+                !handle.is_finished()
+                    && fs::read_to_string(&log_path).unwrap_or_default().is_empty(),
+                "the writer must remain blocked while the sibling lock is held"
+            );
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
         held.unlock().unwrap();
         handle.join().unwrap();
         assert_eq!(fs::read_to_string(&log_path).unwrap(), "line\n");
-
-        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     /// A job event's write failure is marked under its own job id, not task
@@ -1300,9 +1310,8 @@ mod tests {
     fn a_job_drop_is_marked_by_job_id_and_counted_apart_from_tasks() {
         use std::os::unix::fs::PermissionsExt;
 
-        let temp_dir = std::env::temp_dir().join("forge_test_events_job_dropped");
-        let _ = fs::remove_dir_all(&temp_dir);
-        fs::create_dir_all(&temp_dir).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let temp_dir = dir.path().to_path_buf();
         let locked = temp_dir.join("locked");
         fs::create_dir_all(&locked).unwrap();
         let log_path = locked.join("events.jsonl");
@@ -1350,6 +1359,5 @@ mod tests {
         assert_eq!(dropped_log_job_count(&log_path), 2);
 
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
-        let _ = fs::remove_dir_all(&temp_dir);
     }
 }

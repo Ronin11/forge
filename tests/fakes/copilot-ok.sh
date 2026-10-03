@@ -10,11 +10,11 @@
 #   inside a code fence, with no further tool calls.
 #
 # It logs its own argv (via argv_debug) for the tests to check the flags
-# Forge built for each phase; the prompt, the last argument after `-p`, is
-# left out the way the codex fakes leave theirs out.
+# Forge built for each phase. The prompt arrives on stdin.
 source "$(dirname "$0")/lib.sh"
 
-argv_debug "${@:1:$#-1}"
+cat >/dev/null
+argv_debug "$@"
 
 has_resume=0
 for a in "$@"; do

@@ -1023,7 +1023,11 @@ fn three_check_failures_on_different_tests_do_not_hold_the_initiative() {
 /// initiative holds its fourth task, the worker says so once with the
 /// remedy, an `initiative_held` event for a person carries it to the
 /// plugins, `initiative show` prints it under state, and raising
-/// `--stop-after` says the hold is released and what resumes.
+/// `--stop-after` says the hold is released and what resumes. Each of
+/// the three also looks like a mechanic load flake in its own right (a
+/// fresh task, untouched by name, passing again on the base) and gets
+/// its own retry queued; those three plus the initiative's own fourth
+/// item are what "queued behind it" counts.
 #[test]
 fn three_check_failures_on_one_test_hold_the_initiative_and_say_so() {
     let e = Env::new();
@@ -1040,7 +1044,7 @@ fn three_check_failures_on_one_test_hold_the_initiative_and_say_so() {
     let rule = "L1 test: suite::flaky_under_load";
     let reason = format!("stop rule: {rule} (streak 3)");
     let announced = format!(
-        "initiative {id} held: {reason}; 1 task(s) queued behind it; \
+        "initiative {id} held: {reason}; 4 task(s) queued behind it; \
          forge initiative set {id} --stop-after <n> to continue, or fix the rule"
     );
     let stderr = String::from_utf8_lossy(&o.stderr);
@@ -1051,7 +1055,7 @@ fn three_check_failures_on_one_test_hold_the_initiative_and_say_so() {
     assert_eq!(events[0]["id"], id);
     assert_eq!(events[0]["project"], "demo");
     assert_eq!(events[0]["reason"], reason.as_str());
-    assert_eq!(events[0]["queued"], 1);
+    assert_eq!(events[0]["queued"], 4);
     assert_eq!(events[0]["audience"], "person");
     assert_eq!(events[0]["text"], announced.as_str());
 
@@ -1078,7 +1082,7 @@ fn three_check_failures_on_one_test_hold_the_initiative_and_say_so() {
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(
         out.contains(&format!(
-            "hold released ({reason}): 1 queued task(s) resume"
+            "hold released ({reason}): 4 queued task(s) resume"
         )),
         "{out}"
     );

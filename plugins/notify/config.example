@@ -5,3 +5,7 @@
 # rolled-back deploy always runs `command` (see docs/DEPLOY.md, "When a
 # deploy runs"). Set to 1 to also notify on a deploy that simply passed.
 NOTIFY_DEPLOY_OK=0
+
+# Default: only tasks the kernel says need a person. Explicit task states
+# (e.g. NOTIFY_ON=blocked failed) restore the old per-task firehose.
+NOTIFY_ON=person

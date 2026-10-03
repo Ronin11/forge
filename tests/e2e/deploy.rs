@@ -2,6 +2,8 @@ use crate::support::*;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
+mod question;
+
 #[test]
 fn deploy_targets_are_added_listed_and_forge_deploy_log_starts_empty() {
     let e = Env::new();
@@ -270,6 +272,8 @@ fn a_deploy_that_passes_records_ok_and_a_failing_one_rolls_back_and_blocks_a_que
         .success()
     );
 
+    let landed = question::land_task(&e);
+
     // A "remote" the fake ssh/rsync actually reach: a directory on this
     // machine, exactly as docs/DEPLOY.md's build order intends.
     let remote = e._dir.path().join("remote");
@@ -395,19 +399,7 @@ fn a_deploy_that_passes_records_ok_and_a_failing_one_rolls_back_and_blocks_a_que
         "good\n"
     );
 
-    // A blocked question was filed on a new task (this project's
-    // repository never had one), naming the check's output.
-    let (state, reason): (String, String) = e
-        .db()
-        .query_row(
-            "SELECT state, reason FROM tasks WHERE project = 'demo' ORDER BY id DESC LIMIT 1",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(state, "blocked");
-    assert!(reason.contains("rolled back to"), "{reason}");
-    assert!(reason.contains("bad"), "{reason}");
+    question::assert_answer_closes_question(&e, landed, failed["id"].as_i64().unwrap());
 }
 
 /// A minimal local HTTP server for the smoke e2e test below: one page with

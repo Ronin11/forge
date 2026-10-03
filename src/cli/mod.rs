@@ -23,15 +23,18 @@ macro_rules! out {
     }};
 }
 
+mod audit_cmd;
 mod chat;
 mod demo;
 mod deploy;
 mod eval;
 mod gc;
+mod guard;
 mod initiatives;
 mod jobs;
 mod project_targets;
 mod projects;
+mod secret;
 mod statistics;
 mod stats;
 mod task_records;
@@ -43,6 +46,7 @@ mod workflows_draft;
 use chat::ChatCmd;
 use deploy::{DeployArgs, PluginCmd, ProvisionArgs};
 use eval::EvalCmd;
+use guard::GuardCmd;
 use initiatives::InitiativeCmd;
 use jobs::{EconomistCmd, ExperimentCmd, JobCmd, MessageCmd};
 use projects::{IntakeCmd, ProjectCmd, RefCmd};
@@ -120,6 +124,15 @@ pub struct TaskArgs {
     /// Run only after this task has landed (repeatable); blocked if it ends otherwise
     #[arg(long = "after")]
     after: Vec<i64>,
+    /// Claim order: 0 (lowest) to 7 (highest), or low, normal, high,
+    /// urgent (default: normal). Among claimable tasks, higher claims
+    /// first.
+    #[arg(long, value_parser = crate::store::parse_priority)]
+    priority: Option<i64>,
+    /// This task replaces an earlier failed or blocked one, which counts
+    /// as handled and whose own dependents wait on this task instead
+    #[arg(long)]
+    supersedes: Option<i64>,
     /// Show the agents the journal of earlier attempts, overriding the
     /// operator's control-arm fraction for this task
     #[arg(long, conflicts_with = "no_journal")]
@@ -142,10 +155,24 @@ pub struct TaskArgs {
     trust: Option<String>,
 }
 
+#[derive(Args)]
+struct RunArgs {
+    #[command(flatten)]
+    task: TaskArgs,
+    /// Requeue on a provider hold instead of redrawing or waiting in the foreground
+    #[arg(long)]
+    no_wait: bool,
+}
+
 #[derive(Subcommand)]
 enum Cmd {
+    /// Manage machine-local provider credentials.
+    Secret {
+        #[command(subcommand)]
+        cmd: secret::SecretCmd,
+    },
     /// Run one task now
-    Run(TaskArgs),
+    Run(RunArgs),
     /// Queue a task for `forge work`
     Add {
         #[command(flatten)]
@@ -173,9 +200,9 @@ enum Cmd {
     Chat(ChatCmd),
     /// Run queued tasks: stay up and poll, or drain and exit with --once
     Work {
-        /// Tasks to run at the same time
-        #[arg(long, default_value_t = 1)]
-        jobs: usize,
+        /// Override config.toml [worker] slots for this worker
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        jobs: Option<u32>,
         /// Seconds between queue polls when idle
         #[arg(long, default_value_t = 30)]
         poll: u64,
@@ -272,6 +299,12 @@ enum Cmd {
         /// Route every role of the new task to this provider (default: as before)
         #[arg(long)]
         provider: Option<String>,
+        /// Let this retry change the repo's [verify] protected paths, for
+        /// a task filed without --allow-protected (recorded as a
+        /// decision); never lowers what the task it retries already
+        /// allowed
+        #[arg(long)]
+        allow_protected: bool,
     },
     /// Answer a task blocked on a question and re-queue it as a retry
     Answer {
@@ -480,6 +513,21 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Every task lineage with activity since the time (default 24h): a
+    /// lineage is a root (no `retry_of`) and every task that retries it,
+    /// directly or through other retries, down to its tip. Each outcome
+    /// (landed, in progress, withdrawn, unverified, question, dangling)
+    /// gets its task count and summed attempt cost; dangling tips (failed,
+    /// or blocked with no open question for a person) are named with
+    /// their reasons.
+    Audit {
+        /// How far back to look, as a duration (`24h`, `7d`, `90m`, ...); default 24h
+        #[arg(long)]
+        since: Option<String>,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
     /// Measure a provider against what the record already knows (no routing
     /// changes; see docs/EXECUTION.md, "Measuring the judgment tier")
     Eval {
@@ -530,8 +578,13 @@ enum Cmd {
         /// operator's attention cost at [measure] operator_usd_per_hour
         #[arg(long)]
         questions: bool,
-        /// With --factors or --questions, only tasks that finished (or
-        /// blocked) in the last N days
+        /// Every mechanic decision (docs/WORKFLOWS.md, "Mechanic"): a
+        /// count per kind — load flake, landing conflict, ratchet, turn
+        /// cap, clean-tree, or raised to the operator
+        #[arg(long)]
+        mechanic: bool,
+        /// With --factors, --questions, or --mechanic, only tasks that
+        /// finished (or blocked) in the last N days
         #[arg(long)]
         days: Option<i64>,
         /// Only this project's tasks (also adds the per-project section
@@ -613,6 +666,9 @@ enum Cmd {
     },
     /// Remove worktrees that are clean and whose commits are all on a remote
     Gc {
+        /// Remove only build caches from non-running task and job worktrees
+        #[arg(long)]
+        caches: bool,
         /// Report what would happen without removing anything
         #[arg(long)]
         dry_run: bool,
@@ -685,6 +741,14 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ExperimentCmd,
     },
+    /// The landing guard's own callback: what its pre-receive hook shells
+    /// out to, not a person's command (see `forge project guard`,
+    /// `docs/OPS.md`, "Landing hand-made work")
+    #[command(hide = true)]
+    Guard {
+        #[command(subcommand)]
+        cmd: GuardCmd,
+    },
     /// The operator's own way to reach a running (or not-yet-started)
     /// `forge-web`: the tokened link it prints at start, without having
     /// to start a second one just to see it (see docs/CLIENT.md,
@@ -698,6 +762,7 @@ enum Cmd {
 pub async fn main() -> Result<()> {
     let cmd = Cli::parse().cmd;
     match cmd {
+        Cmd::Secret { cmd } => secret::run(cmd),
         Cmd::Run(..)
         | Cmd::Add { .. }
         | Cmd::Work { .. }
@@ -723,8 +788,10 @@ pub async fn main() -> Result<()> {
         | Cmd::Economist { .. }
         | Cmd::Experiment { .. } => jobs::dispatch(cmd).await,
         Cmd::Chat(..) => chat::dispatch(cmd).await,
+        Cmd::Audit { .. } => audit_cmd::dispatch(cmd).await,
         Cmd::Workflows { .. } | Cmd::Providers { .. } => workflows::dispatch(cmd).await,
         Cmd::Plugin { .. } | Cmd::Deploy(..) | Cmd::Provision(..) => deploy::dispatch(cmd).await,
+        Cmd::Guard { .. } => guard::dispatch(cmd),
         Cmd::Gc { .. }
         | Cmd::Init { .. }
         | Cmd::Doctor { .. }
@@ -763,6 +830,7 @@ impl From<&TaskArgs> for crate::queue::TaskRequest {
             show_checks: a.show_checks,
             no_land: a.no_land,
             after: a.after.clone(),
+            priority: a.priority,
             journal_choice: if a.journal {
                 Some(true)
             } else if a.no_journal {
@@ -774,6 +842,7 @@ impl From<&TaskArgs> for crate::queue::TaskRequest {
             resume_on_failure: a.resume_on_failure,
             trust: a.trust.clone(),
             blocked: None,
+            supersedes: a.supersedes,
         }
     }
 }
@@ -828,3 +897,22 @@ fn worker_json(f: &Forge) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod run_wait_tests {
+    use super::*;
+
+    #[test]
+    fn run_waits_by_default_and_accepts_no_wait() {
+        for (extra, expected) in [(None, false), (Some("--no-wait"), true)] {
+            let mut args = vec!["forge", "run", ".", "task"];
+            args.extend(extra);
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Cmd::Run(run) = cli.cmd else {
+                panic!("expected run")
+            };
+            assert_eq!(run.no_wait, expected);
+        }
+        assert!(Cli::try_parse_from(["forge", "add", ".", "task", "--no-wait"]).is_err());
+    }
+}

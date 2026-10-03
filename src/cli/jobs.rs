@@ -322,7 +322,7 @@ async fn job_start(
     at: Option<i64>,
     delay: Option<String>,
 ) -> Result<()> {
-    let f = Forge::open(false, false)?;
+    let f = Forge::open(now, false)?;
     let due_at = match (at, delay) {
         (Some(at), _) => Some(at),
         (None, Some(d)) => {
@@ -392,10 +392,9 @@ async fn job_fire(
         source,
         trigger_ref: &trigger_ref,
         input_text: &input_text,
+        trust: level,
     })?;
-    if started {
-        f.store.set_job_trust(id, level)?;
-    } else {
+    if !started {
         eprintln!("job {id} already started for ref {trigger_ref}; nothing new started");
     }
     out!("{id}");

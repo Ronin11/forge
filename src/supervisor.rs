@@ -28,6 +28,15 @@ use crate::engine::Fault;
 use crate::envelope::{Envelope, Kind};
 use crate::report::Event;
 use crate::store::{AttemptState, DecisionFilter, Task, TaskFilter, TaskState};
+
+/// Automatic follow-ups for a task that ends `TaskState::Failed`, run
+/// right after (`worker::drive`): classifies the mechanical kind and
+/// retries, refiles, or raises a decision. Lives under `supervisor` (and
+/// so counts as its edges to `queue`, already tolerated) rather than as
+/// its own top-level kernel module, so it adds no new edge for
+/// `tests/layers.rs` to flag: it is the same rung as `demotion_as_task`,
+/// before the human, just triggered by `Failed` instead of `Blocked`.
+pub(crate) mod mechanic;
 use crate::verify::{GitFacts, Rule, Verdict, emit_check, l0};
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -572,6 +581,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
             id,
             step: "supervisor",
             dir: wt,
+            identity_repo: Some(std::path::Path::new(&t.repo)),
             prompt: &prompt_text,
             system: "",
             model: &cfg.model,
@@ -880,7 +890,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         }
         "superseded" => {
             let by = superseding_task(f, &t, &r.citations).context("no superseding task")?;
-            f.store.insert_decision_by(crate::store::InsertDecisionBy {
+            let decision = f.store.insert_decision_by(crate::store::InsertDecisionBy {
                 task_id: id,
                 repo: &t.repo,
                 question: &q.question,
@@ -889,6 +899,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
                 citations: &cited,
                 answered_for: t.question_to.as_deref(),
             })?;
+            f.store.set_decision_retry(decision, by)?;
             let mut t = t.clone();
             t.state = TaskState::Failed;
             t.reason = format!("superseded by task {by} (supervisor): {}", r.reason);

@@ -127,6 +127,16 @@ pub fn redactor(f: &Forge) -> Redactor {
         .flat_map(|m| m.values().cloned())
         .collect();
     for p in f.providers.values() {
+        for reference in [&p.api_key, &p.account_id, &p.cloudflare_api_key]
+            .into_iter()
+            .flatten()
+        {
+            if let Ok(Some(value)) =
+                crate::secret_store::resolve_at(&f.paths.home, Some(reference), None)
+            {
+                secrets.push(value);
+            }
+        }
         secrets.extend(p.env.iter().map(|(_, v)| v.clone()));
         secrets.extend(
             [&p.api_key_env, &p.account_id_env, &p.cloudflare_key_env]

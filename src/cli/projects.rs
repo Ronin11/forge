@@ -172,6 +172,19 @@ pub(super) enum ProjectCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Retire a project: it keeps its repos, backlog and task history,
+    /// reachable by name (`forge project show`), but every operational
+    /// pass — worker scheduling, guard installs, doctor's per-project
+    /// checks — skips it from here on. Refused while it has a queued or
+    /// running task. Use this for a project whose repository is gone
+    /// (doctor's `projects` row names it).
+    Retire { name: String },
+    /// Install the landing guard into this project's bare origin(s): a
+    /// pre-receive hook that rejects a push to the base branch (or its
+    /// deletion) unless it carries the integrator's own push option (see
+    /// `forge init`, `docs/OPS.md`, "Landing hand-made work"). Run this
+    /// for a project registered after `forge init` last ran; idempotent.
+    Guard { name: String },
 }
 
 fn ref_add(task: i64, kind: String, url: String, label: String, by: String) -> Result<()> {
@@ -220,6 +233,9 @@ fn print_project_row(r: &crate::view::ProjectRow) {
     out!("name       {}", r.name);
     out!("purpose    {}", r.purpose);
     out!("created_at {}", render::utc(r.created_at));
+    if let Some(at) = r.retired_at {
+        out!("retired_at {}", render::utc(at));
+    }
     if r.repos.is_empty() {
         out!("repos      none");
     }
@@ -484,6 +500,18 @@ fn project_list(json: bool) -> Result<()> {
     Ok(())
 }
 
+fn project_retire(name: String) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    f.store
+        .project(&name)?
+        .with_context(|| format!("no project {name}"))?;
+    if !f.store.retire_project(&name, unix_now())? {
+        bail!("project {name} is already retired");
+    }
+    out!("retired project {name}");
+    Ok(())
+}
+
 fn project_show(name: String, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let p = f
@@ -621,6 +649,31 @@ fn project_resolve_token(token: String, json: bool) -> Result<()> {
     Ok(())
 }
 
+async fn project_guard(name: String) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    if f.store.project(&name)?.is_none() {
+        bail!("no project {name}");
+    }
+    let steps = crate::guard::install_for_project(&f.paths.home, &f.store, &name).await?;
+    if steps.is_empty() {
+        out!("{name} has no repository with a bare origin on this machine to guard");
+        return Ok(());
+    }
+    for s in &steps {
+        out!(
+            "{} {} @ {}",
+            if s.changed {
+                "guarded"
+            } else {
+                "already guarded"
+            },
+            s.repo,
+            s.bare.display()
+        );
+    }
+    Ok(())
+}
+
 async fn dispatch_ref(cmd: Cmd) -> Result<()> {
     match cmd {
         Cmd::Ref { cmd } => match cmd {
@@ -684,9 +737,11 @@ async fn dispatch_project(cmd: Cmd) -> Result<()> {
                 ProjectWebhookCmd::Revoke { project, name } => webhook_revoke(project, name),
                 ProjectWebhookCmd::List { project, json } => webhook_list(project, json),
             },
+            ProjectCmd::Retire { name } => project_retire(name),
             ProjectCmd::Portal { name, revoke } => project_portal(name, revoke),
             ProjectCmd::View { name, json } => project_view(name, json),
             ProjectCmd::ResolveToken { token, json } => project_resolve_token(token, json),
+            ProjectCmd::Guard { name } => project_guard(name).await,
         },
         _ => unreachable!("command routed to the wrong family"),
     }
@@ -703,9 +758,10 @@ async fn dispatch_initiative(cmd: Cmd) -> Result<()> {
                 workflow,
                 budget,
                 stop_after,
+                priority,
             } => {
                 initiative_new(
-                    project, outcome, from, provider, workflow, budget, stop_after,
+                    project, outcome, from, provider, workflow, budget, stop_after, priority,
                 )
                 .await
             }
@@ -715,7 +771,8 @@ async fn dispatch_initiative(cmd: Cmd) -> Result<()> {
                 budget,
                 stop_after,
                 outcome,
-            } => initiative_set(id, budget, stop_after, outcome),
+                priority,
+            } => initiative_set(id, budget, stop_after, outcome, priority),
             InitiativeCmd::List { project, json } => initiative_list(project, json),
             InitiativeCmd::Show { id, json } => initiative_show(id, json),
             InitiativeCmd::Report { id, json } => initiative_report(id, json),

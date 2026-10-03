@@ -583,7 +583,7 @@ pub async fn integrate(
         *seq += 1;
         let land_seq = *seq;
         let timer = Timer::now();
-        if let Err(e) = git::push_sha(home, repo, &candidate, url, &t.base_branch).await {
+        if let Err(e) = git::push_base_sha(home, repo, &candidate, url, &t.base_branch).await {
             let args = round::BasePushFailure {
                 t,
                 url,
@@ -1254,6 +1254,7 @@ async fn land_integrated(
             f.report.emit(
                 id,
                 crate::report::Event::TaskDone {
+                    audience: "none",
                     state: t.state.as_str(),
                     attempts: f.store.attempts(id)?.len(),
                     cost: f.store.task_cost(id)?,

@@ -579,6 +579,9 @@ fn list_providers(json: bool) -> Result<()> {
                     "runner": p.runner.as_str(),
                     "model": p.model,
                     "base_url": p.base_url,
+                    "api_key": p.api_key,
+                    "account_id": p.account_id,
+                    "cloudflare_api_key": p.cloudflare_api_key,
                     "api_key_env": p.api_key_env,
                     "backend": (p.runner == crate::agent::Runner::Jev)
                         .then(|| crate::agent::backend_for(p).as_str()),

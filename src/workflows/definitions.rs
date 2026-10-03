@@ -210,6 +210,16 @@ struct StepRaw {
     on: BTreeMap<String, String>,
     /// A run workflow's step: how many times a loop may enter it.
     max_attempts: Option<u32>,
+    /// A run workflow's operation step: the `[secrets]` names in the
+    /// operator's config it is given, as environment (docs/JOBS.md).
+    #[serde(default)]
+    secrets: Vec<String>,
+    /// A run workflow's operation step: the hosts its egress policy is
+    /// opened to, and only that step's (`host`, `host:port`, `*.suffix`).
+    #[serde(default)]
+    egress: Vec<String>,
+    /// A run workflow's operation step: what the step may spend, in USD.
+    budget_usd: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -287,6 +297,12 @@ pub struct StepRef {
     pub on: BTreeMap<String, String>,
     #[serde(default)]
     pub max_attempts: Option<u32>,
+    #[serde(default)]
+    pub secrets: Vec<String>,
+    #[serde(default)]
+    pub egress: Vec<String>,
+    #[serde(default)]
+    pub budget_usd: Option<f64>,
 }
 
 #[derive(Clone, Debug)]
@@ -591,34 +607,11 @@ pub(crate) fn parse_workflow(path: &Path, text: &str, hash: String) -> Result<Wo
         }
     }
     let trigger = raw.trigger.map(|t| build_trigger(path, t)).transpose()?;
-    let mut steps = Vec::new();
-    for s in raw.steps {
-        let action = s.action.or(s.kind);
-        if action.is_some() == s.workflow.is_some() {
-            bail!(
-                "{}: a step names exactly one of `action` or `workflow`",
-                path.display()
-            );
-        }
-        if s.max_turns == Some(0) || s.timeout_secs == Some(0) {
-            bail!(
-                "{}: max_turns and timeout_secs must be positive",
-                path.display()
-            );
-        }
-        steps.push(StepRef {
-            action,
-            workflow: s.workflow,
-            model: s.model,
-            max_turns: s.max_turns,
-            timeout_secs: s.timeout_secs,
-            role: s.role,
-            effect: s.effect,
-            judgment: s.judgment,
-            on: s.on,
-            max_attempts: s.max_attempts,
-        });
-    }
+    let steps = raw
+        .steps
+        .into_iter()
+        .map(|s| step_ref(path, s, raw.kind))
+        .collect::<Result<Vec<_>>>()?;
     if raw.kind == WorkflowKind::Build
         && let Some(s) = steps
             .iter()
@@ -649,6 +642,86 @@ pub(crate) fn parse_workflow(path: &Path, text: &str, hash: String) -> Result<Wo
         path: path.to_path_buf(),
         text: text.to_string(),
     })
+}
+
+/// One step as written, checked on its own: it names one of `action` or
+/// `workflow`, its limits are positive, and what it declares to be given
+/// (`check_step_grants`) is well formed.
+fn step_ref(path: &Path, s: StepRaw, kind: WorkflowKind) -> Result<StepRef> {
+    let action = s.action.or(s.kind);
+    if action.is_some() == s.workflow.is_some() {
+        bail!(
+            "{}: a step names exactly one of `action` or `workflow`",
+            path.display()
+        );
+    }
+    if s.max_turns == Some(0) || s.timeout_secs == Some(0) {
+        bail!(
+            "{}: max_turns and timeout_secs must be positive",
+            path.display()
+        );
+    }
+    let step = StepRef {
+        action,
+        workflow: s.workflow,
+        model: s.model,
+        max_turns: s.max_turns,
+        timeout_secs: s.timeout_secs,
+        role: s.role,
+        effect: s.effect,
+        judgment: s.judgment,
+        on: s.on,
+        max_attempts: s.max_attempts,
+        secrets: s.secrets,
+        egress: s.egress,
+        budget_usd: s.budget_usd,
+    };
+    check_step_grants(path, &step, kind)?;
+    Ok(step)
+}
+
+/// A step's `secrets`, `egress` and `budget_usd` are a run workflow's
+/// operation step's: refused on a build workflow's step and on a splice,
+/// and their values checked here so a malformed one fails at load, not in
+/// the middle of a job.
+fn check_step_grants(path: &Path, s: &StepRef, kind: WorkflowKind) -> Result<()> {
+    if s.secrets.is_empty() && s.egress.is_empty() && s.budget_usd.is_none() {
+        return Ok(());
+    }
+    let step = s
+        .action
+        .as_deref()
+        .or(s.workflow.as_deref())
+        .unwrap_or_default();
+    if kind == WorkflowKind::Build {
+        bail!(
+            "{}: step {step:?} carries `secrets`, `egress` or `budget_usd`; those are a run workflow's operation step's (set kind = \"run\")",
+            path.display()
+        );
+    }
+    if s.workflow.is_some() {
+        bail!(
+            "{}: step {step:?} splices in a workflow and carries `secrets`, `egress` or `budget_usd`; declare them on the spliced workflow's own steps",
+            path.display()
+        );
+    }
+    for name in &s.secrets {
+        crate::secrets::check_name(name)
+            .with_context(|| format!("{}: step {step:?}: secrets", path.display()))?;
+    }
+    for host in &s.egress {
+        crate::egress::Rule::parse(host)
+            .with_context(|| format!("{}: step {step:?}: egress", path.display()))?;
+    }
+    if let Some(b) = s.budget_usd
+        && !(b.is_finite() && b > 0.0)
+    {
+        bail!(
+            "{}: step {step:?}: budget_usd must be a positive number of dollars",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// Whether the workflow named `name`, with its own raw text `text`, writes
@@ -831,6 +904,64 @@ on_failure = "ask:contact"
         assert_eq!(w.steps[0].role.as_deref(), Some("read"));
         assert_eq!(w.steps[3].effect, Some(EffectKind::Message));
         assert_eq!(w.steps[4].effect, Some(EffectKind::Row));
+    }
+
+    fn step_workflow(kind: &str, step: &str) -> String {
+        format!(
+            "name = \"nightly\"\nkind = \"{kind}\"\nsteps = [{step}]\n[trigger]\non = \"manual\"\n"
+        )
+    }
+
+    #[test]
+    fn an_operation_step_may_declare_secrets_egress_and_a_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        let step = "{ action = \"code\", effect = \"row\", secrets = [\"cloudflare_token\"], egress = [\"api.cloudflare.com\"], budget_usd = 0.5 }";
+        write(dir.path(), "nightly.toml", &step_workflow("run", step));
+        let w = get(dir.path(), "nightly").unwrap().unwrap();
+        assert_eq!(w.steps[0].secrets, vec!["cloudflare_token".to_string()]);
+        assert_eq!(w.steps[0].egress, vec!["api.cloudflare.com".to_string()]);
+        assert_eq!(w.steps[0].budget_usd, Some(0.5));
+    }
+
+    #[test]
+    fn a_step_declaring_no_grants_has_none() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        let step = "{ action = \"code\", effect = \"row\" }";
+        write(dir.path(), "nightly.toml", &step_workflow("run", step));
+        let w = get(dir.path(), "nightly").unwrap().unwrap();
+        assert!(w.steps[0].secrets.is_empty() && w.steps[0].egress.is_empty());
+        assert_eq!(w.steps[0].budget_usd, None);
+    }
+
+    #[test]
+    fn a_malformed_step_grant_is_refused_at_load() {
+        for bad in [
+            "secrets = [\"Not A Name\"]",
+            "egress = [\"https://api.cloudflare.com/\"]",
+            "egress = [\"*.com\"]",
+            "budget_usd = 0.0",
+            "budget_usd = -1.0",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            load_all(dir.path()).unwrap();
+            let step = format!("{{ action = \"code\", effect = \"row\", {bad} }}");
+            write(dir.path(), "nightly.toml", &step_workflow("run", &step));
+            assert!(get(dir.path(), "nightly").is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn step_grants_are_a_run_workflows_operation_steps_only() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        let step = "{ action = \"code\", secrets = [\"cloudflare_token\"] }";
+        write(dir.path(), "nightly.toml", &step_workflow("build", step));
+        assert!(get(dir.path(), "nightly").is_err());
+        let splice = "{ workflow = \"other\", egress = [\"api.cloudflare.com\"] }";
+        write(dir.path(), "nightly.toml", &step_workflow("run", splice));
+        assert!(get(dir.path(), "nightly").is_err());
     }
 
     #[test]

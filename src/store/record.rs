@@ -125,6 +125,15 @@ impl Store {
         Ok(())
     }
 
+    /// The source checkout of an automatic refile, without joining its retry lineage.
+    pub fn refile_source(&self, id: i64) -> Result<Option<i64>> {
+        Ok(self.lock().retry_query_row(
+            "SELECT task_id FROM decisions WHERE retry_id=?1 AND kind='mechanic-ratchet' ORDER BY id DESC LIMIT 1",
+            params![id],
+            |r| r.get(0),
+        ).optional()?)
+    }
+
     /// Mark a decision as the kernel's own ruling of `kind`.
     pub fn set_decision_kind(&self, decision_id: i64, kind: &str) -> Result<()> {
         self.lock().retry_execute(
@@ -176,6 +185,18 @@ impl Store {
             DECISION_COLUMNS.join(", ")
         ))?;
         let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), decision_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// How many decisions of each `mechanic-*` kind were recorded at or
+    /// after `since` (`0` for all time): what `forge stats --mechanic`
+    /// counts (docs/WORKFLOWS.md, "Mechanic").
+    pub fn mechanic_kind_counts(&self, since: i64) -> Result<Vec<(String, i64)>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT kind, COUNT(*) AS n FROM decisions WHERE kind LIKE 'mechanic-%' AND created_at >= ?1 GROUP BY kind ORDER BY kind",
+        )?;
+        let rows = stmt.query_map(params![since], |r| Ok((r.get("kind")?, r.get("n")?)))?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -265,6 +286,34 @@ impl Store {
         Ok(c.last_insert_rowid())
     }
 
+    /// Record the landing guard's emergency override (see `guard`): a hand
+    /// push to the base branch that carried `forge-override=<reason>`
+    /// instead of the integrator's token. `task_id` is `None`, the same as
+    /// `insert_reprice_decision` — the push touches no one task — and
+    /// `kind` is `"forge-override"`, so `decisions_of_kind_since` is how
+    /// `forge doctor` finds one within the last 24 hours.
+    pub fn insert_override_decision(
+        &self,
+        repo: &str,
+        pusher: &str,
+        reason: &str,
+        branch: &str,
+    ) -> Result<i64> {
+        let c = self.lock();
+        c.retry_execute(
+            "INSERT INTO decisions (task_id, repo, question, answer, created_at, answered_by, citations, answered_for, kind)
+             VALUES (NULL, ?1, ?2, ?3, ?4, ?5, '', NULL, 'forge-override')",
+            params![
+                repo,
+                format!("emergency push to {branch}"),
+                reason,
+                crate::unix_now(),
+                pusher
+            ],
+        )?;
+        Ok(c.last_insert_rowid())
+    }
+
     /// Record a reference on a task: the pull request it landed as, the
     /// issue it came from.
     pub fn insert_task_ref(
@@ -329,6 +378,60 @@ mod tests {
         })
         .unwrap();
         assert_eq!(s.supervisor_answers_in_lineage(b).unwrap(), 1);
+    }
+
+    #[test]
+    fn mechanic_kind_counts_groups_by_kind_and_ignores_other_decisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        let t = Task {
+            repo: "r".into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 2,
+            timeout_secs: 1,
+            ..Default::default()
+        };
+        let a = s.insert_task(&t).unwrap();
+        let b = s.insert_task(&t).unwrap();
+        let insert = |kind: &str| {
+            let d = s
+                .insert_decision_by(InsertDecisionBy {
+                    task_id: a,
+                    repo: "r",
+                    question: "q",
+                    answer: "a",
+                    answered_by: "mechanic",
+                    citations: "",
+                    answered_for: None,
+                })
+                .unwrap();
+            s.set_decision_kind(d, kind).unwrap();
+        };
+        insert("mechanic-load-flake");
+        insert("mechanic-load-flake");
+        insert("mechanic-ratchet");
+        s.insert_decision_by(InsertDecisionBy {
+            task_id: b,
+            repo: "r",
+            question: "q",
+            answer: "a",
+            answered_by: "supervisor",
+            citations: "",
+            answered_for: None,
+        })
+        .unwrap();
+        assert_eq!(
+            s.mechanic_kind_counts(0).unwrap(),
+            vec![
+                ("mechanic-load-flake".to_string(), 2),
+                ("mechanic-ratchet".to_string(), 1),
+            ]
+        );
+        let far_future = crate::unix_now() + 1_000_000;
+        assert!(s.mechanic_kind_counts(far_future).unwrap().is_empty());
     }
 
     #[test]

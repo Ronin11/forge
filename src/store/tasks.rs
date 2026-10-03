@@ -168,6 +168,8 @@ pub struct Task {
     /// operator. Set from the envelope's `needs_input.to` when the task
     /// blocks; meaningless outside `TaskState::Blocked`.
     pub question_to: Option<String>,
+    /// The deploy whose failure filed this no-work question.
+    pub deploy_id: Option<i64>,
     pub created_at: i64,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
@@ -203,6 +205,10 @@ pub struct Task {
     pub verify_base: String,
     /// The task this one re-queues, when it was made by `forge retry`.
     pub retry_of: Option<i64>,
+    /// The earlier failed or blocked task this one replaces, when made by
+    /// `forge add --supersedes` (see `store::supersede`); `None` for every
+    /// other way in.
+    pub supersedes: Option<i64>,
     /// Show the agents the journal of earlier attempts (the default);
     /// false for the control arm of a measurement.
     pub journal: bool,
@@ -311,6 +317,11 @@ pub struct Task {
     /// The adopted branch, commit and adopter; `None` unless `origin` is
     /// `Adopted`. Set once at insert.
     pub adoption: Option<Adoption>,
+    /// 0 (lowest) to 7 (highest), 2 ("normal") by default; see
+    /// `store::priority`. Among otherwise-claimable tasks, higher claims
+    /// first (`Store::queued_unblocked`). A retry or a refile inherits
+    /// the task it re-queues' own value (`queue::retry_request`).
+    pub priority: i64,
 }
 
 /// `Store::set_task_fields`: only a field that is `Some` replaces the
@@ -331,26 +342,17 @@ pub struct TaskUpdate {
     pub checks: Option<Vec<String>>,
     /// The task's own `--provider` (`Task::provider`), routing every role.
     pub provider: Option<String>,
-}
-
-/// One task in a lineage: parent is what it retries.
-#[derive(Debug, Clone)]
-pub struct LineageRow {
-    pub id: i64,
-    pub parent: Option<i64>,
-    pub state: String,
-    pub reason: String,
-    pub workflow: String,
-    pub cost: f64,
+    /// See `store::priority`.
+    pub priority: Option<i64>,
 }
 
 /// The shared decision behind `release_dependents` and
 /// `release_dependents_of`: for each `(id, after_json)` candidate — always
 /// a task currently `blocked` with a reason starting "waits on task" —
 /// walk its after list and either release it to `queued` with its reason
-/// cleared (every dependency landed or was withdrawn: never a defect in
-/// the work, see `TaskState::Withdrawn`), give it a fresh reason naming
-/// the first dependency that ended badly (failed, unverified, or
+/// cleared (every dependency succeeded and landed when required), give
+/// it a fresh reason naming the first dependency that ended badly
+/// (failed, withdrawn, unverified, or
 /// succeeded without landing), or leave it alone (a dependency still
 /// queued, running, or itself blocked has not resolved yet). Returns the
 /// ids released to `queued`.
@@ -379,13 +381,16 @@ fn release_or_reblock(c: &Connection, candidates: Vec<(i64, String)>) -> Result<
                 all_resolved = false;
                 continue;
             };
-            let ok =
-                state == "withdrawn" || (state == "succeeded" && (!land || !landed_sha.is_empty()));
+            let ok = state == "succeeded" && (!land || !landed_sha.is_empty());
             if ok {
                 continue;
             }
             all_resolved = false;
-            if blocker.is_none() && matches!(state.as_str(), "failed" | "unverified" | "succeeded")
+            if blocker.is_none()
+                && matches!(
+                    state.as_str(),
+                    "failed" | "unverified" | "withdrawn" | "succeeded"
+                )
             {
                 blocker = Some((d, state, reason));
             }
@@ -512,8 +517,8 @@ pub(super) fn insert_task_row(conn: &Connection, t: &Task) -> Result<i64> {
     conn.retry_execute(
         "INSERT INTO tasks (repo, task, title, base_branch, model, provider, max_turns, max_attempts, timeout_secs, checks_json,
                             state, reason, question_to, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm, explore_json,
-                            project, initiative, shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json, trust, origin, adoption_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40)",
+                            project, initiative, shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json, trust, origin, adoption_json, priority, deploy_id, supersedes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43)",
         params![
             t.repo,
             t.task,
@@ -555,6 +560,9 @@ pub(super) fn insert_task_row(conn: &Connection, t: &Task) -> Result<i64> {
             t.trust.as_str(),
             t.origin.as_str(),
             super::adoption::to_column(t.adoption.as_ref())?,
+            t.priority,
+            t.deploy_id,
+            t.supersedes,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -589,7 +597,7 @@ impl Store {
              concierge_json=?43, proposal_json=?44, proposal_answer=?45, proposal_initiative=?46,
              title=?47, landed_at=?48, hand_landed=?49, shape_text_len=?50, shape_path_tokens=?51,
              shape_tdd=?52, shape_declared_checks=?53, model_source=?54, workflow_source=?55,
-             routing_json=?56, session_id=?57, handoff=?58 WHERE id=?1",
+             routing_json=?56, session_id=?57, handoff=?58, deploy_id=?59, supersedes=?60 WHERE id=?1",
             params![
                 t.id,
                 t.repo,
@@ -649,8 +657,13 @@ impl Store {
                 serde_json::to_string(&t.routing)?,
                 t.session_id,
                 t.handoff,
+                t.deploy_id,
+                t.supersedes,
             ],
         )?;
+        if !matches!(t.state, TaskState::Running | TaskState::Queued) {
+            crate::disk::task_caches(&t.worktree)?;
+        }
         Ok(())
     }
 
@@ -665,37 +678,13 @@ impl Store {
             .optional()?)
     }
 
-    /// Queued tasks whose dependencies have all landed (or succeeded
-    /// without landing, when they were told not to) and whose initiative
-    /// is not in `held`, oldest first: what `claim_next` considers.
-    pub fn queued_unblocked(&self, held: &[i64]) -> Result<Vec<Task>> {
-        let ids: Vec<i64> = {
-            let c = self.lock();
-            let mut stmt = c.prepare(
-                "SELECT t.id FROM tasks t WHERE t.state='queued' AND t.origin='agent' AND NOT EXISTS (
-                   SELECT 1 FROM json_each(t.after_json) j LEFT JOIN tasks d ON d.id = j.value
-                   WHERE d.id IS NULL OR d.state != 'succeeded' OR (d.land = 1 AND d.landed_sha = '')
-                 ) ORDER BY t.id",
-            )?;
-            stmt.query_map([], |r| r.get(0))?
-                .collect::<rusqlite::Result<_>>()?
-        };
-        let mut out = Vec::new();
-        for id in ids {
-            let Some(t) = self.task(id)? else { continue };
-            if !t.initiative.is_some_and(|i| held.contains(&i)) {
-                out.push(t);
-            }
-        }
-        Ok(out)
-    }
-
-    /// Atomically take the oldest queued task for this worker, skipping
-    /// any whose initiative is in `held` (the caller has already found
-    /// those initiatives are holding new claims, see
-    /// `view::initiative_hold`) or for which `provider_held` says the
-    /// provider it would run under is at its rate-window cap: the oldest
-    /// queued, unheld task whose dependencies have all landed.
+    /// Atomically take the highest-priority queued task for this worker
+    /// (ties broken oldest first; see `store::priority` and
+    /// `queued_unblocked`), skipping any whose initiative is in `held`
+    /// (the caller has already found those initiatives are holding new
+    /// claims, see `view::initiative_hold`) or for which `provider_held`
+    /// says the provider it would run under is at its rate-window cap.
+    #[cfg(test)]
     pub fn claim_next(
         &self,
         pid: i64,
@@ -730,6 +719,11 @@ impl Store {
             "UPDATE tasks SET state='withdrawn', reason=?2, finished_at=?3 WHERE id=?1 AND state IN ('blocked', 'queued')",
             params![id, reason, crate::unix_now()],
         )?;
+        if n == 1
+            && let Some(t) = self.task(id)?
+        {
+            crate::disk::task_caches(&t.worktree)?;
+        }
         Ok(n == 1)
     }
 
@@ -765,7 +759,8 @@ impl Store {
                 shape_tdd = COALESCE(?12, shape_tdd),
                 after_json = COALESCE(?13, after_json),
                 checks_json = COALESCE(?14, checks_json),
-                provider = COALESCE(?15, provider)
+                provider = COALESCE(?15, provider),
+                priority = COALESCE(?16, priority)
              WHERE id=?1 AND state IN ('queued', 'blocked')",
             params![
                 id,
@@ -783,6 +778,7 @@ impl Store {
                 after_json,
                 checks_json,
                 d.provider,
+                d.priority,
             ],
         )?;
         Ok(n == 1)
@@ -830,6 +826,13 @@ impl Store {
             )?;
             if n > 0 {
                 out.push((t, d, why));
+            }
+        }
+        drop(stmt);
+        drop(c);
+        for (id, _, _) in &out {
+            if let Some(task) = self.task(*id)? {
+                crate::disk::task_caches(&task.worktree)?;
             }
         }
         Ok(out)
@@ -904,38 +907,6 @@ impl Store {
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
         release_or_reblock(&c, candidates)
-    }
-
-    /// The first task in `id`'s chain of retries: itself when it retries nothing.
-    pub fn root_of(&self, id: i64) -> Result<i64> {
-        // Retries always point at an already-existing task, so ids only
-        // shrink walking up the chain: the root is the smallest one.
-        Ok(lineage_ids(&self.lock(), id)?.into_iter().min().unwrap())
-    }
-
-    /// Every task in `id`'s lineage, root first: the root and everything
-    /// that retries it, directly or through other retries.
-    pub fn lineage(&self, id: i64) -> Result<Vec<LineageRow>> {
-        let root = self.root_of(id)?;
-        let c = self.lock();
-        let mut stmt = c.prepare(
-            "WITH RECURSIVE down(id) AS (
-               SELECT ?1 UNION ALL SELECT t.id FROM down JOIN tasks t ON t.retry_of = down.id)
-             SELECT t.id, t.retry_of, t.state, t.reason, t.workflow,
-                    COALESCE((SELECT SUM(cost_usd) FROM attempts a WHERE a.task_id = t.id), 0) AS cost
-             FROM down JOIN tasks t ON t.id = down.id ORDER BY t.id",
-        )?;
-        let rows = stmt.query_map(params![root], |r| {
-            Ok(LineageRow {
-                id: r.get("id")?,
-                parent: r.get("retry_of")?,
-                state: r.get("state")?,
-                reason: r.get("reason")?,
-                workflow: r.get("workflow")?,
-                cost: r.get("cost")?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Every task that retries `id` directly.
@@ -1422,6 +1393,7 @@ mod tests {
                         after: Some(vec![3, 4]),
                         checks: Some(vec!["true".into()]),
                         provider: None,
+                        priority: Some(7),
                     }
                 )
                 .unwrap()
@@ -1444,6 +1416,7 @@ mod tests {
         assert!(got.shape_tdd);
         assert_eq!(got.after, vec![3, 4]);
         assert_eq!(got.checks, vec!["true".to_string()]);
+        assert_eq!(got.priority, 7);
 
         // A blocked task takes the change too.
         store

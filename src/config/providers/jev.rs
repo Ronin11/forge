@@ -23,6 +23,9 @@ pub(super) fn settle(name: &str, jev: bool, p: &mut ProviderRaw) -> Result<agent
             .is_some_and(|u| u.contains("{account_id}"))
     {
         p.cloudflare_url = p.base_url.take();
+        if p.cloudflare_api_key.is_none() {
+            p.cloudflare_api_key = p.api_key.take();
+        }
         if p.cloudflare_api_key_env.is_none() {
             p.cloudflare_api_key_env = p.api_key_env.take();
         }

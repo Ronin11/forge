@@ -19,6 +19,20 @@ use crate::support::*;
 use std::path::Path;
 use std::process::Output;
 
+// A just-copied executable can transiently fail to spawn with ETXTBSY under
+// concurrent process load. Retry only that launch error; no child ran yet.
+fn copied_binary_output(cmd: &mut std::process::Command) -> std::io::Result<Output> {
+    for attempt in 0..5 {
+        match cmd.output() {
+            Err(err) if err.raw_os_error() == Some(libc::ETXTBSY) && attempt < 4 => {
+                std::thread::sleep(std::time::Duration::from_millis(20 * (attempt + 1)));
+            }
+            result => return result,
+        }
+    }
+    unreachable!()
+}
+
 fn write_fake(path: &Path, content: &str) {
     std::fs::write(path, content).unwrap();
     let mut perm = std::fs::metadata(path).unwrap().permissions();
@@ -241,16 +255,17 @@ fn forge_init_relink_moves_an_existing_install_onto_the_release_layout() {
 
     let relink = || {
         // Run through the old symlink, as the operator's shell would.
-        let o = std::process::Command::new(local_bin.join("forge"))
-            .env("FORGE_HOME", &e.home)
-            .env("XDG_CONFIG_HOME", &e.xdg_config)
-            .env("HOME", &home_dir)
-            .env("FORGE_SUPERVISOR", "0")
-            .env_remove("XDG_RUNTIME_DIR")
-            .env_remove("DBUS_SESSION_BUS_ADDRESS")
-            .args(["init", "--relink"])
-            .output()
-            .unwrap();
+        let o = copied_binary_output(
+            std::process::Command::new(local_bin.join("forge"))
+                .env("FORGE_HOME", &e.home)
+                .env("XDG_CONFIG_HOME", &e.xdg_config)
+                .env("HOME", &home_dir)
+                .env("FORGE_SUPERVISOR", "0")
+                .env_remove("XDG_RUNTIME_DIR")
+                .env_remove("DBUS_SESSION_BUS_ADDRESS")
+                .args(["init", "--relink"]),
+        )
+        .unwrap();
         String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr)
     };
 
@@ -303,16 +318,17 @@ fn forge_init_relink_refuses_a_directory_with_only_forge() {
     std::fs::create_dir_all(&home_dir).unwrap();
     std::fs::copy(env!("CARGO_BIN_EXE_forge"), build.join("forge")).unwrap();
 
-    let o = std::process::Command::new(build.join("forge"))
-        .env("FORGE_HOME", &e.home)
-        .env("XDG_CONFIG_HOME", &e.xdg_config)
-        .env("HOME", &home_dir)
-        .env("FORGE_SUPERVISOR", "0")
-        .env_remove("XDG_RUNTIME_DIR")
-        .env_remove("DBUS_SESSION_BUS_ADDRESS")
-        .args(["init", "--relink"])
-        .output()
-        .unwrap();
+    let o = copied_binary_output(
+        std::process::Command::new(build.join("forge"))
+            .env("FORGE_HOME", &e.home)
+            .env("XDG_CONFIG_HOME", &e.xdg_config)
+            .env("HOME", &home_dir)
+            .env("FORGE_SUPERVISOR", "0")
+            .env_remove("XDG_RUNTIME_DIR")
+            .env_remove("DBUS_SESSION_BUS_ADDRESS")
+            .args(["init", "--relink"]),
+    )
+    .unwrap();
     let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
     assert!(!o.status.success(), "{out}");
     for b in ["forge-web", "forge-portal", "forge-repomap", "forge-tui"] {

@@ -153,6 +153,7 @@ fn portal_doc_never_carries_a_forbidden_key_even_when_the_project_has_everything
             timeout_secs: 60,
             state: TaskState::Blocked,
             reason: "needs input: which price sheet should this pull from?".into(),
+            question_to: Some("customer".into()),
             created_at: crate::unix_now(),
             workflow: "direct".into(),
             project: Some("equitizr".into()),
@@ -809,4 +810,53 @@ fn running_for_you_carries_a_description_effects_a_rehearsal_flag_and_gates_the_
 
     let v = serde_json::to_value(&doc).unwrap();
     assert_no_forbidden_keys(&v);
+}
+
+#[test]
+fn portal_needs_you_only_lists_questions_addressed_to_customer() {
+    let (_dir, f) = fixture();
+    let project = Project {
+        name: "portal".into(),
+        ..Default::default()
+    };
+    f.store.create_project(&project).unwrap();
+    let mut customer_id = 0;
+    for recipient in [Some("customer"), Some("alice"), None] {
+        let initiative = f
+            .store
+            .create_initiative(&Initiative {
+                project: project.name.clone(),
+                outcome: recipient.unwrap_or("operator").into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let t = insert(
+            &f,
+            Task {
+                project: Some(project.name.clone()),
+                initiative: Some(initiative),
+                state: TaskState::Blocked,
+                reason: "needs input: Which price sheet?".into(),
+                question_to: recipient.map(str::to_string),
+                ..Default::default()
+            },
+        );
+        if recipient == Some("customer") {
+            customer_id = t.id;
+        }
+    }
+    let doc = portal_doc(&f, &project).unwrap();
+    assert_eq!(doc.questions.len(), 1);
+    assert_eq!(doc.questions[0].task_id, customer_id);
+    assert_eq!(doc.initiatives.len(), 3);
+    for initiative in doc.initiatives {
+        assert_eq!(
+            initiative.state,
+            if initiative.outcome == "customer" {
+                "waiting on you"
+            } else {
+                "in progress"
+            }
+        );
+    }
 }

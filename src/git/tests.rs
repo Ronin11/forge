@@ -1,13 +1,8 @@
-/// Every `Git::new(..)` call site, as `function:argument`. Kernel-owned:
-/// the kernel repository (`kernel`, `&kernel`, the `&src` of
-/// `place_branch`, the fresh verification checkouts and the directory
-/// `kernel_repository` initializes). The rest run in a path the caller
-/// names: the operator's registered repository, or a kernel-made tree or
-/// clone whose contents were read out of the agent's before any check
-/// ran. Nothing that pushes, or that runs a merge for landing, is in the
-/// second group, and the only command aimed at an agent's clone is the
-/// hardened fetch in `place_branch`. Adding a call site fails this test:
-/// name it here, and say which group it is in.
+/// Every Git constructor is inventoried. All general-purpose helpers must
+/// immediately harden their invocation, regardless of who supplies the path.
+/// Only hook metadata inspection is exempt: its production callers
+/// receive bare origins from the registered project repositories (see the
+/// caller guard below). Kernel-only pushes retain their separate path guard.
 const CALL_SITES: &[&str] = &[
     // Kernel-owned.
     "kernel_repository:&dir",
@@ -19,9 +14,10 @@ const CALL_SITES: &[&str] = &[
     "place_branch:&src",
     "published:&kernel",
     "push_sha:&kernel",
-    // The hardened fetch into an agent's clone.
+    "push_base_sha:&kernel",
+    // Hardened fetch into an agent's clone.
     "place_branch:dir",
-    // Caller-named: registered repository or kernel-made tree.
+    // Caller-named: always hardened, including agent clones.
     "current_branch:repo",
     "ref_exists:repo",
     "clone_task:repo",
@@ -52,6 +48,7 @@ const CALL_SITES: &[&str] = &[
     "show_file:dir",
     "count_commits:wt",
     "changed_paths:wt",
+    "committed_paths:wt",
     "diff_lines:repo",
     "changed_with_status:wt",
     "diff_text:dir",
@@ -63,6 +60,7 @@ const CALL_SITES: &[&str] = &[
     "dirty_tracked_paths:wt",
     "dirty_files:wt",
     "unstage:wt",
+    "clear_namespace:dest",
     "remote_url:repo",
     "ls_tree:repo",
     "archive_into:repo",
@@ -72,7 +70,7 @@ const CALL_SITES: &[&str] = &[
     "remote_branch_exists:\".\"",
     "remote_branch_sha:\".\"",
     // Caller-named: a registered repository's bare origin, which
-    // `forge init --mirror` hooks.
+    // `forge init` (the landing guard, `--mirror`) hooks.
     "is_bare:dir",
     "hooks_dir:dir",
     "config_get:dir",
@@ -118,6 +116,7 @@ fn no_push_or_landing_step_runs_git_in_a_callers_directory() {
         "stage",
         "published",
         "push_sha",
+        "push_base_sha",
         "push_ref",
         "push",
         "push_to_repo",
@@ -128,10 +127,82 @@ fn no_push_or_landing_step_runs_git_in_a_callers_directory() {
             assert!(arg.contains("kernel"), "{site}");
         }
     }
-    // The one command in an agent's clone is a hardened fetch.
+}
+
+#[test]
+fn caller_named_git_sites_are_hardened_or_have_a_trusted_caller() {
     let src = include_str!("../git.rs");
-    let at = src.find("Git::new(dir)\n        .hardened()").unwrap();
-    assert!(src[at..].contains("\"fetch\""));
+    let src = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+    let sites = call_sites();
+    for (site, tail) in sites.iter().zip(src.split("Git::new(").skip(1)) {
+        let after = tail.split_once(')').unwrap().1.trim_start();
+        if !["hooks_dir:dir", "config_get:dir", "config_set:dir"].contains(&site.as_str()) {
+            assert!(after.starts_with(".hardened()"), "unhardened Git at {site}");
+        }
+    }
+
+    // These exceptions are restricted to mirror and guard installation.
+    // Scan every production source, so adding a caller requires a new audit.
+    fn callers(dir: &Path, found: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_stem().is_some_and(|name| name == "tests") {
+                continue;
+            }
+            if path.is_dir() {
+                callers(&path, found);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                let production = text.split("#[cfg(test)]").next().unwrap();
+                for line in production.lines() {
+                    if ["git::hooks_dir(", "git::config_get(", "git::config_set("]
+                        .iter()
+                        .any(|needle| line.contains(needle))
+                    {
+                        found.push(format!(
+                            "{}:{}",
+                            path.file_name().unwrap().to_str().unwrap(),
+                            line.trim()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let mut found = Vec::new();
+    callers(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut found,
+    );
+    found.sort();
+    let mut expected = vec![
+        "init.rs:let hooks = git::hooks_dir(bare).await?;".to_string(),
+        "init.rs:if git::config_get(bare, \"forge.mirror\").await.as_deref() != Some(mirror) {"
+            .to_string(),
+        "init.rs:git::config_set(bare, \"forge.mirror\", mirror).await?;".to_string(),
+    ];
+    expected.extend([
+        "guard.rs:let hooks = git::hooks_dir(bare).await?;".to_string(),
+        "guard.rs:if git::config_get(bare, \"receive.advertisePushOptions\")".to_string(),
+        "guard.rs:git::config_set(bare, \"receive.advertisePushOptions\", \"true\").await?;".to_string(),
+        "guard.rs:if git::config_get(bare, \"forge.home\").await.as_deref() != Some(&home.display().to_string()) {".to_string(),
+        "guard.rs:git::config_set(bare, \"forge.home\", &home.display().to_string()).await?;".to_string(),
+        "guard.rs:if git::config_get(bare, \"forge.repo\").await.as_deref() != Some(repo) {".to_string(),
+        "guard.rs:git::config_set(bare, \"forge.repo\", repo).await?;".to_string(),
+        "guard.rs:if git::config_get(bare, \"forge.base-branch\").await.as_deref() != Some(base_branch) {".to_string(),
+        "guard.rs:git::config_set(bare, \"forge.base-branch\", base_branch).await?;".to_string(),
+    ]);
+    expected.sort();
+    assert_eq!(found, expected);
+    let init = include_str!("../init.rs");
+    assert_eq!(
+        init.matches("install_mirror_hook(&bare, mirror)").count(),
+        1
+    );
+    assert!(init.contains("for r in store.project_repos(&p.name)?"));
+    assert!(init.contains("let repo = Path::new(&r.repo)"));
+    assert!(init.contains("let Some(url) = git::remote_url(repo, &remote).await"));
+    assert!(init.contains("if let Some(bare) = git::local_bare(&url).await"));
 }
 
 #[tokio::test]
@@ -269,6 +340,37 @@ async fn dirty_tracked_paths_excludes_untracked_but_keeps_modified_and_staged() 
     assert_eq!(dirty, vec!["tracked.txt", "untracked.txt"]);
     let tracked_only = dirty_tracked_paths(wt).await.unwrap();
     assert_eq!(tracked_only, vec!["tracked.txt"]);
+}
+
+#[test]
+fn restore_metadata_removes_commondir_redirects_and_resets_config() {
+    let dir = init_repo();
+    let git_dir = dir.path().join(".git");
+    std::fs::write(git_dir.join("commondir"), "/tmp/evil\n").unwrap();
+    std::fs::write(git_dir.join("gitdir"), "/tmp/evil/worktrees/x\n").unwrap();
+    std::fs::write(
+        git_dir.join("config"),
+        "[filter \"x\"]\n\tclean = touch /tmp/should-not-run\n",
+    )
+    .unwrap();
+    std::fs::write(git_dir.join("hooks").join("pre-commit"), "#!/bin/sh\n").unwrap();
+    std::fs::write(git_dir.join("info").join("exclude"), "planted\n").unwrap();
+
+    restore_metadata(dir.path()).unwrap();
+
+    assert!(!git_dir.join("commondir").exists());
+    assert!(!git_dir.join("gitdir").exists());
+    let config = std::fs::read_to_string(git_dir.join("config")).unwrap();
+    assert!(!config.contains("filter"), "{config}");
+    assert_eq!(std::fs::read_dir(git_dir.join("hooks")).unwrap().count(), 0);
+    assert_eq!(std::fs::read_dir(git_dir.join("info")).unwrap().count(), 0);
+}
+
+#[test]
+fn restore_metadata_refuses_a_git_that_is_not_a_plain_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink("/tmp", dir.path().join(".git")).unwrap();
+    assert!(restore_metadata(dir.path()).is_err());
 }
 
 #[tokio::test]

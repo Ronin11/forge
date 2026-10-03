@@ -1,4 +1,4 @@
-//! The copilot runner: `copilot -p` in two phases, the work and then the
+//! The copilot runner: `copilot` in two phases, the work and then the
 //! structured report, its JSON frames folded into the outcome.
 
 use super::*;
@@ -7,13 +7,12 @@ use super::*;
 /// copilot has no schema flag at all, so the shape the answer must take is
 /// quoted in the prompt itself and the envelope read out of the final
 /// message (see `json_in_message`).
-const COPILOT_REPORT_PROMPT: &str = "Do no further work. Report the structured \
+pub(super) const COPILOT_REPORT_PROMPT: &str = "Do no further work. Report the structured \
 result for everything done in this session so far: one JSON object matching \
 the JSON schema below exactly, with no prose before or after it and no code \
 fence.\n\nSchema:\n";
 
-/// The copilot CLI's argv for one phase, the prompt last (`-p <text>`, so a
-/// fake can drop it from its argv echo the way the codex fakes do): the
+/// The copilot CLI's argv for one phase, with the prompt on stdin: the
 /// JSON event stream; every tool and path auto-approved (non-interactive
 /// mode refuses to run without it; the sandbox, not the CLI's prompt, is
 /// the boundary, as for the other runners); the bundled GitHub MCP server
@@ -21,7 +20,7 @@ fence.\n\nSchema:\n";
 /// self-update; its own logs at error level; `-C` the worktree; `--model`
 /// when the launch names one (absent, the CLI's own choice); the provider's
 /// own args; `--resume <session>` to continue one.
-fn copilot_argv(bin: &str, l: &Launch<'_>, resume: Option<&str>, prompt: &str) -> Vec<String> {
+fn copilot_argv(bin: &str, l: &Launch<'_>, resume: Option<&str>) -> Vec<String> {
     let mut argv = vec![
         bin.to_string(),
         "--output-format".to_string(),
@@ -44,8 +43,6 @@ fn copilot_argv(bin: &str, l: &Launch<'_>, resume: Option<&str>, prompt: &str) -
         argv.push("--resume".to_string());
         argv.push(id.to_string());
     }
-    argv.push("-p".to_string());
-    argv.push(prompt.to_string());
     argv
 }
 
@@ -178,6 +175,7 @@ async fn run_copilot_phase(args: RunCopilotPhase<'_>) -> Result<(Option<i32>, bo
     let RunCopilotPhase {
         l,
         argv,
+        prompt,
         extra_env,
         start,
         log,
@@ -196,6 +194,7 @@ async fn run_copilot_phase(args: RunCopilotPhase<'_>) -> Result<(Option<i32>, bo
     run_json_phase(RunJsonPhase {
         l,
         argv,
+        prompt,
         extra_env,
         start,
         log,
@@ -206,25 +205,25 @@ async fn run_copilot_phase(args: RunCopilotPhase<'_>) -> Result<(Option<i32>, bo
     .await
 }
 
-/// The copilot-cli backend (GitHub Copilot CLI, `copilot -p`), run in the
+/// The copilot-cli backend (GitHub Copilot CLI, `copilot`), run in the
 /// same two phases as codex and for the same reason, with one difference:
 /// copilot has no schema flag, so phase two quotes the schema in its prompt
 /// and the envelope is read out of the final message. Phase one runs the
 /// prompt (or resumes the attempt's session); once it ends, phase two
-/// resumes that session with `COPILOT_REPORT_PROMPT`. Stdin is closed in
-/// both: the prompt travels on argv. The CLI meters premium requests, not
+/// resumes that session with `COPILOT_REPORT_PROMPT`. Both phases write the prompt to stdin
+/// and close it at EOF, selecting non-interactive execution. The CLI meters premium requests, not
 /// tokens (1.0.88 reports no token counts at all), so the attempt's cost is
 /// the requests its `result` frames report at the provider's
 /// `price_usd_per_premium_request` — 0 within a plan's allowance — plus
 /// whatever tokens it does report at the per-million prices.
 pub(super) async fn run_copilot(l: Launch<'_>) -> Result<Outcome> {
     let bin = crate::executor::agent_bin(l.sandbox, l.worktree, copilot_bin_for(l.step));
-    let mut extra_env = crate::git::identity(&l.worktree.join(".git")).await;
+    let mut extra_env = l.identity.clone();
     extra_env.extend(inputs::provider_env(l.provider));
     extra_env.push(("COPILOT_AUTO_UPDATE".to_string(), "false".to_string()));
 
-    let mut log =
-        File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
+    let mut log = CappedLog::create(l.log_path)
+        .with_context(|| format!("creating {}", l.log_path.display()))?;
     writeln!(
         log,
         "{{\"type\":\"forge_prompt\",\"text\":{}}}",
@@ -239,10 +238,11 @@ pub(super) async fn run_copilot(l: Launch<'_>) -> Result<Outcome> {
     let mut watch = Watch::new(l.early_ending);
     let mut tally = CopilotTally::default();
 
-    let argv1 = copilot_argv(&bin, &l, l.resume, l.prompt);
+    let argv1 = copilot_argv(&bin, &l, l.resume);
     let (exit1, timed_out1, mut stderr_text) = run_copilot_phase(RunCopilotPhase {
         l: &l,
         argv: &argv1,
+        prompt: l.prompt,
         extra_env: &extra_env,
         start: &start,
         log: &mut log,
@@ -271,10 +271,11 @@ pub(super) async fn run_copilot(l: Launch<'_>) -> Result<Outcome> {
             },
         );
         let prompt2 = format!("{COPILOT_REPORT_PROMPT}{}", l.schema);
-        let argv2 = copilot_argv(&bin, &l, Some(&session), &prompt2);
+        let argv2 = copilot_argv(&bin, &l, Some(&session));
         let (exit2, timed_out2, stderr2) = run_copilot_phase(RunCopilotPhase {
             l: &l,
             argv: &argv2,
+            prompt: &prompt2,
             extra_env: &extra_env,
             start: &start,
             log: &mut log,
@@ -439,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn copilot_argv_carries_the_stream_flags_model_resume_and_the_prompt_last() {
+    fn copilot_argv_carries_stream_flags_model_resume_without_the_prompt() {
         let dir = tempfile::tempdir().unwrap();
         let report = Reporter::new(false, None);
         let provider = Provider {
@@ -457,7 +458,7 @@ mod tests {
             false,
             None,
         );
-        let argv = copilot_argv("copilot", &l, Some("sess-1"), "do it");
+        let argv = copilot_argv("copilot", &l, Some("sess-1"));
         assert_eq!(argv[0], "copilot");
         for flag in [
             "--allow-all-tools",
@@ -473,10 +474,9 @@ mod tests {
         assert_eq!(argv[at("--model") + 1], "sonnet");
         assert_eq!(argv[at("--reasoning-effort") + 1], "high");
         assert_eq!(argv[at("--resume") + 1], "sess-1");
-        let n = argv.len();
-        assert_eq!(&argv[n - 2..], ["-p", "do it"], "the prompt is last");
+        assert!(!argv.iter().any(|a| a == "-p" || a == l.prompt));
         assert!(
-            !copilot_argv("copilot", &l, None, "x").contains(&"--resume".to_string()),
+            !copilot_argv("copilot", &l, None).contains(&"--resume".to_string()),
             "no resume on a fresh session"
         );
     }
