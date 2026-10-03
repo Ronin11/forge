@@ -830,6 +830,16 @@ impl Sandbox {
             "--dev",
             "/dev",
         ]);
+        // `--dev` mounts a tmpfs the size of host RAM: a write straight into
+        // `/dev` (not through a device node) is otherwise unbounded. Give
+        // `/dev/shm` its own sized tmpfs, over the plain directory `--dev`
+        // left there, then take the outer `/dev` back read-only; the device
+        // nodes `--dev` created are separate mounts or bind mounts of host
+        // device files, so neither loses function.
+        cmd.arg("--size")
+            .arg(self.limits.tmp_bytes.to_string())
+            .args(["--tmpfs", "/dev/shm"]);
+        cmd.args(["--remount-ro", "/dev"]);
         cmd.args([
             "--ro-bind",
             "/usr",
@@ -892,30 +902,7 @@ impl Sandbox {
         for d in under {
             cmd.arg("--ro-bind-try").arg(d).arg(d);
         }
-        // Disk-backed uppers avoid bwrap's unbounded invisible tmpfs. Each
-        // launch gets fresh directories, outside all writable sandbox binds;
-        // they are discarded alongside the worktree. If disk setup fails,
-        // use a cold cache, never the operator's writable cache.
-        if self.overlay {
-            let root = overlay_state_dir(worktree);
-            for p in self.extra_rw.iter().filter(|p| p.exists()) {
-                let upper = (|| -> std::io::Result<_> {
-                    std::fs::create_dir_all(&root)?;
-                    let dir = tempfile::tempdir_in(&root)?;
-                    std::fs::create_dir(dir.path().join("upper"))?;
-                    std::fs::create_dir(dir.path().join("work"))?;
-                    Ok(dir.keep())
-                })();
-                if let Ok(dir) = upper {
-                    cmd.arg("--overlay-src")
-                        .arg(p)
-                        .arg("--overlay")
-                        .arg(dir.join("upper"))
-                        .arg(dir.join("work"))
-                        .arg(p);
-                }
-            }
-        }
+        self.bind_overlay_caches(&mut cmd, worktree);
         if let Some(d) = &self.dependency_cache {
             cmd.arg("--ro-bind-try").arg(d).arg(d);
         }
@@ -974,27 +961,64 @@ impl Sandbox {
             // node only honours the proxy variables when asked to.
             cmd.env("NODE_USE_ENV_PROXY", "1");
         }
-        if let Some(runner) = &self.scope_runner {
-            let mut scope = Command::new(runner);
-            self.limits.scope_args(&mut scope);
-            scope
-                .arg(cmd.get_program())
-                .args(cmd.get_args())
-                .env_clear();
-            for (key, value) in cmd.get_envs() {
-                if let Some(value) = value {
-                    scope.env(key, value);
-                }
+        self.wrap_in_scope(cmd)
+    }
+
+    /// Run `cmd` under `systemd-run --user --scope` when one was detected
+    /// (see `ResourceLimits::scope_runner`), bounding its aggregate memory
+    /// and process count; `cmd` unchanged when there is none.
+    fn wrap_in_scope(&self, cmd: Command) -> Command {
+        let Some(runner) = &self.scope_runner else {
+            return cmd;
+        };
+        let mut scope = Command::new(runner);
+        self.limits.scope_args(&mut scope);
+        scope
+            .arg(cmd.get_program())
+            .args(cmd.get_args())
+            .env_clear();
+        for (key, value) in cmd.get_envs() {
+            if let Some(value) = value {
+                scope.env(key, value);
             }
-            // Only the host launcher needs access to the user manager.
-            for key in ["DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"] {
-                if let Some(value) = std::env::var_os(key) {
-                    scope.env(key, value);
-                }
-            }
-            return scope;
         }
-        cmd
+        // Only the host launcher needs access to the user manager.
+        for key in ["DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"] {
+            if let Some(value) = std::env::var_os(key) {
+                scope.env(key, value);
+            }
+        }
+        scope
+    }
+
+    /// Bind the operator's package caches, each attempt's writes going to a
+    /// fresh disk-backed overlay upper outside every writable sandbox bind,
+    /// discarded with the worktree: bwrap's `--tmp-overlay` upper is an
+    /// invisible tmpfs with no size bound, so a disk directory is used
+    /// instead. If disk setup fails, the launch proceeds with a cold cache
+    /// rather than the operator's writable one.
+    fn bind_overlay_caches(&self, cmd: &mut Command, worktree: &Path) {
+        if !self.overlay {
+            return;
+        }
+        let root = overlay_state_dir(worktree);
+        for p in self.extra_rw.iter().filter(|p| p.exists()) {
+            let upper = (|| -> std::io::Result<_> {
+                std::fs::create_dir_all(&root)?;
+                let dir = tempfile::tempdir_in(&root)?;
+                std::fs::create_dir(dir.path().join("upper"))?;
+                std::fs::create_dir(dir.path().join("work"))?;
+                Ok(dir.keep())
+            })();
+            if let Ok(dir) = upper {
+                cmd.arg("--overlay-src")
+                    .arg(p)
+                    .arg("--overlay")
+                    .arg(dir.join("upper"))
+                    .arg(dir.join("work"))
+                    .arg(p);
+            }
+        }
     }
 }
 

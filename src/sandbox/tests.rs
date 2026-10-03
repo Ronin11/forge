@@ -698,6 +698,7 @@ fn relay_detect_strips_deleted_suffix() {
     let sb = Sandbox::detect(
         "/bin/sh",
         &crate::config::SandboxPaths {
+            limits: ResourceLimits::default(),
             ro: Vec::new(),
             rw: Vec::new(),
             dependency_cache: None,
@@ -763,15 +764,21 @@ fn resource_limits_bound_every_tmpfs_and_wrap_the_launch() {
         .windows(4)
         .filter(|w| w[0] == "--size" && w[2] == "--tmpfs")
         .collect();
-    assert_eq!(mounts.len(), 3);
+    assert_eq!(mounts.len(), 4);
     assert_eq!(mounts[0][1], "1073741824");
-    assert_eq!(mounts[0][3], "/tmp");
-    assert_eq!(mounts[1][1], "67108864");
-    assert_eq!(mounts[1][3], "/run");
-    assert_eq!(mounts[2][1], "268435456");
+    assert_eq!(mounts[0][3], "/dev/shm");
+    assert_eq!(mounts[1][1], "1073741824");
+    assert_eq!(mounts[1][3], "/tmp");
+    assert_eq!(mounts[2][1], "67108864");
+    assert_eq!(mounts[2][3], "/run");
+    assert_eq!(mounts[3][1], "268435456");
     assert_eq!(
         args.iter().filter(|a| *a == "--tmpfs").count(),
         mounts.len()
+    );
+    assert!(
+        args.windows(2)
+            .any(|w| w[0] == "--remount-ro" && w[1] == "/dev")
     );
     sandbox.limits = ResourceLimits {
         tmp_bytes: 1048576,
@@ -833,6 +840,55 @@ fn resource_limits_tmpfs_exhaustion_is_enospc() {
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("No space left on device"),
+        "{output:?}"
+    );
+}
+
+/// `--dev` mounts a tmpfs the size of host RAM; a write straight into it
+/// (bypassing /tmp's own bound) must still hit a size limit rather than
+/// growing without bound.
+#[test]
+fn resource_limits_dev_tmpfs_is_bound_and_dev_itself_is_read_only() {
+    if std::env::var("FORGE_TEST_NO_SANDBOX").as_deref() == Ok("1") {
+        return;
+    }
+    let (bwrap, _) =
+        resolve_binary("bwrap").expect("bwrap required; set FORGE_TEST_NO_SANDBOX=1 to opt out");
+    let root = tempfile::tempdir().unwrap();
+    let mut sandbox = Sandbox::with_bwrap(bwrap, PathBuf::from("/home/attempt"));
+    sandbox.limits.tmp_bytes = 1024 * 1024;
+    let output = sandbox
+        .command(
+            root.path(),
+            &[
+                "/bin/sh".into(),
+                "-c".into(),
+                "LC_ALL=C dd if=/dev/zero of=/dev/shm/full bs=65536 count=32".into(),
+            ],
+            &[],
+            &sandbox.policy_for(root.path()),
+            Phase::Check,
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("No space left on device"),
+        "{output:?}"
+    );
+    let output = sandbox
+        .command(
+            root.path(),
+            &["/bin/sh".into(), "-c".into(), "echo x > /dev/escape".into()],
+            &[],
+            &sandbox.policy_for(root.path()),
+            Phase::Check,
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Read-only file system"),
         "{output:?}"
     );
 }
