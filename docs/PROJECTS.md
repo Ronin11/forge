@@ -145,6 +145,7 @@ layer can be added then.
 forge project new <name> --purpose <text> [--repo <path>[:<scope>]]...
 forge project list | show <name> | backlog <name> [--add <text>]
 forge project set <name> --purpose <text> --workflow … --per-task-usd … --supervisor-model …
+forge project retire <name>                      (refuses a queued or running task; history stays, by name)
 
 forge initiative new <project> --outcome <text> [--from <file>] [--provider <name>] [--workflow <name>] [--budget <usd>]
 forge initiative set <id> [--budget <usd>] [--stop-after <n>] [--outcome <text>]

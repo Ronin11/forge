@@ -67,6 +67,8 @@ pub struct StartWebhook<'a> {
     pub source: workflows::JobSource,
     pub trigger_ref: &'a str,
     pub input_text: &'a str,
+    /// The trust level of the token the delivery carried (`forge job fire`).
+    pub trust: Trust,
 }
 
 /// Trigger identity, delivery time, and input payload for a queued job.
@@ -81,6 +83,10 @@ struct QueueTriggered<'a> {
     trigger_ref: &'a str,
     event_at: i64,
     input_text: &'a str,
+    /// The trust level this job is recorded at (`store::set_job_trust`),
+    /// before it can be claimed: what `secrets::step_grant` reads back to
+    /// decide whether a step's secrets and egress are granted.
+    trust: Trust,
 }
 
 /// Resolved workflow, inputs, and recorded outputs for an inline job run.
@@ -111,6 +117,7 @@ mod failure;
 mod fixture;
 mod flow;
 mod input;
+mod operation_step;
 mod recovery;
 #[cfg(test)]
 mod recovery_tests;
@@ -121,9 +128,9 @@ pub use fixture::{bench, require_fixture_pass, test};
 
 use crate::ctx::Forge;
 use crate::report::Event;
-use crate::store::{Job, JobEffect, JobState, JobStep, Message, Owner};
+use crate::store::{Job, JobEffect, JobState, JobStep, Message, Owner, Trust};
 use crate::workflows::{self, Kind};
-use crate::{checks, config, git, operation, unix_now};
+use crate::{checks, config, git, unix_now};
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -246,6 +253,21 @@ fn step_env(args: StepEnv<'_>) -> Vec<(String, String)> {
     env
 }
 
+/// The verdict row of a run whose spend passed its `[limits] budget` at
+/// `action`, which is a question for the operator rather than a failure.
+fn over_budget(action: &str, total_cost: f64, budget_usd: f64) -> checks::CheckResult {
+    checks::CheckResult {
+        level: "L0".to_string(),
+        name: "budget".to_string(),
+        ok: false,
+        tail: format!(
+            "step {action} brought the run to ${total_cost:.4}, over the ${budget_usd:.2} \
+             per-run budget; asking the operator"
+        ),
+        ..Default::default()
+    }
+}
+
 /// Lines an effect log holds right now; a fresh log (or one not yet
 /// created) holds none.
 fn log_lines(path: &Path) -> Vec<String> {
@@ -359,6 +381,7 @@ pub async fn start(args: Start<'_>) -> Result<i64> {
         )?,
         None => f.store.create_job(&job)?,
     };
+    f.store.set_job_trust(job_id, Trust::Operator)?;
     if !now {
         input::publish(f, job_id, &input_text, due_at)?;
         return Ok(job_id);
@@ -421,6 +444,7 @@ pub async fn start_scheduled(
         trigger_ref: &slot.to_string(),
         event_at: slot,
         input_text: "{}",
+        trust: Trust::Operator,
     })
 }
 
@@ -472,6 +496,7 @@ pub fn start_message(
         trigger_ref: &trigger_ref,
         event_at: m.at,
         input_text: &message_input(m).to_string(),
+        trust: Trust::Contact,
     })
     .map(Some)
 }
@@ -515,6 +540,7 @@ pub fn start_event(args: StartEvent<'_>) -> Result<Option<i64>> {
         trigger_ref: &trigger_ref,
         event_at: at,
         input_text: input,
+        trust: Trust::Operator,
     }) {
         Ok(id) => Ok(Some(id)),
         // Two ticks racing on one event: the unique index refused the
@@ -556,6 +582,7 @@ pub fn start_webhook(args: StartWebhook<'_>) -> Result<(i64, bool)> {
         source,
         trigger_ref,
         input_text,
+        trust,
     } = args;
     let kind = workflows::TriggerOn::Webhook;
     let input_text = if input_text.trim().is_empty() {
@@ -584,6 +611,7 @@ pub fn start_webhook(args: StartWebhook<'_>) -> Result<(i64, bool)> {
         trigger_ref,
         event_at: unix_now(),
         input_text,
+        trust,
     }) {
         Ok(id) => Ok((id, true)),
         // Two deliveries of one key racing: the unique index refused the
@@ -611,6 +639,7 @@ fn queue_triggered(args: QueueTriggered<'_>) -> Result<i64> {
         trigger_ref,
         event_at,
         input_text,
+        trust,
     } = args;
     let started_at = unix_now();
     let due_at = wf
@@ -643,6 +672,7 @@ fn queue_triggered(args: QueueTriggered<'_>) -> Result<i64> {
         }
         None => f.store.create_job(&job)?,
     };
+    f.store.set_job_trust(job_id, trust)?;
     input::publish(f, job_id, input_text, due_at)?;
     Ok(job_id)
 }
@@ -686,15 +716,22 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
         },
     );
     let scratch = scratch_dir(f, job_id);
+    let _cache_cleanup = crate::disk::JobCaches(scratch.clone());
     git::fresh_archive(repo, landed_sha, &scratch).await?;
     let repo_checks = config::load_working_checks(&scratch).unwrap_or_default();
+    let build_env = config::load_working_build_env(&scratch)?;
+    crate::agent::build_env::configure_env(&f.paths.home, &scratch, &f.build_env, &build_env);
 
+    if config::shared_target_enabled(&scratch)? {
+        f.shared_target(&scratch, repo);
+    }
     let idir = recovery::prepare_run(f, job_id, input_text)?;
 
     let effect_log = idir.join("effects.log");
     std::fs::write(&effect_log, "")?;
 
     let secrets = f.project_secrets.get(project).cloned().unwrap_or_default();
+    let trust = f.store.job_trust(job_id)?.unwrap_or(Trust::Public);
     let timeout = Duration::from_secs(check_timeout_secs);
     let input_bytes = limits.map_or(workflows::default_input_bytes(), |l| l.input_bytes);
 
@@ -822,7 +859,6 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
         'step: {
             match action.kind {
                 Kind::Operation => {
-                    let before = log_lines(&effect_log).len();
                     let env = step_env(StepEnv {
                         job_id,
                         step_name: &action.name,
@@ -837,69 +873,34 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
                         secrets: &secrets,
                         dry_run,
                     });
-                    let started_at = unix_now();
-                    let r = match operation::run_job_operation(
-                        action,
-                        &repo_checks,
-                        &scratch,
-                        &env,
-                        timeout,
-                    )
-                    .await
-                    {
-                        Ok(r) => r,
-                        Err(e) => {
-                            failed = true;
-                            verdict.push(checks::CheckResult {
-                                level: "OP".to_string(),
-                                name: action.name.clone(),
-                                ok: false,
-                                tail: format!("{e:#}"),
-                                ..Default::default()
-                            });
-                            break 'step;
-                        }
-                    };
-                    let (tail, output_ref) = record_output(&idir, &seq.to_string(), &r);
-                    f.store.append_job_step(&JobStep {
-                        run: 0,
-                        id: 0,
+                    let ran = operation_step::run(operation_step::OperationStep {
+                        f,
                         job_id,
                         seq,
-                        action: action.name.clone(),
-                        kind: "operation".to_string(),
-                        provider: String::new(),
-                        model: String::new(),
-                        cost_usd: Some(0.0),
-                        started_at,
-                        finished_at: Some(unix_now()),
-                        exit_code: r.exit,
-                        output_ref,
-                        tail: tail.clone(),
-                        outcome: String::new(),
-                        probabilities: String::new(),
-                        node: step.node.clone(),
-                    })?;
-                    for line in log_lines(&effect_log).into_iter().skip(before) {
-                        let mut parts = line.splitn(3, '\t');
-                        let (Some(kind), Some(target), Some(summary)) =
-                            (parts.next(), parts.next(), parts.next())
-                        else {
-                            continue;
-                        };
-                        f.store.append_job_effect(&JobEffect {
-                            id: 0,
-                            job_id,
-                            seq,
-                            kind: kind.to_string(),
-                            target: target.to_string(),
-                            summary: summary.to_string(),
-                            dry_run,
-                        })?;
+                        step,
+                        trust,
+                        env,
+                        repo_checks: &repo_checks,
+                        scratch: &scratch,
+                        idir: &idir,
+                        effect_log: &effect_log,
+                        timeout,
+                        dry_run,
+                    })
+                    .await?;
+                    total_cost += ran.charged;
+                    verdict.extend(ran.verdict);
+                    if ran.charged > 0.0
+                        && let Some(l) = limits
+                        && total_cost > l.budget_usd
+                    {
+                        needs_human = true;
+                        ok = false;
+                        verdict.push(over_budget(&action.name, total_cost, l.budget_usd));
+                        break 'steps;
                     }
-                    if !r.ok {
+                    if !ran.ok {
                         failed = true;
-                        verdict.push(checks::CheckResult { tail, ..r });
                         break 'step;
                     }
                     // `produces = ["interface"]` (`ActionDef::yields_interface`)
@@ -911,7 +912,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
                     // printed — a catalog dump, say — as "the output of step
                     // ...".
                     if action.yields_interface() {
-                        step_outputs.push((action.name.clone(), r.stdout.trim().to_string()));
+                        step_outputs.push((action.name.clone(), ran.stdout.trim().to_string()));
                     }
                 }
                 Kind::Directive => {
@@ -984,17 +985,7 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
                     {
                         needs_human = true;
                         ok = false;
-                        verdict.push(checks::CheckResult {
-                            level: "L0".to_string(),
-                            name: "budget".to_string(),
-                            ok: false,
-                            tail: format!(
-                                "step {} brought the run to ${total_cost:.4}, over the ${:.2} \
-                             per-run budget; asking the operator",
-                                action.name, l.budget_usd
-                            ),
-                            ..Default::default()
-                        });
+                        verdict.push(over_budget(&action.name, total_cost, l.budget_usd));
                         break 'steps;
                     }
                     if let Some(p) = &d.output_ref {
@@ -1093,6 +1084,10 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
             cost_usd: total_cost,
         },
     );
+
+    if !dry_run && workflow == "doctor-daily" && state == JobState::Ok {
+        crate::audience::daily_digest(f)?;
+    }
 
     if let Some((action, job_row)) = on_failure {
         flow::apply_on_failure(

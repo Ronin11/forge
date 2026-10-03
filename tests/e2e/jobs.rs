@@ -1364,24 +1364,40 @@ ok = ["true"]
     let o = e.forge("ok.sh", &["work", "--once"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 
-    let rows: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["job", "list", "--json"]).stdout).unwrap();
-    let rows = rows.as_array().unwrap();
-    assert_eq!(rows.len(), 1, "{rows:?}");
-    assert_eq!(rows[0]["project"], "equitizr");
-    assert_eq!(rows[0]["workflow"], "tick");
-    assert_eq!(rows[0]["trigger_kind"], "schedule");
-    let trigger_ref = rows[0]["trigger_ref"].as_str().unwrap();
-    let slot: i64 = trigger_ref.parse().unwrap();
-    assert_eq!(slot % 60, 0, "the slot is a minute boundary: {trigger_ref}");
-
-    // Running the worker again right away, still inside the same minute,
-    // finds nothing new due: the same slot never starts a second job.
+    // Even the first --once invocation can cross minute boundaries: the worker
+    // ticks again while draining jobs. Assert one job per observed slot, never
+    // one job per invocation or that an invocation fits within a minute.
+    let scheduled_jobs = || {
+        let rows: serde_json::Value =
+            serde_json::from_slice(&e.forge("ok.sh", &["job", "list", "--json"]).stdout).unwrap();
+        let rows = rows.as_array().unwrap();
+        assert!(!rows.is_empty(), "the schedule must start a job");
+        let mut slots = std::collections::BTreeMap::new();
+        for row in rows {
+            assert_eq!(row["project"], "equitizr");
+            assert_eq!(row["workflow"], "tick");
+            assert_eq!(row["trigger_kind"], "schedule");
+            let slot: i64 = row["trigger_ref"].as_str().unwrap().parse().unwrap();
+            assert_eq!(slot % 60, 0, "the slot is a minute boundary");
+            let id = row["id"].as_i64().unwrap();
+            assert!(
+                slots.insert(slot, id).is_none(),
+                "duplicate schedule slot: {rows:?}"
+            );
+        }
+        slots
+    };
+    let original = scheduled_jobs();
     let o = e.forge("ok.sh", &["work", "--once"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let rows: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["job", "list", "--json"]).stdout).unwrap();
-    assert_eq!(rows.as_array().unwrap().len(), 1, "{rows:?}");
+    let subsequent = scheduled_jobs();
+    for (slot, id) in original {
+        assert_eq!(
+            subsequent.get(&slot),
+            Some(&id),
+            "the original scheduled job must be retained"
+        );
+    }
 }
 
 fn setup_snapshot_workflow(e: &Env) {
@@ -3034,6 +3050,45 @@ fn a_wrong_state_and_an_extra_effect_are_each_named() {
         out.contains("FAIL  snapshot/2-expects-nothing: extra effect: file out.txt:"),
         "{out}"
     );
+}
+
+#[test]
+fn docs_sync_runs_for_a_landed_task_and_skips_unsuccessful_events() {
+    let e = Env::new();
+    let fixture = include_str!("../../src/builtins/examples/fixtures/docs-sync.json");
+    let original: serde_json::Value = serde_json::from_str(fixture).unwrap();
+    assert_eq!(original["input"]["state"], "succeeded");
+    commit_files(
+        &e,
+        &[
+            (
+                ".forge/workflows/docs-sync.toml",
+                include_str!("../../src/builtins/examples/docs-sync.toml"),
+            ),
+            (".forge/fixtures/docs-sync/01.json", fixture),
+        ],
+    );
+    for state in ["succeeded", "failed", "cancelled", "ok"] {
+        let mut fx = original.clone();
+        fx["input"]["state"] = state.into();
+        if state != "succeeded" {
+            fx["expect"]["state"] = "skipped".into();
+            fx["outputs"] = serde_json::json!({});
+        }
+        std::fs::write(
+            e.repo.join(".forge/fixtures/docs-sync/01.json"),
+            serde_json::to_vec(&fx).unwrap(),
+        )
+        .unwrap();
+        let o = job_test(&e, &e.repo, &["docs-sync", e.repo.to_str().unwrap()]);
+        assert!(
+            o.status.success(),
+            "state {state}: {}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(String::from_utf8_lossy(&o.stdout).contains("pass  docs-sync/01"));
+    }
 }
 
 const CLASSIFY_WORKFLOW: &str = r#"name = "classify"

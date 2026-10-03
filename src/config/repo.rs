@@ -42,6 +42,10 @@ struct RepoEnvironmentRaw {
 /// an attempt cannot widen its own allowlist.
 #[derive(Deserialize, Default)]
 struct RepoSandboxRaw {
+    #[serde(default)]
+    shared_target: bool,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
     /// `host`, `host:port`, `*.suffix` or `*.suffix:port`; see `egress::Rule`.
     #[serde(default)]
     egress: Vec<String>,
@@ -125,6 +129,9 @@ impl Execution {
 }
 
 pub struct Config {
+    pub shared_target: bool,
+    pub repo_path: PathBuf,
+    pub build_env: BTreeMap<String, String>,
     pub execution: Execution,
     pub checks: BTreeMap<String, Vec<String>>,
     /// `[checks.fixable]`: for a check named here, the command that fixes
@@ -185,6 +192,7 @@ pub fn is_protected(protected: &[String], path: &str) -> bool {
 async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result<Config> {
     let raw: Raw = toml::from_str(text).with_context(|| format!("parsing {what}"))?;
     raw.execution.validate()?;
+    crate::config::capacity::validate_env(&raw.sandbox.env)?;
     for (name, argv) in &raw.checks.checks {
         if argv.is_empty() {
             bail!("check `{name}` has an empty command");
@@ -218,6 +226,9 @@ async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result
         None
     };
     Ok(Config {
+        shared_target: raw.sandbox.shared_target,
+        repo_path: repo.to_path_buf(),
+        build_env: raw.sandbox.env,
         execution: raw.execution,
         checks: raw.checks.checks,
         fixable: raw.checks.fixable,
@@ -259,6 +270,18 @@ pub async fn load_working(repo: &Path) -> Result<Config> {
     parse(repo, &text, &path.display().to_string(), config_path).await
 }
 
+/// The configured push remote, without querying Git. Callers resolve its
+/// destinations separately; `push = false` disables remote installation checks.
+pub fn load_working_push_remote(dir: &Path) -> Result<Option<String>> {
+    let (path, _, text) = read_working(dir)?;
+    let raw: Raw = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    Ok(raw
+        .defaults
+        .push
+        .unwrap_or(true)
+        .then(|| raw.defaults.remote.unwrap_or_else(|| "origin".to_string())))
+}
+
 /// Just the `[checks]` table of the config in the working tree at `dir`,
 /// which need not be a git repository: `load_working` asks git for the
 /// base branch and the push remote, and a job's scratch tree, an archive,
@@ -292,6 +315,7 @@ pub fn load_working_execution(dir: &Path) -> Result<Execution> {
     let (_, _, text) = read_working(dir)?;
     let raw: Raw = toml::from_str(&text)?;
     raw.execution.validate()?;
+    crate::config::capacity::validate_env(&raw.sandbox.env)?;
     Ok(raw.execution)
 }
 
@@ -339,9 +363,81 @@ pub async fn load_at(repo: &Path, show_dir: &Path, rev: &str) -> Result<Config> 
     parse(repo, &text, &format!("{config_path} at {rev}"), config_path).await
 }
 
+/// Build tuning in an archived tree, without asking it for Git metadata.
+/// Jobs can run without a repository config; they keep the operator's build
+/// settings and have no repository overrides in that case.
+pub fn shared_target_enabled(dir: &Path) -> Result<bool> {
+    let (_, _, text) = match read_working(dir) {
+        Ok(config) => config,
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    };
+    let raw: Raw = toml::from_str(&text)?;
+    Ok(raw.sandbox.shared_target)
+}
+
+pub fn load_working_build_env(dir: &Path) -> Result<BTreeMap<String, String>> {
+    let (path, _, text) = match read_working(dir) {
+        Ok(config) => config,
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(BTreeMap::new());
+        }
+        Err(error) => return Err(error),
+    };
+    let raw: Raw = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    super::capacity::validate_env(&raw.sandbox.env)?;
+    Ok(raw.sandbox.env)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_env_without_repository_config_keeps_operator_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = load_working_build_env(dir.path()).unwrap();
+        assert!(repo.is_empty());
+        let operator = BTreeMap::from([("CARGO_BUILD_JOBS".into(), "2".into())]);
+        assert_eq!(
+            super::super::capacity::merge_env(&operator, &repo),
+            operator
+        );
+    }
+
+    #[test]
+    fn build_env_rejects_invalid_existing_repository_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(ROOT_CONFIG_PATH);
+        for text in ["[sandbox", "[sandbox.env]\nTOKEN = 'secret'"] {
+            std::fs::write(&path, text).unwrap();
+            assert!(load_working_build_env(dir.path()).is_err(), "{text}");
+        }
+        std::fs::write(&path, "[sandbox.env]\nCARGO_BUILD_JOBS = '1'").unwrap();
+        assert_eq!(
+            load_working_build_env(dir.path()).unwrap()["CARGO_BUILD_JOBS"],
+            "1"
+        );
+        std::fs::create_dir(dir.path().join(".forge")).unwrap();
+        let alt = dir.path().join(ALT_CONFIG_PATH);
+        std::fs::rename(&path, &alt).unwrap();
+        assert_eq!(
+            load_working_build_env(dir.path()).unwrap()["CARGO_BUILD_JOBS"],
+            "1"
+        );
+        std::fs::write(&path, "").unwrap();
+        assert!(load_working_build_env(dir.path()).is_err());
+    }
 
     #[test]
     fn scope_matches_dirs_files_and_suffixes() {

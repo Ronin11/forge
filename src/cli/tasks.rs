@@ -53,6 +53,10 @@ pub(super) enum TaskCmd {
         /// worker never re-draws a task that names one)
         #[arg(long)]
         provider: Option<String>,
+        /// Claim order: 0 (lowest) to 7 (highest), or low, normal, high,
+        /// urgent
+        #[arg(long, value_parser = crate::store::parse_priority)]
+        priority: Option<i64>,
     },
 }
 
@@ -74,24 +78,6 @@ async fn answer(id: i64, text: String, by: String, project: Option<String>) -> R
         bail!(
             "task {id} was adopted: no agent answers or edits it; fix the branch by hand and run forge retry {id}"
         );
-    }
-    if let Some(t) = f.store.task(id)?
-        && t.state == TaskState::Blocked
-        && t.proposal_json.is_some()
-    {
-        return match crate::concierge::answer_proposal(&f, id, &text, &by).await? {
-            crate::concierge::ProposalAnswered::Initiative { initiative, tasks } => {
-                out!(
-                    "answered task {id}: filed initiative {initiative} ({} task(s))",
-                    tasks.len()
-                );
-                Ok(())
-            }
-            crate::concierge::ProposalAnswered::Declined => {
-                out!("answered task {id}: proposal declined");
-                Ok(())
-            }
-        };
     }
     let scope = project.as_deref().map(|p| (p, by.as_str()));
     let (_, n) = crate::queue::answer(&f, id, &text, &by, "", scope).await?;
@@ -116,12 +102,12 @@ fn withdraw(id: i64, reason: String, by: String, abort: bool) -> Result<()> {
     Ok(())
 }
 
-async fn run(args: TaskArgs) -> Result<()> {
+async fn run(args: RunArgs) -> Result<()> {
     let f = Arc::new(Forge::open(true, false)?);
     if let Some(msg) = worker::day_budget_reached(&f)? {
         bail!("{msg}");
     }
-    let t = enqueue(&f, &args).await?;
+    let t = enqueue(&f, &args.task).await?;
     if !f.store.claim(t.id, std::process::id() as i64)? {
         bail!(
             "task {} was claimed by another worker before this one could start it",
@@ -129,7 +115,7 @@ async fn run(args: TaskArgs) -> Result<()> {
         );
     }
     eprintln!("task     {}", t.id);
-    if worker::drive(f, t.id).await? != TaskState::Succeeded {
+    if worker::drive_with_wait(f, t.id, !args.no_wait).await? != TaskState::Succeeded {
         // `exit` skips destructors: remove the proxy directory here.
         drop(crate::egress::MadeDirGuard);
         std::process::exit(1);
@@ -147,7 +133,8 @@ async fn retry(id: i64, chain: bool, again: bool, o: crate::queue::RetryOverride
         // branch again, as it is now, and lands it if it passes.
         drop(f);
         let f = Forge::open(true, true)?;
-        let adopted = crate::adopt::retry(&f, &old, &crate::adopt::adopter()).await?;
+        let adopted =
+            crate::adopt::retry(&f, &old, &crate::adopt::adopter(), o.allow_protected).await?;
         return print_adopted(&f, &adopted).await;
     }
     if matches!(old.state, TaskState::Queued | TaskState::Running) {
@@ -394,11 +381,11 @@ async fn dispatch_work(cmd: Cmd) -> Result<()> {
             once,
             max_tasks,
         } => {
-            let f = Arc::new(Forge::open(true, jobs > 1)?);
+            let f = Arc::new(Forge::open(true, jobs.is_none_or(|n| n > 1))?);
             worker::work(
                 f,
                 worker::WorkOpts {
-                    jobs,
+                    jobs: jobs.map(|n| n as usize),
                     poll: (!once).then_some(poll),
                     max_tasks,
                 },
@@ -459,6 +446,7 @@ async fn dispatch_retry(cmd: Cmd) -> Result<()> {
             timeout_secs,
             workflow,
             provider,
+            allow_protected,
         } => {
             retry(
                 id,
@@ -472,6 +460,7 @@ async fn dispatch_retry(cmd: Cmd) -> Result<()> {
                     timeout_secs,
                     workflow,
                     provider,
+                    allow_protected,
                 },
             )
             .await
@@ -577,6 +566,7 @@ async fn dispatch_task(cmd: Cmd) -> Result<()> {
                 checks,
                 no_checks,
                 provider,
+                priority,
             } => {
                 let text = match text_file {
                     Some(p) => Some(
@@ -598,6 +588,7 @@ async fn dispatch_task(cmd: Cmd) -> Result<()> {
                         after: (no_after || !after.is_empty()).then_some(after),
                         checks: (no_checks || !checks.is_empty()).then_some(checks),
                         provider,
+                        priority,
                     },
                 )
                 .await

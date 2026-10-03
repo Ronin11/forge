@@ -38,6 +38,10 @@ pub struct RetryOverrides {
     pub timeout_secs: Option<u32>,
     pub workflow: Option<String>,
     pub provider: Option<String>,
+    /// The operator's flag letting this retry change protected paths, for
+    /// an adopted task whose original adoption lacked it (`adopt::retry`);
+    /// never lowers what the task it retries already allowed.
+    pub allow_protected: bool,
 }
 
 impl RetryOverrides {
@@ -50,6 +54,7 @@ impl RetryOverrides {
             timeout_secs: None,
             workflow: None,
             provider: None,
+            allow_protected: false,
         }
     }
 }
@@ -101,7 +106,10 @@ pub fn retry_request(
         // `forge retry --budget` is a new request and needs the flag.
         allow_over_trust_cap: !(first && o.budget.is_some()) || o.allow_over_trust_cap,
         checks: t.checks.clone(),
-        allow_protected: t.allow_protected,
+        // A protected-path allowance already decided is re-filed as it
+        // was; `forge retry --allow-protected` only ever raises it, for a
+        // task that was filed without it.
+        allow_protected: t.allow_protected || (first && o.allow_protected),
         workflow: Some(if first {
             o.workflow.clone().unwrap_or(t.workflow.clone())
         } else {
@@ -120,5 +128,68 @@ pub fn retry_request(
         trust: Some(t.trust.as_str().to_string()),
         after,
         blocked: None,
+        // A retry or a refile keeps the priority of the task it
+        // re-queues; it is never drawn or defaulted again.
+        priority: Some(t.priority),
+        // A retry re-queues `t` itself, not a task replacing it; the
+        // supersedes link is only for `forge add --supersedes`.
+        supersedes: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(priority: i64) -> Task {
+        Task {
+            repo: "/r".into(),
+            task: "do it".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 2,
+            timeout_secs: 1,
+            priority,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn retry_request_inherits_the_predecessors_priority() {
+        let t = task(7);
+        let req = retry_request(&t, &RetryOverrides::none(), true, vec![], None);
+        assert_eq!(req.priority, Some(7));
+
+        let t = task(0);
+        let req = retry_request(&t, &RetryOverrides::none(), false, vec![], None);
+        assert_eq!(req.priority, Some(0));
+    }
+
+    #[test]
+    fn retry_request_inherits_allow_protected_and_the_flag_only_raises_it() {
+        let mut t = task(0);
+        t.allow_protected = true;
+        let req = retry_request(&t, &RetryOverrides::none(), true, vec![], None);
+        assert!(req.allow_protected);
+
+        let t = task(0);
+        let req = retry_request(&t, &RetryOverrides::none(), true, vec![], None);
+        assert!(
+            !req.allow_protected,
+            "neither the task nor the flag allow it"
+        );
+
+        let o = RetryOverrides {
+            allow_protected: true,
+            ..RetryOverrides::none()
+        };
+        let req = retry_request(&t, &o, true, vec![], None);
+        assert!(req.allow_protected, "the flag raises it");
+        let req = retry_request(&t, &o, false, vec![], None);
+        assert!(
+            !req.allow_protected,
+            "the flag only applies to the task the operator named"
+        );
     }
 }

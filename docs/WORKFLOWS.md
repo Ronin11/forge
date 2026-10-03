@@ -93,6 +93,42 @@ The set of step kinds is closed and small:
   and be committed to `verify/<id>`. Its summary is the interface handed
   to the coder.
 
+### Mechanic: automatic follow-ups for a failed task
+
+A task that ends `TaskState::Failed` is classified into one of five
+mechanical kinds by `src/supervisor/mechanic.rs`, run right after the task ends
+(`worker::drive`), and the kernel acts once per kind per lineage:
+
+- **load flake**: the checks step's failing tests are ones `git diff`
+  says the branch never touched, and the same check passes again on the
+  base alone, archived fresh into a scratch directory (the tests
+  contract's red-on-base check already does this). Retried once.
+- **landing conflict**: the base moved and merging it in conflicted
+  (`"landing failed ...; conflicts in ..."`). Retried through the
+  integrator, up to twice.
+- **a ratchet tripped** (`tests/file_size.rs`, `tests/fn_length.rs`,
+  `tests/layers.rs`, or `workflows::shadow`'s built-in history test):
+  refiled — a fresh task, not a retry of the same branch — with guidance
+  appended naming the file or function at its bound (new code belongs in
+  a new module or function), or, for the history test, that the old blob
+  hash needs appending to `src/builtins/history.tsv`.
+- **turn cap reached with commits on the branch**: retried once with
+  `max_turns` doubled.
+- **L0 clean-tree**: retried once with a line appended saying to commit
+  or gitignore everything.
+
+Anything else, or a kind already spent on this lineage, is left for the
+operator: a decision names the failure and what was tried, and the task
+stays `Failed` (already actionable with `forge retry`/`forge withdraw`,
+so nothing here reopens it). Every action, including that hand-off, is a
+decision row (`answered_by: "mechanic"`, `kind` one of
+`mechanic-load-flake`, `mechanic-landing-conflict`, `mechanic-ratchet`,
+`mechanic-turn-cap`, `mechanic-clean-tree`, or `mechanic-block`), which
+`forge stats --mechanic` counts per kind. A ratchet refile links back to
+the task it supersedes only through that decision's citations until task
+1057's `supersedes` column lands; `src/supervisor/mechanic.rs` marks with a `TODO`
+where to switch to `--supersedes` once it does.
+
 See docs/ACTIONS.md for every built-in workflow, its steps in order, and
 what each action does.
 

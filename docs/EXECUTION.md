@@ -352,3 +352,19 @@ the host file's refresh token dead, and the next host-side refresh empties the f
   `forge doctor` fails the provider's row ("anthropic: login expired since 23:48; run claude login
   as the operator, then forge doctor"), and the notify and signal plugins carry the hold once, as
   a `provider_held` event, not once per attempt.
+
+## CLI prompt transport
+
+Codex reads each prompt from stdin (`codex exec … -`), including resumed
+sessions, nudges, and structured reports. Copilot also reads its prompt
+from piped stdin in both phases, without `-p`. Prompts are kept off the
+process command line and are not truncated to fit the OS argument limit.
+The pipe is closed after writing so each CLI receives EOF.
+
+Copilot 1.0.88 was probed directly (not through the mise shim) with
+`echo 'say hi' | copilot --output-format json --allow-all-tools
+--allow-all-paths --disable-builtin-mcps --no-auto-update -C <dir>`,
+also with `--resume <id>`. With an empty HOME the fresh invocation exited
+with an authentication error and the resumed invocation exited with a
+missing-session error, without opening an interactive session or requiring
+`-p`. No authenticated model turn or JSONL stream was verified in that probe.

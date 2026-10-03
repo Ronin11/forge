@@ -153,6 +153,12 @@ pub struct RunStep {
     pub on: BTreeMap<String, String>,
     /// How many times a loop may enter this step.
     pub max_attempts: u32,
+    /// An operation step's `[secrets]` names, its declared egress hosts and
+    /// its declared spend in USD (docs/JOBS.md); empty and `None` for a
+    /// step that declares none.
+    pub secrets: Vec<String>,
+    pub egress: Vec<String>,
+    pub budget_usd: Option<f64>,
 }
 
 /// A job step, resolved to the action it names (docs/JOBS.md, "Steps"). A
@@ -218,6 +224,12 @@ fn job_steps_into(
             .with_context(|| format!("{:?}: job step names unknown action {name:?}", wf.name))?;
         match action.kind {
             Kind::Directive => {
+                if !s.secrets.is_empty() || !s.egress.is_empty() || s.budget_usd.is_some() {
+                    bail!(
+                        "{:?}: job step {name:?} is a directive; `secrets`, `egress` and `budget_usd` apply to operation steps only",
+                        wf.name
+                    );
+                }
                 if s.role.as_deref().is_none_or(|r| r.trim().is_empty()) {
                     bail!(
                         "{:?}: job step {name:?} is a directive; it needs `role` (docs/JOBS.md, \"Steps\")",
@@ -266,6 +278,9 @@ fn job_steps_into(
             node: String::new(),
             on: s.on.clone(),
             max_attempts: s.max_attempts.unwrap_or(edges::DEFAULT_MAX_ATTEMPTS),
+            secrets: s.secrets.clone(),
+            egress: s.egress.clone(),
+            budget_usd: s.budget_usd,
             action,
         });
     }

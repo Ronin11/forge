@@ -20,12 +20,16 @@ mod descendants;
 mod events;
 mod factors;
 mod holds;
+mod initiative_holds;
 mod job_resolutions;
 mod job_runs;
 mod jobs;
+mod lineage;
 mod messages;
 mod migrations;
+mod notifications;
 mod owners;
+mod priority;
 mod projects;
 mod questions;
 mod record;
@@ -34,6 +38,7 @@ mod run_cursor;
 mod schedule;
 use retry::RetryConnection;
 mod stats;
+mod supersede;
 mod tasks;
 mod webhooks;
 mod workers;
@@ -46,8 +51,10 @@ pub use deploys::{Assessment, Deploy, DeployTarget, FinishDeploy};
 pub use factors::{FactorLevelStat, ROLES};
 pub use job_resolutions::JobResolution;
 pub use jobs::{Job, JobEffect, JobStat, JobState, JobStep, PerDayRefused};
+pub use lineage::LineageRow;
 pub use messages::{Direction, InsertMessage, Message, MessageFilter};
 pub use owners::{Caller, Owner, start_of};
+pub use priority::{PRIORITY_DEFAULT, PRIORITY_MAX, PRIORITY_MIN, parse_priority};
 pub use projects::{
     BacklogItem, Initiative, InitiativeUpdate, Project, ProjectDefaults, ProjectRepo, ProjectStat,
     ProjectTaskStats, is_placeholder_purpose,
@@ -62,8 +69,8 @@ pub use stats::{
     TaskTtl, WorkflowStat,
 };
 pub use tasks::{
-    LineageRow, REQUEUE_ABORT, REQUEUE_ORPHAN, REQUEUE_REASONS, RoleRouting, Routed, Task,
-    TaskState, TaskUpdate, Trust,
+    REQUEUE_ABORT, REQUEUE_ORPHAN, REQUEUE_REASONS, RoleRouting, Routed, Task, TaskState,
+    TaskUpdate, Trust,
 };
 pub use workers::WorkerRow;
 
@@ -149,6 +156,8 @@ pub struct TaskSummary {
     pub project: Option<String>,
     pub initiative: Option<i64>,
     pub trust: String,
+    /// See `store::priority`.
+    pub priority: i64,
     /// `"agent"`, or `"adopted"` for a hand-made branch `forge adopt`
     /// landed (see `Origin`).
     pub origin: String,
@@ -215,6 +224,7 @@ const TASK_COLUMNS: &[&str] = &[
     "state",
     "reason",
     "question_to",
+    "deploy_id",
     "created_at",
     "started_at",
     "finished_at",
@@ -263,6 +273,8 @@ const TASK_COLUMNS: &[&str] = &[
     "handoff",
     "origin",
     "adoption_json",
+    "priority",
+    "supersedes",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -303,6 +315,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         )?,
         reason: r.get("reason")?,
         question_to: r.get("question_to")?,
+        deploy_id: r.get("deploy_id")?,
         created_at: r.get("created_at")?,
         started_at: r.get("started_at")?,
         finished_at: r.get("finished_at")?,
@@ -365,6 +378,8 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
             Origin::try_from(r.get::<_, String>("origin")?.as_str()),
         )?,
         adoption: adoption::from_column(&r.get::<_, String>("adoption_json")?),
+        priority: r.get("priority")?,
+        supersedes: r.get("supersedes")?,
     })
 }
 
@@ -404,7 +419,7 @@ impl Store {
         Ok(store)
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|p| p.into_inner())
     }
 
@@ -428,7 +443,7 @@ impl Store {
     /// Blocked tasks: the demand signal for workflows and the questions
     /// waiting on the operator.
     /// The blocked tasks `forge requests` lists, oldest first, less any
-    /// already retried. `grep` is a case-insensitive substring of what the
+    /// already retried or superseded. `grep` is a case-insensitive substring of what the
     /// request shows: the task's reason (the question, as `view::
     /// request_kind` reads it) or, on its last attempt's envelope, the
     /// `needs_input` question, what it tried, and its options.
@@ -445,7 +460,7 @@ impl Store {
                                  AND (json_extract(a.envelope_json, '$.needs_input.question') LIKE '%' || ?2 || '%'
                                       OR json_extract(a.envelope_json, '$.needs_input.tried') LIKE '%' || ?2 || '%'
                                       OR json_extract(a.envelope_json, '$.needs_input.options') LIKE '%' || ?2 || '%')))
-               AND NOT EXISTS (SELECT 1 FROM tasks n WHERE n.retry_of = t.id) ORDER BY t.id",
+               AND NOT EXISTS (SELECT 1 FROM tasks n WHERE n.retry_of = t.id OR n.supersedes = t.id) ORDER BY t.id",
             TASK_COLUMNS.join(", ")
         ))?;
         let rows = stmt.query_map(params![repo, grep], task_from_row)?;
@@ -554,6 +569,7 @@ impl Store {
                     (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id) AS cost,
                     t.workflow AS workflow, t.created_at AS created_at, t.finished_at AS finished_at,
                     t.project AS project, t.initiative AS initiative, t.trust AS trust, t.origin AS origin,
+                    t.priority AS priority,
                     CASE WHEN ?9 IS NULL THEN NULL WHEN {touched} THEN 'changes' ELSE 'text' END AS touch,
                     CASE WHEN ?5 IS NULL THEN NULL WHEN {by_text} THEN 'text' WHEN {by_title} THEN 'title'
                          WHEN {by_plan} THEN 'plan' ELSE 'summary' END AS matched
@@ -598,6 +614,7 @@ impl Store {
                     project: r.get("project")?,
                     initiative: r.get("initiative")?,
                     trust: r.get("trust")?,
+                    priority: r.get("priority")?,
                     origin: r.get("origin")?,
                     touch: r.get("touch")?,
                     matched: r.get("matched")?,
@@ -762,7 +779,7 @@ impl Store {
         {
             return Ok(0);
         }
-        let c = self.lock();
+        let mut c = self.lock();
         let mut applied = 0;
         for (i, sql) in MIGRATIONS.iter().enumerate() {
             let v = i as i64 + 1;
@@ -778,24 +795,33 @@ impl Store {
             if done {
                 continue;
             }
-            c.execute_batch("BEGIN")?;
-            let r = c.execute_batch(sql).and_then(|()| {
-                c.retry_execute(
-                    "INSERT INTO contract_steps (version, applied_at) VALUES (?1, ?2)",
-                    params![v, crate::unix_now()],
-                )
-                .map(|_| ())
-            });
-            match r {
-                Ok(()) => c.execute_batch("COMMIT")?,
-                Err(e) => {
-                    c.execute_batch("ROLLBACK").ok();
-                    bail!(
-                        "contract step {v} (`{}`) failed: {e}",
-                        migrations::first_line(sql)
-                    );
-                }
+            // Another process may have applied this step since the fast-path
+            // read. Serialize writers and recheck before running any contract SQL.
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let done = tx
+                .query_row("SELECT 1 FROM contract_steps WHERE version=?1", [v], |_| {
+                    Ok(())
+                })
+                .optional()?
+                .is_some();
+            if done {
+                continue;
             }
+            tx.execute_batch(sql)
+                .and_then(|()| {
+                    tx.execute(
+                        "INSERT INTO contract_steps (version, applied_at) VALUES (?1, ?2)",
+                        params![v, crate::unix_now()],
+                    )
+                    .map(|_| ())
+                })
+                .with_context(|| {
+                    format!(
+                        "contract step {v} (`{}`) failed",
+                        migrations::first_line(sql)
+                    )
+                })?;
+            tx.commit()?;
             applied += 1;
         }
         Ok(applied)
@@ -1049,6 +1075,36 @@ mod tests {
         assert!(applied > 0, "expected pending contract steps to run");
         // Nothing pending now: one SELECT per step, no write.
         assert_eq!(s.apply_contracts("new", |_, _| true).unwrap(), 0);
+    }
+
+    #[test]
+    fn concurrent_contract_callers_apply_each_step_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let store = Store::open(&path).unwrap();
+        store
+            .lock()
+            .execute_batch("DELETE FROM contract_steps")
+            .unwrap();
+        let expected = MIGRATIONS
+            .iter()
+            .filter(|sql| migrations::is_contract(sql))
+            .count();
+        assert!(expected > 0);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let store = Store::open(&path).unwrap();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.apply_contracts("new", |_, _| false).unwrap()
+                })
+            })
+            .collect();
+        let applied: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
+        assert_eq!(applied, expected);
+        assert_eq!(store.apply_contracts("new", |_, _| false).unwrap(), 0);
     }
 
     #[test]

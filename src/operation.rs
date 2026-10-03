@@ -222,6 +222,7 @@ pub(crate) async fn run_operation(
             env: &env,
             cap_bytes: checks::FULL_OUTPUT_BYTES,
             full_log_dir: None,
+            egress: None,
         })
         .await
     } else {
@@ -238,6 +239,10 @@ pub(crate) async fn run_operation(
     };
     if let Some(dir) = &scratch {
         let _ = std::fs::remove_dir_all(dir);
+    } else {
+        // Read-only and failed operations can also poison metadata. Reset
+        // it before any later step runs host Git against this worktree.
+        git::restore_metadata(&wt).task()?;
     }
     crate::verify::remove_overlay(&placed, &cfg.namespace, &wt);
     let detail = if r.ok {
@@ -413,6 +418,8 @@ pub(crate) async fn run_job_operation(
     cwd: &Path,
     env: &[(String, String)],
     timeout: Duration,
+    execution: Option<&crate::executor::Execution>,
+    egress: Option<&crate::egress::Policy>,
 ) -> anyhow::Result<checks::CheckResult> {
     let argv: Vec<String> = match (&action.run, &action.check) {
         (Some(run), _) => run.clone(),
@@ -426,7 +433,19 @@ pub(crate) async fn run_job_operation(
             anyhow::bail!("job step {:?} has neither run nor check", action.name)
         }
     };
-    Ok(checks::run_one("OP", &action.name, &argv, cwd, None, timeout, env).await)
+    Ok(checks::run_one_capped(checks::RunOneCapped {
+        level: "OP",
+        name: &action.name,
+        argv: &argv,
+        cwd,
+        sandbox: execution,
+        timeout,
+        env,
+        egress,
+        cap_bytes: 16 * 1024,
+        full_log_dir: None,
+    })
+    .await)
 }
 
 /// An operation resolved from the operator's catalog with its run command
@@ -678,6 +697,9 @@ mod tests {
 
     fn test_cfg(namespace: Vec<String>) -> config::Config {
         config::Config {
+            shared_target: false,
+            repo_path: PathBuf::new(),
+            build_env: Default::default(),
             execution: Default::default(),
             checks: BTreeMap::new(),
             fixable: BTreeMap::new(),

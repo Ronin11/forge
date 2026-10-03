@@ -17,11 +17,9 @@
 # sandboxed run cannot write it back to the host at all.
 source "$(dirname "$0")/lib.sh"
 
-# The prompt is the last, positional argument: everything codex's own flags
-# precede it, and it is arbitrary multi-line text that would need real JSON
-# string escaping (newlines included) to survive round-tripping through
-# argv_debug. The tests only ever check the flags, so it is left out.
-argv_debug "${@:1:$#-1}"
+# The final positional `-` selects the prompt on stdin.
+cat >/dev/null
+argv_debug "$@"
 
 has_output_schema=0
 for a in "$@"; do

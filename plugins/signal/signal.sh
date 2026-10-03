@@ -28,7 +28,7 @@ PROJECTS=
 POLL_SECONDS=30
 TARGET_REPO=
 WORKFLOW=reviewed
-NOTIFY_ON="blocked failed"
+NOTIFY_ON=person
 # A deploy that passes its check is quiet by default: a failed or
 # rolled-back deploy always sends a message (see docs/DEPLOY.md, "When a
 # deploy runs"). Set to 1 to also message on a deploy that simply passed.
@@ -357,7 +357,7 @@ outbound() {
 
         # A refused agent login holds its provider: one message per hold,
         # never one per attempt, saying what the operator has to run.
-        if [ "$type" = provider_held ]; then
+        if [ "$type" = provider_held ] || [ "$type" = disk_held ]; then
             reason=$(printf '%s\n' "$line" | json_str reason)
             signal_send "$SIGNAL_TO" "held $reason"
             continue
@@ -389,13 +389,28 @@ outbound() {
             continue
         fi
 
+        if [ "$type" = notification_digest ]; then
+            day=$(printf '%s\n' "$line" | sed -n 's/.*"day":\([0-9]*\).*/\1/p')
+            sent=$(cat "$FORGE_PLUGIN_STATE/digest-day" 2>/dev/null || true)
+            if [ -n "$day" ] && [ "$day" -gt "${sent:-0}" ]; then
+                msg=$(printf '%s\n' "$line" | json_str text)
+                if signal_send "$SIGNAL_TO" "$msg"; then
+                    printf '%s\n' "$day" >"$FORGE_PLUGIN_STATE/digest-day.tmp"
+                    mv -f "$FORGE_PLUGIN_STATE/digest-day.tmp" "$FORGE_PLUGIN_STATE/digest-day"
+                fi
+            fi
+            continue
+        fi
+
         [ "$type" = task_done ] || continue
 
         task=$(printf '%s\n' "$line" | sed -n 's/.*"task":\([0-9]*\).*/\1/p')
         state=$(printf '%s\n' "$line" | json_str state)
 
+        audience=$(printf '%s\n' "$line" | json_str audience)
         case " $NOTIFY_ON " in
             *" $state "*) ;;
+            *" person "*) [ "$audience" = person ] || continue ;;
             *) continue ;;
         esac
 

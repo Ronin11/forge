@@ -5,6 +5,10 @@
 use super::*;
 
 pub(super) const BUILTIN_ACTIONS: &[(&str, &str)] = &[
+    (
+        "name-docs-to-update.toml",
+        include_str!("../builtins/actions/name-docs-to-update.toml"),
+    ),
     ("code.toml", include_str!("../builtins/actions/code.toml")),
     ("tests.toml", include_str!("../builtins/actions/tests.toml")),
     (

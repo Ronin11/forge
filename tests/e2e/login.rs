@@ -195,7 +195,22 @@ fn the_login_refresh_probe_never_runs_in_the_tasks_worktree() {
 fn an_empty_login_is_a_provider_refusal_not_an_attempt_and_doctor_fails_it() {
     let e = Env::new();
     let config = config_dir(&e, &login("", "", 0));
-    let o = run(&e, "ok.sh", &config);
+    // An unusable login cannot recover on its own. Exercise the explicit
+    // requeue policy so this test does not wait for operator intervention.
+    let o = forge(
+        &e,
+        "ok.sh",
+        &config,
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--no-land",
+            "--no-wait",
+            "--retries",
+            "0",
+        ],
+    );
     assert!(!o.status.success());
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("run `claude login`"), "{err}");

@@ -55,6 +55,9 @@ pub struct ProjectRow {
     pub supervisor_per_lineage: Option<i64>,
     pub protected: Vec<String>,
     pub role_providers: std::collections::BTreeMap<String, String>,
+    /// When `forge project retire` retired this project; `None` while
+    /// active.
+    pub retired_at: Option<i64>,
     /// The escalator's proposals made on this project, newest first, and
     /// how each was answered (see docs/INTAKE.md, "The escalator").
     pub proposals: Vec<ProposalRow>,
@@ -124,6 +127,7 @@ pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
         supervisor_per_lineage: p.supervisor_per_lineage,
         protected: p.protected.clone().unwrap_or_default(),
         role_providers: p.role_providers.clone(),
+        retired_at: p.retired_at,
         proposals,
     })
 }
@@ -1069,13 +1073,16 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
         .map(|(t, _)| t)
         .collect();
 
-    // A blocked task whose kind is "question" is what the customer sees
+    // A blocked question addressed to "customer" is what the customer sees
     // under Needs you; it also flips its own initiative's plain state to
     // "waiting on you" below, the two lists staying consistent with each
     // other by construction.
     let mut questions = Vec::new();
     let mut questioning_initiatives: std::collections::BTreeSet<i64> = Default::default();
-    for t in latest.iter().filter(|t| t.state == TaskState::Blocked) {
+    for t in latest
+        .iter()
+        .filter(|t| t.state == TaskState::Blocked && t.question_to.as_deref() == Some("customer"))
+    {
         let (kind, text) = request_kind(&t.reason);
         if kind == "question" {
             questions.push(PortalQuestion {

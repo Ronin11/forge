@@ -15,7 +15,11 @@ use std::path::{Path, PathBuf};
 #[derive(Deserialize, Default)]
 struct HomeRaw {
     #[serde(default)]
+    limits: Limits,
+    #[serde(default)]
     budget: BudgetRaw,
+    #[serde(default)]
+    worker: crate::config::capacity::Settings,
     #[serde(default)]
     sandbox: SandboxRaw,
     #[serde(default)]
@@ -48,6 +52,10 @@ struct HomeRaw {
     /// the store: today just a project's secrets (see `ProjectHomeRaw`).
     #[serde(default)]
     projects: BTreeMap<String, ProjectHomeRaw>,
+    /// `[secrets]`: name to environment variable the worker already has
+    /// (see `crate::secrets`), never a value.
+    #[serde(default)]
+    secrets: BTreeMap<String, crate::secrets::Entry>,
     /// `[environment]`: what the kernel grants a repository automatically
     /// when an attempt fails on a missing tool (see `environment`).
     #[serde(default)]
@@ -64,6 +72,7 @@ struct EnvironmentRaw {
 /// `[projects.<name>]` in the operator's config.
 #[derive(Deserialize, Default)]
 struct ProjectHomeRaw {
+    slots: Option<usize>,
     /// Injected as environment for that project's jobs (`forge job start`),
     /// never into a prompt (see docs/JOBS.md, "Security posture").
     #[serde(default)]
@@ -115,6 +124,8 @@ pub struct Supervisor {
 
 #[derive(Deserialize, Default)]
 struct SandboxRaw {
+    #[serde(default)]
+    env: BTreeMap<String, String>,
     ro_paths: Option<Vec<String>>,
     rw_paths: Option<Vec<String>>,
     dependency_cache: Option<String>,
@@ -136,6 +147,9 @@ pub struct SandboxPaths {
 }
 
 pub struct HomeConfig {
+    pub limits: Limits,
+    pub worker: crate::config::capacity::Settings,
+    pub build_env: BTreeMap<String, String>,
     pub budget: Budget,
     pub sandbox: SandboxPaths,
     pub supervisor: Supervisor,
@@ -157,6 +171,8 @@ pub struct HomeConfig {
     /// A project's secrets, by project name (see `ProjectHomeRaw`); a
     /// project the operator declared none for is absent, not empty.
     pub project_secrets: BTreeMap<String, BTreeMap<String, String>>,
+    /// `[secrets]`: name to environment variable (`crate::secrets`).
+    pub secrets: BTreeMap<String, String>,
     /// `[environment]`: the hosts and host cache paths granted automatically.
     pub environment: crate::environment::Policy,
 }
@@ -453,6 +469,13 @@ auto_land = false
 #
 # [projects.equitizr.secrets]
 # SIGNAL_TOKEN = \"...\"
+
+# A named secret a run workflow's operation step may declare, resolved to an
+# environment variable the worker process already has (never a value here).
+# Granted only to operator-trust jobs, and only to the step that names it.
+#
+# [secrets]
+# cloudflare_token = { env = \"CLOUDFLARE_API_TOKEN\" }
 ";
 
 /// Write the operator's config the first time `home` is used, so there is a
@@ -475,6 +498,19 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => HomeRaw::default(),
         Err(e) => return Err(e).context(format!("reading {}", path.display())),
     };
+    let mut worker = raw.worker;
+    if let Ok(value) = super::env("MIN_FREE_GB") {
+        worker.min_free_gb = value
+            .parse()
+            .context("FORGE_MIN_FREE_GB must be a non-negative integer")?;
+    }
+    worker.projects = raw
+        .projects
+        .iter()
+        .filter_map(|(name, p)| p.slots.map(|n| (name.clone(), n)))
+        .collect();
+    worker.validate()?;
+    crate::config::capacity::validate_env(&raw.sandbox.env)?;
     let ro = raw
         .sandbox
         .ro_paths
@@ -496,6 +532,9 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
     let roles = build_roles(raw.roles, &providers)?;
     let explore = build_explore(raw.measure.explore, &providers)?;
     Ok(HomeConfig {
+        limits: raw.limits,
+        worker,
+        build_env: raw.sandbox.env,
         budget,
         sandbox: SandboxPaths {
             ro: ro.iter().map(|p| expand(p)).collect(),
@@ -543,6 +582,7 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
             .into_iter()
             .map(|(name, p)| (name, p.secrets))
             .collect(),
+        secrets: crate::secrets::build(raw.secrets)?,
         environment: crate::environment::Policy::build(
             raw.environment.hosts,
             raw.environment
@@ -561,6 +601,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = load_home(dir.path()).unwrap();
         assert_eq!(c.budget.per_task_usd, 2.0);
+        assert_eq!(c.limits.log_bytes, 64 << 20);
         assert!(c.sandbox.rw.iter().any(|p| p.ends_with(".npm")));
         assert!(
             !dir.path().join("config.toml").exists(),
@@ -568,11 +609,12 @@ mod tests {
         );
         std::fs::write(
             dir.path().join("config.toml"),
-            "[sandbox]\nro_paths = [\"/opt/tools\"]\nrw_paths = []\n",
+            "[limits]\nlog_bytes = 1048576\n[sandbox]\nro_paths = [\"/opt/tools\"]\nrw_paths = []\n",
         )
         .unwrap();
         let c = load_home(dir.path()).unwrap();
         assert_eq!(c.sandbox.ro, vec![PathBuf::from("/opt/tools")]);
+        assert_eq!(c.limits.log_bytes, 1 << 20);
         assert!(c.sandbox.rw.is_empty());
         assert_eq!(c.budget.per_day_usd, None);
         assert_eq!(c.budget.five_hour_max, 0.9);
@@ -700,5 +742,20 @@ mod tests {
         assert_eq!(c.early_ending.edits_without_commit, 4);
         assert_eq!(c.early_ending.repeats, 3);
         assert_eq!(c.early_ending.signals_to_end, 0);
+    }
+}
+
+/// Host-side attempt log limit configured under `[limits]`.
+#[derive(Deserialize)]
+#[serde(default)]
+pub struct Limits {
+    pub log_bytes: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            log_bytes: 64 << 20,
+        }
     }
 }

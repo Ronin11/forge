@@ -20,6 +20,11 @@ pub struct Project {
     /// (see `config::ROLES`); a role missing here falls to the operator's
     /// `[roles]` table. Set with `forge project set --role <role>=<provider>`.
     pub role_providers: BTreeMap<String, String>,
+    /// When `forge project retire` retired this project; `None` while it
+    /// is active. A retired project keeps its row, repos and history, but
+    /// `list_active_projects` leaves it out of every operational pass:
+    /// worker scheduling, guard installs, and doctor's per-project checks.
+    pub retired_at: Option<i64>,
 }
 
 /// Whether `purpose` is the placeholder the migration and
@@ -141,6 +146,7 @@ pub(super) const PROJECT_COLUMNS: &[&str] = &[
     "supervisor_per_lineage",
     "protected_json",
     "role_providers_json",
+    "retired_at",
 ];
 
 pub(super) const PROJECT_REPO_COLUMNS: &[&str] = &["project", "repo", "scope_json"];
@@ -173,6 +179,7 @@ fn project_from_row(r: &Row) -> rusqlite::Result<Project> {
         role_providers: role_providers_json
             .map(|j| serde_json::from_str(&j).unwrap_or_default())
             .unwrap_or_default(),
+        retired_at: r.get("retired_at")?,
     })
 }
 
@@ -205,6 +212,15 @@ fn initiative_from_row(r: &Row) -> rusqlite::Result<Initiative> {
     })
 }
 
+/// Whether `e` is a SQLite UNIQUE constraint violation, the shape
+/// `create_project` raises when two processes race to seed the same
+/// repository's default project.
+fn unique_name_violation(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<rusqlite::Error>().is_some_and(|e| {
+        e.sqlite_error_code() == Some(rusqlite::ffi::ErrorCode::ConstraintViolation)
+    })
+}
+
 impl Store {
     /// Register a new project. Fails if the name is already taken.
     pub fn create_project(&self, p: &Project) -> Result<()> {
@@ -229,7 +245,9 @@ impl Store {
             .optional()?)
     }
 
-    /// Every project, alphabetically.
+    /// Every project, alphabetically, retired or not: what `forge project
+    /// list`/`show` draw on, so a retired project's history stays
+    /// reachable by name.
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let c = self.lock();
         let mut stmt = c.prepare(&format!(
@@ -238,6 +256,37 @@ impl Store {
         ))?;
         let rows = stmt.query_map([], project_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Every project not retired, alphabetically: what every operational
+    /// pass draws on instead of `list_projects` — worker scheduling,
+    /// guard installs, and doctor's per-project checks — so a retired
+    /// project (`forge project retire`) is skipped everywhere but its own
+    /// history.
+    pub fn list_active_projects(&self) -> Result<Vec<Project>> {
+        Ok(self
+            .list_projects()?
+            .into_iter()
+            .filter(|p| p.retired_at.is_none())
+            .collect())
+    }
+
+    /// Retire a project: refuses while it has a queued or running task
+    /// (`forge project retire`). `Ok(false)` if there is no such project
+    /// or it is already retired; its repos, backlog and task history are
+    /// left exactly as they were.
+    pub fn retire_project(&self, name: &str, at: i64) -> Result<bool> {
+        let stats = self.project_task_stats(name)?;
+        anyhow::ensure!(
+            stats.queued == 0 && stats.running == 0,
+            "project {name} has {} queued and {} running task(s); let them finish or withdraw them first",
+            stats.queued,
+            stats.running
+        );
+        Ok(self.lock().retry_execute(
+            "UPDATE projects SET retired_at=?2 WHERE name=?1 AND retired_at IS NULL",
+            params![name, at],
+        )? > 0)
     }
 
     /// Apply `forge project set`'s changes: only the columns given (not
@@ -439,22 +488,38 @@ impl Store {
         if let Some(name) = self.default_project_for_repo(repo)? {
             return Ok(Some(name));
         }
-        let ambiguous: i64 = self.lock().retry_query_row(
+        let seen: i64 = self.lock().retry_query_row(
             "SELECT COUNT(*) FROM project_repos WHERE repo=?1",
             params![repo],
             |r| r.get(0),
         )?;
-        if ambiguous > 0 {
-            return Ok(None);
+        if seen > 0 {
+            // Another process registered this repo between our check
+            // above and here. That registration might be the single one
+            // a racing `ensure_default_project` call just made (not
+            // ambiguous, just late to see it) or a second, genuinely
+            // ambiguous one; `default_project_for_repo` already tells
+            // the two apart, so defer to it rather than treating any
+            // row appearing here as ambiguity.
+            return self.default_project_for_repo(repo);
         }
         let name = project_name_for_repo(repo);
-        if self.project(&name)?.is_none() {
-            self.create_project(&Project {
+        if self.project(&name)?.is_none()
+            && let Err(e) = self.create_project(&Project {
                 name: name.clone(),
                 purpose: format!("Repository {repo}."),
                 created_at: crate::unix_now(),
                 ..Default::default()
-            })?;
+            })
+        {
+            // Another process may have raced us to create the same
+            // default project name between the check above and this
+            // insert (two concurrent `forge adopt`/`forge add` calls for
+            // the same repository, say); that is fine as long as the
+            // project exists now, not a real failure.
+            if !unique_name_violation(&e) || self.project(&name)?.is_none() {
+                return Err(e);
+            }
         }
         self.register_repo(&name, repo, None)?;
         Ok(Some(name))
@@ -489,6 +554,22 @@ impl Store {
             params![id, d.outcome, d.budget_usd, d.stop_after_same_rule],
         )?;
         Ok(n > 0)
+    }
+
+    /// `forge initiative set --priority`: reprioritize every task of this
+    /// initiative that is still queued (a running or finished task keeps
+    /// what it already had; a task filed into this initiative later gets
+    /// whatever `forge initiative new`/`forge add` gave it, not this).
+    /// Returns how many rows changed.
+    pub fn set_priority_for_queued_initiative_tasks(
+        &self,
+        initiative: i64,
+        priority: i64,
+    ) -> Result<i64> {
+        Ok(self.lock().retry_execute(
+            "UPDATE tasks SET priority=?2 WHERE initiative=?1 AND state='queued'",
+            params![initiative, priority],
+        )? as i64)
     }
 
     pub fn initiative(&self, id: i64) -> Result<Option<Initiative>> {
@@ -718,6 +799,39 @@ mod tests {
     }
 
     #[test]
+    fn two_processes_racing_ensure_default_project_for_the_same_repo_both_succeed() {
+        // Two concurrent `forge adopt`/`forge add` calls for a repo
+        // neither has seen before (separate processes, so separate
+        // connections) can both find no project yet and both try to
+        // create the same default-named project; the later one must not
+        // fail just because the earlier one won the insert.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        Store::open(&path).unwrap();
+        let repo = dir.path().join("raced").display().to_string();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let path = path.clone();
+                let repo = repo.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let s = Store::open(&path).unwrap();
+                    barrier.wait();
+                    s.ensure_default_project(&repo)
+                })
+            })
+            .collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap().unwrap(), Some("raced".to_string()));
+        }
+
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.list_projects().unwrap().len(), 1);
+    }
+
+    #[test]
     fn set_project_defaults_role_providers_merges_instead_of_replacing() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(&dir.path().join("t.db")).unwrap();
@@ -823,6 +937,58 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
+    }
+
+    #[test]
+    fn retire_project_refuses_a_queued_or_running_task_and_keeps_history_once_retired() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "stale");
+        s.register_repo("stale", "/no/such/repo", None).unwrap();
+
+        let base = || Task {
+            repo: "/no/such/repo".into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 1,
+            timeout_secs: 1,
+            state: TaskState::Queued,
+            created_at: 1,
+            workflow: "direct".into(),
+            workflow_hash: "h1".into(),
+            project: Some("stale".into()),
+            ..Default::default()
+        };
+        let mut t = base();
+        t.id = s.insert_task(&t).unwrap();
+        s.update_task(&t).unwrap();
+
+        let err = s.retire_project("stale", 2).unwrap_err().to_string();
+        assert!(err.contains("1 queued"), "{err}");
+
+        t.state = TaskState::Succeeded;
+        t.started_at = Some(1);
+        t.finished_at = Some(2);
+        s.update_task(&t).unwrap();
+
+        assert!(s.retire_project("stale", 3).unwrap());
+        let p = s.project("stale").unwrap().unwrap();
+        assert_eq!(p.retired_at, Some(3));
+        // Repos and history are untouched.
+        assert_eq!(s.project_repos("stale").unwrap().len(), 1);
+        assert_eq!(s.project_tasks("stale").unwrap().len(), 1);
+        // list_projects still has it; list_active_projects does not.
+        assert!(s.list_projects().unwrap().iter().any(|p| p.name == "stale"));
+        assert!(
+            !s.list_active_projects()
+                .unwrap()
+                .iter()
+                .any(|p| p.name == "stale")
+        );
+        // Already retired: no-op, not an error.
+        assert!(!s.retire_project("stale", 4).unwrap());
     }
 
     #[test]
