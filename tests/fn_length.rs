@@ -124,7 +124,7 @@ const ALLOWLIST: &[(&str, &str, usize, &str)] = &[
     ),
     (
         "src/job.rs",
-        "run_now",
+        "run_now_inner",
         460,
         "existing function awaiting a focused split",
     ),

@@ -95,22 +95,6 @@ impl Executor for Host {
         cmd
     }
 }
-impl Executor for Sandbox {
-    fn guarantees(&self) -> Guarantees {
-        Backend::Bwrap.guarantees()
-    }
-    fn command(
-        &self,
-        worktree: &Path,
-        argv: &[String],
-        env: &[(String, String)],
-        egress: &Policy,
-        phase: Phase,
-    ) -> Command {
-        self.command(worktree, argv, env, egress, phase)
-    }
-}
-
 /// Synchronize a private scratch clone, preserve argv and stdin, and retrieve
 /// edits (including commits) even when the remote process fails.
 fn ssh_command(
@@ -262,7 +246,7 @@ impl Execution {
             Backend::Bwrap => self
                 .bwrap
                 .as_ref()
-                .map(Executor::guarantees)
+                .map(|_| Backend::Bwrap.guarantees())
                 .unwrap_or_default(),
         }
     }
@@ -278,7 +262,7 @@ impl Execution {
         argv: &[String],
         env: &[(String, String)],
         phase: Phase,
-    ) -> Command {
+    ) -> anyhow::Result<Command> {
         self.command_under(path, argv, env, None, phase)
     }
     /// An explicit policy replaces inherited model, repository and granted hosts.
@@ -289,7 +273,7 @@ impl Execution {
         env: &[(String, String)],
         egress: Option<&Policy>,
         phase: Phase,
-    ) -> Command {
+    ) -> anyhow::Result<Command> {
         let policy = self
             .bwrap
             .as_ref()
@@ -302,24 +286,21 @@ impl Execution {
                 .ancestors()
                 .find_map(|p| remotes.get(p))
                 .expect("SSH executor configured");
-            return ssh_command(destination, path, argv, env);
+            return Ok(ssh_command(destination, path, argv, env));
         }
         if self.backend(path) == Backend::Host {
-            return Host.command(path, argv, env, policy, phase);
+            return Ok(Host.command(path, argv, env, policy, phase));
         }
-        match &self.bwrap {
-            Ok(sb) => Executor::command(sb, path, argv, env, policy, phase),
-            Err(error) => {
-                let mut cmd = Command::new("/bin/sh");
-                cmd.args([
-                    "-c",
-                    "printf '%s\\n' \"$1\" >&2; exit 127",
-                    "forge-executor",
-                    error,
-                ]);
-                cmd
-            }
-        }
+        let sb = self
+            .bwrap
+            .as_ref()
+            .map_err(|error| crate::egress::SocketError::Failed(anyhow::anyhow!("{error}")))?;
+        let socket = match sb.proxies.socket_for(policy) {
+            Ok(socket) => Some(socket),
+            Err(crate::egress::SocketError::NoRuntime) => None,
+            Err(error @ crate::egress::SocketError::Failed(_)) => return Err(error.into()),
+        };
+        Ok(sb.command(path, argv, env, socket.as_deref(), phase))
     }
     /// What a launch in `path` with `env` does before its `command` is
     /// built: a bwrap launch seeds its private logins (see
@@ -329,14 +310,6 @@ impl Execution {
             && self.backend(path) == Backend::Bwrap
         {
             sb.prepare(path, env, phase).await;
-        }
-    }
-    /// Fails, naming the socket, when a bwrap launch in `path` would bind
-    /// a proxy socket that is not there.
-    pub fn check_socket(&self, path: &Path) -> anyhow::Result<()> {
-        match &self.bwrap {
-            Ok(sb) if self.backend(path) == Backend::Bwrap => sb.check_socket(path),
-            _ => Ok(()),
         }
     }
     /// After a launch in `path`: write the attempt's private login back over
@@ -378,6 +351,11 @@ impl Execution {
             sb.set_cache_dir(path, dir);
         }
     }
+    pub fn register_task(&self, path: &Path, siblings: &[PathBuf]) {
+        if let Ok(sb) = &self.bwrap {
+            sb.register_task(path, siblings);
+        }
+    }
     pub fn grant_host(&self, path: &Path, rule: Rule) -> bool {
         self.bwrap
             .as_ref()
@@ -389,147 +367,4 @@ impl Execution {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn guarantees_for_follows_the_declared_backend_and_the_fallback() {
-        let execution = Execution {
-            bwrap: Err("bwrap not found".into()),
-            fallback: Backend::Host,
-            backends: Mutex::new(BTreeMap::new()),
-            remotes: Mutex::new(BTreeMap::new()),
-        };
-        let (backend, g) = execution.guarantees_for(&config::Execution::default());
-        assert_eq!(backend, Backend::Host);
-        assert!(!g.egress_bounded);
-        let declared = config::Execution {
-            declared: Some(Backend::Bwrap),
-            ..Default::default()
-        };
-        let (backend, g) = execution.guarantees_for(&declared);
-        assert_eq!(backend, Backend::Bwrap);
-        assert!(!g.egress_bounded && !g.worktree_private);
-    }
-
-    #[tokio::test]
-    async fn execution_config_defaults_and_rejects_unknown_backends() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("forge.toml");
-        let defaults = "[defaults]\nbase_branch = \"main\"\n";
-        std::fs::write(&path, defaults).unwrap();
-        assert_eq!(
-            config::load_working(dir.path())
-                .await
-                .unwrap()
-                .execution
-                .declared,
-            None
-        );
-        std::fs::write(
-            &path,
-            format!("{defaults}[execution]\nbackend = \"host\"\n"),
-        )
-        .unwrap();
-        assert_eq!(
-            config::load_working(dir.path())
-                .await
-                .unwrap()
-                .execution
-                .declared,
-            Some(Backend::Host)
-        );
-        std::fs::write(&path, format!("{defaults}[execution]\nbackend = \"ssh\"\n")).unwrap();
-        assert!(config::load_working(dir.path()).await.is_err());
-    }
-
-    #[test]
-    fn host_preserves_argv_cwd_and_explicit_environment() {
-        let dir = tempfile::tempdir().unwrap();
-        let argv = vec![
-            "/bin/sh".into(),
-            "-c".into(),
-            "printf '%s:%s' \"$VALUE\" \"$1\"; test \"$PWD\" = \"$EXPECTED\"".into(),
-            "sh".into(),
-            "two words".into(),
-        ];
-        let env = vec![
-            ("VALUE".into(), "a value".into()),
-            ("EXPECTED".into(), dir.path().display().to_string()),
-        ];
-        let output = Host
-            .command(dir.path(), &argv, &env, &Policy::new([]), Phase::Agent)
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        assert_eq!(output.stdout, b"a value:two words");
-    }
-
-    #[test]
-    fn unavailable_bwrap_never_falls_back_to_host() {
-        let execution = Execution {
-            bwrap: Err("bwrap unavailable".into()),
-            fallback: Backend::Bwrap,
-            backends: Mutex::new(BTreeMap::new()),
-            remotes: Mutex::new(BTreeMap::new()),
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let argv = vec!["/bin/true".into()];
-        assert!(
-            !execution
-                .command(dir.path(), &argv, &[], Phase::Agent)
-                .output()
-                .unwrap()
-                .status
-                .success()
-        );
-        execution.set_backend(dir.path(), Backend::Host);
-        assert!(
-            execution
-                .command(dir.path(), &argv, &[], Phase::Agent)
-                .output()
-                .unwrap()
-                .status
-                .success()
-        );
-        assert_eq!(execution.backend(&dir.path().join("child")), Backend::Host);
-    }
-
-    #[test]
-    fn without_bwrap_an_undeclared_repository_runs_on_the_host() {
-        let execution = Execution {
-            bwrap: Err("bwrap not found".into()),
-            fallback: Backend::Host,
-            backends: Mutex::new(BTreeMap::new()),
-            remotes: Mutex::new(BTreeMap::new()),
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let argv = vec!["/bin/sh".into(), "-c".into(), "true".into()];
-        execution.configure(dir.path(), &config::Execution::default());
-        assert_eq!(execution.backend(dir.path()), Backend::Host);
-        assert!(!execution.guarantees(dir.path()).egress_bounded);
-        assert!(
-            execution
-                .command(dir.path(), &argv, &[], Phase::Agent)
-                .output()
-                .unwrap()
-                .status
-                .success()
-        );
-        // Declaring bwrap still fails closed.
-        execution.configure(
-            dir.path(),
-            &config::Execution {
-                declared: Some(Backend::Bwrap),
-                ..Default::default()
-            },
-        );
-        assert!(
-            !execution
-                .command(dir.path(), &argv, &[], Phase::Agent)
-                .output()
-                .unwrap()
-                .status
-                .success()
-        );
-    }
-}
+mod tests;

@@ -240,10 +240,11 @@ fn forge_init_enables_units_when_a_systemd_session_is_reachable() {
 
 #[test]
 fn forge_init_relink_moves_an_existing_install_onto_the_release_layout() {
-    let e = Env::new();
+    let e = Env::with_releases();
     // The old layout: ~/.local/bin/forge -> a build directory's binary.
     let home_dir = e._dir.path().join("userhome");
-    let build = e._dir.path().join("target-release");
+    let artifacts = disk_tempdir();
+    let build = artifacts.path().join("target-release");
     std::fs::create_dir_all(&build).unwrap();
     std::fs::copy(env!("CARGO_BIN_EXE_forge"), build.join("forge")).unwrap();
     for b in ["forge-web", "forge-portal", "forge-repomap", "forge-tui"] {
@@ -313,7 +314,8 @@ fn forge_init_relink_moves_an_existing_install_onto_the_release_layout() {
 fn forge_init_relink_refuses_a_directory_with_only_forge() {
     let e = Env::new();
     let home_dir = e._dir.path().join("userhome");
-    let build = e._dir.path().join("target-debug");
+    let artifacts = disk_tempdir();
+    let build = artifacts.path().join("target-debug");
     std::fs::create_dir_all(&build).unwrap();
     std::fs::create_dir_all(&home_dir).unwrap();
     std::fs::copy(env!("CARGO_BIN_EXE_forge"), build.join("forge")).unwrap();

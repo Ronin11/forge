@@ -26,14 +26,13 @@ fn review_provider_state_is_separate_and_discarded_with_the_coders() {
     sandbox.config_dir = root.path().join("host-claude");
     std::fs::create_dir_all(&sandbox.config_dir).unwrap();
     std::fs::write(sandbox.config_dir.join("settings.json"), "settings").unwrap();
-    let policy = Policy::new([]);
     prepared(&sandbox, &worktree, &[]);
-    let _ = sandbox.command(&worktree, &[], &[], &policy, Phase::Agent);
+    let _ = sandbox.command(&worktree, &[], &[], None, Phase::Agent);
     std::fs::create_dir_all(coder.join("claude/projects")).unwrap();
     std::fs::write(coder.join("claude/projects/session"), "coder transcript").unwrap();
     let env = vec![("FORGE_CONTRACT".into(), "review".into())];
     prepared(&sandbox, &worktree, &env);
-    let cmd = sandbox.command(&worktree, &[], &env, &policy, Phase::Agent);
+    let cmd = sandbox.command(&worktree, &[], &env, None, Phase::Agent);
     assert!(args_of(&cmd).contains(&review.join("claude").display().to_string()));
     assert!(!args_of(&cmd).contains(&coder.join("claude").display().to_string()));
     assert!(!review.join("claude/projects").exists());
@@ -136,6 +135,7 @@ fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
         caches: Mutex::new(BTreeMap::new()),
         targets: Mutex::new(BTreeMap::new()),
         granted: Mutex::new(BTreeMap::new()),
+        directories: Mutex::new(BTreeMap::new()),
     };
     sandbox.set_provider_hosts(&worktree, &[Rule::parse("api.example.com").unwrap()]);
     sandbox.set_cache_dir(&worktree, repo_cache.clone());
@@ -367,24 +367,24 @@ fn test_sandbox(model: &str) -> Sandbox {
         caches: Mutex::new(BTreeMap::new()),
         targets: Mutex::new(BTreeMap::new()),
         granted: Mutex::new(BTreeMap::new()),
+        directories: Mutex::new(BTreeMap::new()),
     };
     sb.set_provider_hosts(Path::new("/work/1"), &[Rule::parse(model).unwrap()]);
     sb
 }
 
 #[tokio::test]
-async fn a_missing_proxy_socket_error_names_the_socket() {
-    let sb = test_sandbox("api.example.com");
+async fn a_missing_proxy_socket_is_recreated() {
     let root = tempfile::tempdir().unwrap();
-    let worktree = root.path();
-    let socket = sb.proxies.socket_for(&sb.policy_for(worktree)).unwrap();
-    sb.check_socket(worktree).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let proxies = Proxies::in_dir(root.path().join("proxies"));
+    let policy = Policy::new([]);
+    let socket = proxies.socket_for(&policy).unwrap();
     std::fs::remove_file(&socket).unwrap();
-    let error = sb.check_socket(worktree).unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        format!("egress proxy socket {} is missing", socket.display())
-    );
+    let healed = proxies.socket_for(&policy).unwrap();
+    assert!(healed.exists());
+    assert_ne!(socket, healed);
 }
 
 fn args_of(cmd: &Command) -> Vec<String> {
@@ -564,7 +564,15 @@ async fn the_command_has_a_namespace_of_its_own_and_one_route_out() {
     let sb = test_sandbox("api.example.com");
     let cmd = sb.command_for_worktree(Path::new("/work/1"), &["true".to_string()], &[]);
     let args = args_of(&cmd);
-    assert!(args.iter().any(|a| a == "--unshare-net"), "{args:?}");
+    for flag in [
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--unshare-cgroup-try",
+    ] {
+        assert!(args.iter().any(|a| a == flag), "missing {flag}: {args:?}");
+    }
     let bind = args
         .windows(3)
         .find(|w| w[0] == "--bind" && w[2] == "/run/forge/egress.sock")
@@ -635,7 +643,7 @@ async fn check_phase_never_seeds_or_binds_agent_state() {
     std::fs::write(&login, "agent-login").unwrap();
     sandbox.prepare(&worktree, &[], Phase::Check).await;
     let argv = vec!["/bin/sh".into(), "-c".into(), "env; ls ~/.claude".into()];
-    let command = sandbox.command(&worktree, &argv, &[], &Policy::new([]), Phase::Check);
+    let command = sandbox.command(&worktree, &argv, &[], None, Phase::Check);
     let args = args_of(&command);
     for dir in [
         &sandbox.config_dir,
@@ -698,7 +706,7 @@ fn relay_detect_strips_deleted_suffix() {
     let sb = Sandbox::detect(
         "/bin/sh",
         &crate::config::SandboxPaths {
-            limits: ResourceLimits::default(),
+            limits: crate::config::SandboxLimits::default(),
             ro: Vec::new(),
             rw: Vec::new(),
             dependency_cache: None,
@@ -741,6 +749,71 @@ fn relay_missing_executable_stops_before_launching_agent() {
     assert!(output.stdout.is_empty(), "the agent must not run");
     assert!(began.elapsed() >= std::time::Duration::from_secs(5));
     assert!(began.elapsed() < std::time::Duration::from_secs(15));
+}
+
+#[test]
+fn a_grant_for_a_worktree_reaches_its_registered_tests_and_red_siblings() {
+    let sb = test_sandbox("api.example.com");
+    let names = |p: &Policy| p.rules().iter().map(|r| r.to_string()).collect::<Vec<_>>();
+    let wt = PathBuf::from("/work/1");
+    let tests_dir = PathBuf::from("/work/1-tests");
+    let red_dir = PathBuf::from("/work/1-red");
+    // The tests contract's own clone and its scratch directory are
+    // siblings of the worktree on disk, not descendants, so without
+    // registering them a grant applied to the worktree would never
+    // reach either (E1-22).
+    sb.register_task(&wt, &[tests_dir.clone(), red_dir.clone()]);
+    assert!(sb.grant_host(&wt, Rule::parse("registry.npmjs.org").unwrap()));
+    for dir in [&wt, &tests_dir, &red_dir] {
+        assert!(
+            names(&sb.policy_for(dir)).contains(&"registry.npmjs.org".to_string()),
+            "{dir:?}: {:?}",
+            names(&sb.policy_for(dir))
+        );
+    }
+    // A worktree never registered with any task keeps the old sibling
+    // isolation: the grant does not leak to it.
+    assert!(
+        !names(&sb.policy_for(Path::new("/work/2"))).contains(&"registry.npmjs.org".to_string())
+    );
+}
+
+#[test]
+fn registered_task_directories_share_declarations_and_cache_grants() {
+    let sb = test_sandbox("api.example.com");
+    let wt = PathBuf::from("/work/1");
+    let tests = PathBuf::from("/work/1-tests");
+    let red = PathBuf::from("/work/1-red");
+    let cache = PathBuf::from("/cache/repository");
+    let granted = PathBuf::from("/cache/operator");
+    sb.register_task(&wt, &[tests.clone(), red.clone()]);
+    sb.register_task(&wt, &[tests.clone(), red.clone()]);
+    sb.set_egress(&tests, &[Rule::parse("registry.npmjs.org").unwrap()]);
+    sb.set_cache_dir(&red, cache.clone());
+    assert!(sb.grant_ro(&tests, granted.clone()));
+    assert!(!sb.grant_ro(&wt, granted.clone()));
+    assert!(sb.grant_host(&red, Rule::parse("example.org").unwrap()));
+    assert!(!sb.grant_host(&tests, Rule::parse("example.org").unwrap()));
+    for dir in [&wt, &tests, &red, &red.join("nested")] {
+        let policy = sb.policy_for(dir);
+        let names: Vec<_> = policy.rules().iter().map(|r| r.to_string()).collect();
+        assert!(names.contains(&"registry.npmjs.org".to_string()));
+        assert!(names.contains(&"example.org".to_string()));
+        assert_eq!(sb.cache_dir_for(dir), Some(cache.clone()));
+        let cmd = sb.command(dir, &["true".into()], &[], None, Phase::Check);
+        assert!(args_of(&cmd).windows(3).any(|args| {
+            args == [
+                "--ro-bind-try",
+                granted.to_str().unwrap(),
+                granted.to_str().unwrap(),
+            ]
+        }));
+    }
+    let other = Path::new("/work/2");
+    assert!(sb.policy_for(other).rules().is_empty());
+    assert_eq!(sb.cache_dir_for(other), None);
+    let cmd = sb.command(other, &["true".into()], &[], None, Phase::Check);
+    assert!(!args_of(&cmd).contains(&granted.display().to_string()));
 }
 
 #[test]
@@ -832,7 +905,7 @@ fn resource_limits_tmpfs_exhaustion_is_enospc() {
                 "LC_ALL=C dd if=/dev/zero of=/tmp/full bs=65536 count=32".into(),
             ],
             &[],
-            &sandbox.policy_for(root.path()),
+            None,
             Phase::Check,
         )
         .output()
@@ -866,7 +939,7 @@ fn resource_limits_dev_tmpfs_is_bound_and_dev_itself_is_read_only() {
                 "LC_ALL=C dd if=/dev/zero of=/dev/shm/full bs=65536 count=32".into(),
             ],
             &[],
-            &sandbox.policy_for(root.path()),
+            None,
             Phase::Check,
         )
         .output()
@@ -881,7 +954,7 @@ fn resource_limits_dev_tmpfs_is_bound_and_dev_itself_is_read_only() {
             root.path(),
             &["/bin/sh".into(), "-c".into(), "echo x > /dev/escape".into()],
             &[],
-            &sandbox.policy_for(root.path()),
+            None,
             Phase::Check,
         )
         .output()
