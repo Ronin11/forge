@@ -65,8 +65,8 @@ pub use questions::{QuestionRecord, Resolution};
 pub use record::{Decision, InsertDecisionBy, TaskRef};
 pub use schedule::ScheduleRefusal;
 pub use stats::{
-    HumanAttentionProjectStat, HumanAttentionStat, JournalStat, RoleStat, StatsFilter, StepStat,
-    TaskTtl, WorkflowStat,
+    EARLY_SIGNALS, HumanAttentionProjectStat, HumanAttentionStat, JournalStat, RoleStat,
+    StatsFilter, StepStat, TaskTtl, WorkflowStat,
 };
 pub use tasks::{
     REQUEUE_ABORT, REQUEUE_ORPHAN, REQUEUE_REASONS, RoleRouting, Routed, Task, TaskState,
