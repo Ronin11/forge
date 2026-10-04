@@ -1220,14 +1220,7 @@ mod tests {
         let task = |early_ending: Option<String>| Task {
             repo: "/r".into(),
             task: "do".into(),
-            base_branch: "main".into(),
-            model: "sonnet".into(),
-            max_turns: 1,
-            max_attempts: 1,
-            timeout_secs: 60,
             state: TaskState::Queued,
-            created_at: 1,
-            workflow: "direct".into(),
             early_ending,
             ..Default::default()
         };
@@ -1235,10 +1228,19 @@ mod tests {
             .insert_task(&task(Some(r#"{"no_edit_calls":50}"#.into())))
             .unwrap();
         let unset = store.insert_task(&task(None)).unwrap();
+        drop(store);
+        let store = Store::open(&dir.path().join("t.db")).unwrap();
         let back = store.task(set).unwrap().unwrap().early_ending;
         assert_eq!(back.as_deref(), Some(r#"{"no_edit_calls":50}"#));
         // NULL: the operator's `[early_ending]` config applies.
         assert_eq!(store.task(unset).unwrap().unwrap().early_ending, None);
+        let mut cleared = store.task(set).unwrap().unwrap();
+        cleared.early_ending = None;
+        store.update_task(&cleared).unwrap();
+        assert_eq!(store.task(set).unwrap().unwrap().early_ending, None);
+        let sql = "SELECT count(*) FROM tasks WHERE early_ending IS NULL";
+        let nulls: i64 = store.lock().query_row(sql, [], |r| r.get(0)).unwrap();
+        assert_eq!(nulls, 2);
     }
 
     #[test]
