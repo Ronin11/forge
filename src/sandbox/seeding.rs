@@ -142,7 +142,7 @@ fn operator_config_secrets_are_absent_from_the_sandbox_home() {
             &worktree,
             &["/bin/sh".into(), "-c".into(), script],
             &[],
-            &Policy::new([]),
+            None,
             Phase::Agent,
         )
         .output()

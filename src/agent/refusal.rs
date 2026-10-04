@@ -178,7 +178,16 @@ pub fn probe_login(provider: &Provider, dir: &Path) -> Probe {
     let extra = super::inputs::provider_env(provider);
     let mut spawned = Err(std::io::Error::other("never spawned"));
     for _ in 0..20 {
-        let mut cmd = super::command_in(None, dir, &argv, &extra, crate::sandbox::Phase::Agent);
+        let mut cmd =
+            match super::command_in(None, dir, &argv, &extra, crate::sandbox::Phase::Agent) {
+                Ok(cmd) => cmd,
+                Err(error) => {
+                    return Probe {
+                        detail: format!("cannot start {}: {error:#}", argv[0]),
+                        ..Probe::default()
+                    };
+                }
+            };
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -496,13 +505,13 @@ async fn probe(l: &Launch<'_>) {
             &argv,
             &extra,
             crate::sandbox::Phase::Agent,
-        ));
+        )?);
         c.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true)
             .process_group(0);
-        c
+        Ok(c)
     })
     .await
     else {

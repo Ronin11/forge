@@ -2298,7 +2298,8 @@ fn plugin_forge_bin_survives_worker_binary_replacement() {
     for inherited in [false, true] {
         let e = Env::new();
         std::fs::create_dir_all(&e.home).unwrap();
-        let bin = e.home.join("forge-launch");
+        let artifacts = disk_tempdir();
+        let bin = artifacts.path().join("forge-launch");
         std::fs::copy(env!("CARGO_BIN_EXE_forge"), &bin).unwrap();
         let plugin = e.home.join("plugins/stable-bin");
         std::fs::create_dir_all(&plugin).unwrap();
@@ -2344,7 +2345,7 @@ exec sleep 3600
         assert!(wait_until(|| observed.exists(), Duration::from_secs(10)));
 
         // Deploy replaces the inode rather than writing to an executing file.
-        let replacement = e.home.join("forge-new");
+        let replacement = artifacts.path().join("forge-new");
         std::fs::copy(env!("CARGO_BIN_EXE_forge"), &replacement).unwrap();
         std::fs::rename(replacement, &bin).unwrap();
         assert!(
