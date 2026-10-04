@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 pub struct Env {
     pub _dir: tempfile::TempDir,
+    _releases: Option<tempfile::TempDir>,
     pub home: PathBuf,
     pub repo: PathBuf,
     pub origin: PathBuf,
@@ -339,12 +340,27 @@ impl Env {
         let xdg_config = dir.path().join("xdg_config");
         Env {
             _dir: dir,
+            _releases: None,
             home,
             repo,
             origin,
             xdg_config,
             no_sandbox,
         }
+    }
+
+    /// Release fixtures copy large debug binaries. Keep those on the build
+    /// filesystem, not the potentially small /tmp shared by parallel tests.
+    /// The home stays short so its Unix socket paths still fit sockaddr_un.
+    pub fn with_releases() -> Env {
+        let mut e = Self::new();
+        let root = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        std::fs::create_dir_all(root).unwrap();
+        let releases = tempfile::tempdir_in(root).unwrap();
+        std::fs::create_dir_all(&e.home).unwrap();
+        std::os::unix::fs::symlink(releases.path(), e.home.join("bin")).unwrap();
+        e._releases = Some(releases);
+        e
     }
 
     pub fn cmd(&self, fake: &str) -> Command {

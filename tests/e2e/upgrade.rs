@@ -112,13 +112,13 @@ impl Upgrade {
     /// under the test's own `XDG_CONFIG_HOME/systemd/user`, so
     /// `forge upgrade`'s "when their units exist" check sees exactly them.
     fn new(units: &[&str], curl_fake: &str) -> Upgrade {
-        let e = Env::new();
+        let e = Env::with_releases();
         // Creates FORGE_HOME and a fresh forge.db for `forge upgrade` to
         // back up and read the schema version of.
         e.forge("ok.sh", &["doctor", "--json"]);
         std::fs::write(e.home.join("web.token"), "tok123\n").unwrap();
 
-        let scratch = e._dir.path().join("release");
+        let scratch = e.home.join("bin/packages");
         std::fs::create_dir_all(&scratch).unwrap();
         let bins = old_bin_dir(&e.home);
 
