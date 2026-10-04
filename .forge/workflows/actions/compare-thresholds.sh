@@ -19,8 +19,8 @@ src_file_max=${SRC_FILE_MAX_LINES:-3000}
 
 crossed=""
 long_fn=$(jq -r --argjson max "$function_max" '
-  [.longest_functions[]? | select(.lines > $max)] | first // empty |
-  "\(.at) \(.signature) is \(.lines) lines (over " + ($max | tostring) + ")"
+  [.longest_functions[]? | select(.lines > $max) |
+    "\(.at) \(.signature) is \(.lines) lines (over \($max))"] | join("; ")
 ' "$measurements" 2>/dev/null)
 if [ -n "$long_fn" ]; then
   crossed="$long_fn"
