@@ -20,7 +20,16 @@ All ten landed commits are ancestors of the current tree (`ae2e851`).
 Only the tests each task named (or implied) were run (`cargo test
 --locked <name>` or `--bin forge <module>::` / `--test e2e <name>`,
 not the full suite), on 2026-10-03 against this tree; all of them
-passed, as noted per task below.
+passed, as noted per task below. `cargo fmt --check` and `cargo clippy
+--workspace --all-targets` are both clean. A full `cargo test
+--workspace` run on this host hits unrelated flakiness: several
+`successor`, `upgrade`, `web`, `worker` and `statusline` e2e tests
+(none named by tasks 665-678) intermittently panic on `StorageFull` /
+`DiskFull` because this sandbox's `/tmp` is a fixed 1 GiB tmpfs and
+those tests bind disk-backed sandbox caches; run individually (or with
+a clean `/tmp`), every one of them passes, and the failure count varies
+run to run, consistent with resource contention rather than a defect
+in this batch's work.
 
 | task | verdict | evidence | what is missing |
 |---|---|---|---|
