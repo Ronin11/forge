@@ -680,6 +680,68 @@ pub fn op_names(e: &Env, id: i64) -> Vec<(String, bool)> {
         .collect()
 }
 
+/// Sets up a project and copies the real `engineering-weekly` workflow and
+/// its three scripts, unmodified, into the project's own repository
+/// (docs/JOBS.md, "Where an automation lives").
+pub fn setup_engineering_weekly_project(e: &Env, project: &str) {
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                project,
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let wf_dir = e.repo.join(".forge/workflows");
+    std::fs::create_dir_all(wf_dir.join("actions")).unwrap();
+    std::fs::copy(
+        root.join(".forge/workflows/engineering-weekly.toml"),
+        wf_dir.join("engineering-weekly.toml"),
+    )
+    .unwrap();
+    for f in [
+        "measure-engineering.toml",
+        "review-if-crossed.toml",
+        "measure.sh",
+        "compare-thresholds.sh",
+        "skip-if-reviewed.sh",
+    ] {
+        std::fs::copy(
+            root.join(".forge/workflows/actions").join(f),
+            wf_dir.join("actions").join(f),
+        )
+        .unwrap();
+    }
+}
+
+/// Runs the `engineering-weekly` job `--now` (dry or real) and returns its
+/// `job show --json` document.
+pub fn run_engineering_weekly(e: &Env, project: &str, dry_run: bool) -> serde_json::Value {
+    let mut args = vec!["job", "start", project, "engineering-weekly"];
+    if dry_run {
+        args.push("--dry-run");
+    }
+    args.push("--now");
+    let o = e.forge("ok.sh", &args);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+    serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap()
+}
+
 /// Commit whatever the test changed in the operator catalog as the
 /// operator: only such a commit lets a copy of a built-in action win over
 /// the built-in (docs/WORKFLOWS.md, "Authoring").

@@ -1,3 +1,5 @@
+mod thresholds;
+
 use crate::support::*;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;

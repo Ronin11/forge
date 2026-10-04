@@ -127,22 +127,12 @@ fn forge_job_bench_measures_two_fake_providers_over_two_fixtures() {
 #[test]
 fn engineering_weekly_dry_run_measures_and_files_nothing() {
     let e = Env::new();
-    let repo_s = e.repo.to_str().unwrap();
-    assert!(
-        e.forge(
-            "ok.sh",
-            &["project", "new", "acme", "--purpose", "p", "--repo", repo_s],
-        )
-        .status
-        .success()
-    );
+    setup_engineering_weekly_project(&e, "acme");
 
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let wf_dir = e.repo.join(".forge/workflows");
-    std::fs::create_dir_all(wf_dir.join("actions")).unwrap();
-
-    let wf_text =
-        std::fs::read_to_string(root.join(".forge/workflows/engineering-weekly.toml")).unwrap();
+    // Lower SRC_FILE_MAX_LINES from 3000 to 5 so a small fixture file
+    // crosses it deterministically and fast.
+    let wf_path = e.repo.join(".forge/workflows/engineering-weekly.toml");
+    let wf_text = std::fs::read_to_string(&wf_path).unwrap();
     let wf_text = wf_text.replace(
         "SRC_FILE_MAX_LINES = \"3000\"",
         "SRC_FILE_MAX_LINES = \"5\"",
@@ -151,22 +141,7 @@ fn engineering_weekly_dry_run_measures_and_files_nothing() {
         wf_text.contains("SRC_FILE_MAX_LINES = \"5\""),
         "the real workflow's threshold line changed shape; update this test's replace"
     );
-    std::fs::write(wf_dir.join("engineering-weekly.toml"), wf_text).unwrap();
-
-    for f in ["measure-engineering.toml", "review-if-crossed.toml"] {
-        std::fs::copy(
-            root.join(".forge/workflows/actions").join(f),
-            wf_dir.join("actions").join(f),
-        )
-        .unwrap();
-    }
-    for f in ["measure.sh", "compare-thresholds.sh", "skip-if-reviewed.sh"] {
-        std::fs::copy(
-            root.join(".forge/workflows/actions").join(f),
-            wf_dir.join("actions").join(f),
-        )
-        .unwrap();
-    }
+    std::fs::write(&wf_path, wf_text).unwrap();
 
     // A fixture file over the test's lowered threshold, nowhere near a
     // real 3000-line one, and no Cargo.toml: measure.sh's cargo
@@ -181,25 +156,7 @@ fn engineering_weekly_dry_run_measures_and_files_nothing() {
     git(&e.repo, &["add", "-A"]);
     git(&e.repo, &["commit", "-qm", "engineering-weekly fixture"]);
 
-    let o = e.forge(
-        "ok.sh",
-        &[
-            "job",
-            "start",
-            "acme",
-            "engineering-weekly",
-            "--dry-run",
-            "--now",
-        ],
-    );
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
-
-    let doc: serde_json::Value = serde_json::from_slice(
-        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
-            .stdout,
-    )
-    .unwrap();
+    let doc = run_engineering_weekly(&e, "acme", true);
     assert_eq!(doc["state"], "ok", "{doc:?}");
     assert_eq!(doc["dry_run"], true);
     let effects = doc["effects"].as_array().unwrap();
@@ -214,8 +171,9 @@ fn engineering_weekly_dry_run_measures_and_files_nothing() {
     assert_eq!(effects[1]["kind"], "row");
     assert_eq!(effects[1]["target"], "task");
     let filed = effects[1]["summary"].as_str().unwrap();
-    assert!(filed.contains("docs/REVIEW"), "{filed}");
-    assert!(filed.contains("over 5 lines"), "{filed}");
+    assert!(filed.starts_with("engineering-weekly crossed"), "{filed}");
+    assert!(filed.contains("docs/REVIEW-2.md"), "{filed}");
+    assert!(filed.contains("(over 5)"), "{filed}");
     assert!(filed.contains("(dry run)"), "{filed}");
 
     // Nothing was actually filed: `forge add` was never called.
@@ -228,12 +186,8 @@ fn engineering_weekly_dry_run_measures_and_files_nothing() {
 
     // A real run (the dry run above never counted against `per_day`)
     // really does call `forge add`: the crossed threshold lands as a
-    // queued task whose text starts with "docs/REVIEW".
-    let o = e.forge(
-        "ok.sh",
-        &["job", "start", "acme", "engineering-weekly", "--now"],
-    );
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // queued task whose text starts with "engineering-weekly crossed".
+    run_engineering_weekly(&e, "acme", false);
 
     let tasks: serde_json::Value = serde_json::from_slice(
         &e.forge("ok.sh", &["log", "--project", "acme", "--json"])
@@ -247,7 +201,7 @@ fn engineering_weekly_dry_run_measures_and_files_nothing() {
         tasks[0]["text"]
             .as_str()
             .unwrap()
-            .starts_with("docs/REVIEW"),
+            .starts_with("engineering-weekly crossed"),
         "{tasks:?}"
     );
 }

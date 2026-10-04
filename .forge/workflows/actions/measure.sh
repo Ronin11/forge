@@ -119,7 +119,7 @@ if [ -d "$repo/src" ]; then
     esac
     grep -qxF -- "$rel" "$tested_tmp" && continue
 
-    if ! grep -q '#\[cfg(test)\]' "$f" 2>/dev/null; then
+    if ! grep -qE '#\[cfg\(test\)\]|#\[(tokio::)?test\]' "$f" 2>/dev/null; then
       printf '%s\n' "$rel" >> "$notests_tmp"
     fi
   done < <(kernel_files)
