@@ -1010,16 +1010,17 @@ impl Store {
         let rows = {
             let c = self.lock();
             let mut stmt = c.prepare(
-                "SELECT t.workflow, a.early_signals, a.early_near
+                "SELECT t.workflow AS workflow, a.early_signals AS early_signals,
+                        a.early_near AS early_near
                  FROM attempts a JOIN tasks t ON t.id = a.task_id
                  WHERE a.state != 'running'
                  ORDER BY t.workflow, a.id",
             )?;
             let rows = stmt.query_map([], |r| {
                 Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
+                    r.get::<_, String>("workflow")?,
+                    r.get::<_, String>("early_signals")?,
+                    r.get::<_, String>("early_near")?,
                 ))
             })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
