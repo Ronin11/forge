@@ -218,8 +218,8 @@ async fn launch(args: &RunOneCapped<'_>) -> anyhow::Result<tokio::process::Child
             .find(|(k, _)| k == "FORGE_TASK_ID")
             .map(|(_, v)| v.as_str());
         return Err(match task_id {
-            Some(id) => format!("task {id}: {reason} contains a NUL byte"),
-            None => format!("{reason} contains a NUL byte"),
+            Some(id) => anyhow::anyhow!("task {id}: {reason} contains a NUL byte"),
+            None => anyhow::anyhow!("{reason} contains a NUL byte"),
         });
     }
     crate::agent::prepare_in(sandbox, cwd, env, crate::sandbox::Phase::Check).await;
