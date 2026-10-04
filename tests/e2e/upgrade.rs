@@ -121,6 +121,12 @@ impl Upgrade {
         let scratch = e.home.join("bin/packages");
         std::fs::create_dir_all(&scratch).unwrap();
         let bins = old_bin_dir(&e.home);
+        // Upgrade extracts another full copy under home/worktrees before
+        // installing it. Keep that staging area on disk as well.
+        let worktrees = bins.join("worktrees");
+        std::fs::create_dir_all(&worktrees).unwrap();
+        std::fs::remove_dir(e.home.join("worktrees")).unwrap();
+        std::os::unix::fs::symlink(&worktrees, e.home.join("worktrees")).unwrap();
 
         let unit_dir = e.xdg_config.join("systemd/user");
         std::fs::create_dir_all(&unit_dir).unwrap();
