@@ -4,7 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 #[test]
 fn forge_web_serve_runs_forge_web_from_path_with_the_bind_flag() {
     let e = Env::new();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = disk_tempdir();
     // A copy of forge in a directory of its own, so no real forge-web sits beside it.
     let forge = dir.path().join("forge");
     std::fs::copy(env!("CARGO_BIN_EXE_forge"), &forge).unwrap();
@@ -55,7 +55,7 @@ fn forge_web_serve_runs_forge_web_from_path_with_the_bind_flag() {
 #[test]
 fn forge_web_serve_skips_a_non_executable_forge_web_on_path() {
     let e = Env::new();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = disk_tempdir();
     let forge = dir.path().join("forge");
     std::fs::copy(env!("CARGO_BIN_EXE_forge"), &forge).unwrap();
     let first = dir.path().join("first");

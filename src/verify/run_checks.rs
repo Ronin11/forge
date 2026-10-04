@@ -25,7 +25,7 @@ async fn run_one_recorded(
     cwd: &Path,
     timeout: Duration,
     env: &[(String, String)],
-) -> CheckResult {
+) -> Result<CheckResult> {
     crate::checks::run_one_capped(crate::checks::RunOneCapped {
         level,
         name,
@@ -109,7 +109,7 @@ pub(super) async fn l1_l2(
     names.sort_by_key(|n| (n.as_str() != "setup", n.as_str()));
     for name in names {
         let argv = &s.cfg.checks[name];
-        let r = run_one_recorded(s, "L1", name, argv, s.worktree, timeout, &facts).await;
+        let r = run_one_recorded(s, "L1", name, argv, s.worktree, timeout, &facts).await?;
         // Checks can replace Git metadata even when they fail.
         crate::git::restore_metadata(s.worktree)?;
         s.report.emit(
@@ -168,7 +168,8 @@ pub(super) async fn l1_l2(
         for (i, cmd) in s.task_checks.iter().enumerate() {
             let name = format!("task-check-{}", i + 1);
             let argv = vec!["bash".to_string(), "-c".to_string(), cmd.clone()];
-            let mut r = run_one_recorded(s, "L2", &name, &argv, s.worktree, timeout, &facts).await;
+            let mut r =
+                run_one_recorded(s, "L2", &name, &argv, s.worktree, timeout, &facts).await?;
             crate::git::restore_metadata(s.worktree)?;
             if !r.ok {
                 r.tail = format!("$ {cmd}\n{}", r.tail);
@@ -233,7 +234,7 @@ pub(super) async fn try_known_fix(
     let mut ok = true;
     for name in &failing {
         let argv = &s.cfg.fixable[*name];
-        let r = run_one("fix", name, argv, s.worktree, s.sandbox, timeout, &facts).await;
+        let r = run_one("fix", name, argv, s.worktree, s.sandbox, timeout, &facts).await?;
         // A fix command is untrusted just like a check. In particular,
         // commit_all below must never read a config redirected by commondir.
         crate::git::restore_metadata(s.worktree)?;
@@ -292,7 +293,7 @@ pub(super) async fn red_on_base(s: &Subject<'_>, checks: &mut Vec<CheckResult>) 
     let facts = s.facts();
     let mut setup_ok = true;
     if let Some(argv) = s.cfg.checks.get("setup") {
-        let r = run_one_recorded(s, "L1", "setup", argv, scratch, timeout, &facts).await;
+        let r = run_one_recorded(s, "L1", "setup", argv, scratch, timeout, &facts).await?;
         emit_check(s.report, s.task_id, &r);
         setup_ok = r.ok;
         checks.push(r);
@@ -308,7 +309,7 @@ pub(super) async fn red_on_base(s: &Subject<'_>, checks: &mut Vec<CheckResult>) 
             timeout,
             &facts,
         )
-        .await;
+        .await?;
         let failed_on_base = !r.ok && !r.timed_out;
         r.ok = failed_on_base;
         if !failed_on_base {

@@ -55,9 +55,17 @@ if [ -d "$repo/src" ]; then
       }
     ' "$f" >> "$funcs_tmp"
 
-    if ! grep -q '#\[cfg(test)\]' "$f" 2>/dev/null; then
-      printf '%s\n' "$rel" >> "$notests_tmp"
-    fi
+    # A test file (tests.rs, *_tests.rs, test_support.rs, or any file
+    # holding #[test] functions) is itself the tests, not a module
+    # without them.
+    case "${rel##*/}" in
+      tests.rs | *_tests.rs | test_support.rs) ;;
+      *)
+        if ! grep -qE '#\[cfg\(test\)\]|#\[(tokio::)?test\]' "$f" 2>/dev/null; then
+          printf '%s\n' "$rel" >> "$notests_tmp"
+        fi
+        ;;
+    esac
   done < <(kernel_files)
 
   if [ -s "$files_tmp" ]; then

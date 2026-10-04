@@ -23,7 +23,14 @@ pub trait Classify<T> {
 
 impl<T, E: Into<anyhow::Error>> Classify<T> for Result<T, E> {
     fn task(self) -> Result<T, Fault> {
-        self.map_err(|e| Fault::Task(e.into()))
+        self.map_err(|e| {
+            let error = e.into();
+            if error.downcast_ref::<crate::egress::SocketError>().is_some() {
+                Fault::Env(error)
+            } else {
+                Fault::Task(error)
+            }
+        })
     }
     fn env(self) -> Result<T, Fault> {
         self.map_err(|e| Fault::Env(e.into()))

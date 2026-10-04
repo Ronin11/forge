@@ -5,7 +5,9 @@
 //! text is the first frame of every attempt log, so a wording change is
 //! visible in the record and measured by the profiles.
 
-/// Task context, attempt feedback, and journal material for a directive prompt.
+/// Task context, attempt feedback, and journal material for a directive
+/// prompt. Every field is a reference or `Copy`, so this is too.
+#[derive(Clone, Copy)]
 pub struct DirectivePrompt<'a> {
     pub t: &'a Task,
     pub cfg: &'a config::Config,

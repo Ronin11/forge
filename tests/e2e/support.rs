@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 pub struct Env {
     pub _dir: tempfile::TempDir,
+    _releases: Option<tempfile::TempDir>,
     pub home: PathBuf,
     pub repo: PathBuf,
     pub origin: PathBuf,
@@ -296,6 +297,13 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
+/// Large binary fixtures belong beside the build artifacts, not on /tmp.
+pub fn disk_tempdir() -> tempfile::TempDir {
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    std::fs::create_dir_all(root).unwrap();
+    tempfile::tempdir_in(root).unwrap()
+}
+
 impl Env {
     pub fn new() -> Env {
         let dir = tempfile::tempdir().unwrap();
@@ -339,12 +347,25 @@ impl Env {
         let xdg_config = dir.path().join("xdg_config");
         Env {
             _dir: dir,
+            _releases: None,
             home,
             repo,
             origin,
             xdg_config,
             no_sandbox,
         }
+    }
+
+    /// Release fixtures copy large debug binaries. Keep those on the build
+    /// filesystem, not the potentially small /tmp shared by parallel tests.
+    /// The home stays short so its Unix socket paths still fit sockaddr_un.
+    pub fn with_releases() -> Env {
+        let mut e = Self::new();
+        let releases = disk_tempdir();
+        std::fs::create_dir_all(&e.home).unwrap();
+        std::os::unix::fs::symlink(releases.path(), e.home.join("bin")).unwrap();
+        e._releases = Some(releases);
+        e
     }
 
     pub fn cmd(&self, fake: &str) -> Command {
@@ -657,6 +678,68 @@ pub fn op_names(e: &Env, id: i64) -> Vec<(String, bool)> {
             )
         })
         .collect()
+}
+
+/// Sets up a project and copies the real `engineering-weekly` workflow and
+/// its three scripts, unmodified, into the project's own repository
+/// (docs/JOBS.md, "Where an automation lives").
+pub fn setup_engineering_weekly_project(e: &Env, project: &str) {
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                project,
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let wf_dir = e.repo.join(".forge/workflows");
+    std::fs::create_dir_all(wf_dir.join("actions")).unwrap();
+    std::fs::copy(
+        root.join(".forge/workflows/engineering-weekly.toml"),
+        wf_dir.join("engineering-weekly.toml"),
+    )
+    .unwrap();
+    for f in [
+        "measure-engineering.toml",
+        "review-if-crossed.toml",
+        "measure.sh",
+        "compare-thresholds.sh",
+        "skip-if-reviewed.sh",
+    ] {
+        std::fs::copy(
+            root.join(".forge/workflows/actions").join(f),
+            wf_dir.join("actions").join(f),
+        )
+        .unwrap();
+    }
+}
+
+/// Runs the `engineering-weekly` job `--now` (dry or real) and returns its
+/// `job show --json` document.
+pub fn run_engineering_weekly(e: &Env, project: &str, dry_run: bool) -> serde_json::Value {
+    let mut args = vec!["job", "start", project, "engineering-weekly"];
+    if dry_run {
+        args.push("--dry-run");
+    }
+    args.push("--now");
+    let o = e.forge("ok.sh", &args);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+    serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap()
 }
 
 /// Commit whatever the test changed in the operator catalog as the
