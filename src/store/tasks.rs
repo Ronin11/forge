@@ -209,6 +209,11 @@ pub struct Task {
     /// `forge add --supersedes` (see `store::supersede`); `None` for every
     /// other way in.
     pub supersedes: Option<i64>,
+    /// This task's own early-ending thresholds, raw JSON of
+    /// `[early_ending]` keys (e.g. `{"no_edit_calls":50}`), set the way
+    /// `max_turns` is; `None` means the operator's `[early_ending]` config
+    /// applies.
+    pub early_ending: Option<String>,
     /// Show the agents the journal of earlier attempts (the default);
     /// false for the control arm of a measurement.
     pub journal: bool,
@@ -517,8 +522,8 @@ pub(super) fn insert_task_row(conn: &Connection, t: &Task) -> Result<i64> {
     conn.retry_execute(
         "INSERT INTO tasks (repo, task, title, base_branch, model, provider, max_turns, max_attempts, timeout_secs, checks_json,
                             state, reason, question_to, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm, explore_json,
-                            project, initiative, shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json, trust, origin, adoption_json, priority, deploy_id, supersedes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43)",
+                            project, initiative, shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json, trust, origin, adoption_json, priority, deploy_id, supersedes, early_ending)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44)",
         params![
             t.repo,
             t.task,
@@ -563,6 +568,7 @@ pub(super) fn insert_task_row(conn: &Connection, t: &Task) -> Result<i64> {
             t.priority,
             t.deploy_id,
             t.supersedes,
+            t.early_ending,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -597,7 +603,8 @@ impl Store {
              concierge_json=?43, proposal_json=?44, proposal_answer=?45, proposal_initiative=?46,
              title=?47, landed_at=?48, hand_landed=?49, shape_text_len=?50, shape_path_tokens=?51,
              shape_tdd=?52, shape_declared_checks=?53, model_source=?54, workflow_source=?55,
-             routing_json=?56, session_id=?57, handoff=?58, deploy_id=?59, supersedes=?60 WHERE id=?1",
+             routing_json=?56, session_id=?57, handoff=?58, deploy_id=?59, supersedes=?60,
+             early_ending=?61 WHERE id=?1",
             params![
                 t.id,
                 t.repo,
@@ -659,6 +666,7 @@ impl Store {
                 t.handoff,
                 t.deploy_id,
                 t.supersedes,
+                t.early_ending,
             ],
         )?;
         if !matches!(t.state, TaskState::Running | TaskState::Queued) {
@@ -1199,9 +1207,38 @@ mod tests {
         t.shape_path_tokens = 3;
         t.shape_tdd = true;
         t.shape_declared_checks = 5;
+        t.early_ending = Some(r#"{"repeats":4}"#.into());
         store.update_task(&t).unwrap();
         let back = store.task(t.id).unwrap().unwrap();
         assert_eq!(format!("{back:?}"), format!("{t:?}"));
+    }
+
+    #[test]
+    fn early_ending_round_trips_its_json_and_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("t.db")).unwrap();
+        let task = |early_ending: Option<String>| Task {
+            repo: "/r".into(),
+            task: "do".into(),
+            base_branch: "main".into(),
+            model: "sonnet".into(),
+            max_turns: 1,
+            max_attempts: 1,
+            timeout_secs: 60,
+            state: TaskState::Queued,
+            created_at: 1,
+            workflow: "direct".into(),
+            early_ending,
+            ..Default::default()
+        };
+        let set = store
+            .insert_task(&task(Some(r#"{"no_edit_calls":50}"#.into())))
+            .unwrap();
+        let unset = store.insert_task(&task(None)).unwrap();
+        let back = store.task(set).unwrap().unwrap().early_ending;
+        assert_eq!(back.as_deref(), Some(r#"{"no_edit_calls":50}"#));
+        // NULL: the operator's `[early_ending]` config applies.
+        assert_eq!(store.task(unset).unwrap().unwrap().early_ending, None);
     }
 
     #[test]

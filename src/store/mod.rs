@@ -275,6 +275,7 @@ const TASK_COLUMNS: &[&str] = &[
     "adoption_json",
     "priority",
     "supersedes",
+    "early_ending",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -380,6 +381,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         adoption: adoption::from_column(&r.get::<_, String>("adoption_json")?),
         priority: r.get("priority")?,
         supersedes: r.get("supersedes")?,
+        early_ending: r.get("early_ending")?,
     })
 }
 
