@@ -328,7 +328,7 @@ const ALLOWLIST: &[(&str, &str, usize, &str)] = &[
         "test fixture",
     ),
     (
-        "tests/e2e/jobs.rs",
+        "tests/e2e/jobs_measure.rs",
         "engineering_weekly_dry_run_measures_and_files_nothing",
         146,
         "test fixture",
