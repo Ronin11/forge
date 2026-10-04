@@ -115,6 +115,8 @@ fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
     let repo_cache = root.path().join("forge-home/cache/abc123");
 
     let sandbox = Sandbox {
+        limits: ResourceLimits::default(),
+        scope_runner: None,
         bwrap: PathBuf::from("/usr/bin/bwrap"),
         home: PathBuf::from("/home/attempt"),
         agent_dirs: vec![PathBuf::from("/opt/agent")],
@@ -156,7 +158,10 @@ fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
     let ro_extra = pos("--ro-bind-try", "/opt/toolchain");
     let worktree_bind = pos("--bind", worktree.to_str().unwrap());
     let overlay_src = pos("--overlay-src", npm_cache.to_str().unwrap());
-    let tmp_overlay = pos("--tmp-overlay", npm_cache.to_str().unwrap());
+    assert!(!args.iter().any(|a| a == "--tmp-overlay"));
+    let tmp_overlay = args.iter().position(|a| a == "--overlay").unwrap();
+    assert_eq!(args[tmp_overlay + 3], npm_cache.to_str().unwrap());
+    assert!(Path::new(&args[tmp_overlay + 1]).starts_with(overlay_state_dir(&worktree)));
     let cache_bind = pos("--bind-try", repo_cache.to_str().unwrap());
 
     assert!(tmpfs_home < ro_agent, "tmpfs $HOME must precede ro binds");
@@ -262,6 +267,10 @@ fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
 
     discard_provider_state(&worktree);
     assert!(!provider_dir.exists(), "provider state must be discarded");
+    assert!(
+        !overlay_state_dir(&worktree).exists(),
+        "disk uppers must be discarded"
+    );
 }
 
 #[test]
@@ -338,6 +347,8 @@ fn without_overlay_support_caches_are_not_bound() {
 /// caller never names gets none.
 fn test_sandbox(model: &str) -> Sandbox {
     let sb = Sandbox {
+        limits: ResourceLimits::default(),
+        scope_runner: None,
         bwrap: PathBuf::from("/usr/bin/bwrap"),
         home: PathBuf::from("/home/attempt"),
         agent_dirs: vec![],
@@ -689,6 +700,7 @@ fn relay_detect_strips_deleted_suffix() {
     let sb = Sandbox::detect(
         "/bin/sh",
         &crate::config::SandboxPaths {
+            limits: crate::config::SandboxLimits::default(),
             ro: Vec::new(),
             rw: Vec::new(),
             dependency_cache: None,
