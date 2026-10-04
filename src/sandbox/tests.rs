@@ -800,7 +800,7 @@ fn registered_task_directories_share_declarations_and_cache_grants() {
         assert!(names.contains(&"registry.npmjs.org".to_string()));
         assert!(names.contains(&"example.org".to_string()));
         assert_eq!(sb.cache_dir_for(dir), Some(cache.clone()));
-        let cmd = sb.command(dir, &["true".into()], &[], &policy, Phase::Check);
+        let cmd = sb.command(dir, &["true".into()], &[], None, Phase::Check);
         assert!(args_of(&cmd).windows(3).any(|args| {
             args == [
                 "--ro-bind-try",
@@ -812,13 +812,7 @@ fn registered_task_directories_share_declarations_and_cache_grants() {
     let other = Path::new("/work/2");
     assert!(sb.policy_for(other).rules().is_empty());
     assert_eq!(sb.cache_dir_for(other), None);
-    let cmd = sb.command(
-        other,
-        &["true".into()],
-        &[],
-        &sb.policy_for(other),
-        Phase::Check,
-    );
+    let cmd = sb.command(other, &["true".into()], &[], None, Phase::Check);
     assert!(!args_of(&cmd).contains(&granted.display().to_string()));
 }
 
