@@ -686,6 +686,45 @@ fn queue_triggered(args: QueueTriggered<'_>) -> Result<i64> {
 /// through. `recorded` maps a directive step's action to the output that
 /// stands in for its model call; only a replay passes any.
 async fn run_now(args: RunNow<'_>) -> Result<()> {
+    let f = args.f;
+    let job_id = args.job_id;
+    let project = args.project;
+    let workflow = args.workflow;
+    let repo = args.repo;
+    let dry_run = args.dry_run;
+    let result = run_now_inner(args).await;
+    if let Err(e) = &result
+        && e.downcast_ref::<crate::egress::SocketError>().is_some()
+    {
+        // No child ran for this step. Do not invent a check result or apply
+        // the workflow's task-failure retries to a broken execution environment.
+        let cost = f.store.job_step_cost(job_id)?;
+        f.store
+            .finish_job(job_id, unix_now(), JobState::NeedsHuman, Some(cost), "[]")?;
+        f.report.emit(
+            0,
+            Event::JobFinished {
+                project,
+                workflow,
+                job_id,
+                state: JobState::NeedsHuman.as_str(),
+                cost_usd: cost,
+            },
+        );
+        if !dry_run {
+            failure::ask(
+                f,
+                project,
+                &repo.to_string_lossy(),
+                None,
+                format!("job {job_id} ({workflow}) environment fault: {e:#}"),
+            )?;
+        }
+    }
+    result
+}
+
+async fn run_now_inner(args: RunNow<'_>) -> Result<()> {
     let RunNow {
         f,
         job_id,
@@ -938,6 +977,9 @@ async fn run_now(args: RunNow<'_>) -> Result<()> {
                     let d = match ran {
                         Ok(d) => d,
                         Err(e) => {
+                            if e.downcast_ref::<crate::egress::SocketError>().is_some() {
+                                return Err(e);
+                            }
                             failed = true;
                             verdict.push(checks::CheckResult {
                                 level: "OP".to_string(),
@@ -1194,6 +1236,13 @@ pub(crate) use recovery::recover_interrupted;
 /// (docs/JOBS.md step 1d: "a job's failure never affects a task").
 pub async fn drive(f: Arc<Forge>, job_id: i64) -> JobState {
     if let Err(e) = run_claimed(&f, job_id).await {
+        // The common runner already recorded an environment fault and notified
+        // the operator. Keep that terminal state and its empty check verdict.
+        if let Ok(Some(job)) = f.store.job(job_id)
+            && job.finished_at.is_some()
+        {
+            return job.state;
+        }
         let _ = f.store.finish_job(
             job_id,
             unix_now(),
