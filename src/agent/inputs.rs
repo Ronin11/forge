@@ -44,6 +44,21 @@ pub(super) struct RunJsonPhase<'a> {
         &'a mut (dyn FnMut(&Value, &mut Outcome, &mut Watch) -> Option<String> + Send + 'a),
 }
 
+/// A spawned agent child and what `drive_json_child` needs to pump its
+/// stdin/stdout/stderr to completion: the same sinks as `RunJsonPhase`,
+/// minus the argv/env already consumed spawning `child`.
+pub(super) struct DriveJsonChild<'a> {
+    pub(super) l: &'a Launch<'a>,
+    pub(super) prompt: &'a str,
+    pub(super) start: &'a Instant,
+    pub(super) log: &'a mut CappedLog,
+    pub(super) out: &'a mut Outcome,
+    pub(super) watch: &'a mut Watch,
+    pub(super) apply:
+        &'a mut (dyn FnMut(&Value, &mut Outcome, &mut Watch) -> Option<String> + Send + 'a),
+    pub(super) child: tokio::process::Child,
+}
+
 /// A Copilot phase with its output sinks and cumulative token accounting.
 pub(super) struct RunCopilotPhase<'a> {
     pub(super) l: &'a Launch<'a>,

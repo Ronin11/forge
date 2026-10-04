@@ -23,7 +23,7 @@ pub(super) use chat::truncated_first_line;
 use claude::{apply_claude_result, claude_argv, run_claude};
 use codex::{apply_codex_event, run_codex};
 use copilot::{CopilotTally, apply_copilot_event, run_copilot};
-use inputs::{AgentRun, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
+use inputs::{AgentRun, DriveJsonChild, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
 pub use jev::*;
 pub(crate) use relaunch::Relaunch;
 #[cfg(test)]
@@ -416,6 +416,26 @@ pub fn command_under(
     }
 }
 
+/// The name of the first argument or environment value carrying a NUL
+/// byte, if any: `Command::spawn` turns that into the bare OS error "nul
+/// byte found in provided data" (building the `CString` an exec needs
+/// fails), which names neither the task nor the field at fault. Checked
+/// before every launch — an agent's own and a check's or operation's alike
+/// (`checks::launch`) — since a task's text is the one value here an
+/// operator does not control: it can arrive with an embedded NUL inlined
+/// from a reviewer's note (see `verify::review::collect`).
+pub(crate) fn nul_byte_culprit<'a>(
+    argv: &'a [String],
+    env: &'a [(String, String)],
+) -> Option<&'a str> {
+    if let Some(a) = argv.iter().find(|a| a.contains('\0')) {
+        return Some(a.as_str());
+    }
+    env.iter()
+        .find(|(_, v)| v.contains('\0'))
+        .map(|(k, _)| k.as_str())
+}
+
 /// Spawns the command `make` builds, retrying briefly on `ETXTBSY`. A
 /// script just written and chmod'd can still read as busy for a few
 /// milliseconds after the writer closes it — a kernel race distinct from
@@ -624,6 +644,9 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
         report,
         log,
     } = args;
+    if let Some(reason) = nul_byte_culprit(argv, identity) {
+        anyhow::bail!("task {task_id}: {reason} contains a NUL byte and cannot start {bin}");
+    }
     prepare_in(sandbox, worktree, identity, Phase::Agent).await;
     let mut child = spawn_retrying_etxtbsy(|| {
         let mut c = Command::from(command_in(sandbox, worktree, argv, identity, Phase::Agent)?);
@@ -950,8 +973,15 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
         watch,
         apply,
     } = args;
+    if let Some(reason) = nul_byte_culprit(argv, extra_env) {
+        anyhow::bail!(
+            "task {}: {reason} contains a NUL byte and cannot start {}",
+            l.task_id,
+            argv[0]
+        );
+    }
     prepare_in(l.sandbox, l.worktree, extra_env, Phase::Agent).await;
-    let mut child = spawn_retrying_etxtbsy(|| {
+    let child = spawn_retrying_etxtbsy(|| {
         let mut c = Command::from(command_in(
             l.sandbox,
             l.worktree,
@@ -968,6 +998,34 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
     .await
     .with_context(|| format!("spawning {}", argv[0]))?;
 
+    drive_json_child(DriveJsonChild {
+        l,
+        prompt,
+        start,
+        log,
+        out,
+        watch,
+        apply,
+        child,
+    })
+    .await
+}
+
+/// Drives a spawned agent child to exit or timeout, writing every raw line
+/// to `log` and folding each JSON frame into `out`/`watch` through `apply`.
+/// Split out of `run_json_phase_once` so the spawn and the drive each stay
+/// within the function-length ceiling.
+async fn drive_json_child(args: DriveJsonChild<'_>) -> Result<(Option<i32>, bool, String)> {
+    let DriveJsonChild {
+        l,
+        prompt,
+        start,
+        log,
+        out,
+        watch,
+        apply,
+        mut child,
+    } = args;
     let mut stdin = child.stdin.take().context("agent stdin")?;
     let write_prompt = async {
         // Drain output concurrently; early exits can close the input pipe.
