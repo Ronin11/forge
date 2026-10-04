@@ -130,7 +130,7 @@ pub struct Sandbox {
     /// only for the test constructor, whose relay binary does not exist.
     relay: bool,
     /// The proxies this process runs, one per distinct policy.
-    proxies: Arc<Proxies>,
+    pub(crate) proxies: Arc<Proxies>,
     /// A repository's declared egress, by the worktree its attempts run in
     /// (see `set_egress`); a worktree not in here gets the model endpoints
     /// alone.
@@ -151,6 +151,15 @@ pub struct Sandbox {
     /// host cache paths bound read-only. Kept apart from `declared` so
     /// re-reading the repository's config never drops a grant.
     granted: Mutex<BTreeMap<PathBuf, Granted>>,
+    /// One task's own directories, other than its worktree, registered by
+    /// `register_task`: its tests contract's own clone, its scratch
+    /// directory. These are siblings of the worktree on disk, not
+    /// descendants, so the ancestor walk `declared`, `caches` and
+    /// `granted` are read through alone would never connect a grant
+    /// applied to one to the others (E1-22). Maps each such directory to
+    /// the worktree it belongs to, so `resolve` can key those three maps
+    /// by task rather than by path.
+    directories: Mutex<BTreeMap<PathBuf, PathBuf>>,
 }
 
 /// One worktree's environment grants.
@@ -478,6 +487,7 @@ impl Sandbox {
             caches: Mutex::new(BTreeMap::new()),
             targets: Mutex::new(BTreeMap::new()),
             granted: Mutex::new(BTreeMap::new()),
+            directories: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -492,6 +502,35 @@ impl Sandbox {
             .partition(|d| dirs.iter().any(|p| d.starts_with(p) && d != p))
     }
 
+    /// Register the directories one task's own steps run in, besides
+    /// `worktree` itself: the tests contract's own clone, its scratch
+    /// directory. Both are siblings of `worktree` on disk (named
+    /// `<worktree>-tests`, `<worktree>-red`), not descendants, so without
+    /// this a grant applied to `worktree` would never reach them (E1-22).
+    /// The caller names the siblings; this layer only aliases whatever
+    /// paths it is given to `worktree`. Idempotent: safe to call again
+    /// with the same directories, e.g. once per attempt.
+    pub fn register_task(&self, worktree: &Path, siblings: &[PathBuf]) {
+        let mut dirs = self.directories.lock().unwrap();
+        let worktree = worktree.to_path_buf();
+        for dir in siblings {
+            dirs.insert(dir.clone(), worktree.clone());
+        }
+        dirs.insert(worktree.clone(), worktree);
+    }
+
+    /// `path`'s task, if `path` (or an ancestor of it) was registered by
+    /// `register_task` as one of a task's own directories; `path` itself
+    /// otherwise. Lets `declared`, `caches` and `granted` be keyed by task
+    /// rather than by path, so a grant applied through any of a task's
+    /// directories reaches the rest.
+    fn resolve(&self, path: &Path) -> PathBuf {
+        let dirs = self.directories.lock().unwrap();
+        path.ancestors()
+            .find_map(|d| dirs.get(d).cloned())
+            .unwrap_or_else(|| path.to_path_buf())
+    }
+
     /// Declare what attempts running in `worktree` may reach besides the
     /// model endpoints: the repository's `[sandbox] egress`, read from its
     /// trusted base. Called again whenever that config is re-read.
@@ -499,7 +538,7 @@ impl Sandbox {
         self.declared
             .lock()
             .unwrap()
-            .insert(worktree.to_path_buf(), rules.to_vec());
+            .insert(self.resolve(worktree), rules.to_vec());
     }
 
     /// Declare the model endpoints attempts running in `worktree` may
@@ -516,8 +555,9 @@ impl Sandbox {
     /// Grant attempts in `worktree` one more host. `false` when it was
     /// already granted, so a caller re-running on a grant cannot loop.
     pub fn grant_host(&self, worktree: &Path, rule: Rule) -> bool {
+        let key = self.resolve(worktree);
         let mut g = self.granted.lock().unwrap();
-        let hosts = &mut g.entry(worktree.to_path_buf()).or_default().hosts;
+        let hosts = &mut g.entry(key).or_default().hosts;
         if hosts.iter().any(|r| r.to_string() == rule.to_string()) {
             return false;
         }
@@ -528,8 +568,9 @@ impl Sandbox {
     /// Bind `path` read-only into attempts in `worktree`. `false` when it
     /// was already granted.
     pub fn grant_ro(&self, worktree: &Path, path: PathBuf) -> bool {
+        let key = self.resolve(worktree);
         let mut g = self.granted.lock().unwrap();
-        let ro = &mut g.entry(worktree.to_path_buf()).or_default().ro;
+        let ro = &mut g.entry(key).or_default().ro;
         if ro.contains(&path) {
             return false;
         }
@@ -544,17 +585,18 @@ impl Sandbox {
         let provider_hosts = self.provider_hosts.lock().unwrap();
         let declared = self.declared.lock().unwrap();
         let granted = self.granted.lock().unwrap();
+        let key = self.resolve(worktree);
         let model = worktree
             .ancestors()
             .find_map(|d| provider_hosts.get(d))
             .into_iter()
             .flatten();
-        let extra = worktree
+        let extra = key
             .ancestors()
             .find_map(|d| declared.get(d))
             .into_iter()
             .flatten();
-        let more = worktree
+        let more = key
             .ancestors()
             .find_map(|d| granted.get(d))
             .into_iter()
@@ -577,7 +619,7 @@ impl Sandbox {
         self.caches
             .lock()
             .unwrap()
-            .insert(worktree.to_path_buf(), dir);
+            .insert(self.resolve(worktree), dir);
     }
 
     /// The real config directory of `shape`'s CLI, which its login is
@@ -619,7 +661,8 @@ impl Sandbox {
 
     fn cache_dir_for(&self, worktree: &Path) -> Option<PathBuf> {
         let caches = self.caches.lock().unwrap();
-        worktree.ancestors().find_map(|d| caches.get(d)).cloned()
+        let key = self.resolve(worktree);
+        key.ancestors().find_map(|d| caches.get(d)).cloned()
     }
 
     /// A sandbox whose bwrap is `bwrap` (a fake, in a test) and whose every
@@ -648,6 +691,7 @@ impl Sandbox {
             caches: Mutex::new(BTreeMap::new()),
             targets: Mutex::new(BTreeMap::new()),
             granted: Mutex::new(BTreeMap::new()),
+            directories: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -664,25 +708,12 @@ impl Sandbox {
             worktree,
             argv,
             env,
-            &self.policy_for(worktree),
+            self.proxies
+                .socket_for(&self.policy_for(worktree))
+                .ok()
+                .as_deref(),
             Phase::Agent,
         )
-    }
-
-    /// Whether the proxy socket this worktree's launch will bind in is
-    /// there: an error naming it when not, so the launch is an environment
-    /// fault rather than a `bwrap` failure the agent is blamed for.
-    pub fn check_socket(&self, worktree: &Path) -> Result<()> {
-        // No runtime means no route, which `command` already tolerates.
-        let Ok(socket) = self.proxies.socket_for(&self.policy_for(worktree)) else {
-            return Ok(());
-        };
-        anyhow::ensure!(
-            socket.exists(),
-            "egress proxy socket {} is missing",
-            socket.display()
-        );
-        Ok(())
     }
 
     fn wrapper_script(&self, relay_enabled: bool, refused: Option<&Path>, phase: Phase) -> String {
@@ -816,7 +847,7 @@ impl Sandbox {
         worktree: &Path,
         argv: &[String],
         env: &[(String, String)],
-        policy: &Policy,
+        socket: Option<&Path>,
         phase: Phase,
     ) -> Command {
         let mut cmd = Command::new(&self.bwrap);
@@ -825,6 +856,9 @@ impl Sandbox {
             "--new-session",
             "--unshare-pid",
             "--unshare-net",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-cgroup-try",
             "--proc",
             "/proc",
             "--dev",
@@ -885,13 +919,6 @@ impl Sandbox {
         // The route out: the proxy for this worktree's policy, on a socket
         // bound in beside the seed. Without a runtime to run a proxy on
         // there is no route, and the namespace has nothing but loopback.
-        let socket = match self.proxies.socket_for(policy) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                eprintln!("egress: no route out for {}: {e:#}", worktree.display());
-                None
-            }
-        };
         if let Some(s) = &socket {
             cmd.arg("--bind").arg(s).arg(egress::SANDBOX_SOCKET);
         }
@@ -908,7 +935,8 @@ impl Sandbox {
         }
         // Host caches the environment policy granted this worktree.
         let granted = self.granted.lock().unwrap();
-        if let Some(g) = worktree.ancestors().find_map(|d| granted.get(d)) {
+        let key = self.resolve(worktree);
+        if let Some(g) = key.ancestors().find_map(|d| granted.get(d)) {
             for d in &g.ro {
                 cmd.arg("--ro-bind-try").arg(d).arg(d);
             }

@@ -113,156 +113,15 @@ pub async fn run_attempt(
     } = args;
     let contract = step.action.contract;
     let repo = Path::new(&t.repo);
-    // The initiative's outcome, when this task belongs to one: placed in
-    // every step's prompt as "Why this task exists" (see
-    // docs/PROJECTS.md, "Initiative").
-    let outcome = t
-        .initiative
-        .and_then(|id| f.store.initiative(id).ok().flatten())
-        .map(|i| i.outcome);
-    let journal = if t.journal && contract != Contract::Review {
-        let j = crate::journal::journal_for(f, t)?;
-        (!j.is_empty()).then_some(j)
-    } else {
-        None
-    };
-    let context = (t.context_enabled && !t.context.is_empty()).then(|| t.context.clone());
-    let common = Inputs {
-        feedback: feedback.map(str::to_string),
-        task_checks: t.checks.clone(),
-        protected: cfg.protected.clone(),
-        namespace: cfg.namespace.clone(),
-        resumed: resume
-            .filter(|r| r.fresh_from.is_none())
-            .map(|r| r.session.clone()),
-        continuation: resume.map(|r| {
-            if r.fresh_from.is_some() {
-                "fresh"
-            } else {
-                "resume"
-            }
-            .to_string()
-        }),
-        journal: journal.clone(),
-        context: context.clone(),
-        ..Default::default()
-    };
-    let spec = match contract {
-        Contract::Code => {
-            let refs = overlay_refs(repo, t.id, Some(&t.verify_base)).await;
-            Spec {
-                dir: PathBuf::from(&t.worktree),
-                prompt: code_prompt(crate::prompts::DirectivePrompt {
-                    t,
-                    cfg,
-                    step,
-                    n: attempt_no,
-                    feedback,
-                    journal: journal.as_deref(),
-                    outcome: outcome.as_deref(),
-                }),
-                inputs: Inputs {
-                    interface: (!t.interface.is_empty()).then(|| t.interface.clone()),
-                    plan: (!t.plan.is_empty()).then(|| t.plan.clone()),
-                    overlay_refs: refs.clone(),
-                    checks_shown: t.show_checks,
-                    ..common
-                },
-                overlay_refs: refs,
-                verify_ref: None,
-                scratch: None,
-            }
-        }
-        Contract::Tests => {
-            // The tests step's own clone of the base, apart from the coder's.
-            let dir = tests_clone_dir(&t.worktree);
-            if !dir.exists() {
-                let base_ref = cfg
-                    .push_remote
-                    .as_ref()
-                    .map(|n| format!("refs/remotes/{n}/{}", t.base_branch));
-                git::clone_task(
-                    repo,
-                    &t.base_branch,
-                    &dir,
-                    &format!("verify/{}", t.id),
-                    base_ref.as_deref(),
-                    Some(&t.base_sha),
-                )
-                .await
-                .env()?;
-            }
-            Spec {
-                dir,
-                prompt: tests_prompt(crate::prompts::DirectivePrompt {
-                    t,
-                    cfg,
-                    step,
-                    n: attempt_no,
-                    feedback,
-                    journal: journal.as_deref(),
-                    outcome: outcome.as_deref(),
-                }),
-                inputs: common,
-                overlay_refs: Vec::new(),
-                verify_ref: Some(format!("verify/{}", t.id)),
-                scratch: Some(scratch_dir(&t.worktree)),
-            }
-        }
-        Contract::Plan if step.action.name == "interview" => Spec {
-            dir: PathBuf::from(&t.worktree),
-            prompt: interview_prompt(
-                t,
-                cfg,
-                step,
-                &f.store.decisions_in_lineage(t.id).task()?,
-                outcome.as_deref(),
-            ),
-            inputs: common,
-            overlay_refs: Vec::new(),
-            verify_ref: None,
-            scratch: None,
-        },
-        Contract::Plan if step.action.name == "concierge" => Spec {
-            dir: PathBuf::from(&t.worktree),
-            prompt: concierge_prompt(f, t, cfg, step, outcome.as_deref()).task()?,
-            inputs: common,
-            overlay_refs: Vec::new(),
-            verify_ref: None,
-            scratch: None,
-        },
-        Contract::Plan => Spec {
-            dir: PathBuf::from(&t.worktree),
-            prompt: plan_prompt(crate::prompts::DirectivePrompt {
-                t,
-                cfg,
-                step,
-                n: attempt_no,
-                feedback,
-                journal: journal.as_deref(),
-                outcome: outcome.as_deref(),
-            }),
-            inputs: common,
-            overlay_refs: Vec::new(),
-            verify_ref: None,
-            scratch: None,
-        },
-        Contract::Review => Spec {
-            dir: PathBuf::from(&t.worktree),
-            prompt: review_prompt(t, cfg, step, outcome.as_deref(), asked(feedback)),
-            // A review is told nothing of earlier attempts: it judges the
-            // branch as it stands. Feedback owed to it is recorded, not
-            // shown, but for the one ask to inline a reproduction.
-            inputs: Inputs {
-                journal: None,
-                context: None,
-                ..common
-            },
-            overlay_refs: Vec::new(),
-            verify_ref: None,
-            scratch: None,
-        },
-    };
+    // The tests contract's own clone and scratch directory are siblings
+    // of the worktree on disk, not descendants: without registering them
+    // an environment grant applied to the worktree would never reach an
+    // attempt running in either (E1-22).
+    f.register_task_dirs(
+        Path::new(&t.worktree),
+        &[tests_clone_dir(&t.worktree), scratch_dir(&t.worktree)],
+    );
+    let spec = build_spec(f, t, cfg, step, attempt_no, feedback, resume).await?;
     f.allow_egress(&spec.dir, cfg, t.trust, Some(&t.provider));
     if let Some(scratch) = &spec.scratch {
         f.allow_egress(scratch, cfg, t.trust, Some(&t.provider));
@@ -376,6 +235,170 @@ pub async fn run_attempt(
     };
     record(f, &mut a, &spec.dir, &verdict, &outcome, extra).await?;
     Ok((a, verdict, outcome))
+}
+
+/// Build `step`'s contract into a `Spec`: where the agent works, what it
+/// is told, which refs are overlaid, and what the verdict needs.
+async fn build_spec(
+    f: &Forge,
+    t: &Task,
+    cfg: &config::Config,
+    step: &ResolvedStep,
+    attempt_no: i64,
+    feedback: Option<&str>,
+    resume: Option<&Resume>,
+) -> Result<Spec, Fault> {
+    let contract = step.action.contract;
+    let repo = Path::new(&t.repo);
+    // The initiative's outcome, when this task belongs to one: placed in
+    // every step's prompt as "Why this task exists" (see
+    // docs/PROJECTS.md, "Initiative").
+    let outcome = t
+        .initiative
+        .and_then(|id| f.store.initiative(id).ok().flatten())
+        .map(|i| i.outcome);
+    let journal = if t.journal && contract != Contract::Review {
+        let j = crate::journal::journal_for(f, t)?;
+        (!j.is_empty()).then_some(j)
+    } else {
+        None
+    };
+    let context = (t.context_enabled && !t.context.is_empty()).then(|| t.context.clone());
+    let common = Inputs {
+        feedback: feedback.map(str::to_string),
+        task_checks: t.checks.clone(),
+        protected: cfg.protected.clone(),
+        namespace: cfg.namespace.clone(),
+        resumed: resume
+            .filter(|r| r.fresh_from.is_none())
+            .map(|r| r.session.clone()),
+        continuation: resume.map(|r| {
+            if r.fresh_from.is_some() {
+                "fresh"
+            } else {
+                "resume"
+            }
+            .to_string()
+        }),
+        journal: journal.clone(),
+        context: context.clone(),
+        ..Default::default()
+    };
+    let dp = crate::prompts::DirectivePrompt {
+        t,
+        cfg,
+        step,
+        n: attempt_no,
+        feedback,
+        journal: journal.as_deref(),
+        outcome: outcome.as_deref(),
+    };
+    Ok(match contract {
+        Contract::Code => code_spec(dp, repo, common).await,
+        Contract::Tests => tests_spec(dp, repo, common).await?,
+        Contract::Plan if step.action.name == "interview" => Spec {
+            dir: PathBuf::from(&t.worktree),
+            prompt: interview_prompt(
+                t,
+                cfg,
+                step,
+                &f.store.decisions_in_lineage(t.id).task()?,
+                outcome.as_deref(),
+            ),
+            inputs: common,
+            overlay_refs: Vec::new(),
+            verify_ref: None,
+            scratch: None,
+        },
+        Contract::Plan if step.action.name == "concierge" => Spec {
+            dir: PathBuf::from(&t.worktree),
+            prompt: concierge_prompt(f, t, cfg, step, outcome.as_deref()).task()?,
+            inputs: common,
+            overlay_refs: Vec::new(),
+            verify_ref: None,
+            scratch: None,
+        },
+        Contract::Plan => Spec {
+            dir: PathBuf::from(&t.worktree),
+            prompt: plan_prompt(dp),
+            inputs: common,
+            overlay_refs: Vec::new(),
+            verify_ref: None,
+            scratch: None,
+        },
+        Contract::Review => Spec {
+            dir: PathBuf::from(&t.worktree),
+            prompt: review_prompt(t, cfg, step, outcome.as_deref(), asked(feedback)),
+            // A review is told nothing of earlier attempts: it judges the
+            // branch as it stands. Feedback owed to it is recorded, not
+            // shown, but for the one ask to inline a reproduction.
+            inputs: Inputs {
+                journal: None,
+                context: None,
+                ..common
+            },
+            overlay_refs: Vec::new(),
+            verify_ref: None,
+            scratch: None,
+        },
+    })
+}
+
+/// The code contract's `Spec`: the worktree itself, the overlay refs it is
+/// judged by, and the coder's private view of the interface and plan.
+async fn code_spec(dp: crate::prompts::DirectivePrompt<'_>, repo: &Path, common: Inputs) -> Spec {
+    let t = dp.t;
+    let refs = overlay_refs(repo, t.id, Some(&t.verify_base)).await;
+    Spec {
+        dir: PathBuf::from(&t.worktree),
+        prompt: code_prompt(dp),
+        inputs: Inputs {
+            interface: (!t.interface.is_empty()).then(|| t.interface.clone()),
+            plan: (!t.plan.is_empty()).then(|| t.plan.clone()),
+            overlay_refs: refs.clone(),
+            checks_shown: t.show_checks,
+            ..common
+        },
+        overlay_refs: refs,
+        verify_ref: None,
+        scratch: None,
+    }
+}
+
+/// The tests contract's `Spec`: its own clone of the base, apart from the
+/// coder's, cloned once and reused across the step's attempts.
+async fn tests_spec(
+    dp: crate::prompts::DirectivePrompt<'_>,
+    repo: &Path,
+    common: Inputs,
+) -> Result<Spec, Fault> {
+    let t = dp.t;
+    let dir = tests_clone_dir(&t.worktree);
+    if !dir.exists() {
+        let base_ref = dp
+            .cfg
+            .push_remote
+            .as_ref()
+            .map(|n| format!("refs/remotes/{n}/{}", t.base_branch));
+        git::clone_task(
+            repo,
+            &t.base_branch,
+            &dir,
+            &format!("verify/{}", t.id),
+            base_ref.as_deref(),
+            Some(&t.base_sha),
+        )
+        .await
+        .env()?;
+    }
+    Ok(Spec {
+        dir,
+        prompt: tests_prompt(dp),
+        inputs: common,
+        overlay_refs: Vec::new(),
+        verify_ref: Some(format!("verify/{}", t.id)),
+        scratch: Some(scratch_dir(&t.worktree)),
+    })
 }
 
 /// The cursor to store if the attempt verifies, with what this contract

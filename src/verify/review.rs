@@ -77,16 +77,58 @@ fn collect(dir: &Path, rel: &str, out: &mut Vec<ReviewNote>) {
         } else if kind.is_file()
             && let Ok(bytes) = std::fs::read(&path)
         {
-            let mut content =
-                String::from_utf8_lossy(&bytes[..bytes.len().min(NOTE_BYTES)]).into_owned();
-            if bytes.len() > NOTE_BYTES {
-                content.push_str("\n[truncated]");
-            }
+            let note_path = format!("{rel}{name}");
+            let content = if is_text(&bytes) {
+                let mut content =
+                    String::from_utf8_lossy(&bytes[..bytes.len().min(NOTE_BYTES)]).into_owned();
+                if bytes.len() > NOTE_BYTES {
+                    content.push_str("\n[truncated]");
+                }
+                content
+            } else {
+                binary_descriptor(&note_path, bytes.len())
+            };
             out.push(ReviewNote {
-                path: format!("{rel}{name}"),
+                path: note_path,
                 content,
             });
         }
+    }
+}
+
+/// Whether a reviewer's file is worth inlining as text: valid UTF-8 with no
+/// embedded NUL. A NUL survives `String::from_utf8_lossy` unchanged (it is
+/// valid UTF-8 on its own) and breaks anything downstream that carries the
+/// demotion's text as a process argument or environment value — a binary
+/// file such as a screenshot landed this way on four Forge tasks
+/// (2026-09, `render.png`), each failing its follow-up at `setup` with the
+/// OS's own "nul byte found in provided data" rather than anything naming
+/// the task.
+fn is_text(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes).is_ok_and(|s| !s.contains('\0'))
+}
+
+/// What a binary (or NUL-containing) note is attached as instead of its
+/// content: the path, a size a human can read, and that it was not
+/// inlined — never the bytes themselves.
+fn binary_descriptor(path: &str, bytes: usize) -> String {
+    format!("{path}: binary, {}, not inlined", human_bytes(bytes as u64))
+}
+
+fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut size = n as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{n} B")
+    } else if (size - size.round()).abs() < 0.05 {
+        format!("{:.0} {}", size.round(), UNITS[unit])
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
     }
 }
 
@@ -364,5 +406,83 @@ mod tests {
             .is_none()
         );
         assert!(asked(Some("The previous attempt failed verification")).is_none());
+    }
+
+    fn demotion(question: &str, notes: Vec<ReviewNote>) -> Envelope {
+        use crate::envelope::NeedsInput;
+        Envelope {
+            schema_version: 1,
+            summary: String::new(),
+            needs_input: Some(NeedsInput {
+                question: question.into(),
+                tried: String::new(),
+                path: String::new(),
+                kind: Kind::Review,
+                options: Vec::new(),
+                context: String::new(),
+                checkpoint: None,
+                to: None,
+            }),
+            changes: Vec::new(),
+            checks_run: Vec::new(),
+            claims: Vec::new(),
+            review_notes: notes,
+        }
+    }
+
+    /// A PNG under a task's notes directory (as `whole/render.png` landed on
+    /// tasks 1476, 1483, 1487, 1490 and 1567): `collect` never inlines its
+    /// bytes, so the demotion built from it carries no NUL and still names
+    /// the file for a human (or a follow-up task's `setup`) to find.
+    #[test]
+    fn a_binary_review_note_is_attached_by_path_size_and_type_not_content() {
+        let root = tempfile::tempdir().unwrap();
+        let sub = root.path().join("whole");
+        std::fs::create_dir_all(&sub).unwrap();
+        let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00];
+        bytes.extend(std::iter::repeat_n(0xffu8, 128));
+        std::fs::write(sub.join("render.png"), &bytes).unwrap();
+
+        let mut notes = Vec::new();
+        collect(root.path(), "tests/review-notes/1546/", &mut notes);
+        assert_eq!(notes.len(), 1);
+        let note = &notes[0];
+        assert_eq!(note.path, "tests/review-notes/1546/whole/render.png");
+        assert!(!note.content.contains('\0'), "{:?}", note.content);
+        assert!(note.content.contains("render.png"), "{}", note.content);
+        assert!(note.content.contains("binary"), "{}", note.content);
+        assert!(note.content.contains("not inlined"), "{}", note.content);
+
+        let text = demotion(
+            "the exploration world-stage page renders a blank screen",
+            notes,
+        )
+        .demotion_text()
+        .unwrap();
+        assert!(!text.contains('\0'), "{text:?}");
+        assert!(text.contains("render.png"), "{text}");
+    }
+
+    /// A reviewer's own text file is unaffected: `collect` still inlines it
+    /// verbatim, and the demotion carries it in full.
+    #[test]
+    fn a_text_review_note_still_inlines_verbatim() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("repro.py"), "print(1)\n").unwrap();
+
+        let mut notes = Vec::new();
+        collect(root.path(), "tests/review-notes/7/", &mut notes);
+        assert_eq!(
+            notes,
+            vec![ReviewNote {
+                path: "tests/review-notes/7/repro.py".into(),
+                content: "print(1)\n".into(),
+            }]
+        );
+
+        let text = demotion("`repro.py` reproduces the defect", notes)
+            .demotion_text()
+            .unwrap();
+        assert!(text.contains("print(1)"), "{text}");
     }
 }

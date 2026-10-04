@@ -145,7 +145,7 @@ pub async fn run_one(
     sandbox: Option<&Execution>,
     timeout: Duration,
     env: &[(String, String)],
-) -> CheckResult {
+) -> anyhow::Result<CheckResult> {
     run_one_capped(RunOneCapped {
         level,
         name,
@@ -184,10 +184,10 @@ fn save_full_log(dir: &Path, level: &str, name: &str, bytes: &[u8]) -> Option<St
 /// As `run_one`, keeping `cap_bytes` of merged and of stdout-alone output
 /// instead of the default tail. An operation with `output = "full"` asks
 /// for `FULL_OUTPUT_BYTES` here.
-pub async fn run_one_capped(args: RunOneCapped<'_>) -> CheckResult {
+pub async fn run_one_capped(args: RunOneCapped<'_>) -> anyhow::Result<CheckResult> {
     let mut relaunch = crate::agent::Relaunch::default();
     loop {
-        let r = run_one_capped_once(&args).await;
+        let r = run_one_capped_once(&args).await?;
         // A check that ran and failed has its stderr merged into `tail`;
         // a launch that bwrap lost never ran the command at all.
         let wall = Duration::from_millis(r.ms as u64);
@@ -195,12 +195,12 @@ pub async fn run_one_capped(args: RunOneCapped<'_>) -> CheckResult {
             eprintln!("{}: {}", args.name, relaunch.note());
             continue;
         }
-        return r;
+        return Ok(r);
     }
 }
 
 /// Refuse unenforceable policies before constructing a child with its secrets.
-async fn launch(args: &RunOneCapped<'_>) -> Result<tokio::process::Child, String> {
+async fn launch(args: &RunOneCapped<'_>) -> anyhow::Result<tokio::process::Child> {
     let RunOneCapped {
         sandbox,
         cwd,
@@ -210,7 +210,17 @@ async fn launch(args: &RunOneCapped<'_>) -> Result<tokio::process::Child, String
         ..
     } = *args;
     if egress.is_some() && !sandbox.is_some_and(|s| s.guarantees(cwd).egress_bounded) {
-        return Err("declared secrets or egress require a network-isolating executor".into());
+        anyhow::bail!("declared secrets or egress require a network-isolating executor");
+    }
+    if let Some(reason) = crate::agent::nul_byte_culprit(argv, env) {
+        let task_id = env
+            .iter()
+            .find(|(k, _)| k == "FORGE_TASK_ID")
+            .map(|(_, v)| v.as_str());
+        return Err(match task_id {
+            Some(id) => anyhow::anyhow!("task {id}: {reason} contains a NUL byte"),
+            None => anyhow::anyhow!("{reason} contains a NUL byte"),
+        });
     }
     crate::agent::prepare_in(sandbox, cwd, env, crate::sandbox::Phase::Check).await;
     let mut std_cmd = crate::agent::command_under(
@@ -220,7 +230,7 @@ async fn launch(args: &RunOneCapped<'_>) -> Result<tokio::process::Child, String
         env,
         egress,
         crate::sandbox::Phase::Check,
-    );
+    )?;
     // Unsandboxed checks get their own process group so a backgrounded
     // child can be killed with them; bwrap's --new-session does the same.
     std_cmd.process_group(0);
@@ -230,11 +240,11 @@ async fn launch(args: &RunOneCapped<'_>) -> Result<tokio::process::Child, String
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| e.to_string())
+        .map_err(Into::into)
 }
 
 /// One launch of `run_one_capped`, without the bwrap relaunch.
-async fn run_one_capped_once(args: &RunOneCapped<'_>) -> CheckResult {
+async fn run_one_capped_once(args: &RunOneCapped<'_>) -> anyhow::Result<CheckResult> {
     let RunOneCapped {
         level,
         name,
@@ -252,10 +262,11 @@ async fn run_one_capped_once(args: &RunOneCapped<'_>) -> CheckResult {
     let child = launch(args).await;
     let mut child = match child {
         Ok(c) => c,
+        Err(e) if e.downcast_ref::<crate::egress::SocketError>().is_some() => return Err(e),
         Err(e) => {
             r.tail = format!("could not start: {e}");
             r.ms = start.elapsed().as_millis();
-            return r;
+            return Ok(r);
         }
     };
     let pid = child.id();
@@ -336,7 +347,7 @@ async fn run_one_capped_once(args: &RunOneCapped<'_>) -> CheckResult {
         }
     }
     r.ms = start.elapsed().as_millis();
-    r
+    Ok(r)
 }
 
 /// The last `n` lines, for display and feedback.
@@ -367,7 +378,8 @@ mod tests {
             full_log_dir: None,
             egress: None,
         })
-        .await;
+        .await
+        .unwrap();
         (r, crate::agent::launches(&counter))
     }
 
@@ -422,7 +434,8 @@ mod tests {
             Duration::from_millis(500),
             &[],
         )
-        .await;
+        .await
+        .unwrap();
         assert!(r.timed_out);
         assert!(mark.exists(), "the EXIT trap did not run");
     }
@@ -445,7 +458,8 @@ mod tests {
             Duration::from_secs(20),
             &[],
         )
-        .await;
+        .await
+        .unwrap();
         assert!(
             start.elapsed() < Duration::from_secs(10),
             "took {:?}",
@@ -475,7 +489,8 @@ mod tests {
             Duration::from_secs(5),
             &env,
         )
-        .await;
+        .await
+        .unwrap();
         assert!(r.ok);
         assert_eq!(r.stdout, "out-1\n");
         assert!(
@@ -510,7 +525,8 @@ mod tests {
             full_log_dir: Some(logs.path()),
             egress: None,
         })
-        .await;
+        .await
+        .unwrap();
         assert_eq!(r.exit, Some(1));
         assert!(!r.ok);
         assert_eq!(r.failing_tests, vec!["TestBig".to_string()]);
