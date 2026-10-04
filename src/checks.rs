@@ -212,6 +212,16 @@ async fn launch(args: &RunOneCapped<'_>) -> Result<tokio::process::Child, String
     if egress.is_some() && !sandbox.is_some_and(|s| s.guarantees(cwd).egress_bounded) {
         return Err("declared secrets or egress require a network-isolating executor".into());
     }
+    if let Some(reason) = crate::agent::nul_byte_culprit(argv, env) {
+        let task_id = env
+            .iter()
+            .find(|(k, _)| k == "FORGE_TASK_ID")
+            .map(|(_, v)| v.as_str());
+        return Err(match task_id {
+            Some(id) => format!("task {id}: {reason} contains a NUL byte"),
+            None => format!("{reason} contains a NUL byte"),
+        });
+    }
     crate::agent::prepare_in(sandbox, cwd, env, crate::sandbox::Phase::Check).await;
     let mut std_cmd = crate::agent::command_under(
         sandbox,
