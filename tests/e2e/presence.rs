@@ -67,7 +67,7 @@ fn a_fake_source_commands_transitions_move_the_recorded_state_and_call_a_fake_sy
     let plugin_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/presence");
     install_and_enable(&e, &plugin_src);
 
-    let scratch = tempfile::tempdir().unwrap();
+    let scratch = disk_tempdir();
     let source = scratch.path().join("fake-source.sh");
     write_exec(&source, FAKE_SOURCE);
     std::fs::write(
@@ -88,7 +88,7 @@ fn a_fake_source_commands_transitions_move_the_recorded_state_and_call_a_fake_sy
         std::env::var("PATH").unwrap_or_default()
     );
 
-    let fake_home = tempfile::tempdir().unwrap();
+    let fake_home = crate::support::disk_tempdir();
     let calls_log = fake_home.path().join("systemctl-calls.log");
 
     let mut worker = Worker::spawn(
@@ -143,7 +143,7 @@ fn doctor_reports_the_presence_row_once_a_state_is_written() {
     let plugin_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/presence");
     install_and_enable(&e, &plugin_src);
 
-    let scratch = tempfile::tempdir().unwrap();
+    let scratch = disk_tempdir();
     let source = scratch.path().join("fake-source.sh");
     write_exec(&source, "#!/bin/sh\nsleep 1000\n");
     std::fs::write(
@@ -163,7 +163,7 @@ fn doctor_reports_the_presence_row_once_a_state_is_written() {
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let fake_home = tempfile::tempdir().unwrap();
+    let fake_home = crate::support::disk_tempdir();
 
     let mut worker = Worker::spawn(
         e.cmd("ok.sh")
@@ -207,18 +207,18 @@ fn doctor_reports_the_presence_row_once_a_state_is_written() {
 /// `IDLE_QUOTA` must not linger once the transition to idle happens.
 #[test]
 fn apply_idle_clears_a_quota_that_only_the_active_state_configures() {
-    let plugin_dir = tempfile::tempdir().unwrap();
+    let plugin_dir = disk_tempdir();
     std::fs::write(plugin_dir.path().join("config"), "ACTIVE_QUOTA=200\n").unwrap();
-    let state_dir = tempfile::tempdir().unwrap();
+    let state_dir = disk_tempdir();
 
-    let bin = tempfile::tempdir().unwrap();
+    let bin = disk_tempdir();
     write_exec(&bin.path().join("systemctl"), FAKE_SYSTEMCTL);
     let path = format!(
         "{}:{}",
         bin.path().display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let fake_home = tempfile::tempdir().unwrap();
+    let fake_home = crate::support::disk_tempdir();
     let calls_log = fake_home.path().join("systemctl-calls.log");
 
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/presence/presence.sh");

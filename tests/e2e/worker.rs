@@ -413,7 +413,7 @@ fn doctor_warns_about_a_held_initiative_and_names_it() {
         .success()
     );
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = disk_tempdir();
     let file = dir.path().join("tasks.txt");
     // Two independent tasks: the first lands and spends the whole
     // budget, the second is left queued behind the hold.

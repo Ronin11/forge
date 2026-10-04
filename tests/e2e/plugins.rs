@@ -1483,7 +1483,7 @@ fn the_signal_plugin_routes_a_contacts_message_through_the_concierge() {
         .success()
     );
 
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = disk_tempdir();
     let plugin_dir = tmp.path().join("plugin");
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&plugin_dir).unwrap();
@@ -1667,7 +1667,7 @@ struct TwilioFixture {
 /// Twilio account seeded with two available numbers, an empty owned
 /// list, and a $1.00/mo local price.
 fn setup_twilio(config_extra: &str) -> TwilioFixture {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = disk_tempdir();
     let plugin_dir = dir.path().join("plugin");
     let state_dir = dir.path().join("state");
     let fake_dir = dir.path().join("fake");

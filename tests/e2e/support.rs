@@ -306,7 +306,7 @@ pub fn disk_tempdir() -> tempfile::TempDir {
 
 impl Env {
     pub fn new() -> Env {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = disk_tempdir();
         let home = dir.path().join("home");
         let repo = dir.path().join("repo");
         let origin = dir.path().join("origin.git");

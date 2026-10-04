@@ -72,7 +72,7 @@ fn event_cursors_report_resync_when_history_is_unavailable() {
 #[test]
 fn notify_persists_reported_cursor_and_uses_it_after_restart() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = disk_tempdir();
     let fake = dir.path().join("forge");
     fs::write(
         &fake,
@@ -194,7 +194,7 @@ fn reference_plugins_exit_non_zero_on_an_empty_offset_or_a_failed_events() {
         let ok_events = "echo '{\"type\":\"note\",\"cursor\":\"8:42\"}'";
 
         // The first snapshot fails: no offset to start from.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = disk_tempdir();
         assert!(
             !run_plugin_with_stub(script, dir.path(), "exit 1", ok_events),
             "{script}: failed snapshot"
@@ -203,7 +203,7 @@ fn reference_plugins_exit_non_zero_on_an_empty_offset_or_a_failed_events() {
 
         // A cursor file left empty by a kill mid-write: fail, and drop it
         // so the restart takes a fresh snapshot and recovers.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = disk_tempdir();
         fs::write(dir.path().join("cursor"), "").unwrap();
         let snapshot = "echo '{\"events_offset\":\"7:999\"}'";
         assert!(
@@ -224,7 +224,7 @@ fn reference_plugins_exit_non_zero_on_an_empty_offset_or_a_failed_events() {
 
         // The events process itself fails after delivering a line: the
         // cursor keeps what was delivered and the plugin exits non-zero.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = disk_tempdir();
         let failing = "echo '{\"type\":\"note\",\"cursor\":\"8:42\"}'; exit 3";
         assert!(
             !run_plugin_with_stub(script, dir.path(), snapshot, failing),
