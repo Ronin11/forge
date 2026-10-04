@@ -230,7 +230,14 @@ async fn go_live(
         );
         return false;
     };
-    let check = operation::run_self_live_check(target, &f.paths.home, timeout).await;
+    let check = match operation::run_self_live_check(target, &f.paths.home, timeout).await {
+        Ok(check) => check,
+        Err(error) => {
+            r.ok = false;
+            r.tail = format!("{}\ncannot launch live check: {error:#}", r.tail.trim_end());
+            return false;
+        }
+    };
     r.tail = format!(
         "{}\nlive {}: worker pid {pid} runs it and current names it\n{}",
         r.tail.trim_end(),
