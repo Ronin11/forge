@@ -830,7 +830,7 @@ fn resource_limits_tmpfs_exhaustion_is_enospc() {
                 "LC_ALL=C dd if=/dev/zero of=/tmp/full bs=65536 count=32".into(),
             ],
             &[],
-            &sandbox.policy_for(root.path()),
+            None,
             Phase::Check,
         )
         .output()
@@ -864,7 +864,7 @@ fn resource_limits_dev_tmpfs_is_bound_and_dev_itself_is_read_only() {
                 "LC_ALL=C dd if=/dev/zero of=/dev/shm/full bs=65536 count=32".into(),
             ],
             &[],
-            &sandbox.policy_for(root.path()),
+            None,
             Phase::Check,
         )
         .output()
@@ -879,7 +879,7 @@ fn resource_limits_dev_tmpfs_is_bound_and_dev_itself_is_read_only() {
             root.path(),
             &["/bin/sh".into(), "-c".into(), "echo x > /dev/escape".into()],
             &[],
-            &sandbox.policy_for(root.path()),
+            None,
             Phase::Check,
         )
         .output()
