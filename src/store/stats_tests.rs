@@ -1291,3 +1291,94 @@ fn tools_factor_means_include_retries_and_zeroes_but_not_missing_logs() {
             .is_empty()
     );
 }
+
+#[test]
+fn early_stats_counts_each_signal_tripped_and_near_per_workflow() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("t.db")).unwrap();
+    assert!(s.early_stats().unwrap().is_empty());
+    let task = |workflow: &str| {
+        s.insert_task(&Task {
+            repo: "r".into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 4,
+            timeout_secs: 1,
+            workflow: workflow.into(),
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    let attempt = |task_id, attempt_no, signals: &str, near: &str| {
+        let id = s
+            .insert_attempt(&Attempt {
+                task_id,
+                attempt_no,
+                step: "code".into(),
+                started_at: 0,
+                ..Default::default()
+            })
+            .unwrap();
+        s.finish_attempt(&FinishAttempt {
+            id,
+            state: AttemptState::Succeeded,
+            finished_at: Some(1),
+            early_signals: signals.into(),
+            early_near: near.into(),
+            ..Default::default()
+        })
+        .unwrap();
+    };
+    let direct = task("direct");
+    attempt(direct, 1, r#"["no-edit","repeat"]"#, "[]");
+    // Named twice, counted once.
+    attempt(
+        direct,
+        2,
+        r#"["repeat","repeats","repeat","unknown"]"#,
+        r#"["uncommitted","edits_without_commit","uncommitted"]"#,
+    );
+    attempt(direct, 3, "[]", r#"["no_edit_calls","uncommitted"]"#);
+    let reviewed = task("reviewed");
+    attempt(reviewed, 1, r#"["uncommitted"]"#, r#"["repeat"]"#);
+    // Not an array of strings: an attempt with no signals.
+    attempt(reviewed, 2, "not json", r#"{"repeat":true}"#);
+    // Still running: not counted.
+    s.insert_attempt(&Attempt {
+        task_id: reviewed,
+        attempt_no: 3,
+        step: "code".into(),
+        started_at: 0,
+        ..Default::default()
+    })
+    .unwrap();
+
+    let counts = |pairs: [i64; 3]| -> std::collections::BTreeMap<String, i64> {
+        EARLY_SIGNALS
+            .iter()
+            .zip(pairs)
+            .map(|(n, c)| (n.to_string(), c))
+            .collect()
+    };
+    let stats = s.early_stats().unwrap();
+    assert_eq!(
+        stats,
+        vec![
+            EarlyStat {
+                workflow: "direct".into(),
+                attempts: 3,
+                // no_edit_calls, edits_without_commit, repeats
+                early_signals: counts([1, 0, 2]),
+                early_near: counts([1, 2, 0]),
+            },
+            EarlyStat {
+                workflow: "reviewed".into(),
+                attempts: 2,
+                early_signals: counts([0, 1, 0]),
+                early_near: counts([0, 0, 1]),
+            },
+        ]
+    );
+}
