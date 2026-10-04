@@ -583,7 +583,7 @@ enum Cmd {
         /// cap, clean-tree, or raised to the operator
         #[arg(long)]
         mechanic: bool,
-        /// Per workflow: attempts, and for each early-ending signal
+        /// Per workflow: finished attempts, and for each early-ending signal
         /// (no_edit_calls, edits_without_commit, repeats) how many
         /// attempts tripped it and how many came within 20% of it
         #[arg(long)]

@@ -47,5 +47,10 @@ fn stats_early_json_counts_each_signal_per_workflow() {
     let o = e.forge("ok.sh", &["stats", "--early"]);
     assert!(o.status.success());
     let text = String::from_utf8_lossy(&o.stdout);
-    assert!(text.contains("edits_without_commit"), "{text}");
+    assert!(text.contains(&workflow), "{text}");
+    assert!(text.contains("TRIPPED"), "{text}");
+    assert!(text.contains("NEAR"), "{text}");
+    for signal in ["no_edit_calls", "edits_without_commit", "repeats"] {
+        assert!(text.contains(signal), "{text}");
+    }
 }

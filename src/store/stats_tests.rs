@@ -1296,6 +1296,7 @@ fn tools_factor_means_include_retries_and_zeroes_but_not_missing_logs() {
 fn early_stats_counts_each_signal_tripped_and_near_per_workflow() {
     let dir = tempfile::tempdir().unwrap();
     let s = Store::open(&dir.path().join("t.db")).unwrap();
+    assert!(s.early_stats().unwrap().is_empty());
     let task = |workflow: &str| {
         s.insert_task(&Task {
             repo: "r".into(),
@@ -1333,12 +1334,17 @@ fn early_stats_counts_each_signal_tripped_and_near_per_workflow() {
     let direct = task("direct");
     attempt(direct, 1, r#"["no-edit","repeat"]"#, "[]");
     // Named twice, counted once.
-    attempt(direct, 2, r#"["repeat","repeat"]"#, r#"["uncommitted"]"#);
-    attempt(direct, 3, "[]", r#"["no-edit","uncommitted"]"#);
+    attempt(
+        direct,
+        2,
+        r#"["repeat","repeats","repeat","unknown"]"#,
+        r#"["uncommitted","edits_without_commit","uncommitted"]"#,
+    );
+    attempt(direct, 3, "[]", r#"["no_edit_calls","uncommitted"]"#);
     let reviewed = task("reviewed");
     attempt(reviewed, 1, r#"["uncommitted"]"#, r#"["repeat"]"#);
     // Not an array of strings: an attempt with no signals.
-    attempt(reviewed, 2, "not json", "[]");
+    attempt(reviewed, 2, "not json", r#"{"repeat":true}"#);
     // Still running: not counted.
     s.insert_attempt(&Attempt {
         task_id: reviewed,
