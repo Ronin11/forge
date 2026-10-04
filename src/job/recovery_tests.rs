@@ -214,12 +214,14 @@ async fn a_job_with_a_broken_route_needs_human_without_a_failed_check() {
     f.sandbox = Some(crate::executor::Execution::bwrap_only(sandbox));
     f.store.set_job_trust(id, Trust::Operator).unwrap();
     let step = workflows::RunStep {
-        action: toml::from_str(
+        action: workflows::parse_action(
+            Path::new("route-test.toml"),
             r#"name = "route-test"
 kind = "operation"
 description = "must not launch without a route"
 run = ["/bin/true"]
 "#,
+            String::new(),
         )
         .unwrap(),
         role: None,
