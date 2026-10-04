@@ -1,52 +1,132 @@
-# Landed-work audit, batch 12 (forge, tasks 639-660)
+# Landed-work audit, batch 12 (forge, tasks 639–660)
 
-Six of the ten landed commits in this batch are `Merge main into …` merges
-(639, 644, 645, 651, 652, 659); their own change is `git diff <landed>^2
-<landed>`, which in every case isolates exactly the commits the first-parent
-history adds on top of the stated base (verified with `git log --first-parent
-<base>..<landed>`). 642, 650, 657 and 660 land directly (single- or
-two-commit linear history on top of the stated base), so their own change is
-`git diff <base> <landed>`.
+Audited on 2026-10-04 against `1c0019e` (the predecessor audit branch with
+current base `c71441e` merged). This replaces the predecessor's all-done
+assessment: **3 done, 7 partial**. Passing fixtures are evidence for what they
+assert, not proof that every sentence of the task was implemented. No code,
+configuration, or tests were changed.
 
-All ten landed commits are ancestors of the current tree
-(`ae2e851`). Every piece traced below is still in place, though several
-files were reorganized by later, unaudited work (`src/cli.rs` →
-`src/cli/mod.rs` plus siblings; `src/config.rs` → `src/config/`; `src/
-engine.rs` → `src/engine/`; `src/view.rs` → `src/view/`) — the named
-functions and tests were re-found under their new paths and still exist
-under the same names. Task 650's cache ceiling was narrowed by a later,
-unaudited commit (`eef2cec`, from "one directory under `~/.cache`" to "a
-path under the operator's `[environment] cache_paths` table"); this is a
-refinement, not a revert, and 650's own e2e tests still pass unchanged.
+## Change provenance
 
-Only the tests each task named (or implied) were run (`forge-test cargo
-test ...` against the appropriate package or filter, not the full suite),
-on 2026-10-03 against this tree; all of them passed.
+For merge commits whose subject starts `Merge main into`, the own-change
+range is the second parent to the merge, as requested. The other ranges use
+the supplied base. These are the ranges inspected, not diffs against today's
+unrelated work:
 
-| task | verdict | evidence | what is missing |
+| task | own-change range |
+|---|---|
+| 639 | `fdf057e9d750^2..fdf057e9d750` |
+| 642 | `2eb5c41a20b7..76c9c84af0a2` |
+| 644 | `e9a03d934d89^2..e9a03d934d89` |
+| 645 | `d46f4339b220^2..d46f4339b220` |
+| 650 | `31845b5ab44c..58779db0d5ca` |
+| 651 | `219e68b54240^2..219e68b54240` |
+| 652 | `c8505ecda3be^2..c8505ecda3be` |
+| 657 | `219e68b54240..23548406c8af` |
+| 659 | `31845b5ab44c^2..31845b5ab44c` |
+| 660 | `d74028321d44..0c9f5cc06aa3` |
+
+Current paths were checked after the reorganizations: `git log --follow`
+identifies `7be833d` for `src/cli/web.rs` and `ba304e7` for
+`src/engine/needs.rs`. `git log -S 'cache_paths: &[PathBuf]' --
+src/environment.rs` identifies `eef2cec` (task 871, merged at `1f412bd`):
+it deliberately replaced task 650's arbitrary `~/.cache` ceiling with the
+operator's explicit table. That aspect is superseded; the whole task remains
+partial because the uncovered-need routing omission is independent of it.
+Task 650 also extends task 659's original uncovered-host behavior rather than
+replacing its recognizer and automatic-grant implementation.
+
+## Verdicts
+
+All test names below passed in the scoped run recorded under Validation.
+Source-derived counterexamples are identified as such; they were not added
+as tests or represented as executed failures.
+
+| task | verdict | evidence on current tree | what is missing |
 |---|---|---|---|
-| 639 Trust by source, task 3 of 4: enforcement in the run | done | `[sandbox] dependency_cache` is read and expanded (`src/config/home.rs:131,164-168,291,580`), bound read-only into every attempt (`src/sandbox.rs:126,472,906` `--ro-bind-try`), and `forge doctor` warns when it is absent and a level's egress is `model` while OK-ing it when present (`src/doctor.rs:209-228`). `Forge::allow_egress` now takes the task's trust and restricts a `model`-egress level to the model endpoints only (`src/ctx.rs` in the landed diff, now called from `src/engine.rs:171`, `src/landing.rs:370,878` with every call site updated). A level with `auto_land = false` ends its run `Unverified` naming the level instead of landing itself (`src/landing.rs:1166-1176`), and `forge land <id> --by-hand` (the human path) still lands it; the on-landing assessment is unaffected since it runs from `try_land`/`land_task` either way. e2e `trust::a_public_task_ends_unverified_with_its_branch_pushed_and_forge_land_lands_it` and `plugins::github_issues_files_a_task_and_reports_back_when_it_lands` (updated to expect `unverified` then `forge land`) both pass under `forge-test cargo test --workspace -- <name>`. | — |
-| 642 Portal, task 3 of 4: what was built, with proof | done | `PortalLanded` carries `deployed_at`, `deploy_id` and `screenshot` (`src/view/projects.rs`, fields added in the landed diff, still present as of `src/view/projects.rs` per `deployed_at`/`screenshot` grep), filled from the newest ok, non-rolled-back deploy for the landing's task(s) (`deploy_for` closure in the landed diff). `portal/src/main.rs::render_landed` links a landing to "Live since …" and an `<img>` of the look step's screenshot routed through `/p/<token>/shot/done/<id>`, with the shot path restricted to the landing's own deploy id (404 otherwise) and the double-`/` guard tightened. `render_initiatives` appends "— n of m done" (the initiative's `done`/`pieces` fraction) to the "Being built" section. Snapshot test `done_shows_what_changed_when_it_went_live_and_the_look_screenshot` (`portal/tests/done.rs`), fixture of two landings (one deployed with a screenshot, one not) plus one initiative two-of-three done, passes under `forge-test cargo test --workspace -- done_shows_what_changed_when_it_went_live_and_the_look_screenshot` (pinned to `portal/tests/snapshots/done.txt`). | — |
-| 644 forge web serve [--bind ADDR] | done | `WebCmd::Serve` and `web_serve` (`src/cli/web.rs`) exec `forge-web` found beside the running `forge` binary, else on PATH, passing `--bind` through, with a one-line "forge-web not found" error naming both places; a private `is_executable` helper (checking `is_file()` and the `0o111` mode bits) gates both the beside-forge candidate and the PATH search, so a non-executable `forge-web` is skipped and the search continues. Documented in `docs/CLIENT.md` ("Reaching forge-web (operator)") beside `link`/`open`, and `README.md`'s run line now reads `forge web serve # run the web client (forge-web)`. `tests/boundary.rs` (unmodified, protected) still enforces that `forge-web` links nothing of the kernel. e2e `web::forge_web_serve_runs_forge_web_from_path_with_the_bind_flag` and `web::forge_web_serve_skips_a_non_executable_forge_web_on_path` (the supervisor's requested follow-up test) both pass under `forge-test cargo test --workspace -- forge_web_serve`. | — |
-| 645 TUI parity, task 2 of 6: the initiative screen | done | The initiative screen (outcome, tasks with states/cost, refused rules, rulings, questions, deploys, a cost-bar against budget, elapsed time, held reason, and `b`/`s` keys calling `forge initiative set`) landed under task 641 on the same branch and is unchanged. 645's own fix, `reload_initiative` (`tui/src/lib.rs`, private helper), re-reads the open initiative report on every `refresh()` and `snapshot()` call without changing `self.screen`, so a refresh elsewhere never jumps the user back to the initiative screen. Test `refresh_re_reads_the_open_initiative_report` (`tui/tests/snapshots.rs`) replaces the fake `forge` binary in place (write-then-rename, avoiding ETXTBSY) between a `refresh()` and a `snapshot()` call, asserts the frame picks up the new outcome both times while `app.screen()` stays `Screen::Initiative`, then confirms leaving the screen and refreshing does not reopen it. All 28 `forge-tui` snapshot tests, including this one and `a_held_initiative_renders_its_report`, pass under `forge-test cargo test -p forge-tui`. | — |
-| 650 Environment needs, part 2 of 2 | done | `env_supervisor::applies`/`rule`/`block`/`question` (`src/env_supervisor.rs`, wired into `src/engine/needs.rs:89-102`) send an uncovered host or cache need to the supervisor with the typed need, evidence line, policy table (`Policy::describe`) and a ceiling (`environment::within_ceiling`/`host_ceiling`/`cache_ceiling`) the supervisor may not exceed; an approval is applied and recorded like an automatic grant but `answered_by = "supervisor"`, a denial (or an approval outside the ceiling, a failed run, or a lineage over `per_lineage`) reaches the operator as a yes/no question naming the reason. The repository's `forge.toml [environment] deny` narrows the ceiling (`host_ceiling`/`cache_ceiling` check it); it and the operator's table are read by code, never by the prompt. Documented in `docs/OPS.md` ("A need the table does not cover") beside part 1's section. e2e `environment::an_unlisted_registry_host_is_approved_by_the_supervisor_and_the_run_repeats` and `environment::a_wildcard_is_denied_whatever_the_supervisor_says_and_the_question_names_why` (plus `a_denial_reaches_the_operator_with_the_supervisors_reason` and `the_repository_can_deny_a_host_the_supervisor_would_approve`) all pass under `forge-test cargo test --workspace -- environment::`. Unit tests on the ceiling (`the_ceiling_is_one_named_host_never_a_wildcard_github_or_a_model`, cache-ceiling tests) pass in the same run; the cache-ceiling test names now differ from what 650 landed because a later, unaudited commit (`eef2cec`) narrowed the cache ceiling to the operator's `[environment] cache_paths` table — the behavior 650 asked for (a ceiling enforced by code, never by the prompt) still holds. | — |
-| 651 Questions, part 1 of 2: measure before ruling | done | `forge stats --questions [--days N] [--json]` (`src/cli/statistics.rs`, `src/cli/stats.rs`) prints `QuestionsDoc` (`src/view/questions.rs`): five `QuestionKindRow`s (review, question, workflow, job, dependency) plus a `total`, each with `count`, `open`, `answered_by_supervisor`, `answered_by_operator`, `withdrawn`, `as_stated`, `median_wait_hours`, `operator_handled` and `attention_cost_usd` at the configured rate. The "do it as stated" classifier (`answer_repeats_ask`, `landed_with_answer_appended`, folded by `is_as_stated`) is unit-tested in `src/view/questions_tests.rs` (`an_answer_that_only_restates_the_ask_is_as_stated`, `an_answer_that_adds_a_decision_is_not_as_stated`, `the_landed_retry_with_only_the_answer_appended_is_as_stated`, `a_retry_that_changed_anything_else_is_not_as_stated`, `a_demotion_answered_with_one_fix_that_landed_is_as_stated`, `withdrawn_and_open_questions_are_never_as_stated`, `the_document_counts_kinds_medians_and_prices_operator_attention`) and documented in `docs/CLIENT.md` (`QuestionsDoc`/`QuestionKindRow` tables) beside the other stats shapes. e2e `questions::three_supervisor_answered_demotions_that_landed_are_do_it_as_stated` builds the tonight's-sample fixture (three supervisor-answered review demotions with a reproduction, all "do it as stated") and passes. All of the above pass under `forge-test cargo test --workspace -- questions::` and `-- view::questions`. | — |
-| 652 Questions, part 2 of 2: a review demotion that names a reproducible defect is a task | done | `supervisor::demotion_is_task` (`src/supervisor.rs:367-397`) deterministically recognizes a reproduction (fenced/inline command, or a step list ending in an observed-vs-expected line) and the absence of a question mark; `supervisor::demotion_as_task` (`:407-...`) runs before the supervisor in `src/worker.rs:79-100`, files the follow-up task on the same lineage with the demotion as its text and the branch kept, within `per_lineage`, and records a decision row of kind `demotion-as-task` (`Store::set_decision_kind`, `src/store/record.rs`) that `forge stats --questions` counts (`DecisionRow.kind`, `src/view/tasks.rs`). A demotion that asks something (`tests/fakes/reviewer-ask.sh`, carrying a `?`) still blocks as before; `tests/fakes/reviewer-demote.sh` was adjusted to add a trailing "is that intended?" so existing question-path tests relying on it keep blocking. Documented in `docs/WORKFLOWS.md` ("A review demotion that names a defect is a task") beside the review step. e2e `questions::a_demotion_with_a_reproduction_files_a_follow_up_that_lands`, `questions::a_demotion_whose_follow_up_fails_stays_blocked` and `questions::a_demotion_that_asks_something_still_blocks_with_the_question` all pass under `forge-test cargo test --workspace -- questions::`. | — |
-| 657 TUI parity, task 5 of 6: activity and search | done | `tui/src/activity.rs` draws an activity screen tailing `forge events` (`task_started`, `attempt_started`, `tool_call`, `agent_done`, `check`, `pushed`, `task_done`, a `needs_input`/blocked task rendered as "question", `job_finished`), filterable by kind (`f`) and project (`p`/`c`), with a running-attempts strip (task, step, turns, calls, cost-so-far) seeded from tasks in state `running`. A query line (`/`) on the task list maps onto `forge log --json`'s `--state`/`--project`/`--grep` filters and pages with `--before` on `n`. Snapshot tests `a_fixture_event_stream_renders_its_kinds` (pinned to `activity_feed.txt`) and `a_query_renders_the_verb_call_and_pages_by_before` (pinned to `task_list_query.txt`) both pass, along with all 28 `forge-tui` snapshot tests, under `forge-test cargo test -p forge-tui`. | — |
-| 659 Environment needs, part 1 of 2 | done | `environment::recognize` (`src/environment.rs`) is a pure recognizer over a failed check's output tail or a `needs_input` question, yielding a typed `Need` (host, binary, toolchain, cache) or nothing; `refused_host` matches the egress proxy's `forge egress: HOST:PORT is not allowed` line and tool `403` lines. `Policy` (`config::HomeConfig.environment`, `[environment] hosts`/`cache_paths` in `config.toml`, defaulted to `registry.npmjs.org, index.crates.io, static.crates.io, nodejs.org`, the Playwright CDN hosts, and `~/.cache/node-gyp`/`~/.cache/ms-playwright`) says what is granted without asking. `src/engine/needs.rs` applies a covered need (egress for the worktree, or a read-only sandbox bind), records a decision row by `forge` (kind `environment-grant`) naming the need and evidence, and re-runs without spending a retry; an uncovered need is left exactly as before (left to part 2, 650). `forge doctor`'s `check_environment_grants` (`src/doctor.rs:931-968`) lists every automatic grant of the last 7 days. Documented in `docs/OPS.md` ("Environment needs") beside egress. e2e `environment::a_covered_host_is_granted_and_the_run_repeats_with_no_question_and_no_retry_spent` and `environment::a_host_the_table_does_not_cover_still_fails_as_before` both pass under `forge-test cargo test --workspace -- <name>`. | — |
-| 660 Mentor-ready, refactor check: a function-length ratchet | done | `tests/fn_length.rs` walks every `git ls-files -- *.rs` tracked file, scans each with a minimal brace-matching scanner (`blank`/`functions`, handling comments, strings, raw strings, char literals and lifetimes) measuring each `fn`'s body line count, and fails any function over 120 lines not on the shrinking `ALLOWLIST` of `(file, fn, ceiling, reason)` seeded at landing length plus 20; a stale allowlist entry (one whose function is no longer over 120 lines) also fails, and the failure message names the function, its length and its ceiling. `CONTRIBUTING.md` ("Function length") documents the rule beside the file-size one. Test-module functions are counted (the scanner has no `#[cfg(test)]` exemption). `tracked_rust_functions_stay_within_their_line_limits` plus the four scanner unit tests (`braces_in_strings_and_raw_strings_do_not_count`, `char_literals_and_lifetimes`, `comments_are_ignored`, `nested_closures_match_arms_and_inner_fns`, `bodyless_fns_and_fn_pointer_types_are_skipped`) all pass — 6 tests total — under `forge-test cargo test --workspace -- --test fn_length`. | — |
+| 639 | partial | `src/config/home.rs:164` and `src/config/home.rs:580` define/load the dependency cache; `src/sandbox.rs:933` binds it read-only; `src/doctor.rs:209` warns if absent. `src/ctx.rs:310` restricts model trust to no declared hosts, without testing cache presence. `src/engine/land.rs:51` returns Unverified naming trust; `src/landing.rs:1166` gates automatic landing, and `src/landing.rs:1249` invokes landing effects whose assessment is at `src/landing/effects.rs:35`. `README.md:263` documents both cache and fallback. **PASS:** `trust::a_public_task_ends_unverified_with_its_branch_pushed_and_forge_land_lands_it` (`tests/e2e/trust.rs:297`) proves pushed/unverified then manual landing; it does not exercise registry fallback. | Absent-cache setup fallback is not implemented: the same cleared egress policy reaches checks (`src/checks.rs:225`), and the only cache-dependent sandbox branch is the mount. README promises more than the code provides. |
+| 642 | partial | `portal/src/main.rs:424` renders initiative outcome and done/total; `portal/src/main.rs:442` renders landing text, live time and screenshot. `src/view/projects.rs:1135` selects a successful, non-rolled-back deploy and its screenshot; `portal/src/main.rs:786` restricts screenshot lookup. **PASS:** `done_shows_what_changed_when_it_went_live_and_the_look_screenshot` (`portal/tests/done.rs:147`, fixture `portal/tests/done.rs:43`, snapshot `portal/tests/snapshots/done.txt:1`) checks two supplied landings, one deployed, and 2 of 3 done. | Not every landed task is represented: `src/view/projects.rs:1157` emits only settled initiative aggregates and `src/view/projects.rs:1177` excludes all initiative tasks from individual entries. A landed task in an unfinished initiative has no Done entry; settled initiatives lose each task's own title/evidence. The mocked JSON snapshot bypasses this producer. |
+| 644 | done | `src/cli/web.rs:60` requires an executable regular file; `src/cli/web.rs:69` searches beside forge then PATH, passes bind, and uses exec with the named-location error. No web implementation is imported. Operator docs: `docs/CLIENT.md:520`; README command: `README.md:50`. **PASS:** `web::forge_web_serve_runs_forge_web_from_path_with_the_bind_flag` (`tests/e2e/web.rs:5`) and `web::forge_web_serve_skips_a_non_executable_forge_web_on_path` (`tests/e2e/web.rs:56`), including the supervisor's two-PATH-directory regression. | None. Boundary source remains protected and unchanged; its tests and the historical full-suite/clippy instructions were not rerun in this scoped audit. |
+| 645 | done | `tui/src/lib.rs:1109` renders outcome, held reason, elapsed time, task states/costs, refusals, rulings, questions and deploys; `tui/src/lib.rs:1082` draws the block cost bar. `tui/src/lib.rs:403` calls initiative set for budget/stop-after. `reload_initiative` (`tui/src/lib.rs:382`) preserves screen and is called at `tui/src/lib.rs:164` and `tui/src/lib.rs:288`. **PASS:** `a_held_initiative_renders_its_report` (`tui/tests/snapshots.rs:287`), `refresh_re_reads_the_open_initiative_report` (`tui/tests/snapshots.rs:301`, refresh and snapshot, atomic fake replacement, also refresh while off-screen), and `the_budget_and_stop_after_keys_call_initiative_set` (`tui/tests/snapshots.rs:334`). Held snapshot: `tui/tests/snapshots/initiative_held.txt:1`. | None in the supplied task text and supervisor correction. The supplied tail is truncated; no unseen requirement is inferred. The set-key fixture exercises budget; the shared stop-after branch is verified in source. |
+| 650 | partial | `src/env_supervisor.rs:43` supplies typed need/evidence/table/ceiling; `src/env_supervisor.rs:93` checks lineage budget and holds approvals to the ceiling. `src/engine/needs.rs:89` applies the approval or blocks on a reasoned denial; `src/environment.rs:455` records attribution. Host exclusions and repository deny: `src/environment.rs:378`; current cache ceiling: `src/environment.rs:430`. Docs: `docs/OPS.md:542`. **PASS:** `environment::an_unlisted_registry_host_is_approved_by_the_supervisor_and_the_run_repeats` (`tests/e2e/environment.rs:80`), `environment::a_wildcard_is_denied_whatever_the_supervisor_says_and_the_question_names_why` (`tests/e2e/environment.rs:103`), `environment::a_denial_reaches_the_operator_with_the_supervisors_reason` (`tests/e2e/environment.rs:118`) and `environment::the_repository_can_deny_a_host_the_supervisor_would_approve` (`tests/e2e/environment.rs:132`). Ceiling unit tests at `src/environment.rs:688`, `src/environment.rs:715`, `src/environment.rs:732` also pass. | `src/env_supervisor.rs:80` excludes Binary and Toolchain outright, so an uncovered typed need of either kind returns Left at `src/engine/needs.rs:106` without the required supervisor denial. This is explicitly documented at `docs/OPS.md:563`. Cache-ceiling replacement by task 871 is intentional, not a missing restoration. |
+| 651 | partial | `src/cli/statistics.rs:415` renders table/JSON; `src/store/questions.rs:54` gathers windowed questions and resolutions; `src/view/questions.rs:137` defines counts, median wait and attention fields, computed at `src/view/questions.rs:176`. Docs: `docs/CLIENT.md:1251`. **PASS:** `questions::three_supervisor_answered_demotions_that_landed_are_do_it_as_stated` (`tests/e2e/questions.rs:59`, three supervisor-answered review demotions with landed retries) and all seven `view::questions::questions_tests` tests (`src/view/questions_tests.rs:7`, `src/view/questions_tests.rs:22`, `src/view/questions_tests.rs:38`, `src/view/questions_tests.rs:60`, `src/view/questions_tests.rs:109`, `src/view/questions_tests.rs:115`, `src/view/questions_tests.rs:125`). | The classifier is broader than repeating the ask: `src/view/questions.rs:50` returns true for any answer containing an approval phrase, even negated or followed by a new decision. Source-derived counterexample: 'Do not proceed; use a different database'. The negative fixtures never combine an approval phrase with added instructions. |
+| 652 | partial | `src/supervisor.rs:407` files the same-lineage follow-up, enforces the budget and records `demotion-as-task` (`src/supervisor.rs:441`); the worker invokes it before supervision (`src/worker.rs:79`). `src/store/questions.rs:113` reads decisions for question accounting. Docs: `docs/WORKFLOWS.md:73`. **PASS:** `questions::a_demotion_with_a_reproduction_files_a_follow_up_that_lands` (`tests/e2e/questions.rs:106`) proves follow-up, decision, inherited branch file and eventual success; `questions::a_demotion_whose_follow_up_fails_stays_blocked` (`tests/e2e/questions.rs:175`) and `questions::a_demotion_that_asks_something_still_blocks_with_the_question` (`tests/e2e/questions.rs:195`) cover failure/question paths. | The reproduction predicate at `src/supervisor.rs:367` rejects valid inline commands with one token (requires two whitespace-separated words), and rejects every '?' even inside a command rather than only operator questions. Source-derived example: 'Running `false` exits 1, expected 0' fails the predicate. Existing e2e uses a two-word command. |
+| 657 | partial | Event recording/filtering: `tui/src/activity.rs:69`, `tui/src/activity.rs:345`; query flags and before cursor: `tui/src/activity.rs:137`, `tui/src/activity.rs:270`; event subscription: `tui/src/lib.rs:758`. **PASS:** `a_fixture_event_stream_renders_its_kinds` (`tui/tests/snapshots.rs:687`, snapshot `tui/tests/snapshots/activity_feed.txt:1`) and `a_query_renders_the_verb_call_and_pages_by_before` (`tui/tests/snapshots.rs:733`, snapshot `tui/tests/snapshots/task_list_query.txt:1`). | Actual step and live turns/cost are absent. `Running` (`tui/src/activity.rs:36`) has attempt numbers but no step; the STEP cell at `tui/src/activity.rs:302` formats those numbers. Only AgentDone sets turns/cost (`tui/src/activity.rs:87`), then AttemptDone removes the row. `seed_running` (`tui/src/activity.rs:174`) inserts empty defaults. Snapshot explicitly expects 'attempt 2 of 3', so it does not prove step or live spend. |
+| 659 | partial | `src/environment.rs:84` recognizes host/binary/toolchain/cache needs; defaults are at `src/environment.rs:37`, policy at `src/environment.rs:294`. `src/engine/needs.rs:78` applies/records grants and `src/engine/step.rs:99` reruns operations without a retry. `src/ctx.rs:353` applies scoped grants; doctor lists seven days at `src/doctor.rs:1032`; docs at `docs/OPS.md:503`. **PASS:** `environment::a_covered_host_is_granted_and_the_run_repeats_with_no_question_and_no_retry_spent` (`tests/e2e/environment.rs:22`) and `environment::a_host_the_table_does_not_cover_still_fails_as_before` (`tests/e2e/environment.rs:50`). Recognizer tests `a_proxy_refusal_names_the_host`, `a_tools_403_line_with_a_url_names_the_host`, `a_missing_browser_cache_names_the_path`, `a_missing_binary_or_toolchain_is_typed`, `ordinary_failures_and_questions_are_nothing`, `a_question_is_read_the_same_way` (`src/environment.rs:527` onwards) all pass. | The requested evil.example blocked-question e2e is not present: the existing test asserts state failed (`tests/e2e/environment.rs:55`) and an operation-setup failure. It proves no accidental grant, but not the requested terminal question. Task 650 adds supervisor handling when enabled; the supervisor-disabled fixture still fails outright. |
+| 660 | done | `tests/fn_length.rs:648` walks tracked Rust files including test modules, enforces 120 or the allowlisted ceiling, reports name/length/ceiling, and rejects stale entries at `tests/fn_length.rs:685`. Allowlist/reasons: `tests/fn_length.rs:10`; blanking/brace scanner: `tests/fn_length.rs:496`, `tests/fn_length.rs:586`. Rule beside file size: `CONTRIBUTING.md:92`. **PASS:** `tracked_rust_functions_stay_within_their_line_limits` plus `scanner::braces_in_strings_and_raw_strings_do_not_count`, `scanner::char_literals_and_lifetimes`, `scanner::comments_are_ignored`, `scanner::nested_closures_match_arms_and_inner_fns`, `scanner::bodyless_fns_and_fn_pointer_types_are_skipped` (`tests/fn_length.rs:713` onwards): six tests total. | None. The documented measure is signature through closing brace (stricter than body only); shrinking allowlist policy is documented and stale entries are executable checks. |
+
+## Validation
+
+Ran only the task-related filters below through `forge-test`; **exit 0,
+51 passed, 0 failed** (23 kernel unit tests, 16 e2e, 6 function-length tests,
+1 portal snapshot, 5 TUI snapshots). Other workspace targets selected zero
+tests. The environment module filter includes related later regression tests;
+no full suite was run. An environment e2e has a capability-dependent early
+return, so its harness success is not claimed as proof of sandbox support.
+Full log: `.git/forge-test/89a537fcfef4b06c.log` (local, not committed).
+
+```sh
+forge-test cargo test --workspace --   a_public_task_ends_unverified_with_its_branch_pushed_and_forge_land_lands_it   done_shows_what_changed_when_it_went_live_and_the_look_screenshot   forge_web_serve a_held_initiative_renders_its_report   refresh_re_reads_the_open_initiative_report   the_budget_and_stop_after_keys_call_initiative_set   environment:: questions:: view::questions   a_fixture_event_stream_renders_its_kinds   a_query_renders_the_verb_call_and_pages_by_before   tracked_rust_functions_stay_within_their_line_limits   braces_in_strings_and_raw_strings_do_not_count char_literals_and_lifetimes   comments_are_ignored nested_closures_match_arms_and_inner_fns   bodyless_fns_and_fn_pointer_types_are_skipped
+```
+
+No claim is made that the repository-wide fmt, clippy, setup or test checks
+pass; those are left to Forge as requested. The initial `forge-test --help`
+probe exited 2 because this wrapper treats its first argument as an executable;
+it ran no tests. The successful invocation above is the verification result.
+The missing paragraphs below are ready to file as follow-up tasks; this audit
+neither changes implementation nor claims those follow-ups have been filed.
 
 ```json
 [
-  {"task": 639, "verdict": "done", "missing": ""},
-  {"task": 642, "verdict": "done", "missing": ""},
-  {"task": 644, "verdict": "done", "missing": ""},
-  {"task": 645, "verdict": "done", "missing": ""},
-  {"task": 650, "verdict": "done", "missing": ""},
-  {"task": 651, "verdict": "done", "missing": ""},
-  {"task": 652, "verdict": "done", "missing": ""},
-  {"task": 657, "verdict": "done", "missing": ""},
-  {"task": 659, "verdict": "done", "missing": ""},
-  {"task": 660, "verdict": "done", "missing": ""}
+  {
+    "task": 639,
+    "verdict": "partial",
+    "missing": "Implement the promised setup-only declared-registry fallback when [sandbox] dependency_cache is absent, while keeping agent attempts at model-only egress; currently allow_egress clears declared rules regardless of cache presence. Add a sandboxed regression that exercises setup with and without the cache and verifies the agent cannot use the fallback. Reconcile README.md's fallback claim with the implemented behavior."
+  },
+  {
+    "task": 642,
+    "verdict": "partial",
+    "missing": "Expose every landed task in Done, including tasks in an unfinished initiative and the individual tasks of a settled initiative, using their title or first sentence and their own deployment evidence. Currently initiative tasks are excluded from the task loop and only settled initiatives get an aggregate outcome entry. Add a store-backed portal fixture with both unfinished and settled initiatives; the current two-landing snapshot uses prebuilt JSON and cannot detect this omission."
+  },
+  {
+    "task": 644,
+    "verdict": "done",
+    "missing": ""
+  },
+  {
+    "task": 645,
+    "verdict": "done",
+    "missing": ""
+  },
+  {
+    "task": 650,
+    "verdict": "partial",
+    "missing": "Route recognized uncovered binary and toolchain needs through a bounded supervisor denial rather than returning them to the original failure/question path. Include the typed need, evidence, policy and code-enforced ceiling, and only send the operator a reasoned yes/no denial. Add regressions for both need kinds. Preserve task 871's later restriction of cache grants to the operator's explicit cache_paths table rather than restoring the superseded arbitrary ~/.cache ceiling."
+  },
+  {
+    "task": 651,
+    "verdict": "partial",
+    "missing": "Make the do-it-as-stated classifier reject answers that introduce a decision even when they contain phrases such as go ahead or proceed, and reject negated approvals. The current substring early return classifies 'Do not proceed; use a different database' as as-stated regardless of the question or landed retry. Add positive and negative fixture answers covering approval phrases with extra instructions, negation and repeated-word alternatives; retain the independent exact appended-answer-and-landed rule."
+  },
+  {
+    "task": 652,
+    "verdict": "partial",
+    "missing": "Recognize one-word inline reproduction commands and distinguish question marks in command literals from questions to the operator. Currently 'Running `false` exits 1, expected 0' is not routed as a task, and an otherwise valid reproduction containing a URL query string is rejected by the blanket question-mark check. Add focused classifier and end-to-end cases while retaining same-lineage branch inheritance, budget enforcement and demotion-as-task decisions."
+  },
+  {
+    "task": 657,
+    "verdict": "partial",
+    "missing": "Populate the activity running-attempt strip with the actual workflow step and live turns/cost so far. Currently STEP displays attempt n of m; turns and cost are only filled by AgentDone and the row disappears at AttemptDone. Seed these fields for attempts already running when the TUI opens, and add a snapshot before agent completion proving live updates and the step name. Keep the existing event filters and before-cursor query paging."
+  },
+  {
+    "task": 659,
+    "verdict": "partial",
+    "missing": "Complete the specified uncovered-host failure terminal behavior: the evil.example setup fixture currently ends failed (and explicitly asserts failed), whereas the task requested a blocked question. Add a regression proving the uncovered need ends in a crisp actionable question when no grant is available, while preserving task 650's supervisor-first route when enabled and the no-retry automatic-grant path. Do not treat the existing passing failed-state assertion as proof of the requested blocked behavior."
+  },
+  {
+    "task": 660,
+    "verdict": "done",
+    "missing": ""
+  }
 ]
 ```
