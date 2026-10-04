@@ -35,6 +35,7 @@ mod intake;
 mod jev;
 mod job_secrets;
 mod jobs;
+mod jobs_measure;
 mod jobs_schedule_retry;
 mod knownfixes;
 mod landing;

@@ -67,7 +67,7 @@ pub async fn passes_on_base(
                 &[],
             )
             .await;
-            Ok(r.ok)
+            r.map(|r| r.ok)
         }
         Err(e) => Err(e),
     };

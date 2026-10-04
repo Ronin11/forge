@@ -20,7 +20,11 @@ reviewed_this_week = ["bash", ".forge/workflows/actions/skip-if-reviewed.sh"]
 # Today's numbers (docs/REVIEW-2.md): `run_task` is ~166 lines, the
 # largest file (cli.rs) is already past 3000 — that crossing is exactly
 # what this job exists to catch and ask about.
+#
+# RUN_TASK_MAX_LINES is kept as an alias: when FUNCTION_MAX_LINES isn't
+# set, it supplies the default for the longest-function check below.
 RUN_TASK_MAX_LINES = "400"
+FUNCTION_MAX_LINES = "400"
 SRC_FILE_MAX_LINES = "3000"
 
 [limits]
