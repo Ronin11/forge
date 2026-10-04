@@ -111,6 +111,10 @@ pub(super) async fn run(args: OperationStep<'_>) -> Result<Ran> {
         Ok(r) => grant.redactor.result(r),
         Err(e) => {
             let why = grant.redactor.redact(&format!("{e:#}"));
+            if e.downcast_ref::<crate::egress::SocketError>().is_some() {
+                // Preserve the launch fault's type while redacting its diagnostic.
+                return Err(crate::egress::SocketError::Failed(anyhow::anyhow!(why)).into());
+            }
             return Ok(failed_before_running(&action.name, why));
         }
     };

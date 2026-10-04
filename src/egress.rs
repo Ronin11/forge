@@ -908,22 +908,74 @@ pub fn clear_refused(dir: &Path) {
 /// own socket in a private directory that goes away with the process.
 #[derive(Default)]
 pub struct Proxies {
+    #[cfg(test)]
+    dir: Option<PathBuf>,
     running: Mutex<BTreeMap<Policy, (PathBuf, tokio::task::JoinHandle<()>)>>,
 }
 
+/// Why `Proxies::socket_for` has no socket: no runtime to serve one on
+/// (the launch goes offline), or a proxy that could not be started (the
+/// launch must not happen at all: an environment fault).
+#[derive(Debug)]
+pub enum SocketError {
+    NoRuntime,
+    Failed(anyhow::Error),
+}
+
+impl std::fmt::Display for SocketError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoRuntime => write!(f, "no runtime to run the egress proxy on"),
+            Self::Failed(error) => write!(f, "{error:#}"),
+        }
+    }
+}
+
+impl std::error::Error for SocketError {}
+
+impl From<anyhow::Error> for SocketError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Failed(error)
+    }
+}
+
 impl Proxies {
+    #[cfg(test)]
+    pub fn in_dir(dir: PathBuf) -> Self {
+        Self {
+            dir: Some(dir),
+            running: Mutex::default(),
+        }
+    }
     /// The socket of a proxy enforcing `policy`, started if it is not
-    /// running. Needs a tokio runtime; without one there is no proxy, and
-    /// so no route out.
-    pub fn socket_for(&self, policy: &Policy) -> Result<PathBuf> {
-        let handle = tokio::runtime::Handle::try_current()
-            .context("no runtime to run the egress proxy on")?;
+    /// running. Rebuilds a missing socket or directory. Without a tokio
+    /// runtime returns `NoRuntime`; creation failures return `Failed`.
+    pub fn socket_for(&self, policy: &Policy) -> std::result::Result<PathBuf, SocketError> {
+        let handle = tokio::runtime::Handle::try_current().map_err(|_| SocketError::NoRuntime)?;
         let mut running = self.running.lock().unwrap();
         if let Some((path, task)) = running.get(policy)
             && !task.is_finished()
+            && path.exists()
         {
             return Ok(path.clone());
         }
+        if let Some((path, task)) = running.remove(policy) {
+            task.abort();
+            let _ = std::fs::remove_file(path);
+        }
+        #[cfg(test)]
+        let dir = if let Some(dir) = &self.dir {
+            if !dir.exists() {
+                create_private(dir).with_context(|| {
+                    format!("creating egress proxy directory {}", dir.display())
+                })?;
+            }
+            verify_private(dir)?;
+            dir.clone()
+        } else {
+            own_dir_ready()?
+        };
+        #[cfg(not(test))]
         let dir = own_dir_ready()?;
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

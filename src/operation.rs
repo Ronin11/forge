@@ -245,6 +245,7 @@ pub(crate) async fn run_operation(
         git::restore_metadata(&wt).task()?;
     }
     crate::verify::remove_overlay(&placed, &cfg.namespace, &wt);
+    let r = r.env()?;
     let detail = if r.ok {
         format!("exit 0 in {:.1}s", r.ms as f64 / 1000.0)
     } else if r.timed_out {
@@ -433,7 +434,7 @@ pub(crate) async fn run_job_operation(
             anyhow::bail!("job step {:?} has neither run nor check", action.name)
         }
     };
-    Ok(checks::run_one_capped(checks::RunOneCapped {
+    checks::run_one_capped(checks::RunOneCapped {
         level: "OP",
         name: &action.name,
         argv: &argv,
@@ -445,7 +446,7 @@ pub(crate) async fn run_job_operation(
         cap_bytes: 16 * 1024,
         full_log_dir: None,
     })
-    .await)
+    .await
 }
 
 /// An operation resolved from the operator's catalog with its run command
@@ -494,7 +495,7 @@ async fn run_action(
     cwd: &Path,
     timeout: Duration,
     env: &[(String, String)],
-) -> checks::CheckResult {
+) -> anyhow::Result<checks::CheckResult> {
     checks::run_one("OP", &a.def.name, &a.argv, cwd, None, timeout, env).await
 }
 
@@ -537,7 +538,7 @@ pub(crate) async fn run_deploy_method(
     env.push(("FORGE_CHECK".to_string(), target.check_cmd.clone()));
     env.push(("FORGE_DEPLOY_SHA".to_string(), sha.to_string()));
     env.push(("FORGE_HOME".to_string(), home.display().to_string()));
-    Ok(run_action(action, cwd, timeout, &env).await)
+    run_action(action, cwd, timeout, &env).await
 }
 
 /// What `deploy-self` checks once its release is live: the target's own
@@ -574,7 +575,7 @@ pub(crate) async fn run_self_live_check(
     target: &DeployTarget,
     home: &Path,
     timeout: Duration,
-) -> checks::CheckResult {
+) -> anyhow::Result<checks::CheckResult> {
     let mut env = arg_env(&target.args);
     env.push(("FORGE_CHECK".to_string(), target.check_cmd.clone()));
     env.push(("FORGE_HOME".to_string(), home.display().to_string()));
@@ -612,7 +613,7 @@ pub(crate) async fn run_deploy_smoke(
             out_dir.display().to_string(),
         ),
     ];
-    Ok(run_action(action, out_dir, timeout, &env).await)
+    run_action(action, out_dir, timeout, &env).await
 }
 
 /// The `provision-hetzner` operation, resolved once up front like the rest.
@@ -636,7 +637,7 @@ pub(crate) async fn run_provision(
         "FORGE_ARG_OUT_DIR".to_string(),
         out_dir.display().to_string(),
     ));
-    Ok(run_action(action, out_dir, timeout, &env).await)
+    run_action(action, out_dir, timeout, &env).await
 }
 
 #[cfg(test)]

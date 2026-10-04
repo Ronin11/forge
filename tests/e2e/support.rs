@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 pub struct Env {
     pub _dir: tempfile::TempDir,
+    _releases: Option<tempfile::TempDir>,
     pub home: PathBuf,
     pub repo: PathBuf,
     pub origin: PathBuf,
@@ -296,6 +297,13 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
+/// Large binary fixtures belong beside the build artifacts, not on /tmp.
+pub fn disk_tempdir() -> tempfile::TempDir {
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    std::fs::create_dir_all(root).unwrap();
+    tempfile::tempdir_in(root).unwrap()
+}
+
 impl Env {
     pub fn new() -> Env {
         let dir = tempfile::tempdir().unwrap();
@@ -339,12 +347,25 @@ impl Env {
         let xdg_config = dir.path().join("xdg_config");
         Env {
             _dir: dir,
+            _releases: None,
             home,
             repo,
             origin,
             xdg_config,
             no_sandbox,
         }
+    }
+
+    /// Release fixtures copy large debug binaries. Keep those on the build
+    /// filesystem, not the potentially small /tmp shared by parallel tests.
+    /// The home stays short so its Unix socket paths still fit sockaddr_un.
+    pub fn with_releases() -> Env {
+        let mut e = Self::new();
+        let releases = disk_tempdir();
+        std::fs::create_dir_all(&e.home).unwrap();
+        std::os::unix::fs::symlink(releases.path(), e.home.join("bin")).unwrap();
+        e._releases = Some(releases);
+        e
     }
 
     pub fn cmd(&self, fake: &str) -> Command {
