@@ -7,8 +7,10 @@ agent promising to follow its prompt.
 
 ## Attempts and credentials
 
-Attempts run under **bubblewrap**, with a read-only system, private temporary
-files, and a **tmpfs home** exposing only the required agent state, task clone,
+Attempts run under **bubblewrap**, with a read-only system, a private
+temporary directory (`/tmp`, and `TMPDIR` naming it: a disk directory beside
+the task's worktree, never shared with another task and removed with the
+worktree), and a **tmpfs home** exposing only the required agent state, task clone,
 and configured toolchain/cache mounts. The clone has **no remote**; the
 registered checkout and its `.git` are not mounted. The kernel handles landing
 and pushing. See [the sandbox implementation](src/sandbox.rs) and

@@ -1315,7 +1315,7 @@ fn forge_run_removes_its_proxy_dir_at_exit() {
 }
 
 #[test]
-fn resource_limits_configured_tmpfs_fails_with_enospc() {
+fn resource_limits_configured_shm_tmpfs_fails_with_enospc() {
     let e = Env::new();
     if e.sandbox_disabled() {
         return;
@@ -1328,12 +1328,12 @@ fn resource_limits_configured_tmpfs_fails_with_enospc() {
     .unwrap();
     assert!(e.forge("ok.sh", &["workflows"]).status.success());
     let check = r#"set -eu
-if LC_ALL=C dd if=/dev/zero of=/tmp/full bs=65536 count=32 2>dd-error; then
+if LC_ALL=C dd if=/dev/zero of=/dev/shm/full bs=65536 count=32 2>dd-error; then
     echo 'write exceeded tmpfs limit'; exit 1
 fi
 grep -q 'No space left on device' dd-error
-test "$(wc -c < /tmp/full)" -le 1048576
-rm dd-error /tmp/full"#;
+test "$(wc -c < /dev/shm/full)" -le 1048576
+rm dd-error /dev/shm/full"#;
     std::fs::write(e.home.join("workflows/actions/resource-limit.toml"), format!(
         "name = \"resource-limit\"\nkind = \"operation\"\ndescription = \"tmpfs bound\"\nconsumes = [\"branch\"]\nrun = {}\n",
         serde_json::to_string(&["/bin/sh", "-c", check]).unwrap()
@@ -1380,7 +1380,7 @@ rm dd-error /tmp/full"#;
         row["detail"]
             .as_str()
             .unwrap()
-            .contains("/tmp=1048576 bytes"),
+            .contains("/dev/shm=1048576 bytes"),
         "{row}"
     );
 }

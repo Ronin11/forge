@@ -1,6 +1,7 @@
 //! The agent and the checks run under bubblewrap. Read-only system, private
-//! /tmp, /run and /proc, a tmpfs $HOME with only the holes the attempt
-//! needs: the task's clone (its .git included), the agent binary, and a
+//! /run and /proc, a private disk-backed /tmp (a `<worktree>-tmp` sibling,
+//! see `tmp_dir`, discarded with the worktree), a tmpfs $HOME with only the
+//! holes the attempt needs: the task's clone (its .git included), the agent binary, and a
 //! private copy of the CLIs' credentials with kernel-built settings,
 //! seeded from the operator's logins and discarded with the worktree
 //! (see `provider_state_dir`, `discard_provider_state`) — the operator's
@@ -253,6 +254,29 @@ fn overlay_state_dir(worktree: &Path) -> PathBuf {
     PathBuf::from(format!("{}-overlays", worktree.display()))
 }
 
+/// The attempt's private `/tmp`, bound there with `TMPDIR` naming it: a
+/// sibling of the worktree, so on the same disk as FORGE_HOME's worktrees
+/// rather than a RAM-backed tmpfs (an e2e suite writing gigabytes of
+/// temporary repositories there exhausted host memory when several
+/// attempts ran checks at once). Created by `Sandbox::command` and removed
+/// by `discard_provider_state` with the worktree, like `provider_state_dir`.
+fn tmp_dir(worktree: &Path) -> PathBuf {
+    PathBuf::from(format!("{}-tmp", worktree.display()))
+}
+
+/// Create `tmp_dir(worktree)`, private to the operator; `None` when it
+/// cannot be, so the launch falls back to a sized tmpfs `/tmp`.
+fn create_tmp_dir(worktree: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let dir = tmp_dir(worktree);
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)
+        .ok()?;
+    Some(dir)
+}
+
 /// Where the attempts in `worktree` get their private copy of the claude
 /// and codex CLIs' state: a sibling of the worktree, under its parent, in
 /// the same style as `attempt::tests_clone_dir`. Created and seeded by the
@@ -286,7 +310,7 @@ fn contract_of(env: &[(String, String)]) -> Option<Contract> {
 }
 
 /// Remove `worktree`'s private provider-state directory (see
-/// `provider_state_dir`): called where the worktree itself is removed, so
+/// `provider_state_dir`) and its private `/tmp` (see `tmp_dir`): called where the worktree itself is removed, so
 /// nothing about the task's claude or codex sessions outlives its tree. A
 /// copy still holding a login later than the host's is written back first
 /// (docs/REVIEW-4.md #1.9): deleting it unwritten could throw away the only
@@ -308,6 +332,7 @@ fn discard_provider_state_in(
     host_dir: impl Fn(&crate::login::Shape) -> Option<PathBuf>,
 ) {
     let _ = std::fs::remove_dir_all(overlay_state_dir(worktree));
+    let _ = std::fs::remove_dir_all(tmp_dir(worktree));
     for contract in [None, Some(Contract::Review)] {
         let dir = provider_dir_for(worktree, contract);
         if let Some(state) = state {
@@ -898,9 +923,19 @@ impl Sandbox {
                 _ => {}
             }
         }
-        cmd.arg("--size")
-            .arg(self.limits.tmp_bytes.to_string())
-            .args(["--tmpfs", "/tmp"]);
+        // `/tmp` is on disk (see `tmp_dir`); a sized tmpfs only when the
+        // directory cannot be made.
+        let tmp = create_tmp_dir(worktree);
+        match &tmp {
+            Some(dir) => {
+                cmd.arg("--bind").arg(dir).arg("/tmp");
+            }
+            None => {
+                cmd.arg("--size")
+                    .arg(self.limits.tmp_bytes.to_string())
+                    .args(["--tmpfs", "/tmp"]);
+            }
+        }
         cmd.args(["--size", "67108864", "--tmpfs", "/run"]);
         // systemd-resolved keeps the real resolv.conf under /run.
         cmd.args([
@@ -976,6 +1011,7 @@ impl Sandbox {
         cmd.env_clear();
         cmd.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         cmd.env("HOME", &self.home);
+        cmd.env("TMPDIR", "/tmp");
         if socket.is_some() {
             let proxy = format!("http://{}", egress::RELAY_ADDR);
             for k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
