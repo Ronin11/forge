@@ -1227,6 +1227,51 @@ fn engineering_weekly_dry_run_measures_and_files_nothing() {
     );
 }
 
+/// measure.sh's `modules_without_tests` names only kernel modules: a test
+/// file (`*_tests.rs`, `tests.rs`) is not itself a module without tests,
+/// and a module its parent declares as `#[cfg(test)] mod <name>;` is test
+/// code. With foo.rs declaring `foo_tests`, foo_tests.rs, and a bar.rs with
+/// no tests, only bar.rs is listed. No Cargo.toml, so no cargo runs.
+#[test]
+fn measure_lists_only_modules_without_tests_not_test_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    let src = repo.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("foo.rs"),
+        "pub fn foo() {}\n\n#[cfg(test)]\nmod foo_tests;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("foo_tests.rs"),
+        "#[test]\nfn foo_runs() {\n    super::foo();\n}\n",
+    )
+    .unwrap();
+    std::fs::write(src.join("bar.rs"), "pub fn bar() {}\n").unwrap();
+
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let effects = dir.path().join("effects.log");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join(".forge/workflows/actions/measure.sh");
+    let o = std::process::Command::new("bash")
+        .arg(&script)
+        .current_dir(&work)
+        .env("FORGE_REPO_DIR", &repo)
+        .env("FORGE_EFFECT_LOG", &effects)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let measured: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(work.join("measurements.json")).unwrap()).unwrap();
+    assert_eq!(
+        measured["modules_without_tests"],
+        serde_json::json!(["src/bar.rs"]),
+        "{measured}"
+    );
+}
+
 /// `Limits.per_day` is checked at `forge job start`: once a workflow has
 /// started that many real runs in the last 24 hours, the next start is
 /// refused with a reason naming the limit, queued or `--now` alike; a
