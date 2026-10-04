@@ -193,6 +193,17 @@ fn a_sandboxed_command_cannot_see_host_sysv_shared_memory() {
         .find(|op| op["name"] == "ipc-isolation")
         .unwrap();
     assert_eq!(op["ok"], true, "{op}");
+    // An empty sandbox listing must not be caused by deleting the host segment.
+    let host = std::fs::read_to_string("/proc/sysvipc/shm").unwrap();
+    assert!(
+        host.lines().skip(1).any(|line| {
+            line.split_whitespace()
+                .nth(1)
+                .and_then(|id| id.parse::<i32>().ok())
+                == Some(segment.0)
+        }),
+        "host segment disappeared during the sandboxed command: {host}"
+    );
 }
 
 /// Agents retain their private logins and provider environment; repository
