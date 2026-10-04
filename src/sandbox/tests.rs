@@ -562,7 +562,15 @@ async fn the_command_has_a_namespace_of_its_own_and_one_route_out() {
     let sb = test_sandbox("api.example.com");
     let cmd = sb.command_for_worktree(Path::new("/work/1"), &["true".to_string()], &[]);
     let args = args_of(&cmd);
-    assert!(args.iter().any(|a| a == "--unshare-net"), "{args:?}");
+    for flag in [
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--unshare-cgroup-try",
+    ] {
+        assert!(args.iter().any(|a| a == flag), "missing {flag}: {args:?}");
+    }
     let bind = args
         .windows(3)
         .find(|w| w[0] == "--bind" && w[2] == "/run/forge/egress.sock")
