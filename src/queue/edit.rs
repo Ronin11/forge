@@ -15,6 +15,9 @@ pub struct TaskEdit {
     pub allow_over_trust_cap: bool,
     pub max_turns: Option<u32>,
     pub timeout_secs: Option<u32>,
+    /// Replaces the task's own early-ending thresholds, raw JSON of
+    /// `[early_ending]` keys (`--early-ending`, `cli::parse_early_ending`).
+    pub early_ending: Option<String>,
     pub retries: Option<u32>,
     pub text: Option<String>,
     pub workflow: Option<String>,
@@ -107,6 +110,13 @@ fn apply_scalars(
         changes.push(format!("timeout-secs {} → {n}", old.timeout_secs));
         up.timeout_secs = Some(n as i64);
     }
+    if let Some(e) = &edit.early_ending {
+        changes.push(format!(
+            "early-ending {} → {e}",
+            old.early_ending.as_deref().unwrap_or("unset")
+        ));
+        up.early_ending = Some(e.clone());
+    }
     if let Some(n) = edit.retries {
         changes.push(format!("retries {} → {n}", old.max_attempts - 1));
         up.max_attempts = Some(n as i64 + 1);
@@ -173,7 +183,7 @@ fn apply_workflow(
 pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String>> {
     if edit.is_empty() {
         bail!(
-            "nothing to set: pass --budget, --max-turns, --timeout-secs, --retries, --text, --text-file, --workflow, --after/--no-after, --check/--no-checks, --provider or --priority"
+            "nothing to set: pass --budget, --max-turns, --timeout-secs, --early-ending, --retries, --text, --text-file, --workflow, --after/--no-after, --check/--no-checks, --provider or --priority"
         );
     }
     if let Some(b) = edit.budget

@@ -323,6 +323,10 @@ pub struct TraceTask {
     pub max_turns: i64,
     pub max_attempts: i64,
     pub timeout_secs: i64,
+    /// This task's own early-ending thresholds, raw JSON of
+    /// `[early_ending]` keys (see `store::Task::early_ending`); `None`
+    /// means the operator's `[early_ending]` config applies.
+    pub early_ending: Option<String>,
     pub checks: Vec<String>,
     pub show_checks: bool,
     pub allow_protected: bool,
@@ -574,6 +578,7 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
         max_turns: t.max_turns,
         max_attempts: t.max_attempts,
         timeout_secs: t.timeout_secs,
+        early_ending: t.early_ending.clone(),
         checks: t.checks.clone(),
         show_checks: t.show_checks,
         allow_protected: t.allow_protected,

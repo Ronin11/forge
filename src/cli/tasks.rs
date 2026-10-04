@@ -25,6 +25,12 @@ pub(super) enum TaskCmd {
         /// Wall-clock limit per attempt in seconds
         #[arg(long)]
         timeout_secs: Option<u32>,
+        /// Replace this task's early-ending thresholds: a comma-separated
+        /// list of no_edit_calls=N, edits_without_commit=N, repeats=N,
+        /// signals_to_end=N, any subset; the rest come from the
+        /// operator's `[early_ending]` config
+        #[arg(long = "early-ending", value_parser = super::parse_early_ending)]
+        early_ending: Option<String>,
         /// Extra attempts after a failure, each fed the previous failure
         #[arg(long)]
         retries: Option<u32>,
@@ -557,6 +563,7 @@ async fn dispatch_task(cmd: Cmd) -> Result<()> {
                 allow_over_trust_cap,
                 max_turns,
                 timeout_secs,
+                early_ending,
                 retries,
                 text,
                 text_file,
@@ -582,6 +589,7 @@ async fn dispatch_task(cmd: Cmd) -> Result<()> {
                         allow_over_trust_cap,
                         max_turns,
                         timeout_secs,
+                        early_ending,
                         retries,
                         text,
                         workflow,

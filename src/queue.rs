@@ -57,6 +57,11 @@ pub struct TaskRequest {
     pub max_turns: u32,
     pub retries: u32,
     pub timeout_secs: u32,
+    /// This task's own early-ending thresholds, raw JSON of
+    /// `[early_ending]` keys (`--early-ending`, parsed by
+    /// `cli::parse_early_ending`); `None` leaves the operator's
+    /// `[early_ending]` config in force (see `store::Task::early_ending`).
+    pub early_ending: Option<String>,
     pub budget: Option<f64>,
     /// The operator's `--allow-over-trust-cap`: `budget` may exceed the
     /// trust level's `per_task_usd`, recorded as a decision. Only the CLI
@@ -357,6 +362,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         max_turns: args.max_turns as i64,
         max_attempts: args.retries as i64 + 1,
         timeout_secs: args.timeout_secs as i64,
+        early_ending: args.early_ending.clone(),
         checks: args.checks.clone(),
         state: match &args.blocked {
             Some(_) => TaskState::Blocked,

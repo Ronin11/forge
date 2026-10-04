@@ -62,6 +62,45 @@ pub struct Cli {
     cmd: Cmd,
 }
 
+/// Parse `--early-ending`'s `key=value,key=value` into the JSON object
+/// stored on the task (`store::Task::early_ending`): any subset of
+/// `no_edit_calls`, `edits_without_commit`, `repeats`, `signals_to_end`
+/// (see `config::EarlyEnding`), each a non-negative integer; a key left
+/// out falls to the operator's `[early_ending]` config.
+fn parse_early_ending(s: &str) -> std::result::Result<String, String> {
+    const KEYS: [&str; 4] = [
+        "no_edit_calls",
+        "edits_without_commit",
+        "repeats",
+        "signals_to_end",
+    ];
+    let mut out = serde_json::Map::new();
+    for pair in s.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let (key, val) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("--early-ending {pair:?}: expected <key>=<value>"))?;
+        if !KEYS.contains(&key) {
+            return Err(format!(
+                "--early-ending {key:?}: unknown key; expected one of {}",
+                KEYS.join(", ")
+            ));
+        }
+        let n: u32 = val
+            .trim()
+            .parse()
+            .map_err(|_| format!("--early-ending {key}={val:?}: must be a non-negative integer"))?;
+        out.insert(key.to_string(), serde_json::Value::from(n));
+    }
+    if out.is_empty() {
+        return Err("--early-ending: expected at least one key=value pair".to_string());
+    }
+    serde_json::to_string(&out).map_err(|e| e.to_string())
+}
+
 #[derive(Args)]
 pub struct TaskArgs {
     /// Path to a git repository containing a forge.toml
@@ -91,6 +130,12 @@ pub struct TaskArgs {
     /// Wall-clock limit per attempt; the agent is killed past it
     #[arg(long, default_value_t = 1800)]
     timeout_secs: u32,
+    /// Override this task's early-ending thresholds (`Watch` in
+    /// src/agent.rs): a comma-separated list of no_edit_calls=N,
+    /// edits_without_commit=N, repeats=N, signals_to_end=N, any subset;
+    /// the rest come from the operator's `[early_ending]` config
+    #[arg(long = "early-ending", value_parser = parse_early_ending)]
+    early_ending: Option<String>,
     /// Cost cap for this task in USD (default: per_task_usd in config.toml)
     #[arg(long)]
     budget: Option<f64>,
@@ -820,6 +865,7 @@ impl From<&TaskArgs> for crate::queue::TaskRequest {
             max_turns: a.max_turns,
             retries: a.retries,
             timeout_secs: a.timeout_secs,
+            early_ending: a.early_ending.clone(),
             budget: a.budget,
             allow_over_trust_cap: a.allow_over_trust_cap,
             checks: a.checks.clone(),

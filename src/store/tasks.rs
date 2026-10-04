@@ -337,6 +337,9 @@ pub struct TaskUpdate {
     pub max_turns: Option<i64>,
     pub max_attempts: Option<i64>,
     pub timeout_secs: Option<i64>,
+    /// Replaces the task's own early-ending thresholds (see
+    /// `Task::early_ending`); `None` leaves the stored value as it is.
+    pub early_ending: Option<String>,
     /// The task text, with the shape columns derived from it.
     pub task: Option<(String, i64, i64)>,
     /// Workflow name, its hash and its text, as `enqueue` records them.
@@ -758,6 +761,7 @@ impl Store {
                 max_turns = COALESCE(?3, max_turns),
                 max_attempts = COALESCE(?4, max_attempts),
                 timeout_secs = COALESCE(?5, timeout_secs),
+                early_ending = COALESCE(?17, early_ending),
                 task = COALESCE(?6, task),
                 shape_text_len = COALESCE(?7, shape_text_len),
                 shape_path_tokens = COALESCE(?8, shape_path_tokens),
@@ -787,6 +791,7 @@ impl Store {
                 checks_json,
                 d.provider,
                 d.priority,
+                d.early_ending,
             ],
         )?;
         Ok(n == 1)
@@ -1433,6 +1438,7 @@ mod tests {
                         checks: Some(vec!["true".into()]),
                         provider: None,
                         priority: Some(7),
+                        early_ending: Some(r#"{"repeats":4}"#.into()),
                     }
                 )
                 .unwrap()
@@ -1456,6 +1462,7 @@ mod tests {
         assert_eq!(got.after, vec![3, 4]);
         assert_eq!(got.checks, vec!["true".to_string()]);
         assert_eq!(got.priority, 7);
+        assert_eq!(got.early_ending.as_deref(), Some(r#"{"repeats":4}"#));
 
         // A blocked task takes the change too.
         store

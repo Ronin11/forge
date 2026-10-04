@@ -472,6 +472,9 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
         task.max_attempts,
         task.timeout_secs
     );
+    if let Some(e) = &task.early_ending {
+        out!("early-ending {e}");
+    }
     out!(
         "provider   {}",
         if task.provider.is_empty() {

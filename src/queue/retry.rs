@@ -102,6 +102,9 @@ pub fn retry_request(
         } else {
             t.budget_usd
         },
+        // A retry keeps the early-ending override of the task it
+        // re-queues; there is no `forge retry --early-ending` flag.
+        early_ending: t.early_ending.clone(),
         // A budget already decided is re-filed as it was; one named on
         // `forge retry --budget` is a new request and needs the flag.
         allow_over_trust_cap: !(first && o.budget.is_some()) || o.allow_over_trust_cap,
