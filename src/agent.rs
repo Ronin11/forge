@@ -23,7 +23,7 @@ pub(super) use chat::truncated_first_line;
 use claude::{apply_claude_result, claude_argv, run_claude};
 use codex::{apply_codex_event, run_codex};
 use copilot::{CopilotTally, apply_copilot_event, run_copilot};
-use inputs::{AgentRun, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
+use inputs::{AgentRun, DriveJsonChild, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
 pub use jev::*;
 pub(crate) use relaunch::Relaunch;
 #[cfg(test)]
@@ -981,7 +981,7 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
         );
     }
     prepare_in(l.sandbox, l.worktree, extra_env, Phase::Agent).await;
-    let mut child = spawn_retrying_etxtbsy(|| {
+    let child = spawn_retrying_etxtbsy(|| {
         let mut c = Command::from(command_in(
             l.sandbox,
             l.worktree,
@@ -998,6 +998,34 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
     .await
     .with_context(|| format!("spawning {}", argv[0]))?;
 
+    drive_json_child(DriveJsonChild {
+        l,
+        prompt,
+        start,
+        log,
+        out,
+        watch,
+        apply,
+        child,
+    })
+    .await
+}
+
+/// Drives a spawned agent child to exit or timeout, writing every raw line
+/// to `log` and folding each JSON frame into `out`/`watch` through `apply`.
+/// Split out of `run_json_phase_once` so the spawn and the drive each stay
+/// within the function-length ceiling.
+async fn drive_json_child(args: DriveJsonChild<'_>) -> Result<(Option<i32>, bool, String)> {
+    let DriveJsonChild {
+        l,
+        prompt,
+        start,
+        log,
+        out,
+        watch,
+        apply,
+        mut child,
+    } = args;
     let mut stdin = child.stdin.take().context("agent stdin")?;
     let write_prompt = async {
         // Drain output concurrently; early exits can close the input pipe.
