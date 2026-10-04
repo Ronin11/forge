@@ -2,8 +2,8 @@
 # The engineering-weekly job's second step: compare measurements.json
 # (written by measure.sh, in the same scratch) against the thresholds the
 # workflow file declares as [env] — never hard-coded here. When one is
-# crossed, file a task on the project through `forge add` carrying the
-# measurements and the crossed threshold, asking for a review in the
+# crossed, file one task on the project through `forge add` naming every
+# crossing and carrying the measurements, asking for a review in the
 # shape of docs/REVIEW-2.md. A dry run only logs what it would have
 # filed: `forge add` itself is never called.
 set -uo pipefail
@@ -17,43 +17,47 @@ fi
 function_max=${FUNCTION_MAX_LINES:-${RUN_TASK_MAX_LINES:-400}}
 src_file_max=${SRC_FILE_MAX_LINES:-3000}
 
-crossed=""
-long_fn=$(jq -r --argjson max "$function_max" '
-  [.longest_functions[]? | select(.lines > $max) |
-    "\(.at) \(.signature) is \(.lines) lines (over \($max))"] | join("; ")
+# Every crossing is collected, never just the first: one filed task
+# names them all.
+crossings=()
+
+while IFS= read -r line; do
+  [ -n "$line" ] && crossings+=("$line")
+done < <(jq -r --argjson max "$function_max" '
+  .longest_functions[]? | select(.lines > $max) |
+    "\(.at) \(.signature) is \(.lines) lines (over \($max))"
 ' "$measurements" 2>/dev/null)
-if [ -n "$long_fn" ]; then
-  crossed="$long_fn"
+
+while IFS= read -r line; do
+  [ -n "$line" ] && crossings+=("$line")
+done < <(jq -r --argjson max "$src_file_max" '
+  .largest_files[]? | select(.lines > $max) |
+    "src file \(.path) is \(.lines) lines (over \($max))"
+' "$measurements" 2>/dev/null)
+
+while IFS= read -r line; do
+  [ -n "$line" ] && crossings+=("$line")
+done < <(jq -r '
+  .modules_without_tests[]? | "module without a #[cfg(test)] block: \(.)"
+' "$measurements" 2>/dev/null)
+
+warnings=$(jq -r '.clippy_warnings // 0' "$measurements" 2>/dev/null)
+if [ "$warnings" != "null" ] && [ "$warnings" -gt 0 ] 2>/dev/null; then
+  crossings+=("${warnings} clippy warning(s)")
 fi
 
-if [ -z "$crossed" ]; then
-  big=$(jq -r --argjson max "$src_file_max" '.largest_files[]? | select(.lines > $max) | "\(.path) (\(.lines) lines)"' "$measurements" 2>/dev/null | head -1)
-  if [ -n "$big" ]; then
-    crossed="a src file over ${src_file_max} lines: ${big}"
-  fi
-fi
-
-if [ -z "$crossed" ]; then
-  missing=$(jq -r '.modules_without_tests[0] // empty' "$measurements" 2>/dev/null)
-  if [ -n "$missing" ]; then
-    crossed="a module without a #[cfg(test)] block: ${missing}"
-  fi
-fi
-
-if [ -z "$crossed" ]; then
-  warnings=$(jq -r '.clippy_warnings // 0' "$measurements" 2>/dev/null)
-  if [ "$warnings" != "null" ] && [ "$warnings" -gt 0 ] 2>/dev/null; then
-    crossed="${warnings} clippy warning(s)"
-  fi
-fi
-
-if [ -z "$crossed" ]; then
+if [ "${#crossings[@]}" -eq 0 ]; then
   printf 'row\tthresholds\tno threshold crossed\n' >> "$FORGE_EFFECT_LOG"
   exit 0
 fi
 
+crossed=""
+for c in "${crossings[@]}"; do
+  crossed="${crossed:+$crossed; }$c"
+done
+
 measurements_text=$(tr -d '\n' < "$measurements")
-text="docs/REVIEW-3.md: engineering-weekly crossed a threshold — ${crossed}. Write a review document in the shape of docs/REVIEW-2.md from this week's measurements: ${measurements_text}"
+text="engineering-weekly crossed ${#crossings[@]} threshold(s): ${crossed}. Write a review document in the shape of docs/REVIEW-2.md from this week's measurements: ${measurements_text}"
 
 if [ "${FORGE_DRY_RUN:-}" = "1" ]; then
   printf 'row\ttask\t%s (dry run)\n' "$text" >> "$FORGE_EFFECT_LOG"
