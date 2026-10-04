@@ -130,6 +130,35 @@ pub struct JournalStat {
     pub mean_cost_usd: f64,
 }
 
+/// The early-ending signals (`agent::Watch`, `[early_ending]` config) as
+/// `forge stats --early` names them: the threshold each one is set by.
+pub const EARLY_SIGNALS: [&str; 3] = ["no_edit_calls", "edits_without_commit", "repeats"];
+
+/// The `EARLY_SIGNALS` name for a sign as `attempts.early_signals` and
+/// `early_near` record it (`"no-edit"`, `"uncommitted"`, `"repeat"`);
+/// the threshold's own name is taken as well. `None` for anything else.
+pub fn early_signal_name(recorded: &str) -> Option<&'static str> {
+    match recorded {
+        "no-edit" | "no_edit_calls" => Some("no_edit_calls"),
+        "uncommitted" | "edits_without_commit" => Some("edits_without_commit"),
+        "repeat" | "repeats" => Some("repeats"),
+        _ => None,
+    }
+}
+
+/// One workflow's row of `forge stats --early`: its finished attempts,
+/// and per `EARLY_SIGNALS` name how many attempts tripped it
+/// (`early_signals`) and how many came within 20% of it without tripping
+/// (`early_near`), read from the attempts columns of the same names. An
+/// attempt counts once per signal however often the column names it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct EarlyStat {
+    pub workflow: String,
+    pub attempts: i64,
+    pub early_signals: std::collections::BTreeMap<String, i64>,
+    pub early_near: std::collections::BTreeMap<String, i64>,
+}
+
 /// One row of the runner breakdown: attempts, outcomes, cost and wall
 /// time for one (role, provider, model) combination, role being the
 /// attempt's step (see `forge stats --by-role`).
@@ -972,6 +1001,58 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// `forge stats --early`: per workflow (ordered by name), finished
+    /// attempts and how often each early-ending signal tripped or nearly
+    /// tripped. A column that is not a JSON array of strings counts as empty.
+    pub fn early_stats(&self) -> Result<Vec<EarlyStat>> {
+        let rows = {
+            let c = self.lock();
+            let mut stmt = c.prepare(
+                "SELECT t.workflow AS workflow, a.early_signals AS early_signals,
+                        a.early_near AS early_near
+                 FROM attempts a JOIN tasks t ON t.id = a.task_id
+                 WHERE a.state != 'running'
+                 ORDER BY t.workflow, a.id",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>("workflow")?,
+                    r.get::<_, String>("early_signals")?,
+                    r.get::<_, String>("early_near")?,
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let names = |json: &str| -> std::collections::BTreeSet<&'static str> {
+            serde_json::from_str::<Vec<String>>(json)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|s| early_signal_name(s))
+                .collect()
+        };
+        let mut out: Vec<EarlyStat> = Vec::new();
+        for (workflow, signals, near) in rows {
+            if out.last().is_none_or(|w| w.workflow != workflow) {
+                let zero = || EARLY_SIGNALS.iter().map(|n| (n.to_string(), 0)).collect();
+                out.push(EarlyStat {
+                    workflow,
+                    attempts: 0,
+                    early_signals: zero(),
+                    early_near: zero(),
+                });
+            }
+            let row = out.last_mut().expect("pushed above");
+            row.attempts += 1;
+            for n in names(&signals) {
+                *row.early_signals.entry(n.to_string()).or_default() += 1;
+            }
+            for n in names(&near) {
+                *row.early_near.entry(n.to_string()).or_default() += 1;
+            }
+        }
+        Ok(out)
     }
 
     /// The runner breakdown: attempts, outcomes, cost and wall time per

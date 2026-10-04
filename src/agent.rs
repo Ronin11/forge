@@ -23,7 +23,7 @@ pub(super) use chat::truncated_first_line;
 use claude::{apply_claude_result, claude_argv, run_claude};
 use codex::{apply_codex_event, run_codex};
 use copilot::{CopilotTally, apply_copilot_event, run_copilot};
-use inputs::{AgentRun, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
+use inputs::{AgentRun, DriveJsonChild, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
 pub use jev::*;
 pub(crate) use relaunch::Relaunch;
 #[cfg(test)]
@@ -386,7 +386,7 @@ pub fn command_in(
     argv: &[String],
     extra_env: &[(String, String)],
     phase: Phase,
-) -> std::process::Command {
+) -> Result<std::process::Command> {
     command_under(sandbox, worktree, argv, extra_env, None, phase)
 }
 
@@ -398,22 +398,42 @@ pub fn command_under(
     extra_env: &[(String, String)],
     egress: Option<&crate::egress::Policy>,
     phase: Phase,
-) -> std::process::Command {
+) -> Result<std::process::Command> {
     let env = env_with(worktree, extra_env, phase);
     match sandbox {
         Some(sb) => match egress {
             Some(policy) => sb.command_under(worktree, argv, &env, Some(policy), phase),
             None => sb.command(worktree, argv, &env, phase),
         },
-        None => crate::executor::Executor::command(
+        None => Ok(crate::executor::Executor::command(
             &crate::executor::Host,
             worktree,
             argv,
             &env,
             &crate::egress::Policy::new([]),
             phase,
-        ),
+        )),
     }
+}
+
+/// The name of the first argument or environment value carrying a NUL
+/// byte, if any: `Command::spawn` turns that into the bare OS error "nul
+/// byte found in provided data" (building the `CString` an exec needs
+/// fails), which names neither the task nor the field at fault. Checked
+/// before every launch — an agent's own and a check's or operation's alike
+/// (`checks::launch`) — since a task's text is the one value here an
+/// operator does not control: it can arrive with an embedded NUL inlined
+/// from a reviewer's note (see `verify::review::collect`).
+pub(crate) fn nul_byte_culprit<'a>(
+    argv: &'a [String],
+    env: &'a [(String, String)],
+) -> Option<&'a str> {
+    if let Some(a) = argv.iter().find(|a| a.contains('\0')) {
+        return Some(a.as_str());
+    }
+    env.iter()
+        .find(|(_, v)| v.contains('\0'))
+        .map(|(k, _)| k.as_str())
 }
 
 /// Spawns the command `make` builds, retrying briefly on `ETXTBSY`. A
@@ -424,15 +444,15 @@ pub fn command_under(
 /// only the spawn to redo. `make` is called again on each attempt because
 /// a `Command` is consumed by `spawn`.
 async fn spawn_retrying_etxtbsy(
-    mut make: impl FnMut() -> tokio::process::Command,
-) -> std::io::Result<tokio::process::Child> {
+    mut make: impl FnMut() -> Result<tokio::process::Command>,
+) -> Result<tokio::process::Child> {
     const MAX_ATTEMPTS: u32 = 20;
     for attempt in 1..=MAX_ATTEMPTS {
-        match make().spawn() {
+        match make()?.spawn() {
             Err(e) if attempt < MAX_ATTEMPTS && e.raw_os_error() == Some(libc::ETXTBSY) => {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            result => return result,
+            result => return result.map_err(Into::into),
         }
     }
     unreachable!()
@@ -624,14 +644,17 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
         report,
         log,
     } = args;
+    if let Some(reason) = nul_byte_culprit(argv, identity) {
+        anyhow::bail!("task {task_id}: {reason} contains a NUL byte and cannot start {bin}");
+    }
     prepare_in(sandbox, worktree, identity, Phase::Agent).await;
     let mut child = spawn_retrying_etxtbsy(|| {
-        let mut c = Command::from(command_in(sandbox, worktree, argv, identity, Phase::Agent));
+        let mut c = Command::from(command_in(sandbox, worktree, argv, identity, Phase::Agent)?);
         c.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        c
+        Ok(c)
     })
     .await
     .with_context(|| format!("spawning {bin}"))?;
@@ -837,7 +860,6 @@ async fn run_with_relaunch(args: AgentRun<'_>) -> Result<(Outcome, String)> {
 }
 
 pub async fn run(l: Launch<'_>) -> Result<Outcome> {
-    l.sandbox.map_or(Ok(()), |sb| sb.check_socket(l.worktree))?;
     let outcome = match l.provider.runner {
         Runner::ClaudeCli => refusal::guarded_claude(l).await,
         Runner::CodexCli => {
@@ -951,24 +973,59 @@ async fn run_json_phase_once(args: RunJsonPhase<'_>) -> Result<(Option<i32>, boo
         watch,
         apply,
     } = args;
+    if let Some(reason) = nul_byte_culprit(argv, extra_env) {
+        anyhow::bail!(
+            "task {}: {reason} contains a NUL byte and cannot start {}",
+            l.task_id,
+            argv[0]
+        );
+    }
     prepare_in(l.sandbox, l.worktree, extra_env, Phase::Agent).await;
-    let mut child = spawn_retrying_etxtbsy(|| {
+    let child = spawn_retrying_etxtbsy(|| {
         let mut c = Command::from(command_in(
             l.sandbox,
             l.worktree,
             argv,
             extra_env,
             Phase::Agent,
-        ));
+        )?);
         c.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        c
+        Ok(c)
     })
     .await
     .with_context(|| format!("spawning {}", argv[0]))?;
 
+    drive_json_child(DriveJsonChild {
+        l,
+        prompt,
+        start,
+        log,
+        out,
+        watch,
+        apply,
+        child,
+    })
+    .await
+}
+
+/// Drives a spawned agent child to exit or timeout, writing every raw line
+/// to `log` and folding each JSON frame into `out`/`watch` through `apply`.
+/// Split out of `run_json_phase_once` so the spawn and the drive each stay
+/// within the function-length ceiling.
+async fn drive_json_child(args: DriveJsonChild<'_>) -> Result<(Option<i32>, bool, String)> {
+    let DriveJsonChild {
+        l,
+        prompt,
+        start,
+        log,
+        out,
+        watch,
+        apply,
+        mut child,
+    } = args;
     let mut stdin = child.stdin.take().context("agent stdin")?;
     let write_prompt = async {
         // Drain output concurrently; early exits can close the input pipe.
@@ -1084,6 +1141,7 @@ mod tests {
         let argv = vec!["/usr/bin/env".into()];
         let extra = vec![("ANTHROPIC_API_KEY".into(), "explicit-check-key".into())];
         let output = command_in(None, dir.path(), &argv, &extra, Phase::Check)
+            .unwrap()
             .output()
             .unwrap();
         assert!(output.status.success());
