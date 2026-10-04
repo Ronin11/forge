@@ -1223,3 +1223,74 @@ fn forge_run_removes_its_proxy_dir_at_exit() {
         .unwrap_or_default();
     assert!(left.is_empty(), "left behind after `forge run`: {left:?}");
 }
+
+#[test]
+fn resource_limits_configured_tmpfs_fails_with_enospc() {
+    let e = Env::new();
+    if e.sandbox_disabled() {
+        return;
+    }
+    std::fs::create_dir_all(&e.home).unwrap();
+    std::fs::write(
+        e.home.join("config.toml"),
+        "[sandbox]\ntmp_bytes = 1048576\n",
+    )
+    .unwrap();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let check = r#"set -eu
+if LC_ALL=C dd if=/dev/zero of=/tmp/full bs=65536 count=32 2>dd-error; then
+    echo 'write exceeded tmpfs limit'; exit 1
+fi
+grep -q 'No space left on device' dd-error
+test "$(wc -c < /tmp/full)" -le 1048576
+rm dd-error /tmp/full"#;
+    std::fs::write(e.home.join("workflows/actions/resource-limit.toml"), format!(
+        "name = \"resource-limit\"\nkind = \"operation\"\ndescription = \"tmpfs bound\"\nconsumes = [\"branch\"]\nrun = {}\n",
+        serde_json::to_string(&["/bin/sh", "-c", check]).unwrap()
+    )).unwrap();
+    std::fs::write(e.home.join("workflows/resource-limit-wf.toml"),
+        "name = \"resource-limit-wf\"\ndescription = \"tmpfs bound\"\nsteps = [{ action = \"setup\" }, { action = \"code\" }, { action = \"resource-limit\" }]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n"
+    ).unwrap();
+    let output = e
+        .cmd("ok.sh")
+        .args([
+            "run",
+            "--no-land",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--workflow",
+            "resource-limit-wf",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let trace = e.trace_json("1");
+    let op = trace["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|op| op["name"] == "resource-limit")
+        .unwrap();
+    assert_eq!(op["ok"], true, "{op}");
+    let output = e.forge("ok.sh", &["doctor", "--json"]);
+    let rows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let row = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "sandbox.resources")
+        .unwrap();
+    assert!(
+        row["detail"]
+            .as_str()
+            .unwrap()
+            .contains("/tmp=1048576 bytes"),
+        "{row}"
+    );
+}
