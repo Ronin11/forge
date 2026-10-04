@@ -297,6 +297,13 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
+/// Large binary fixtures belong beside the build artifacts, not on /tmp.
+pub fn disk_tempdir() -> tempfile::TempDir {
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    std::fs::create_dir_all(root).unwrap();
+    tempfile::tempdir_in(root).unwrap()
+}
+
 impl Env {
     pub fn new() -> Env {
         let dir = tempfile::tempdir().unwrap();
@@ -354,9 +361,7 @@ impl Env {
     /// The home stays short so its Unix socket paths still fit sockaddr_un.
     pub fn with_releases() -> Env {
         let mut e = Self::new();
-        let root = Path::new(env!("CARGO_TARGET_TMPDIR"));
-        std::fs::create_dir_all(root).unwrap();
-        let releases = tempfile::tempdir_in(root).unwrap();
+        let releases = disk_tempdir();
         std::fs::create_dir_all(&e.home).unwrap();
         std::os::unix::fs::symlink(releases.path(), e.home.join("bin")).unwrap();
         e._releases = Some(releases);

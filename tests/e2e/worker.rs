@@ -654,7 +654,7 @@ fn a_sigterm_drains_the_running_attempt_and_exits_cleanly() {
 /// worker told to stop must never start a successor on it.
 #[test]
 fn a_stopping_worker_starts_no_successor_on_a_staged_release() {
-    let e = Env::new();
+    let e = Env::with_releases();
     let root = e.home.join("bin");
     for id in ["old", "new"] {
         let dir = root.join("releases").join(id);
