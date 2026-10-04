@@ -130,7 +130,7 @@ pub struct Sandbox {
     /// only for the test constructor, whose relay binary does not exist.
     relay: bool,
     /// The proxies this process runs, one per distinct policy.
-    proxies: Arc<Proxies>,
+    pub(crate) proxies: Arc<Proxies>,
     /// A repository's declared egress, by the worktree its attempts run in
     /// (see `set_egress`); a worktree not in here gets the model endpoints
     /// alone.
@@ -664,25 +664,12 @@ impl Sandbox {
             worktree,
             argv,
             env,
-            &self.policy_for(worktree),
+            self.proxies
+                .socket_for(&self.policy_for(worktree))
+                .ok()
+                .as_deref(),
             Phase::Agent,
         )
-    }
-
-    /// Whether the proxy socket this worktree's launch will bind in is
-    /// there: an error naming it when not, so the launch is an environment
-    /// fault rather than a `bwrap` failure the agent is blamed for.
-    pub fn check_socket(&self, worktree: &Path) -> Result<()> {
-        // No runtime means no route, which `command` already tolerates.
-        let Ok(socket) = self.proxies.socket_for(&self.policy_for(worktree)) else {
-            return Ok(());
-        };
-        anyhow::ensure!(
-            socket.exists(),
-            "egress proxy socket {} is missing",
-            socket.display()
-        );
-        Ok(())
     }
 
     fn wrapper_script(&self, relay_enabled: bool, refused: Option<&Path>, phase: Phase) -> String {
@@ -816,7 +803,7 @@ impl Sandbox {
         worktree: &Path,
         argv: &[String],
         env: &[(String, String)],
-        policy: &Policy,
+        socket: Option<&Path>,
         phase: Phase,
     ) -> Command {
         let mut cmd = Command::new(&self.bwrap);
@@ -885,13 +872,6 @@ impl Sandbox {
         // The route out: the proxy for this worktree's policy, on a socket
         // bound in beside the seed. Without a runtime to run a proxy on
         // there is no route, and the namespace has nothing but loopback.
-        let socket = match self.proxies.socket_for(policy) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                eprintln!("egress: no route out for {}: {e:#}", worktree.display());
-                None
-            }
-        };
         if let Some(s) = &socket {
             cmd.arg("--bind").arg(s).arg(egress::SANDBOX_SOCKET);
         }
