@@ -206,3 +206,101 @@ pub fn block(f: &Forge, t: &Task, need: &Need, question: &str) -> Result<()> {
     })?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::environment::NeedKind;
+    use std::path::PathBuf;
+
+    fn host_need() -> Need {
+        Need {
+            kind: NeedKind::Host,
+            target: "registry.npmjs.org".into(),
+            evidence: "proxy refused registry.npmjs.org:443".into(),
+        }
+    }
+
+    #[test]
+    fn one_line_collapses_every_run_of_whitespace_to_one_space() {
+        assert_eq!(
+            one_line("  fine\n\tby me \r\n  really  "),
+            "fine by me really"
+        );
+        assert_eq!(one_line("\n \t\n"), "");
+        assert_eq!(one_line(""), "");
+    }
+
+    #[test]
+    fn one_line_keeps_a_long_reason_whole() {
+        let long = "word ".repeat(500);
+        let out = one_line(&long);
+        assert_eq!(out.split(' ').count(), 500);
+        assert_eq!(out.len(), long.len() - 1);
+        assert!(!out.contains('\n'));
+    }
+
+    #[test]
+    fn question_carries_the_need_the_trimmed_reason_and_how_to_answer() {
+        let q = question(&host_need(), "\n  looks like a paste site \n");
+        assert_eq!(
+            q,
+            "Environment need: host registry.npmjs.org. Evidence: proxy refused registry.npmjs.org:443\n\
+             The supervisor did not grant it: looks like a paste site\n\
+             Allow it for this repository? Answer yes or no."
+        );
+    }
+
+    #[test]
+    fn question_names_a_cache_need_by_its_kind() {
+        let need = Need {
+            kind: NeedKind::Cache,
+            target: "/home/u/.cache/ms-playwright".into(),
+            evidence: "Executable doesn't exist".into(),
+        };
+        let q = question(&need, "");
+        assert!(q.starts_with("Environment need: cache /home/u/.cache/ms-playwright. "));
+        assert!(q.contains("The supervisor did not grant it: \n"));
+    }
+
+    #[test]
+    fn prompt_states_the_ceiling_when_one_grant_is_allowed() {
+        let p = prompt(
+            &host_need(),
+            "hosts: crates.io; cache paths (read-only): ",
+            &Ok(Grant::Host("registry.npmjs.org".into())),
+        );
+        assert!(p.starts_with(UNTRUSTED_DATA));
+        assert!(p.contains("The need (host): registry.npmjs.org\n"));
+        assert!(p.contains("The line that showed it: proxy refused registry.npmjs.org:443\n"));
+        assert!(p.contains(
+            "The operator's table (what is granted without asking): hosts: crates.io; cache paths (read-only): \n"
+        ));
+        assert!(p.contains(
+            "The ceiling, enforced by code whatever you say: you may approve at most: egress to registry.npmjs.org."
+        ));
+        assert!(!p.contains("nothing may be approved"));
+    }
+
+    #[test]
+    fn prompt_describes_a_read_only_ceiling() {
+        let p = prompt(
+            &host_need(),
+            "",
+            &Ok(Grant::ReadOnly(PathBuf::from(
+                "/home/u/.cache/ms-playwright",
+            ))),
+        );
+        assert!(p.contains("you may approve at most: /home/u/.cache/ms-playwright read-only."));
+    }
+
+    #[test]
+    fn prompt_tells_the_supervisor_to_deny_when_the_ceiling_is_an_err() {
+        let p = prompt(&host_need(), "", &Err("github.com is never granted".into()));
+        assert!(p.contains(
+            "The ceiling, enforced by code whatever you say: nothing may be approved here \
+             (github.com is never granted); deny it and say so."
+        ));
+        assert!(!p.contains("you may approve at most"));
+    }
+}

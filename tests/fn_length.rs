@@ -124,7 +124,7 @@ const ALLOWLIST: &[(&str, &str, usize, &str)] = &[
     ),
     (
         "src/job.rs",
-        "run_now",
+        "run_now_inner",
         460,
         "existing function awaiting a focused split",
     ),
@@ -325,12 +325,6 @@ const ALLOWLIST: &[(&str, &str, usize, &str)] = &[
         "tests/e2e/jobs.rs",
         "drift_weekly_model_drift_fires_when_an_alias_moved",
         170,
-        "test fixture",
-    ),
-    (
-        "tests/e2e/jobs.rs",
-        "engineering_weekly_dry_run_measures_and_files_nothing",
-        146,
         "test fixture",
     ),
     (

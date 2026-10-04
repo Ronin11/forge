@@ -79,7 +79,7 @@ fn open_gate(e: &Env, id: i64) {
 
 #[test]
 fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains() {
-    let e = Env::new();
+    let e = Env::with_releases();
     std::fs::create_dir_all(&e.home).unwrap();
     std::fs::write(e.home.join("config.toml"), "[worker]\nslots = 2\n").unwrap();
     let root = e.home.join("bin");
@@ -211,7 +211,7 @@ fn running_by_worker(e: &Env) -> Vec<(i64, i64)> {
 
 #[test]
 fn a_successor_beside_a_predecessor_holding_two_attempts_claims_at_most_jobs_minus_two() {
-    let e = Env::new();
+    let e = Env::with_releases();
     std::fs::create_dir_all(&e.home).unwrap();
     std::fs::write(e.home.join("config.toml"), "[worker]\nslots = 3\n").unwrap();
     let root = e.home.join("bin");
@@ -315,7 +315,7 @@ fn a_successor_beside_a_predecessor_holding_two_attempts_claims_at_most_jobs_min
 
 #[test]
 fn a_successor_exiting_without_taking_over_makes_the_old_worker_fail() {
-    let e = Env::new();
+    let e = Env::with_releases();
     let root = e.home.join("bin");
     let release = root.join("releases/new");
     std::fs::create_dir_all(&release).unwrap();
@@ -381,7 +381,7 @@ fn fake_systemctl(e: &Env) -> (String, std::path::PathBuf) {
 
 #[test]
 fn a_successor_takes_the_unit_over_and_honours_a_stop_job_that_arrives_while_it_claims() {
-    let e = Env::new();
+    let e = Env::with_releases();
     let (path, state) = fake_systemctl(&e);
     let sock_path = e.home.join("notify.sock");
     let sock = std::os::unix::net::UnixDatagram::bind(&sock_path).unwrap();
@@ -434,7 +434,7 @@ fn a_successor_takes_the_unit_over_and_honours_a_stop_job_that_arrives_while_it_
 /// predecessor still draining a running attempt of its own.
 #[test]
 fn a_successor_that_stops_cleanly_after_taking_over_does_not_return_the_claim() {
-    let e = Env::new();
+    let e = Env::with_releases();
     std::fs::create_dir_all(&e.home).unwrap();
     std::fs::write(e.home.join("config.toml"), "[worker]\nslots = 2\n").unwrap();
     let root = e.home.join("bin");
@@ -529,7 +529,7 @@ fn a_successor_that_stops_cleanly_after_taking_over_does_not_return_the_claim() 
 
 #[test]
 fn doctor_fails_the_worker_row_when_the_unit_is_deactivating_with_a_claiming_worker() {
-    let e = Env::new();
+    let e = Env::with_releases();
     let (path, state) = fake_systemctl(&e);
     assert!(e.forge("ok.sh", &["doctor"]).status.code().is_some());
     e.db()
@@ -670,12 +670,19 @@ fn deploy_self_only_stages_for_a_successor_capable_worker_and_restarts_an_older_
 
 #[test]
 fn a_successors_start_leaves_the_live_predecessors_proxy_dir_and_sweeps_a_dead_ones() {
-    let e = Env::new();
+    let e = Env::with_releases();
     std::fs::create_dir_all(&e.home).unwrap();
     std::fs::write(e.home.join("config.toml"), "[worker]\nslots = 2\n").unwrap();
     let root = e.home.join("bin");
     let run = e.home.join("run");
-    std::fs::create_dir_all(&run).unwrap();
+    // Match the private run directory created by proxy startup. A public
+    // fixture directory now correctly prevents sandboxed launches.
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&run)
+        .unwrap();
     for id in ["old", "new"] {
         let dir = root.join("releases").join(id);
         std::fs::create_dir_all(&dir).unwrap();
@@ -861,7 +868,7 @@ fn takeover(e: &Env, path: &str) -> (String, String) {
 
 #[test]
 fn a_successor_restarts_the_units_the_self_target_declares_and_a_missing_one_is_a_note() {
-    let e = Env::new();
+    let e = Env::with_releases();
     declare_self_target(&e, &["units=forge-web forge-portal", "tries=2"]);
     let path = fake_systemctl_without_portal(&e);
     std::fs::write(e.home.join("units/forge-web"), "active\n").unwrap();
@@ -883,7 +890,7 @@ fn a_successor_restarts_the_units_the_self_target_declares_and_a_missing_one_is_
 
 #[test]
 fn a_successor_restarts_only_forge_web_when_the_target_declares_no_units() {
-    let e = Env::new();
+    let e = Env::with_releases();
     declare_self_target(&e, &[]);
     let path = fake_systemctl_without_portal(&e);
     std::fs::write(e.home.join("units/forge-web"), "active\n").unwrap();
@@ -897,7 +904,7 @@ fn a_successor_restarts_only_forge_web_when_the_target_declares_no_units() {
 
 #[test]
 fn a_unit_that_does_not_come_back_active_flips_current_back() {
-    let e = Env::new();
+    let e = Env::with_releases();
     declare_self_target(&e, &["units=forge-web forge-portal", "tries=2"]);
     let path = fake_systemctl_without_portal(&e);
     std::fs::write(e.home.join("units/forge-web"), "inactive\n").unwrap();
@@ -936,7 +943,7 @@ fn keeper_status(e: &Env) -> serde_json::Value {
 
 #[test]
 fn a_successor_that_dies_after_claiming_gives_the_plugins_back_to_the_worker_that_still_claims() {
-    let e = Env::new();
+    let e = Env::with_releases();
     let plugin = e.home.join("plugins/keeper");
     std::fs::create_dir_all(&plugin).unwrap();
     std::fs::write(
@@ -1030,7 +1037,7 @@ fn a_successor_that_dies_after_claiming_gives_the_plugins_back_to_the_worker_tha
 
 #[test]
 fn a_successor_that_claims_and_dies_is_not_started_again_by_a_restarted_worker() {
-    let e = Env::new();
+    let e = Env::with_releases();
     let root = e.home.join("bin");
     let starts = e.home.join("starts.log");
     let bin = root.join("releases/new/forge");
@@ -1084,7 +1091,7 @@ fn a_successor_that_claims_and_dies_is_not_started_again_by_a_restarted_worker()
 
 #[test]
 fn a_successor_that_dies_after_a_restarted_worker_joined_is_not_started_again() {
-    let e = Env::new();
+    let e = Env::with_releases();
     let root = e.home.join("bin");
     let starts = e.home.join("starts.log");
     let bin = root.join("releases/new/forge");
