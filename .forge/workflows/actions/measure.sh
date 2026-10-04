@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The engineering-weekly job's first step: measure the tree the way
 # docs/REVIEW-2.md opens (kernel lines, the five largest files, the eight
-# longest functions, modules without a #[cfg(test)] block, test counts,
+# longest functions, modules without a #[cfg(test)] block (test files
+# themselves excluded), test counts,
 # e2e wall time, clippy warnings), write it to measurements.json in the
 # scratch, and log it as a row effect. Degrades to null/empty fields
 # rather than failing when a tool (cargo, clippy) or the tree (no src/)
@@ -24,6 +25,61 @@ if [ -d "$repo/src" ]; then
   files_tmp=$(mktemp)
   funcs_tmp=$(mktemp)
   notests_tmp=$(mktemp)
+  tested_tmp=$(mktemp)
+
+  # Modules a parent declares as `#[cfg(test)] mod <name>;` (honouring a
+  # `#[path = "..."]` between the two) are test code, not untested code.
+  # Every path the declaration could resolve to is listed, normalized.
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    awk -v path="${f#"$repo"/}" '
+      function norm(p,   n, i, parts, out, k, r) {
+        n = split(p, parts, "/"); k = 0
+        for (i = 1; i <= n; i++) {
+          if (parts[i] == "" || parts[i] == ".") continue
+          if (parts[i] == ".." && k > 0) { k--; continue }
+          out[++k] = parts[i]
+        }
+        r = ""
+        for (i = 1; i <= k; i++) r = r (i > 1 ? "/" : "") out[i]
+        return r
+      }
+      function emit(name,   dir, base, stem) {
+        dir = path; sub(/\/[^\/]*$/, "", dir)
+        base = path; sub(/^.*\//, "", base)
+        stem = base; sub(/\.rs$/, "", stem)
+        if (attr != "") { print norm(dir "/" attr); return }
+        print norm(dir "/" name ".rs")
+        print norm(dir "/" name "/mod.rs")
+        print norm(dir "/" stem "/" name ".rs")
+        print norm(dir "/" stem "/" name "/mod.rs")
+      }
+      {
+        line = $0
+        if (line ~ /^[[:space:]]*#\[cfg\(test\)\]/) {
+          pending = 1; attr = ""
+          sub(/^[[:space:]]*#\[cfg\(test\)\][[:space:]]*/, "", line)
+        }
+        if (!pending) next
+        if (line ~ /^[[:space:]]*#\[path[[:space:]]*=[[:space:]]*"[^"]*"[[:space:]]*\]/) {
+          attr = line
+          sub(/^[^"]*"/, "", attr); sub(/".*$/, "", attr)
+          sub(/^[[:space:]]*#\[[^]]*\][[:space:]]*/, "", line)
+        }
+        if (line ~ /^[[:space:]]*(pub([(][^)]*[)])?[[:space:]]+)?mod[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*;/) {
+          name = line
+          sub(/^[[:space:]]*(pub([(][^)]*[)])?[[:space:]]+)?mod[[:space:]]+/, "", name)
+          sub(/[[:space:]]*;.*$/, "", name)
+          emit(name)
+          pending = 0
+        } else if (line ~ /^[[:space:]]*(#\[.*)?$/) {
+          next
+        } else {
+          pending = 0
+        }
+      }
+    ' "$f" >> "$tested_tmp"
+  done < <(kernel_files)
 
   while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -55,7 +111,15 @@ if [ -d "$repo/src" ]; then
       }
     ' "$f" >> "$funcs_tmp"
 
-    if ! grep -q '#\[cfg(test)\]' "$f" 2>/dev/null; then
+    # Test files are not modules without tests: skip tests.rs, *_tests.rs,
+    # anything under a tests/ directory (children of a test module),
+    # and any module its parent declares under #[cfg(test)].
+    case "$rel" in
+      */tests.rs | *_tests.rs | */tests/*) continue ;;
+    esac
+    grep -qxF -- "$rel" "$tested_tmp" && continue
+
+    if ! grep -qE '#\[cfg\(test\)\]|#\[(tokio::)?test\]' "$f" 2>/dev/null; then
       printf '%s\n' "$rel" >> "$notests_tmp"
     fi
   done < <(kernel_files)
@@ -73,7 +137,7 @@ if [ -d "$repo/src" ]; then
   if [ -s "$notests_tmp" ]; then
     modules_without_tests_json=$(jq -R -s '[splits("\n") | select(length > 0)]' "$notests_tmp")
   fi
-  rm -f "$files_tmp" "$funcs_tmp" "$notests_tmp"
+  rm -f "$files_tmp" "$funcs_tmp" "$notests_tmp" "$tested_tmp"
 fi
 
 unit_tests=0

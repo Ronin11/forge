@@ -859,6 +859,12 @@ CREATE TABLE initiative_holds (
     "
 ALTER TABLE projects ADD COLUMN retired_at INTEGER;
 ",
+    // Per-task early-ending thresholds (`Task::early_ending`), a JSON
+    // object of `[early_ending]` keys such as `{"no_edit_calls":50}`; NULL
+    // means the operator's `[early_ending]` config applies.
+    "
+ALTER TABLE tasks ADD COLUMN early_ending TEXT;
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

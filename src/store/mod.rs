@@ -65,8 +65,8 @@ pub use questions::{QuestionRecord, Resolution};
 pub use record::{Decision, InsertDecisionBy, TaskRef};
 pub use schedule::ScheduleRefusal;
 pub use stats::{
-    HumanAttentionProjectStat, HumanAttentionStat, JournalStat, RoleStat, StatsFilter, StepStat,
-    TaskTtl, WorkflowStat,
+    EARLY_SIGNALS, HumanAttentionProjectStat, HumanAttentionStat, JournalStat, RoleStat,
+    StatsFilter, StepStat, TaskTtl, WorkflowStat,
 };
 pub use tasks::{
     REQUEUE_ABORT, REQUEUE_ORPHAN, REQUEUE_REASONS, RoleRouting, Routed, Task, TaskState,
@@ -275,6 +275,7 @@ const TASK_COLUMNS: &[&str] = &[
     "adoption_json",
     "priority",
     "supersedes",
+    "early_ending",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -380,6 +381,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         adoption: adoption::from_column(&r.get::<_, String>("adoption_json")?),
         priority: r.get("priority")?,
         supersedes: r.get("supersedes")?,
+        early_ending: r.get("early_ending")?,
     })
 }
 

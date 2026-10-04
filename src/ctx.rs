@@ -320,6 +320,18 @@ impl Forge {
         }
     }
 
+    /// Register the directories one task's own steps run in, besides
+    /// `worktree` itself: siblings on disk (the tests contract's own
+    /// clone, its scratch directory), named by the caller. Without this a
+    /// host or cache grant applied to `worktree` would never reach an
+    /// attempt running in one of them (see `sandbox::Sandbox::register_task`,
+    /// E1-22). No-op unsandboxed.
+    pub fn register_task_dirs(&self, worktree: &Path, siblings: &[PathBuf]) {
+        if let Some(sandbox) = &self.sandbox {
+            sandbox.register_task(worktree, siblings);
+        }
+    }
+
     /// Apply what the environment policy grants for `need` to attempts in
     /// `worktree`: the host on top of its egress, or the cache path
     /// read-only. `None` when the policy does not cover the need, the
