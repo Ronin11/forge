@@ -329,12 +329,6 @@ const ALLOWLIST: &[(&str, &str, usize, &str)] = &[
     ),
     (
         "tests/e2e/jobs.rs",
-        "engineering_weekly_dry_run_measures_and_files_nothing",
-        146,
-        "test fixture",
-    ),
-    (
-        "tests/e2e/jobs.rs",
         "forge_job_start_delay_leaves_the_job_scheduled_until_due_and_zero_runs_it",
         149,
         "test fixture",

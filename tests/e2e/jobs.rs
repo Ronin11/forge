@@ -1102,22 +1102,12 @@ fn forge_job_bench_measures_two_fake_providers_over_two_fixtures() {
 #[test]
 fn engineering_weekly_dry_run_measures_and_files_nothing() {
     let e = Env::new();
-    let repo_s = e.repo.to_str().unwrap();
-    assert!(
-        e.forge(
-            "ok.sh",
-            &["project", "new", "acme", "--purpose", "p", "--repo", repo_s],
-        )
-        .status
-        .success()
-    );
+    setup_engineering_weekly_project(&e, "acme");
 
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let wf_dir = e.repo.join(".forge/workflows");
-    std::fs::create_dir_all(wf_dir.join("actions")).unwrap();
-
-    let wf_text =
-        std::fs::read_to_string(root.join(".forge/workflows/engineering-weekly.toml")).unwrap();
+    // Lower SRC_FILE_MAX_LINES from 3000 to 5 so a small fixture file
+    // crosses it deterministically and fast.
+    let wf_path = e.repo.join(".forge/workflows/engineering-weekly.toml");
+    let wf_text = std::fs::read_to_string(&wf_path).unwrap();
     let wf_text = wf_text.replace(
         "SRC_FILE_MAX_LINES = \"3000\"",
         "SRC_FILE_MAX_LINES = \"5\"",
@@ -1126,22 +1116,7 @@ fn engineering_weekly_dry_run_measures_and_files_nothing() {
         wf_text.contains("SRC_FILE_MAX_LINES = \"5\""),
         "the real workflow's threshold line changed shape; update this test's replace"
     );
-    std::fs::write(wf_dir.join("engineering-weekly.toml"), wf_text).unwrap();
-
-    for f in ["measure-engineering.toml", "review-if-crossed.toml"] {
-        std::fs::copy(
-            root.join(".forge/workflows/actions").join(f),
-            wf_dir.join("actions").join(f),
-        )
-        .unwrap();
-    }
-    for f in ["measure.sh", "compare-thresholds.sh", "skip-if-reviewed.sh"] {
-        std::fs::copy(
-            root.join(".forge/workflows/actions").join(f),
-            wf_dir.join("actions").join(f),
-        )
-        .unwrap();
-    }
+    std::fs::write(&wf_path, wf_text).unwrap();
 
     // A fixture file over the test's lowered threshold, nowhere near a
     // real 3000-line one, and no Cargo.toml: measure.sh's cargo
@@ -1156,25 +1131,7 @@ fn engineering_weekly_dry_run_measures_and_files_nothing() {
     git(&e.repo, &["add", "-A"]);
     git(&e.repo, &["commit", "-qm", "engineering-weekly fixture"]);
 
-    let o = e.forge(
-        "ok.sh",
-        &[
-            "job",
-            "start",
-            "acme",
-            "engineering-weekly",
-            "--dry-run",
-            "--now",
-        ],
-    );
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
-
-    let doc: serde_json::Value = serde_json::from_slice(
-        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
-            .stdout,
-    )
-    .unwrap();
+    let doc = run_engineering_weekly(&e, "acme", true);
     assert_eq!(doc["state"], "ok", "{doc:?}");
     assert_eq!(doc["dry_run"], true);
     let effects = doc["effects"].as_array().unwrap();
@@ -1204,11 +1161,7 @@ fn engineering_weekly_dry_run_measures_and_files_nothing() {
     // A real run (the dry run above never counted against `per_day`)
     // really does call `forge add`: the crossed threshold lands as a
     // queued task whose text starts with "docs/REVIEW".
-    let o = e.forge(
-        "ok.sh",
-        &["job", "start", "acme", "engineering-weekly", "--now"],
-    );
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    run_engineering_weekly(&e, "acme", false);
 
     let tasks: serde_json::Value = serde_json::from_slice(
         &e.forge("ok.sh", &["log", "--project", "acme", "--json"])
@@ -1225,6 +1178,62 @@ fn engineering_weekly_dry_run_measures_and_files_nothing() {
             .starts_with("docs/REVIEW"),
         "{tasks:?}"
     );
+}
+
+/// `compare-thresholds.sh` reads `.longest_functions[]` from
+/// measurements.json rather than re-deriving `run_task`'s own length
+/// with a second awk pass over `src/engine.rs` — so a function over
+/// `FUNCTION_MAX_LINES` (400 by default, `RUN_TASK_MAX_LINES` only an
+/// alias for the default) names itself in the filed task regardless of
+/// which file it lives in. Same real workflow and scripts as
+/// `engineering_weekly_dry_run_measures_and_files_nothing`, copied
+/// unmodified, against a fixture file (not engine.rs) holding a single
+/// function: first 450 lines, over the bound, then 300, under it.
+#[test]
+fn engineering_weekly_dry_run_names_a_long_function_over_threshold() {
+    let e = Env::new();
+    setup_engineering_weekly_project(&e, "acme");
+    std::fs::create_dir_all(e.repo.join("src")).unwrap();
+
+    // A 450-line function (over the 400-line default) in a file that
+    // is not engine.rs, and no Cargo.toml, so measure.sh's cargo
+    // test/clippy block never runs.
+    let mut over = String::from("fn big_fn() {\n");
+    over.push_str(&"    let _x = 0;\n".repeat(448));
+    over.push_str("}\n");
+    std::fs::write(e.repo.join("src/longfn.rs"), &over).unwrap();
+    git(&e.repo, &["add", "-A"]);
+    git(&e.repo, &["commit", "-qm", "over-threshold fixture"]);
+
+    let doc = run_engineering_weekly(&e, "acme", true);
+    assert_eq!(doc["state"], "ok", "{doc:?}");
+    let effects = doc["effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 2, "{effects:?}");
+    assert_eq!(effects[1]["target"], "task");
+    let filed = effects[1]["summary"].as_str().unwrap();
+    assert!(
+        filed.contains("src/longfn.rs:1 fn big_fn() is 450 lines (over 400)"),
+        "{filed}"
+    );
+    assert!(filed.contains("(dry run)"), "{filed}");
+
+    // Replace the fixture with a 300-line function, under the bound,
+    // and a #[cfg(test)] block so the file doesn't also trip the
+    // modules-without-tests check.
+    let mut under = String::from("fn mid_fn() {\n");
+    under.push_str(&"    let _x = 0;\n".repeat(298));
+    under.push_str("}\n");
+    under.push_str("#[cfg(test)]\nmod tests {\n    #[test]\n    fn trivial() {}\n}\n");
+    std::fs::write(e.repo.join("src/longfn.rs"), &under).unwrap();
+    git(&e.repo, &["add", "-A"]);
+    git(&e.repo, &["commit", "-qm", "under-threshold fixture"]);
+
+    let doc = run_engineering_weekly(&e, "acme", true);
+    assert_eq!(doc["state"], "ok", "{doc:?}");
+    let effects = doc["effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 2, "{effects:?}");
+    assert_eq!(effects[1]["target"], "thresholds");
+    assert_eq!(effects[1]["summary"], "no threshold crossed");
 }
 
 /// `Limits.per_day` is checked at `forge job start`: once a workflow has

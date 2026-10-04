@@ -14,29 +14,16 @@ if [ ! -f "$measurements" ]; then
   exit 0
 fi
 
-run_task_max=${RUN_TASK_MAX_LINES:-400}
+function_max=${FUNCTION_MAX_LINES:-${RUN_TASK_MAX_LINES:-400}}
 src_file_max=${SRC_FILE_MAX_LINES:-3000}
-repo="${FORGE_REPO_DIR:-.}"
-
-run_task_lines=$(awk '
-  /^[[:space:]]*(pub([(][^)]*[)])?[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+run_task[[:space:]]*\(/ {
-    if (depth == 0) { start = NR; capturing = 1 }
-  }
-  capturing {
-    n = gsub(/{/, "{"); depth += n
-    m = gsub(/}/, "}"); depth -= m
-    if (depth == 0 && (n + m) > 0 && NR >= start) {
-      print (NR - start + 1)
-      capturing = 0
-      exit
-    }
-  }
-' "$repo/src/engine.rs" 2>/dev/null)
-run_task_lines=${run_task_lines:-0}
 
 crossed=""
-if [ "$run_task_lines" -gt "$run_task_max" ] 2>/dev/null; then
-  crossed="run_task is ${run_task_lines} lines (over ${run_task_max})"
+long_fn=$(jq -r --argjson max "$function_max" '
+  [.longest_functions[]? | select(.lines > $max)] | first // empty |
+  "\(.at) \(.signature) is \(.lines) lines (over " + ($max | tostring) + ")"
+' "$measurements" 2>/dev/null)
+if [ -n "$long_fn" ]; then
+  crossed="$long_fn"
 fi
 
 if [ -z "$crossed" ]; then
