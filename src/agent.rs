@@ -1288,6 +1288,22 @@ mod tests {
     }
 
     #[test]
+    fn task_override_of_signals_to_end_zero_disables_only_that_task() {
+        let config = thresholds(1, 1, 1, 1);
+        let task = config.with_task(Some(r#"{"signals_to_end":0}"#));
+        assert_eq!(task, thresholds(1, 1, 1, 0), "unset keys keep the config's");
+        let (mut off, mut on) = (Watch::new(task), Watch::new(config));
+        off.saw("Read", &Value::Null);
+        on.saw("Read", &Value::Null);
+        assert!(
+            off.should_end(true).is_none(),
+            "the task's Watch is disabled"
+        );
+        assert!(on.should_end(true).is_some(), "the config default stays on");
+        assert_eq!(config.with_task(None), config);
+    }
+
+    #[test]
     fn near_reports_signals_close_to_but_under_their_threshold() {
         let mut w = Watch::new(thresholds(10, 100, 100, 2));
         for _ in 0..9 {

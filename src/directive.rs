@@ -13,7 +13,7 @@ use std::path::Path;
 use std::time::Duration;
 
 /// What one launch needs beyond what every launch takes from `Forge` (the
-/// sandbox, the reporter, the early-ending thresholds).
+/// sandbox, the reporter).
 pub struct Spec<'a> {
     /// The task or job the run's events carry.
     pub id: i64,
@@ -44,6 +44,9 @@ pub struct Spec<'a> {
     pub no_tools: bool,
     /// What a `Runner::Jev` judges; see `agent::Launch::judgment`.
     pub judgment: Option<agent::Judgment<'a>>,
+    /// The `Watch` thresholds: `Forge::effective_early_ending` for a
+    /// task's attempt, the operator's `[early_ending]` config otherwise.
+    pub early_ending: crate::config::EarlyEnding,
 }
 
 pub async fn launch(f: &Forge, s: Spec<'_>) -> Result<Outcome> {
@@ -79,7 +82,7 @@ pub async fn launch(f: &Forge, s: Spec<'_>) -> Result<Outcome> {
         writes: s.writes,
         start_sha: s.start_sha,
         schema: s.schema,
-        early_ending: f.early_ending,
+        early_ending: s.early_ending,
         no_tools: s.no_tools,
         judgment: s.judgment,
     })

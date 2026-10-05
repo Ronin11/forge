@@ -259,6 +259,7 @@ pub async fn run(
             resume: None,
             no_tools: false,
             judgment: None,
+            early_ending: f.early_ending,
         },
     )
     .await;

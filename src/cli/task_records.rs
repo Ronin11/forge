@@ -86,14 +86,17 @@ pub(super) fn trace(id: i64, json: bool) -> Result<()> {
         );
         let inputs: audit::Inputs = serde_json::from_value(a.inputs.clone()).unwrap_or_default();
         out!(
-            "inputs     model={} runner={} provider={} max_turns={} timeout={}s base={} start={}",
+            "inputs     model={} runner={} provider={} max_turns={} timeout={}s base={} start={}{}",
             inputs.model,
             a.runner,
             a.provider,
             inputs.max_turns,
             inputs.timeout_secs,
             &inputs.base_sha[..inputs.base_sha.len().min(8)],
-            &inputs.start_sha[..inputs.start_sha.len().min(8)]
+            &inputs.start_sha[..inputs.start_sha.len().min(8)],
+            inputs
+                .early_ending
+                .map_or(String::new(), |e| format!(" early_ending={e}"))
         );
         out!(
             "           checks_shown={} task_checks={:?} protected={:?} namespace={:?} overlay={:?} prompt_chars={}",

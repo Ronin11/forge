@@ -564,6 +564,7 @@ pub async fn new_attempt(args: NewAttempt<'_>) -> Result<(Attempt, PathBuf), Fau
         model_pinned(&t.model_source),
     );
     inputs.max_turns = t.max_turns;
+    inputs.early_ending = Some(f.effective_early_ending(t));
     inputs.timeout_secs = t.timeout_secs;
     inputs.base_sha = t.base_sha.clone();
     inputs.start_sha = start_sha.clone();
@@ -642,6 +643,7 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
             resume,
             no_tools: false,
             judgment: None,
+            early_ending: f.effective_early_ending(t),
         },
     );
     // `forge withdraw --abort` runs in another process: watch for its

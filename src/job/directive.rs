@@ -114,6 +114,7 @@ pub(super) async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOut
                 action,
                 state: &directive_inputs(input_text, step_outputs, input_bytes),
             }),
+            early_ending: f.early_ending,
         },
     )
     .await?;

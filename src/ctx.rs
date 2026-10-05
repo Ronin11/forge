@@ -470,6 +470,13 @@ impl Forge {
             .and_then(|p| self.store.project(p).ok().flatten())
     }
 
+    /// The early-ending thresholds `t`'s agent launches run under: the
+    /// task's own override (`Task::early_ending`) over the operator's
+    /// `[early_ending]` config, key by key.
+    pub fn effective_early_ending(&self, t: &Task) -> config::EarlyEnding {
+        self.early_ending.with_task(t.early_ending.as_deref())
+    }
+
     /// The provider `t`'s step under `role` actually runs: see
     /// `resolve_provider`.
     pub fn effective_provider(&self, t: &Task, role: &str) -> Result<&agent::Provider> {

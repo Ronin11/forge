@@ -91,12 +91,41 @@ struct EarlyEndingRaw {
 /// nowhere: no edit after this many tool calls, this many edits without a
 /// commit, or one command run this many times. `signals_to_end` of these
 /// tripping together ends the run; 0 disables early ending entirely.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, Deserialize)]
 pub struct EarlyEnding {
     pub no_edit_calls: u32,
     pub edits_without_commit: u32,
     pub repeats: u32,
     pub signals_to_end: u32,
+}
+
+impl EarlyEnding {
+    /// These thresholds with a task's own override laid over them: the
+    /// JSON object `store::Task::early_ending` holds (any subset of the
+    /// keys, as `--early-ending` writes it), the way a task's `max_turns`
+    /// stands over the default. A key the override leaves out keeps this
+    /// value; `None`, or JSON that does not parse, keeps them all.
+    pub fn with_task(self, task: Option<&str>) -> EarlyEnding {
+        let Some(o) = task.and_then(|s| serde_json::from_str::<EarlyEndingRaw>(s).ok()) else {
+            return self;
+        };
+        EarlyEnding {
+            no_edit_calls: o.no_edit_calls.unwrap_or(self.no_edit_calls),
+            edits_without_commit: o.edits_without_commit.unwrap_or(self.edits_without_commit),
+            repeats: o.repeats.unwrap_or(self.repeats),
+            signals_to_end: o.signals_to_end.unwrap_or(self.signals_to_end),
+        }
+    }
+}
+
+impl std::fmt::Display for EarlyEnding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "no_edit_calls={},edits_without_commit={},repeats={},signals_to_end={}",
+            self.no_edit_calls, self.edits_without_commit, self.repeats, self.signals_to_end
+        )
+    }
 }
 
 #[derive(Deserialize, Default)]

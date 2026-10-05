@@ -153,6 +153,7 @@ async fn model_step(
             resume: None,
             no_tools: true,
             judgment: None,
+            early_ending: f.early_ending,
         },
     )
     .await?;

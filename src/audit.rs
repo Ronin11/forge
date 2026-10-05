@@ -24,6 +24,10 @@ pub struct Inputs {
     pub step: String,
     pub model: String,
     pub max_turns: i64,
+    /// The early-ending thresholds the run was held to: the task's
+    /// override over the operator's config. `None` before this was recorded.
+    #[serde(default)]
+    pub early_ending: Option<crate::config::EarlyEnding>,
     pub timeout_secs: i64,
     pub base_sha: String,
     pub start_sha: String,

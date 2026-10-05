@@ -597,6 +597,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
             resume: None,
             no_tools: false,
             judgment: None,
+            early_ending: f.early_ending,
         },
     )
     .await?;

@@ -141,6 +141,7 @@ pub async fn rule(f: &Forge, t: &Task, deny: &[String], need: &Need) -> Result<R
             resume: None,
             no_tools: false,
             judgment: None,
+            early_ending: f.early_ending,
         },
     )
     .await?;
