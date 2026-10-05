@@ -22,7 +22,7 @@ fn git(dir: &std::path::Path, args: &[&str]) {
 /// both `mod`s and `use`s `src/a.rs` (deduped to one edge), and
 /// `src/a.rs` `mod`s its own submodule `src/a/b.rs`.
 fn three_file_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = disk_tempdir();
     let repo = dir.path();
     git(repo, &["init", "-q"]);
     git(repo, &["config", "user.email", "t@e"]);

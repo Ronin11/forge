@@ -102,8 +102,9 @@ forge gc [--dry-run]                                        # remove worktrees t
    Forge pushes by URL. The checks are then read from the base commit,
    never from the branch under test.
 3. **Agent.** `claude --print --output-format stream-json --json-schema …`
-   in the worktree under bubblewrap: read-only system, private `/tmp` `/run`
-   `/proc`, a tmpfs `$HOME` holding only the worktree, the repo's `.git`,
+   in the worktree under bubblewrap: read-only system, private `/run` and
+   `/proc`, a private disk-backed `/tmp` beside the worktree (removed with
+   it), a tmpfs `$HOME` holding only the worktree, the repo's `.git`,
    the agent binary, and a private copy of the claude, codex and copilot CLIs'
    credentials and settings — seeded from the operator's real state and
    discarded with the attempt, so no attempt ever reads or writes the

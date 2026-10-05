@@ -316,7 +316,7 @@ fn a_workflow_becomes_measured_after_enough_runs_and_regressions_are_seen() {
 /// ran the catalog's own loader against the repository's own files.
 #[test]
 fn forge_workflows_validate_runs_with_no_store_and_no_forge_home() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = disk_tempdir();
     let repo = dir.path();
     std::fs::create_dir_all(repo.join(".forge/workflows")).unwrap();
     std::fs::write(

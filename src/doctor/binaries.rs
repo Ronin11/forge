@@ -125,7 +125,7 @@ pub(super) fn check_resource_limits(paths: &config::SandboxPaths) -> Check {
     let limits = paths.limits;
     let scope = limits.scope_runner().is_some();
     let detail = format!(
-        "bwrap launches: tmpfs /tmp={} bytes, HOME=268435456 bytes, /run=67108864 bytes; core=0, file={} bytes, nofile=4096; cache uppers on disk; {}",
+        "bwrap launches: tmpfs /dev/shm={} bytes, HOME=268435456 bytes, /run=67108864 bytes; core=0, file={} bytes, nofile=4096; /tmp and cache uppers on disk; {}",
         limits.tmp_bytes,
         limits.memory_max / 512 * 512,
         if scope {

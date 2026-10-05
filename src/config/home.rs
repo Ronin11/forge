@@ -273,7 +273,8 @@ per_task_usd = 2.0
 # per_day_usd = 20.0
 
 [sandbox]
-# Byte limits for /tmp and the systemd scope; HOME is 256 MiB, /run 64 MiB.
+# Byte limits for /dev/shm (and /tmp, only where its per-worktree disk
+# directory cannot be made) and the systemd scope; HOME is 256 MiB, /run 64 MiB.
 # A scope is used when the systemd user manager supports resource controls.
 # memory_max also caps each file (rounded down to a 512-byte block).
 tmp_bytes = 1073741824

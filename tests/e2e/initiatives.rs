@@ -56,7 +56,7 @@ fn an_initiative_from_a_file_lands_a_dependency_and_settles_done_with_the_event(
         .success()
     );
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = disk_tempdir();
     let file = dir.path().join("tasks.txt");
     std::fs::write(
         &file,
@@ -150,7 +150,7 @@ fn same_rule_failures_hold_the_initiative_and_the_report_names_the_rule() {
         .success()
     );
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = disk_tempdir();
     let file = dir.path().join("tasks.txt");
     // `noop.sh` commits nothing, so every one of these fails L0's
     // has-commits rule, deterministically and independently.
@@ -271,7 +271,7 @@ fn setting_the_budget_higher_lifts_a_budget_hold_and_the_worker_claims_the_next_
         .success()
     );
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = disk_tempdir();
     let file = dir.path().join("tasks.txt");
     // Two independent tasks (no `after:`): the first lands the answer,
     // the second is only held back by the budget.
@@ -341,7 +341,7 @@ fn a_task_blocked_on_a_question_keeps_the_initiative_open() {
         .success()
     );
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = disk_tempdir();
     let file = dir.path().join("tasks.txt");
     std::fs::write(&file, "write an answer").unwrap();
 
@@ -628,7 +628,7 @@ fn from_records_the_from_files_own_provider_and_falls_the_rest_to_the_flags_defa
         .success()
     );
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = disk_tempdir();
     let file = dir.path().join("tasks.txt");
     std::fs::write(
         &file,
@@ -677,7 +677,7 @@ fn from_refuses_an_unknown_provider_named_by_a_paragraph_before_queuing_anything
         .success()
     );
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = disk_tempdir();
     let file = dir.path().join("tasks.txt");
     std::fs::write(
         &file,
@@ -726,7 +726,7 @@ fn from_records_the_from_files_own_workflow_and_falls_the_rest_to_the_flags_defa
         .success()
     );
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = disk_tempdir();
     let file = dir.path().join("tasks.txt");
     std::fs::write(
         &file,
@@ -775,7 +775,7 @@ fn from_refuses_an_unknown_workflow_named_by_a_paragraph_before_queuing_anything
         .success()
     );
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = disk_tempdir();
     let file = dir.path().join("tasks.txt");
     std::fs::write(
         &file,
@@ -968,7 +968,7 @@ fn flaky_initiative(e: &Env, test_name: &str) -> i64 {
         .status
         .success()
     );
-    let dir = tempfile::tempdir().unwrap();
+    let dir = disk_tempdir();
     let file = dir.path().join("tasks.txt");
     std::fs::write(&file, "first\n\nsecond\n\nthird\n\nfourth").unwrap();
     let o = e.forge(

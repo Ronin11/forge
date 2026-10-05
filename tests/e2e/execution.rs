@@ -92,7 +92,7 @@ fn a_directive_step_records_the_outcome_it_returned_and_one_off_the_list_fails()
 #[test]
 fn an_outcome_on_an_operation_is_refused_by_the_lint() {
     let e = Env::new();
-    let root = tempfile::tempdir().unwrap();
+    let root = disk_tempdir();
     let actions = root.path().join(".forge/workflows/actions");
     std::fs::create_dir_all(&actions).unwrap();
     std::fs::write(

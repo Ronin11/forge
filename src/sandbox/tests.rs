@@ -430,7 +430,8 @@ fn codex_home_is_where_the_private_codex_copy_is_bound() {
     let mut sb = test_sandbox("api.example.com");
     sb.codex_dir = PathBuf::from("/srv/codex-home");
     let root = tempfile::tempdir().unwrap();
-    let args = args_of(&sb.command_for_worktree(root.path(), &["true".to_string()], &[]));
+    let args =
+        args_of(&sb.command_for_worktree(&root.path().join("wt"), &["true".to_string()], &[]));
     assert!(
         args.windows(3)
             .any(|w| w[0] == "--bind" && w[1].ends_with("/codex") && w[2] == "/srv/codex-home"),
@@ -449,7 +450,8 @@ fn an_agent_under_the_claude_dir_is_bound_after_the_private_binds() {
     sb.agent_dirs = vec![local.clone(), PathBuf::from("/opt/agent")];
     sb.extra_ro = vec![PathBuf::from("/home/attempt/.codex/tools")];
     let root = tempfile::tempdir().unwrap();
-    let args = args_of(&sb.command_for_worktree(root.path(), &["true".to_string()], &[]));
+    let args =
+        args_of(&sb.command_for_worktree(&root.path().join("wt"), &["true".to_string()], &[]));
     let at = |flag: &str, value: &str| {
         args.iter()
             .enumerate()
@@ -830,24 +832,29 @@ fn resource_limit_scope_probe_cannot_notify_the_worker_service() {
 #[test]
 fn resource_limits_bound_every_tmpfs_and_wrap_the_launch() {
     let root = tempfile::tempdir().unwrap();
+    let worktree = root.path().join("wt");
     let mut sandbox = Sandbox::with_bwrap("/usr/bin/bwrap".into(), root.path().join("home"));
     let argv = ["true".to_string()];
-    let args = args_of(&sandbox.command_for_worktree(root.path(), &argv, &[]));
+    let args = args_of(&sandbox.command_for_worktree(&worktree, &argv, &[]));
     let mounts: Vec<_> = args
         .windows(4)
         .filter(|w| w[0] == "--size" && w[2] == "--tmpfs")
         .collect();
-    assert_eq!(mounts.len(), 4);
+    assert_eq!(mounts.len(), 3);
     assert_eq!(mounts[0][1], "1073741824");
     assert_eq!(mounts[0][3], "/dev/shm");
-    assert_eq!(mounts[1][1], "1073741824");
-    assert_eq!(mounts[1][3], "/tmp");
-    assert_eq!(mounts[2][1], "67108864");
-    assert_eq!(mounts[2][3], "/run");
-    assert_eq!(mounts[3][1], "268435456");
+    assert_eq!(mounts[1][1], "67108864");
+    assert_eq!(mounts[1][3], "/run");
+    assert_eq!(mounts[2][1], "268435456");
     assert_eq!(
         args.iter().filter(|a| *a == "--tmpfs").count(),
         mounts.len()
+    );
+    assert!(
+        args.windows(3).any(|w| w[0] == "--bind"
+            && w[1] == tmp_dir(&worktree).to_string_lossy()
+            && w[2] == "/tmp"),
+        "{args:?}"
     );
     assert!(
         args.windows(2)
@@ -859,7 +866,7 @@ fn resource_limits_bound_every_tmpfs_and_wrap_the_launch() {
         tasks_max: 123,
     };
     sandbox.scope_runner = Some("/usr/bin/systemd-run".into());
-    let cmd = sandbox.command_for_worktree(root.path(), &argv, &[]);
+    let cmd = sandbox.command_for_worktree(&worktree, &argv, &[]);
     assert_eq!(cmd.get_program(), "/usr/bin/systemd-run");
     let args = args_of(&cmd);
     assert_eq!(
@@ -876,45 +883,120 @@ fn resource_limits_bound_every_tmpfs_and_wrap_the_launch() {
     );
     assert!(
         args.windows(4)
-            .any(|w| w == ["--size", "1048576", "--tmpfs", "/tmp"])
+            .any(|w| w == ["--size", "1048576", "--tmpfs", "/dev/shm"])
     );
     for phase in [Phase::Agent, Phase::Check] {
         let script = sandbox.wrapper_script(false, None, phase);
         assert!(script.starts_with("ulimit -c 0 && ulimit -f 4194304 && ulimit -n 4096 || exit;"));
         assert!(script.ends_with("exec \"$@\""));
     }
+    discard_provider_state(&worktree);
 }
 
-/// Run the actual generated command, including its wrapper, against the kernel.
+/// When the per-worktree directory cannot be made, `/tmp` is still
+/// private: a sized tmpfs, as before it moved to disk.
 #[test]
-fn resource_limits_tmpfs_exhaustion_is_enospc() {
-    if std::env::var("FORGE_TEST_NO_SANDBOX").as_deref() == Ok("1") {
-        return;
-    }
-    let (bwrap, _) =
-        resolve_binary("bwrap").expect("bwrap required; set FORGE_TEST_NO_SANDBOX=1 to opt out");
+fn an_unmakeable_tmp_dir_falls_back_to_a_sized_tmpfs() {
     let root = tempfile::tempdir().unwrap();
-    let mut sandbox = Sandbox::with_bwrap(bwrap, PathBuf::from("/home/attempt"));
-    sandbox.limits.tmp_bytes = 1024 * 1024;
+    std::fs::write(root.path().join("file"), "").unwrap();
+    let worktree = root.path().join("file/wt");
+    let sandbox = Sandbox::with_bwrap("/usr/bin/bwrap".into(), root.path().join("home"));
+    let args = args_of(&sandbox.command_for_worktree(&worktree, &["true".into()], &[]));
+    assert!(
+        args.windows(4)
+            .any(|w| w == ["--size", "1073741824", "--tmpfs", "/tmp"]),
+        "{args:?}"
+    );
+    assert!(!args.windows(3).any(|w| w[0] == "--bind" && w[2] == "/tmp"));
+}
+
+/// A directory on a real disk for the worktrees these tests run: the
+/// test binary's own target directory, not the host's `/tmp`, which may
+/// itself be a tmpfs.
+fn disk_root() -> tempfile::TempDir {
+    let exe = std::env::current_exe().unwrap();
+    tempfile::tempdir_in(exe.parent().unwrap()).unwrap()
+}
+
+/// Run `script` in `worktree`'s sandbox as a check, returning stdout.
+fn run_sandboxed(sandbox: &Sandbox, worktree: &Path, script: &str) -> String {
     let output = sandbox
         .command(
-            root.path(),
-            &[
-                "/bin/sh".into(),
-                "-c".into(),
-                "LC_ALL=C dd if=/dev/zero of=/tmp/full bs=65536 count=32".into(),
-            ],
+            worktree,
+            &["/bin/sh".into(), "-c".into(), script.into()],
             &[],
             None,
             Phase::Check,
         )
         .output()
         .unwrap();
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("No space left on device"),
-        "{output:?}"
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8(output.stdout).unwrap()
+}
+
+fn fs_type(path: &Path) -> String {
+    let out = Command::new("stat")
+        .args(["-f", "-c", "%T"])
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+/// Run the actual generated command against the kernel: the sandbox's
+/// `/tmp` (and `$TMPDIR`) is the worktree's `-tmp` sibling on disk, not a
+/// RAM-backed tmpfs; two worktrees get different ones; and the directory
+/// goes with the worktree.
+#[test]
+fn the_sandboxs_tmp_is_a_per_worktree_directory_on_disk() {
+    if std::env::var("FORGE_TEST_NO_SANDBOX").as_deref() == Ok("1") {
+        return;
+    }
+    let (bwrap, _) =
+        resolve_binary("bwrap").expect("bwrap required; set FORGE_TEST_NO_SANDBOX=1 to opt out");
+    let root = disk_root();
+    let sandbox = Sandbox::with_bwrap(bwrap, PathBuf::from("/home/attempt"));
+    let one = root.path().join("1");
+    let two = root.path().join("2");
+    for wt in [&one, &two] {
+        std::fs::create_dir_all(wt).unwrap();
+    }
+    let host_fs = fs_type(root.path());
+    let out = run_sandboxed(
+        &sandbox,
+        &one,
+        "echo one > /tmp/marker; echo \"$TMPDIR\"; stat -f -c %T /tmp",
     );
+    let mut lines = out.lines();
+    assert_eq!(lines.next(), Some("/tmp"), "TMPDIR: {out}");
+    let sandbox_fs = lines.next().unwrap();
+    assert_eq!(sandbox_fs, host_fs, "{out}");
+    assert_ne!(sandbox_fs, "tmpfs", "{out}");
+    assert_eq!(
+        std::fs::read_to_string(tmp_dir(&one).join("marker")).unwrap(),
+        "one\n"
+    );
+    let out = run_sandboxed(
+        &sandbox,
+        &two,
+        "test ! -e /tmp/marker && echo two > /tmp/marker && echo ok",
+    );
+    assert_eq!(out.trim(), "ok");
+    assert_eq!(
+        std::fs::read_to_string(tmp_dir(&two).join("marker")).unwrap(),
+        "two\n"
+    );
+    assert_ne!(tmp_dir(&one), tmp_dir(&two));
+    // A later launch in the same worktree sees what the earlier one left.
+    let out = run_sandboxed(&sandbox, &one, "cat /tmp/marker");
+    assert_eq!(out, "one\n");
+    std::fs::remove_dir_all(&one).unwrap();
+    discard_provider_state(&one);
+    assert!(!tmp_dir(&one).exists());
+    assert!(tmp_dir(&two).exists());
+    discard_provider_state(&two);
+    assert!(!tmp_dir(&two).exists());
 }
 
 /// `--dev` mounts a tmpfs the size of host RAM; a write straight into it
@@ -928,11 +1010,13 @@ fn resource_limits_dev_tmpfs_is_bound_and_dev_itself_is_read_only() {
     let (bwrap, _) =
         resolve_binary("bwrap").expect("bwrap required; set FORGE_TEST_NO_SANDBOX=1 to opt out");
     let root = tempfile::tempdir().unwrap();
+    let worktree = root.path().join("wt");
+    std::fs::create_dir_all(&worktree).unwrap();
     let mut sandbox = Sandbox::with_bwrap(bwrap, PathBuf::from("/home/attempt"));
     sandbox.limits.tmp_bytes = 1024 * 1024;
     let output = sandbox
         .command(
-            root.path(),
+            &worktree,
             &[
                 "/bin/sh".into(),
                 "-c".into(),
@@ -951,7 +1035,7 @@ fn resource_limits_dev_tmpfs_is_bound_and_dev_itself_is_read_only() {
     );
     let output = sandbox
         .command(
-            root.path(),
+            &worktree,
             &["/bin/sh".into(), "-c".into(), "echo x > /dev/escape".into()],
             &[],
             None,
@@ -964,4 +1048,5 @@ fn resource_limits_dev_tmpfs_is_bound_and_dev_itself_is_read_only() {
         String::from_utf8_lossy(&output.stderr).contains("Read-only file system"),
         "{output:?}"
     );
+    discard_provider_state(&worktree);
 }

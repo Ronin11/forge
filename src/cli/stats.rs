@@ -355,6 +355,7 @@ async fn dispatch_stats(cmd: Cmd) -> Result<()> {
             factors,
             questions,
             mechanic,
+            early,
             days,
             project,
             initiative,
@@ -363,6 +364,9 @@ async fn dispatch_stats(cmd: Cmd) -> Result<()> {
             force,
             json,
         } => {
+            if early {
+                return early_stats(json);
+            }
             stats(crate::cli::statistics::StatsOptions {
                 tools,
                 step,
@@ -387,6 +391,46 @@ async fn dispatch_stats(cmd: Cmd) -> Result<()> {
         }
         _ => unreachable!("command routed to the wrong family"),
     }
+}
+
+/// `forge stats --early`: see `Store::early_stats`.
+fn early_stats(json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let rows = f.store.early_stats()?;
+    if json {
+        out!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        out!("no finished attempts yet");
+        return Ok(());
+    }
+    out!(
+        "{:<10} {:>5}  {:<22} {:>7} {:>5}",
+        "WF",
+        "ATT",
+        "SIGNAL",
+        "TRIPPED",
+        "NEAR"
+    );
+    for w in &rows {
+        for (i, name) in crate::store::EARLY_SIGNALS.iter().enumerate() {
+            let (wf, att) = if i == 0 {
+                (w.workflow.clone(), w.attempts.to_string())
+            } else {
+                (String::new(), String::new())
+            };
+            out!(
+                "{:<10} {:>5}  {:<22} {:>7} {:>5}",
+                wf,
+                att,
+                name,
+                w.early_signals[*name],
+                w.early_near[*name]
+            );
+        }
+    }
+    Ok(())
 }
 
 async fn dispatch_events(cmd: Cmd) -> Result<()> {

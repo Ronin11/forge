@@ -171,6 +171,73 @@ mod tests {
     use super::*;
 
     #[test]
+    fn provider_env_adds_the_runner_specific_key_only_when_the_named_variable_is_set() {
+        // SAFETY: the variable name is unique to this test.
+        unsafe { std::env::set_var("FORGE_TEST_PROVIDER_ENV_KEY", "secret-value") };
+        let base = vec![("ALREADY".to_string(), "there".to_string())];
+        for (runner, target) in [
+            (Runner::ClaudeCli, "ANTHROPIC_API_KEY"),
+            (Runner::CodexCli, "OPENAI_API_KEY"),
+            (Runner::CopilotCli, "COPILOT_GITHUB_TOKEN"),
+        ] {
+            let provider = Provider {
+                runner,
+                api_key_env: Some("FORGE_TEST_PROVIDER_ENV_KEY".into()),
+                env: base.clone(),
+                ..Provider::default()
+            };
+            let env = provider_env(&provider);
+            assert_eq!(
+                env,
+                vec![
+                    ("ALREADY".to_string(), "there".to_string()),
+                    (target.to_string(), "secret-value".to_string()),
+                ]
+            );
+        }
+        // SAFETY: cleanup of the same unique variable.
+        unsafe { std::env::remove_var("FORGE_TEST_PROVIDER_ENV_KEY") };
+    }
+
+    #[test]
+    fn provider_env_leaves_the_env_alone_for_chat_and_jev_and_without_an_api_key_env() {
+        let base = vec![("ONLY".to_string(), "this".to_string())];
+        let no_key_env = Provider {
+            runner: Runner::ClaudeCli,
+            api_key_env: None,
+            env: base.clone(),
+            ..Provider::default()
+        };
+        assert_eq!(provider_env(&no_key_env), base);
+
+        // SAFETY: the variable name is unique to this test.
+        unsafe { std::env::set_var("FORGE_TEST_PROVIDER_ENV_UNUSED", "x") };
+        for runner in [Runner::Chat, Runner::Jev] {
+            let provider = Provider {
+                runner,
+                api_key_env: Some("FORGE_TEST_PROVIDER_ENV_UNUSED".into()),
+                env: base.clone(),
+                ..Provider::default()
+            };
+            assert_eq!(provider_env(&provider), base);
+        }
+        // SAFETY: cleanup of the same unique variable.
+        unsafe { std::env::remove_var("FORGE_TEST_PROVIDER_ENV_UNUSED") };
+    }
+
+    #[test]
+    fn provider_env_skips_the_key_when_its_named_variable_is_unset() {
+        // SAFETY: the variable name is unique to this test, and unset by it.
+        unsafe { std::env::remove_var("FORGE_TEST_PROVIDER_ENV_MISSING") };
+        let provider = Provider {
+            runner: Runner::ClaudeCli,
+            api_key_env: Some("FORGE_TEST_PROVIDER_ENV_MISSING".into()),
+            ..Provider::default()
+        };
+        assert!(provider_env(&provider).is_empty());
+    }
+
+    #[test]
     fn codex_config_contains_only_the_resolved_model_and_provider() {
         let provider = Provider {
             name: "quoted.\"provider".into(),

@@ -16,7 +16,7 @@ struct SignalFixture {
 /// one scripted inbound message, and a fake `signal-cli` that records
 /// what it is asked to send in `$FORGE_PLUGIN_STATE/sent`.
 fn signal_fixture(repo: &str) -> SignalFixture {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = disk_tempdir();
     let plugin_dir = tmp.path().join("plugin");
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&plugin_dir).unwrap();

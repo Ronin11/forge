@@ -68,7 +68,7 @@ fn a_quiet_home_is_idle_and_a_running_task_moves_through_working_to_a_well_forme
     let e = Env::new();
     enable_statusline(&e);
 
-    let fake_home = tempfile::tempdir().unwrap();
+    let fake_home = disk_tempdir();
     let path = status_path(fake_home.path());
 
     let mut worker = Worker::spawn(
@@ -125,7 +125,7 @@ fn a_blocked_task_moves_the_state_to_attention() {
     let e = Env::new();
     enable_statusline(&e);
 
-    let fake_home = tempfile::tempdir().unwrap();
+    let fake_home = disk_tempdir();
     let path = status_path(fake_home.path());
 
     let id = e.add(&[]);
@@ -185,7 +185,7 @@ fn a_task_created_long_ago_but_finished_recently_still_counts_as_recently_failed
         )
         .unwrap();
 
-    let fake_home = tempfile::tempdir().unwrap();
+    let fake_home = disk_tempdir();
     let path = status_path(fake_home.path());
 
     let mut worker = Worker::spawn(e.cmd("ok.sh").env("HOME", fake_home.path()).args(["work"]));
