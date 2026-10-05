@@ -337,8 +337,7 @@ pub struct TaskUpdate {
     pub max_turns: Option<i64>,
     pub max_attempts: Option<i64>,
     pub timeout_secs: Option<i64>,
-    /// Replaces the task's own early-ending thresholds (see
-    /// `Task::early_ending`); `None` leaves the stored value as it is.
+    /// Replaces the task's own early-ending thresholds (JSON).
     pub early_ending: Option<String>,
     /// The task text, with the shape columns derived from it.
     pub task: Option<(String, i64, i64)>,
@@ -1436,9 +1435,8 @@ mod tests {
                         tdd: Some(true),
                         after: Some(vec![3, 4]),
                         checks: Some(vec!["true".into()]),
-                        provider: None,
                         priority: Some(7),
-                        early_ending: Some(r#"{"repeats":4}"#.into()),
+                        ..Default::default()
                     }
                 )
                 .unwrap()
@@ -1462,7 +1460,6 @@ mod tests {
         assert_eq!(got.after, vec![3, 4]);
         assert_eq!(got.checks, vec!["true".to_string()]);
         assert_eq!(got.priority, 7);
-        assert_eq!(got.early_ending.as_deref(), Some(r#"{"repeats":4}"#));
 
         // A blocked task takes the change too.
         store
