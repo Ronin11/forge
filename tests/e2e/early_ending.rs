@@ -54,3 +54,111 @@ fn stats_early_json_counts_each_signal_per_workflow() {
         assert!(text.contains(signal), "{text}");
     }
 }
+
+/// `forge add --early-ending` stores the given thresholds as JSON on the
+/// task (any subset; the rest come from the operator's `[early_ending]`
+/// config), shown by `forge show` and `forge show --json`; `forge task
+/// set --early-ending` replaces them the same way `--max-turns` does.
+#[test]
+fn forge_add_early_ending_stores_thresholds_and_forge_task_set_replaces_them() {
+    let e = Env::new();
+    let id = e.add(&["--early-ending", "no_edit_calls=5,repeats=3"]);
+
+    let o = e.forge("ok.sh", &["show", &id.to_string()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains(r#"early-ending {"no_edit_calls":5,"repeats":3}"#),
+        "{out}"
+    );
+
+    let show_json = |id: i64| -> serde_json::Value {
+        serde_json::from_slice(
+            &e.forge("ok.sh", &["show", &id.to_string(), "--json"])
+                .stdout,
+        )
+        .unwrap()
+    };
+    let t = show_json(id);
+    assert_eq!(t["early_ending"], r#"{"no_edit_calls":5,"repeats":3}"#);
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "task",
+            "set",
+            &id.to_string(),
+            "--early-ending",
+            "signals_to_end=1",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let t = show_json(id);
+    assert_eq!(t["early_ending"], r#"{"signals_to_end":1}"#);
+
+    // A task filed with no `--early-ending` stores none: the operator's
+    // config applies.
+    let unset = e.add(&[]);
+    assert_eq!(show_json(unset)["early_ending"], serde_json::Value::Null);
+}
+
+/// An unknown `--early-ending` key, or a non-integer value, is refused by
+/// name at argument-parsing time, before a task is ever filed; the same
+/// on `forge task set`.
+#[test]
+fn forge_add_early_ending_rejects_an_unknown_key_or_a_non_integer_naming_it() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    // A task that exists before the bad calls below, so `e.db()` has a
+    // database to open and the count check below has a baseline.
+    let baseline = e.add(&[]);
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            repo,
+            "write 42 to answer.txt",
+            "--early-ending",
+            "bogus=5",
+        ],
+    );
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("bogus"), "{err}");
+    assert_eq!(
+        e.db()
+            .query_row("SELECT count(*) FROM tasks", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1,
+        "no further task was filed"
+    );
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            repo,
+            "write 42 to answer.txt",
+            "--early-ending",
+            "repeats=notanumber",
+        ],
+    );
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("repeats"), "{err}");
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "task",
+            "set",
+            &baseline.to_string(),
+            "--early-ending",
+            "bogus=5",
+        ],
+    );
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("bogus"), "{err}");
+}
