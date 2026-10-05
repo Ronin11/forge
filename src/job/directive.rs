@@ -162,29 +162,10 @@ pub(super) async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOut
     let Some(structured) = &outcome.structured else {
         return Ok(fail("no structured output".to_string()));
     };
-    let schema_value: serde_json::Value =
-        serde_json::from_str(schema).context("the action's schema is not valid JSON")?;
-    let instance: serde_json::Value = match serde_json::from_str(structured) {
+    let instance = match checked_output(action, provider.runner, schema, structured)? {
         Ok(v) => v,
-        Err(e) => {
-            return Ok(fail(format!(
-                "the structured output is not valid JSON: {e}"
-            )));
-        }
+        Err(why) => return Ok(fail(why)),
     };
-    // A judgment is Jev's typed answer, not a model's attempt at the schema:
-    // it is held to the action's outcomes instead.
-    let judged = provider.runner == crate::agent::Runner::Jev;
-    let invalid = if judged {
-        crate::agent::check_judgment(action, &instance)
-    } else {
-        jsonschema::validate(&schema_value, &instance)
-            .err()
-            .map(|e| format!("the structured output does not match the schema: {e}"))
-    };
-    if let Some(why) = invalid {
-        return Ok(fail(why));
-    }
 
     Ok(DirectiveOutcome {
         provider: provider.name.clone(),
@@ -200,6 +181,35 @@ pub(super) async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOut
         output_ref,
         outcome: outcome_of(&instance),
         probabilities: crate::agent::probabilities(provider.runner, &instance),
+    })
+}
+
+/// The step's structured output parsed and held to its action: the schema,
+/// or the action's outcomes when Jev judged it. `Err` is why it failed.
+fn checked_output(
+    action: &workflows::ActionDef,
+    runner: crate::agent::Runner,
+    schema: &str,
+    structured: &str,
+) -> Result<std::result::Result<serde_json::Value, String>> {
+    let schema_value: serde_json::Value =
+        serde_json::from_str(schema).context("the action's schema is not valid JSON")?;
+    let instance: serde_json::Value = match serde_json::from_str(structured) {
+        Ok(v) => v,
+        Err(e) => return Ok(Err(format!("the structured output is not valid JSON: {e}"))),
+    };
+    // A judgment is Jev's typed answer, not a model's attempt at the schema:
+    // it is held to the action's outcomes instead.
+    let invalid = if runner == crate::agent::Runner::Jev {
+        crate::agent::check_judgment(action, &instance)
+    } else {
+        jsonschema::validate(&schema_value, &instance)
+            .err()
+            .map(|e| format!("the structured output does not match the schema: {e}"))
+    };
+    Ok(match invalid {
+        Some(why) => Err(why),
+        None => Ok(instance),
     })
 }
 
