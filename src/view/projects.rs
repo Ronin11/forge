@@ -31,6 +31,10 @@ pub struct ProjectRow {
     pub created_at: i64,
     pub repos: Vec<ProjectRepoRow>,
     pub queued: i64,
+    /// Of `queued`, how many a worker could claim now; the rest wait on a
+    /// predecessor or a held initiative (`Store::queue_breakdown`).
+    pub claimable: i64,
+    pub waiting: i64,
     pub running: i64,
     pub succeeded: i64,
     pub failed: i64,
@@ -74,6 +78,16 @@ fn real_purpose(purpose: &str) -> String {
     }
 }
 
+/// How many of `ids` are queued and claimable right now.
+fn claimable_among(f: &Forge, ids: Vec<i64>) -> Result<i64> {
+    let held = crate::worker::held_initiatives(f)?;
+    let claimable = f.store.queue_breakdown(&held)?;
+    Ok(claimable
+        .iter()
+        .filter(|(id, s)| *s == crate::store::QueueStatus::Claimable && ids.contains(id))
+        .count() as i64)
+}
+
 pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
     let repos = f
         .store
@@ -89,7 +103,8 @@ pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
     let mut proposals: Vec<ProposalRow> = tasks.iter().filter_map(proposal_row).collect();
     proposals.sort_by_key(|p| std::cmp::Reverse(p.task_id));
     let mut stats = crate::store::ProjectTaskStats::default();
-    for (t, _) in latest_per_lineage(f, &tasks)? {
+    let latest = latest_per_lineage(f, &tasks)?;
+    for (t, _) in &latest {
         match t.state {
             TaskState::Queued => stats.queued += 1,
             TaskState::Running => stats.running += 1,
@@ -101,12 +116,15 @@ pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
             TaskState::Capped => stats.capped += 1,
         }
     }
+    let claimable = claimable_among(f, latest.iter().map(|(t, _)| t.id).collect())?;
     Ok(ProjectRow {
         name: p.name.clone(),
         purpose: real_purpose(&p.purpose),
         created_at: p.created_at,
         repos,
         queued: stats.queued,
+        claimable,
+        waiting: stats.queued - claimable,
         running: stats.running,
         succeeded: stats.succeeded,
         failed: stats.failed,
@@ -442,6 +460,10 @@ pub struct InitiativeRow {
     /// L1 test: a::b (streak 3)" or "budget: $x of $y"); `None` otherwise.
     pub held_reason: Option<String>,
     pub queued: i64,
+    /// Of `queued`, how many a worker could claim now; the rest wait on a
+    /// predecessor or a held initiative (`Store::queue_breakdown`).
+    pub claimable: i64,
+    pub waiting: i64,
     pub running: i64,
     pub succeeded: i64,
     pub failed: i64,
@@ -477,6 +499,7 @@ pub fn initiative_row(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
             TaskState::Capped => stats.capped += 1,
         }
     }
+    let claimable = claimable_among(f, latest.iter().map(|t| t.id).collect())?;
     Ok(InitiativeRow {
         id: ini.id,
         project: ini.project.clone(),
@@ -485,6 +508,8 @@ pub fn initiative_row(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
         held_rule: hold,
         held_reason,
         queued: stats.queued,
+        claimable,
+        waiting: stats.queued - claimable,
         running: stats.running,
         succeeded: stats.succeeded,
         failed: stats.failed,
