@@ -148,6 +148,7 @@ forge project set <name> --purpose <text> --workflow … --per-task-usd … --su
 forge project retire <name>                      (refuses a queued or running task; history stays, by name)
 
 forge initiative new <project> --outcome <text> [--from <file>] [--provider <name>] [--workflow <name>] [--budget <usd>]
+forge initiative add <id> --from <file>         (append the file's paragraphs to an existing initiative)
 forge initiative set <id> [--budget <usd>] [--stop-after <n>] [--outcome <text>]
 forge initiative list [<project>] | show <id> | report <id> [--json]
 forge add <repo> <text> --initiative <id>        (project follows the initiative)
@@ -155,6 +156,12 @@ forge add <repo> <text> --project <name>         (a task outside any initiative)
 forge task set <id> [--budget <usd>] [--max-turns <n>] [--timeout-secs <n>] [--retries <n>] [--provider <name>]
 forge log | stats [--project <name>] [--initiative <id>]
 ```
+
+An initiative file's paragraphs may lead with `after: 2, #1690`: a
+comma-separated list of earlier paragraphs (bare 1-based numbers) and
+existing task ids (`#<task id>`), each a dependency. `initiative add`
+reads the same grammar; a bare number counts paragraphs within the
+appended file, and `#<id>` reaches tasks filed earlier.
 
 Every shape joins the client contract (`docs/CLIENT.md`) so the TUI and
 the web show projects, initiatives and their reports without shelling

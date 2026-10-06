@@ -211,3 +211,15 @@ fn no_cli_function_grows_past_eighty_lines_unless_named() {
         "CLI functions over 80 lines with no allowlist entry: {offenders:?}"
     );
 }
+
+#[test]
+fn initiative_new_help_documents_task_ids_in_after() {
+    use clap::CommandFactory;
+    let mut cmd = super::Cli::command();
+    let new = cmd
+        .find_subcommand_mut("initiative")
+        .and_then(|c| c.find_subcommand_mut("new"))
+        .expect("initiative new exists");
+    let help = new.render_long_help().to_string();
+    assert!(help.contains("#<task id>"), "{help}");
+}
