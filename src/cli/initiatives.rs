@@ -11,8 +11,9 @@ pub(super) enum InitiativeCmd {
         #[arg(long)]
         outcome: String,
         /// A file of task texts, one per paragraph (blank-line
-        /// separated); a paragraph may lead with `after: <n>` (an
-        /// earlier paragraph's 1-based number, as a dependency),
+        /// separated); a paragraph may lead with `after:` (a
+        /// comma-separated list of earlier paragraphs' 1-based numbers
+        /// and existing task ids as `#<task id>`, e.g. `after: 2, #1690`),
         /// `repo: <path>` (else the project's first repository),
         /// `provider: <name>` (else --provider's default) and
         /// `workflow: <name>` (else --workflow's default)
