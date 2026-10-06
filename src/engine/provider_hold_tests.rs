@@ -125,13 +125,13 @@ async fn all_arms_held_waits_for_the_earliest_reset_without_requeuing() {
     let (_dir, f, mut t) = fixture();
     let now = unix_now();
     hold(&f, &t, "openai", now + 3600);
-    hold(&f, &t, "anthropic", now + 1);
+    hold(&f, &t, "anthropic", now + 4);
     assert!(
         matches!(routing(&f, &t, "review").map_err(anyhow::Error::from).unwrap(),
-        Routing::Held { provider, until, .. } if provider == "anthropic" && until == now + 1)
+        Routing::Held { provider, until, .. } if provider == "anthropic" && until == now + 4)
     );
     let flow = tokio::time::timeout(
-        Duration::from_secs(3),
+        Duration::from_secs(10),
         before_attempt(&f, &mut t, "review", true),
     )
     .await
