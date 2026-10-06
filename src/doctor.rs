@@ -968,7 +968,7 @@ fn check_spend(f: &Forge) -> Vec<Check> {
 fn check_rate_limit(f: &Forge) -> Vec<Check> {
     let mut out = Vec::new();
     for name in f.providers.keys() {
-        let sample = match f.store.latest_rate_limit(name) {
+        let sample = match f.store.latest_observed_rate_limit(name) {
             Ok(s) => s,
             Err(e) => {
                 out.push(check(

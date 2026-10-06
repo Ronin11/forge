@@ -275,6 +275,7 @@ async fn repair_cost_attributes_a_later_landings_cost_by_the_share_of_lines_it_r
                 early_signals: "[]".into(),
                 early_near: "[]".into(),
                 cli_cost_usd: None,
+                rl_synthetic: false,
             })
             .unwrap();
     };

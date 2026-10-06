@@ -714,6 +714,7 @@ fn finish_row(a: &Attempt) -> FinishAttempt {
         cache_creation_input_tokens: a.cache_creation_input_tokens,
         early_signals: a.early_signals.clone(),
         early_near: a.early_near.clone(),
+        rl_synthetic: false,
     }
 }
 
@@ -792,7 +793,8 @@ pub async fn record(
     a.rl_seven_day_resets = outcome.rate_limits.seven_day.map(|(_, r)| r);
     a.early_signals = serde_json::to_string(&outcome.early_signals).env()?;
     a.early_near = serde_json::to_string(&outcome.early_near).env()?;
-    let finished = finish_row(a);
+    let mut finished = finish_row(a);
+    finished.rl_synthetic = outcome.rate_limits_synthetic;
     match cursor {
         Some(c) if a.state == AttemptState::Succeeded => {
             f.store.finish_attempt_with_cursor(&finished, &c)

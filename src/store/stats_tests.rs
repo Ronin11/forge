@@ -46,6 +46,7 @@ fn finish_attempt(
         early_signals: "[]".into(),
         early_near: "[]".into(),
         cli_cost_usd: None,
+        rl_synthetic: false,
     })
     .unwrap();
 }
@@ -124,6 +125,7 @@ fn defect_escape_counts_broke_base_and_repaired_once_each() {
         early_signals: "[]".into(),
         early_near: "[]".into(),
         cli_cost_usd: None,
+        rl_synthetic: false,
     })
     .unwrap();
 
@@ -372,6 +374,7 @@ fn journal_control_stats_splits_code_retries_by_whether_the_journal_was_shown() 
             early_signals: "[]".into(),
             early_near: "[]".into(),
             cli_cost_usd: None,
+            rl_synthetic: false,
         })
         .unwrap();
     };
@@ -922,6 +925,7 @@ fn finish_overlay_attempt(
         early_signals: "[]".into(),
         early_near: "[]".into(),
         cli_cost_usd: None,
+        rl_synthetic: false,
     })
     .unwrap();
 }

@@ -331,7 +331,7 @@ pub(crate) async fn answer_proposal(
                 .task(*qid)?
                 .with_context(|| format!("proposal quotes task {qid} which no longer exists"))?;
             paragraphs.push(FileTask {
-                after: None,
+                after: Vec::new(),
                 repo: Some(qt.repo.clone()),
                 provider: None,
                 workflow: None,

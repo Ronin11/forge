@@ -83,6 +83,7 @@ async fn record_verdict(
             early_signals: "[]".to_string(),
             early_near: "[]".to_string(),
             cli_cost_usd: None,
+            rl_synthetic: false,
         })
         .env()?;
     Ok(a.id)

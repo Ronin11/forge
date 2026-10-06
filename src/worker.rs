@@ -397,6 +397,69 @@ fn named(provider: &str, msg: &str) -> String {
     }
 }
 
+/// Print the idle line when it differs from the one last printed.
+fn announce_idle(f: &Forge, held: &[i64], last: &mut Option<String>) {
+    let reason = f
+        .store
+        .queue_breakdown(held)
+        .ok()
+        .and_then(|q| idle_reason(&q));
+    if reason != *last {
+        if let Some(r) = &reason {
+            eprintln!("{r}");
+        }
+        *last = reason;
+    }
+}
+
+/// One queued task and why it is or is not claimable.
+type QueueEntry = (i64, crate::store::QueueStatus);
+
+/// The idle line for a queue where nothing can be claimed, or `None` when
+/// the queue is empty or some task is claimable (so anything still idle is
+/// a provider hold, announced on its own).
+fn idle_reason(queue: &[QueueEntry]) -> Option<String> {
+    use crate::store::QueueStatus::*;
+    if queue.is_empty() || queue.iter().any(|(_, s)| *s == Claimable) {
+        return None;
+    }
+    let (mut blocked, mut active, mut held) = (0, 0, 0);
+    let mut blockers: Vec<i64> = Vec::new();
+    for (_, s) in queue {
+        match s {
+            WaitsOnBlocked { dep } => {
+                blocked += 1;
+                if !blockers.contains(dep) {
+                    blockers.push(*dep);
+                }
+            }
+            WaitsOnActive { .. } => active += 1,
+            HeldInitiative { .. } => held += 1,
+            Claimable => {}
+        }
+    }
+    let mut parts = Vec::new();
+    if blocked > 0 {
+        let ids: Vec<String> = blockers.iter().map(|d| d.to_string()).collect();
+        let noun = if ids.len() == 1 { "task" } else { "tasks" };
+        parts.push(format!(
+            "{blocked} wait on blocked {noun} {}",
+            ids.join(", ")
+        ));
+    }
+    if active > 0 {
+        parts.push(format!("{active} on active work"));
+    }
+    if held > 0 {
+        parts.push(format!("{held} in held initiatives"));
+    }
+    Some(format!(
+        "idle: {} queued, none claimable: {}",
+        queue.len(),
+        parts.join(", ")
+    ))
+}
+
 /// The tightest (soonest-resetting) hold among every queued, unblocked
 /// task's own provider (the one `first_role` says its next agent step
 /// will run under, or an arm it would be re-drawn to), when *none* of
@@ -932,6 +995,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut env_error: Option<anyhow::Error> = None;
     let mut claimed = 0u32;
     let mut hold_until: Option<i64> = None;
+    let mut last_idle: Option<String> = None;
     let mut refusals = RefusalLog::default();
 
     loop {
@@ -1002,9 +1066,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     let fc = f.clone();
                     running.spawn(async move { WorkResult::Job(j.id, job::drive(fc, j.id).await) });
                 } else {
-                    // Nothing claimable: either the queue is empty/blocked, or
-                    // every queued candidate's own provider is at its cap.
-                    // Only the latter is a hold worth waiting out.
+                    // Nothing claimable: only a provider cap is a hold worth waiting out.
                     if let Some((msg, until)) = tightest_provider_hold(&f, &held)? {
                         if hold_until != Some(until) {
                             eprintln!("{msg}");
@@ -1012,6 +1074,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                         hold_until = Some(until);
                     } else {
                         hold_until = None;
+                        announce_idle(&f, &held, &mut last_idle);
                     }
                     break;
                 }

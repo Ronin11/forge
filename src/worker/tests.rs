@@ -784,3 +784,33 @@ async fn a_log_that_rolled_is_read_again_from_its_start() {
     assert_eq!(event_jobs(&f).len(), 1);
     assert_eq!(event_jobs(&f)[0].trigger_ref, "0:0");
 }
+
+mod idle {
+    use super::super::{QueueEntry, idle_reason};
+    use crate::store::QueueStatus::*;
+
+    #[test]
+    fn empty_queue_and_claimable_work_say_nothing() {
+        assert_eq!(idle_reason(&[]), None);
+        let q: Vec<QueueEntry> = vec![(1, WaitsOnActive { dep: 9 }), (2, Claimable)];
+        assert_eq!(idle_reason(&q), None);
+    }
+
+    #[test]
+    fn a_stuck_queue_says_what_it_waits_on() {
+        let q: Vec<QueueEntry> = vec![
+            (1, WaitsOnBlocked { dep: 7 }),
+            (2, WaitsOnBlocked { dep: 7 }),
+            (3, WaitsOnActive { dep: 8 }),
+        ];
+        assert_eq!(
+            idle_reason(&q).unwrap(),
+            "idle: 3 queued, none claimable: 2 wait on blocked task 7, 1 on active work"
+        );
+        let q: Vec<QueueEntry> = vec![(1, HeldInitiative { initiative: 4 })];
+        assert_eq!(
+            idle_reason(&q).unwrap(),
+            "idle: 1 queued, none claimable: 1 in held initiatives"
+        );
+    }
+}
