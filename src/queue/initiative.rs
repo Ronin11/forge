@@ -3,13 +3,21 @@
 
 use super::*;
 
+/// One dependency named on an `after:` line: a bare `N` is an earlier
+/// paragraph in the same file (1-based), and `#N` is an existing task's id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dep {
+    Paragraph(usize),
+    Task(i64),
+}
+
 /// One task parsed from an initiative's `--from` file: a paragraph, its
-/// optional dependency on an earlier paragraph (1-based, within the
-/// file), its optional repository override, its optional provider
-/// override, its optional workflow override, and its text.
+/// dependencies (earlier paragraphs in the file and existing tasks), its
+/// optional repository override, its optional provider override, its
+/// optional workflow override, and its text.
 #[derive(Debug)]
 pub struct FileTask {
-    pub after: Option<usize>,
+    pub after: Vec<Dep>,
     pub repo: Option<String>,
     pub provider: Option<String>,
     pub workflow: Option<String>,
@@ -17,16 +25,18 @@ pub struct FileTask {
 }
 
 /// Parse an initiative's task file: one task per paragraph (blank-line
-/// separated), each optionally led by an `after: <n>` line naming an
-/// earlier paragraph in the file as a dependency, a `repo: <path>` line
+/// separated), each optionally led by an `after: 2, #1690` line naming
+/// its dependencies, comma-separated: a bare number is an earlier
+/// paragraph in the file, `#N` an existing task's id; a `repo: <path>` line
 /// naming the repository it runs against instead of the project's first
 /// one, a `provider: <name>` line naming the provider it runs under
 /// instead of `--provider`'s default, and a `workflow: <name>` line
 /// naming the workflow it runs under instead of `--workflow`'s default
 /// (see docs/PROJECTS.md, "Verbs"). The lead lines may appear in any
 /// order, one per line, at the top of the paragraph; whatever is left
-/// is the task's text. A malformed lead line (an `after:` with no
-/// parseable, in-range paragraph number, or a `repo:`/`provider:`/
+/// is the task's text. A malformed lead line (an `after:` entry that is
+/// neither an in-range paragraph number nor `#` and a task id, or a
+/// `repo:`/`provider:`/
 /// `workflow:` with no value) refuses the whole file, naming the
 /// paragraph and the offending line, rather than silently dropping the
 /// paragraph.
@@ -41,25 +51,37 @@ pub fn parse_initiative_file(text: &str) -> Result<Vec<FileTask>> {
         // it matches the position an `after:` line in a later paragraph
         // means to name.
         let this_no = out.len() + 1;
-        let mut after = None;
+        let mut after = Vec::new();
         let mut repo = None;
         let mut provider = None;
         let mut workflow = None;
         let mut body: Vec<&str> = Vec::new();
         let mut in_lead = true;
         for line in para.lines() {
-            if in_lead && let Some(n) = line.strip_prefix("after:") {
-                let Ok(n) = n.trim().parse::<usize>() else {
-                    bail!(
-                        "paragraph {this_no}: malformed header {line:?}: `after:` needs a paragraph number"
-                    );
-                };
-                if n == 0 || n >= this_no {
-                    bail!(
-                        "paragraph {this_no}: malformed header {line:?}: does not name an earlier paragraph in this file"
-                    );
+            if in_lead && let Some(list) = line.strip_prefix("after:") {
+                for item in list.split(',') {
+                    let item = item.trim();
+                    if let Some(id) = item.strip_prefix('#') {
+                        let Ok(id) = id.trim().parse::<i64>() else {
+                            bail!(
+                                "paragraph {this_no}: malformed header {line:?}: `#` needs a task id"
+                            );
+                        };
+                        after.push(Dep::Task(id));
+                        continue;
+                    }
+                    let Ok(n) = item.parse::<usize>() else {
+                        bail!(
+                            "paragraph {this_no}: malformed header {line:?}: `after:` needs a paragraph number"
+                        );
+                    };
+                    if n == 0 || n >= this_no {
+                        bail!(
+                            "paragraph {this_no}: malformed header {line:?}: does not name an earlier paragraph in this file"
+                        );
+                    }
+                    after.push(Dep::Paragraph(n));
                 }
-                after = Some(n);
                 continue;
             }
             if in_lead && let Some(p) = line.strip_prefix("repo:") {
@@ -160,13 +182,18 @@ pub async fn file_initiative_paragraphs(
                 .map(str::to_string)
                 .with_context(|| format!("project {project} lists no repository"))?,
         };
-        let after = match p.after {
-            Some(n) => vec![
-                *ids.get(n - 1)
+        let mut after: Vec<i64> = Vec::new();
+        for dep in &p.after {
+            let id = match *dep {
+                Dep::Paragraph(n) => *ids
+                    .get(n - 1)
                     .with_context(|| format!("after: {n} names a task not yet queued"))?,
-            ],
-            None => Vec::new(),
-        };
+                Dep::Task(id) => id,
+            };
+            if !after.contains(&id) {
+                after.push(id);
+            }
+        }
         let req = TaskRequest {
             repo: PathBuf::from(repo),
             task: p.text.clone(),
@@ -246,13 +273,13 @@ mod tests {
         .unwrap();
         assert_eq!(tasks.len(), 3);
         assert_eq!(tasks[0].repo.as_deref(), Some("/a"));
-        assert_eq!(tasks[0].after, None);
+        assert_eq!(tasks[0].after, vec![]);
         assert_eq!(tasks[0].text, "first task\nsecond line");
         assert_eq!(tasks[1].repo, None);
-        assert_eq!(tasks[1].after, Some(1));
+        assert_eq!(tasks[1].after, vec![Dep::Paragraph(1)]);
         assert_eq!(tasks[1].text, "second task");
         assert_eq!(tasks[2].repo.as_deref(), Some("/b"));
-        assert_eq!(tasks[2].after, Some(1));
+        assert_eq!(tasks[2].after, vec![Dep::Paragraph(1)]);
         assert_eq!(tasks[2].text, "third task");
     }
 
@@ -278,6 +305,8 @@ mod tests {
     fn parse_initiative_file_refuses_after_that_names_itself_or_the_future() {
         assert!(parse_initiative_file("after: 1\nonly task").is_err());
         assert!(parse_initiative_file("first task\n\nafter: 2\nsecond task").is_err());
+        // One out-of-range entry in a list refuses the whole line.
+        assert!(parse_initiative_file("first task\n\nafter: 1, #1690, 2\nsecond task").is_err());
     }
 
     #[test]
@@ -286,7 +315,7 @@ mod tests {
         // the fifth paragraph the same way, regardless of which order
         // the four lines appear in.
         let headers = [
-            ("after: 4", "after"),
+            ("after: 2, #1690, 4", "after"),
             ("repo: /path", "repo"),
             ("provider: devhome", "provider"),
             ("workflow: direct", "workflow"),
@@ -318,7 +347,11 @@ mod tests {
                 .unwrap_or_else(|e| panic!("order {order:?} failed: {e}"));
             assert_eq!(tasks.len(), 5, "order {order:?}");
             let fifth = &tasks[4];
-            assert_eq!(fifth.after, Some(4), "order {order:?}");
+            assert_eq!(
+                fifth.after,
+                vec![Dep::Paragraph(2), Dep::Task(1690), Dep::Paragraph(4)],
+                "order {order:?}"
+            );
             assert_eq!(fifth.repo.as_deref(), Some("/path"), "order {order:?}");
             assert_eq!(
                 fifth.provider.as_deref(),
@@ -337,6 +370,25 @@ mod tests {
             .to_string();
         assert!(err.contains("paragraph 2"), "{err}");
         assert!(err.contains("after: 4"), "{err}");
+
+        let err = parse_initiative_file("one\n\nafter: 1, #\nsecond task")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("paragraph 2"), "{err}");
+        assert!(err.contains("after: 1, #"), "{err}");
+        assert!(err.contains("`#` needs a task id"), "{err}");
+
+        let err = parse_initiative_file("one\n\nafter: 1, x\nsecond task")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("paragraph 2"), "{err}");
+        assert!(err.contains("needs a paragraph number"), "{err}");
+
+        let err = parse_initiative_file("after:\nfirst task")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("paragraph 1"), "{err}");
+        assert!(err.contains("needs a paragraph number"), "{err}");
 
         let err = parse_initiative_file("repo:\nfirst task")
             .unwrap_err()
