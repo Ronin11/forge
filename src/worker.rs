@@ -397,6 +397,21 @@ fn named(provider: &str, msg: &str) -> String {
     }
 }
 
+/// Print the idle line when it differs from the one last printed.
+fn announce_idle(f: &Forge, held: &[i64], last: &mut Option<String>) {
+    let reason = f
+        .store
+        .queue_breakdown(held)
+        .ok()
+        .and_then(|q| idle_reason(&q));
+    if reason != *last {
+        if let Some(r) = &reason {
+            eprintln!("{r}");
+        }
+        *last = reason;
+    }
+}
+
 /// One queued task and why it is or is not claimable.
 type QueueEntry = (i64, crate::store::QueueStatus);
 
@@ -1051,9 +1066,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     let fc = f.clone();
                     running.spawn(async move { WorkResult::Job(j.id, job::drive(fc, j.id).await) });
                 } else {
-                    // Nothing claimable: either the queue is empty/blocked, or
-                    // every queued candidate's own provider is at its cap.
-                    // Only the latter is a hold worth waiting out.
+                    // Nothing claimable: only a provider cap is a hold worth waiting out.
                     if let Some((msg, until)) = tightest_provider_hold(&f, &held)? {
                         if hold_until != Some(until) {
                             eprintln!("{msg}");
@@ -1061,17 +1074,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                         hold_until = Some(until);
                     } else {
                         hold_until = None;
-                        let reason = f
-                            .store
-                            .queue_breakdown(&held)
-                            .ok()
-                            .and_then(|q| idle_reason(&q));
-                        if reason != last_idle {
-                            if let Some(r) = &reason {
-                                eprintln!("{r}");
-                            }
-                            last_idle = reason;
-                        }
+                        announce_idle(&f, &held, &mut last_idle);
                     }
                     break;
                 }
