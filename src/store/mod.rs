@@ -54,7 +54,7 @@ pub use jobs::{Job, JobEffect, JobStat, JobState, JobStep, PerDayRefused};
 pub use lineage::LineageRow;
 pub use messages::{Direction, InsertMessage, Message, MessageFilter};
 pub use owners::{Caller, Owner, start_of};
-pub use priority::{PRIORITY_DEFAULT, PRIORITY_MAX, PRIORITY_MIN, parse_priority};
+pub use priority::{PRIORITY_DEFAULT, PRIORITY_MAX, PRIORITY_MIN, QueueStatus, parse_priority};
 pub use projects::{
     BacklogItem, Initiative, InitiativeUpdate, Project, ProjectDefaults, ProjectRepo, ProjectStat,
     ProjectTaskStats, is_placeholder_purpose,
