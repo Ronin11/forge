@@ -132,11 +132,27 @@ pub fn parse_initiative_file(text: &str) -> Result<Vec<FileTask>> {
 
 /// Validate every parsed paragraph's `provider:` and `workflow:` override
 /// (see [`parse_initiative_file`]) against what's actually configured,
-/// refusing with the paragraph's 1-based number and the unknown name
-/// rather than filing tasks that would fail once run.
-pub fn validate_initiative_file(f: &Forge, parsed: &[FileTask]) -> Result<()> {
+/// and every existing task its `after:` line names (`#N`) against what
+/// `--after` must hold (`dependency_fits`), refusing with the paragraph's
+/// 1-based number and the unknown name rather than filing tasks that
+/// would fail once run. A named task that already failed or was
+/// withdrawn is refused too: a dependent of it would only ever block.
+pub async fn validate_initiative_file(f: &Forge, parsed: &[FileTask]) -> Result<()> {
     for (i, p) in parsed.iter().enumerate() {
         let n = i + 1;
+        for dep in &p.after {
+            let Dep::Task(id) = *dep else { continue };
+            dependency_fits(f, id)
+                .await
+                .with_context(|| format!("paragraph {n}: after: #{id}"))?;
+            let state = f.store.task(id)?.map(|t| t.state);
+            if matches!(state, Some(TaskState::Failed | TaskState::Withdrawn)) {
+                bail!(
+                    "paragraph {n}: after: #{id}: that task is {}, so nothing waiting on it would run",
+                    state.unwrap().as_str()
+                );
+            }
+        }
         if let Some(name) = &p.provider {
             f.providers.get(name).with_context(|| {
                 format!(
@@ -409,41 +425,54 @@ mod tests {
         assert!(err.contains("workflow:"), "{err}");
     }
 
-    #[test]
-    fn validate_initiative_file_refuses_an_unknown_provider_naming_the_paragraph() {
+    #[tokio::test]
+    async fn validate_initiative_file_refuses_an_unknown_provider_naming_the_paragraph() {
         let (_dir, f) = fixture_forge();
         let parsed = parse_initiative_file(
             "first task\n\nsecond task\n\nprovider: does-not-exist\nthird task",
         )
         .unwrap();
         let err = validate_initiative_file(&f, &parsed)
+            .await
             .unwrap_err()
             .to_string();
         assert!(err.contains("paragraph 3"), "{err}");
         assert!(err.contains("does-not-exist"), "{err}");
     }
 
-    #[test]
-    fn validate_initiative_file_refuses_an_unknown_workflow_naming_the_paragraph() {
+    #[tokio::test]
+    async fn validate_initiative_file_refuses_an_unknown_workflow_naming_the_paragraph() {
         let (_dir, f) = fixture_forge();
         let parsed = parse_initiative_file(
             "first task\n\nsecond task\n\nworkflow: does-not-exist\nthird task",
         )
         .unwrap();
         let err = validate_initiative_file(&f, &parsed)
+            .await
             .unwrap_err()
             .to_string();
         assert!(err.contains("paragraph 3"), "{err}");
         assert!(err.contains("does-not-exist"), "{err}");
     }
 
-    #[test]
-    fn validate_initiative_file_passes_a_file_naming_a_configured_provider_and_workflow() {
+    #[tokio::test]
+    async fn validate_initiative_file_passes_a_file_naming_a_configured_provider_and_workflow() {
         let (_dir, f) = fixture_forge();
         let parsed = parse_initiative_file(
             "provider: anthropic\nfirst task\n\nworkflow: direct\nsecond task",
         )
         .unwrap();
-        validate_initiative_file(&f, &parsed).unwrap();
+        validate_initiative_file(&f, &parsed).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn validate_initiative_file_refuses_an_unknown_task_naming_the_paragraph() {
+        let (_dir, f) = fixture_forge();
+        let parsed = parse_initiative_file("first task\n\nafter: 1, #4242\nsecond task").unwrap();
+        let err = validate_initiative_file(&f, &parsed).await.unwrap_err();
+        let err = format!("{err:#}");
+        assert!(err.contains("paragraph 2"), "{err}");
+        assert!(err.contains("4242"), "{err}");
+        assert!(err.contains("no such task"), "{err}");
     }
 }

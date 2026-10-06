@@ -188,7 +188,7 @@ pub(super) async fn initiative_new(
                 format!("unknown workflow {w:?}; see `forge workflows` for what is configured")
             })?;
         }
-        crate::queue::validate_initiative_file(&f, &paragraphs)?;
+        crate::queue::validate_initiative_file(&f, &paragraphs).await?;
         let ids = crate::queue::file_initiative_paragraphs(
             &f,
             &project,

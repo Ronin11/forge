@@ -1115,3 +1115,112 @@ fn a_two_task_chain_shows_one_claimable_and_one_waiting() {
         "{out}"
     );
 }
+
+#[test]
+fn from_a_paragraph_after_an_existing_task_waits_for_it_to_land() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &["project", "new", "demo", "--purpose", "p", "--repo", repo],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let existing = e.add(&[]);
+
+    let dir = disk_tempdir();
+    let file = dir.path().join("tasks.txt");
+    std::fs::write(&file, format!("after: #{existing}\nadd an extra file")).unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "initiative",
+            "new",
+            "demo",
+            "--outcome",
+            "built on an existing task",
+            "--from",
+            file.to_str().unwrap(),
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let iid = created_id(&o).to_string();
+    let filed: i64 = e
+        .db()
+        .query_row("SELECT MAX(id) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_ne!(filed, existing);
+    let after: String = e
+        .db()
+        .query_row("SELECT after_json FROM tasks WHERE id=?1", [filed], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(after, format!("[{existing}]"));
+
+    // Not claimable while the existing task has yet to land.
+    let o = e.forge("ok.sh", &["initiative", "show", &iid]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("tasks      queued=1 (claimable=0 waiting=1) running=0"),
+        "{out}"
+    );
+
+    assert!(
+        e.forge("ok.sh", &["work", "--once", "--max-tasks", "1"])
+            .status
+            .success()
+    );
+    assert_eq!(e.task(existing).0, "succeeded");
+    assert_eq!(e.task(filed).0, "queued", "{:?}", e.task(filed));
+    let o = e.forge("ok.sh", &["initiative", "show", &iid]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("tasks      queued=1 (claimable=1 waiting=0) running=0"),
+        "{out}"
+    );
+    assert!(e.forge("addfile.sh", &["work", "--once"]).status.success());
+    assert_eq!(e.task(filed).0, "succeeded", "{:?}", e.task(filed));
+}
+
+#[test]
+fn from_refuses_an_unknown_task_named_by_a_paragraph_before_queuing_anything() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &["project", "new", "demo", "--purpose", "p", "--repo", repo],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let dir = disk_tempdir();
+    let file = dir.path().join("tasks.txt");
+    std::fs::write(
+        &file,
+        "first task is fine\n\nafter: 1, #4242\nsecond task names no such task",
+    )
+    .unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "initiative",
+            "new",
+            "demo",
+            "--outcome",
+            "refused before anything is queued",
+            "--from",
+            file.to_str().unwrap(),
+        ],
+    );
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("paragraph 2"), "{err}");
+    assert!(err.contains("4242"), "{err}");
+    let count: i64 = e
+        .db()
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "no task should be queued when a task id is unknown"
+    );
+}
