@@ -216,7 +216,8 @@ fn an_empty_login_is_a_provider_refusal_not_an_attempt_and_doctor_fails_it() {
     assert!(err.contains("run `claude login`"), "{err}");
     let a = e.attempts(1);
     assert_eq!(a.len(), 1);
-    assert_eq!(a[0].2, "rate limited by the provider");
+    assert_eq!(a[0].2, "the provider refused the agent login");
+    assert_ne!(a[0].2, "rate limited by the provider");
     assert_eq!(e.task(1).0, "queued", "held, not failed");
     assert!(
         !e.repo.join("answer.txt").exists() && e.log_text(1, 1).contains("claude login"),

@@ -531,14 +531,20 @@ async fn probe(l: &Launch<'_>) {
     }
 }
 
+/// The outcome of a refused login: held as a login, with no rate-limit sample.
+fn login_refusal_outcome(why: &str) -> Outcome {
+    let mut out = Outcome::default();
+    login_refused(&mut out);
+    out.exit_code = Some(1);
+    out.stderr_text = why.to_string();
+    out
+}
+
 /// The refusal: no attempt is made and none is counted. It holds the
 /// provider for a few minutes like any other refusal (so the worker does not
 /// spin on it), and says what to do.
 fn refuse_login(l: &Launch<'_>, why: &str) -> Result<Outcome> {
-    let mut out = Outcome::default();
-    hold_text_only(&mut out);
-    out.exit_code = Some(1);
-    out.stderr_text = why.to_string();
+    let out = login_refusal_outcome(why);
     let mut log = std::fs::File::create(l.log_path)
         .with_context(|| format!("creating {}", l.log_path.display()))?;
     writeln!(
@@ -606,6 +612,15 @@ mod tests {
         };
         assert!(read_stderr(Ok(failed(1, false))).unwrap().login_refused);
         assert!(!read_stderr(Ok(failed(0, true))).unwrap().login_refused);
+    }
+
+    #[test]
+    fn an_empty_token_refusal_is_a_login_hold_with_no_window() {
+        let out =
+            login_refusal_outcome("the agent login in /x has an empty token; run `claude login`");
+        assert!(out.login_refused && out.rate_limited);
+        assert!(out.rate_limits.five_hour.is_none());
+        assert!(out.stderr_text.contains("`claude login`"));
     }
 
     fn claude() -> Provider {
