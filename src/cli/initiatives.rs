@@ -120,7 +120,7 @@ fn print_initiative_row(r: &crate::view::InitiativeRow) {
     );
     out!(
         "tasks      queued={} running={} succeeded={} failed={} unverified={} blocked={} withdrawn={} capped={}",
-        r.queued,
+        super::projects::queued_text(r.queued, r.claimable, r.waiting),
         r.running,
         r.succeeded,
         r.failed,
