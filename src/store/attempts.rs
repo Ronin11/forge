@@ -156,6 +156,8 @@ pub struct FinishAttempt {
     pub cache_creation_input_tokens: Option<i64>,
     pub early_signals: String,
     pub early_near: String,
+    /// The rate-limit sample was Forge's own, not the provider's.
+    pub rl_synthetic: bool,
 }
 
 pub struct RateLimitSample {
@@ -187,8 +189,8 @@ pub struct Op {
 
 /// Every column of the `attempts` table (`store::column_tests::
 /// the_column_lists_agree_with_the_schema` enforces the two agree).
-/// `refunded` and `repriced_at` have no field on `Attempt`: `refunded_attempts`
-/// and `Store::reprice_attempts` are their only readers, and they query the
+/// `refunded`, `repriced_at` and `rl_synthetic` have no field on `Attempt`: `refunded_attempts`
+/// `Store::reprice_attempts` and `Store::latest_observed_rate_limit` are their only readers, and they query the
 /// columns directly rather than going through this struct.
 pub(super) const ATTEMPT_COLUMNS: &[&str] = &[
     "id",
@@ -234,6 +236,7 @@ pub(super) const ATTEMPT_COLUMNS: &[&str] = &[
     "repriced_at",
     "cli_cost_usd",
     "refunded",
+    "rl_synthetic",
 ];
 
 pub(super) const OP_COLUMNS: &[&str] = &[
@@ -392,11 +395,24 @@ impl Store {
     /// the window hold is per provider, since each has its own subscription
     /// (or none at all).
     pub fn latest_rate_limit(&self, provider: &str) -> Result<Option<RateLimitSample>> {
+        self.rate_limit_sample(provider, "")
+    }
+
+    /// `latest_rate_limit` without the samples Forge synthesized (see
+    /// `rl_synthetic`): what the provider itself last said, for doctor. The
+    /// hold keeps reading every sample.
+    pub fn latest_observed_rate_limit(&self, provider: &str) -> Result<Option<RateLimitSample>> {
+        self.rate_limit_sample(provider, "AND rl_synthetic IS NULL")
+    }
+
+    fn rate_limit_sample(&self, provider: &str, filter: &str) -> Result<Option<RateLimitSample>> {
         Ok(self
             .lock()
             .retry_query_row(
-                "SELECT COALESCE(finished_at, started_at) AS seen_at, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets FROM attempts
-                 WHERE provider = ?1 AND (rl_five_hour IS NOT NULL OR rl_seven_day IS NOT NULL) ORDER BY id DESC LIMIT 1",
+                &format!(
+                    "SELECT COALESCE(finished_at, started_at) AS seen_at, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets FROM attempts
+                     WHERE provider = ?1 AND (rl_five_hour IS NOT NULL OR rl_seven_day IS NOT NULL) {filter} ORDER BY id DESC LIMIT 1"
+                ),
                 params![provider],
                 |r| {
                     Ok(RateLimitSample {
@@ -694,7 +710,7 @@ fn finish_attempt_row(c: &rusqlite::Connection, a: &FinishAttempt) -> Result<()>
              result_text=?15, envelope_json=?16, rl_five_hour=?17, rl_seven_day=?18, rl_five_hour_resets=?19,
              rl_seven_day_resets=?20, end_sha=?21, outputs_json=?22, session_id=?23, first_edit=?24,
              input_tokens=?25, output_tokens=?26, cache_read_input_tokens=?27, cache_creation_input_tokens=?28,
-             early_signals=?29, early_near=?30, cli_cost_usd=?31 WHERE id=?1",
+             early_signals=?29, early_near=?30, cli_cost_usd=?31, rl_synthetic=?32 WHERE id=?1",
             params![
                 a.id,
                 a.state.as_str(),
@@ -727,6 +743,7 @@ fn finish_attempt_row(c: &rusqlite::Connection, a: &FinishAttempt) -> Result<()>
                 a.early_signals,
                 a.early_near,
                 a.cli_cost_usd,
+                a.rl_synthetic.then_some(1),
             ],
     )?;
     Ok(())
@@ -842,6 +859,7 @@ mod tests {
             early_signals: "[]".into(),
             early_near: "[]".into(),
             cli_cost_usd: None,
+            rl_synthetic: false,
         };
         let anthropic_attempt = s
             .insert_attempt(&Attempt {
@@ -872,6 +890,86 @@ mod tests {
             Some(0.1)
         );
         assert!(s.latest_rate_limit("openai").unwrap().is_none());
+    }
+
+    #[test]
+    fn the_observed_sample_skips_a_synthetic_one_the_hold_still_reads() {
+        let (_dir, s, task_id) = reprice_fixture();
+        let sample = |no: i64, five_hour: f64, synthetic: bool| {
+            let id = s
+                .insert_attempt(&Attempt {
+                    task_id,
+                    attempt_no: no,
+                    started_at: no,
+                    provider: "anthropic".into(),
+                    ..Default::default()
+                })
+                .unwrap();
+            s.finish_attempt(&FinishAttempt {
+                id,
+                state: AttemptState::Succeeded,
+                finished_at: Some(no),
+                rl_five_hour: Some(five_hour),
+                rl_five_hour_resets: Some(2_000_000_000),
+                rl_synthetic: synthetic,
+                ..Default::default()
+            })
+            .unwrap();
+        };
+        sample(1, 0.4, false);
+        sample(2, 1.0, true);
+        assert_eq!(
+            s.latest_rate_limit("anthropic").unwrap().unwrap().five_hour,
+            Some(1.0)
+        );
+        assert_eq!(
+            s.latest_observed_rate_limit("anthropic")
+                .unwrap()
+                .unwrap()
+                .five_hour,
+            Some(0.4)
+        );
+        assert!(s.latest_observed_rate_limit("openai").unwrap().is_none());
+    }
+
+    #[test]
+    fn rl_synthetic_is_an_additive_nullable_column_old_rows_read_as_observed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let last = MIGRATIONS.len() - 1;
+        assert!(MIGRATIONS[last].contains("ADD COLUMN rl_synthetic INTEGER;"));
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in &MIGRATIONS[..last] {
+            if !super::super::migrations::is_contract(sql) {
+                conn.execute_batch(sql).unwrap();
+            }
+        }
+        conn.execute_batch(&format!("PRAGMA user_version={last}"))
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, state, created_at)
+               VALUES ('r', 't', 'main', 'm', 1, 1, 1, 'queued', 0);
+             INSERT INTO attempts (task_id, attempt_no, state, started_at, provider, rl_five_hour, rl_five_hour_resets)
+               VALUES (1, 1, 'succeeded', 1, 'anthropic', 0.5, 2000000000);",
+        )
+        .unwrap();
+        drop(conn);
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
+        let synthetic: Option<i64> = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT rl_synthetic FROM attempts WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(synthetic, None);
+        assert_eq!(
+            s.latest_observed_rate_limit("anthropic")
+                .unwrap()
+                .unwrap()
+                .five_hour,
+            Some(0.5)
+        );
     }
 
     /// Fixture for the reprice tests: one task, and a helper to insert an
@@ -945,6 +1043,7 @@ mod tests {
             early_signals: "[]".into(),
             early_near: "[]".into(),
             cli_cost_usd: None,
+            rl_synthetic: false,
         })
         .unwrap();
         id

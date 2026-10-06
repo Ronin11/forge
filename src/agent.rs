@@ -66,6 +66,9 @@ pub struct Outcome {
     pub structured: Option<String>,
     /// Last rate-limit sample seen on the stream, per window.
     pub rate_limits: RateLimits,
+    /// `rate_limits` holds a clock Forge made up (a refusal read from text,
+    /// a fallback reset), not a sample the provider reported.
+    pub rate_limits_synthetic: bool,
     /// The CLI session, so a capped attempt can be resumed where it stopped.
     pub session_id: Option<String>,
     /// Forge ended the run itself because enough signs of an attempt going

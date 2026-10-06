@@ -560,6 +560,7 @@ fn finish(f: &Forge, id: i64, v: &Verdict, commit: &str) -> Result<()> {
         early_signals: "[]".to_string(),
         early_near: "[]".to_string(),
         cli_cost_usd: None,
+        rl_synthetic: false,
     })
 }
 

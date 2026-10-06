@@ -70,6 +70,7 @@ pub(super) fn apply_codex_event(
             if let Some(reset) = usage_limit_reset(msg, crate::unix_now()) {
                 out.rate_limited = true;
                 out.rate_limits.five_hour = Some((1.0, reset));
+                out.rate_limits_synthetic = true;
             } else if refusal::login_failure(msg) {
                 refusal::login_refused(out);
             }

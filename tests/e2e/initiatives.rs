@@ -1087,3 +1087,31 @@ fn three_check_failures_on_one_test_hold_the_initiative_and_say_so() {
         "{out}"
     );
 }
+
+/// A two-task chain: the head can be claimed, the follower waits on it,
+/// and `initiative show` says so after the queued count.
+#[test]
+fn a_two_task_chain_shows_one_claimable_and_one_waiting() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &["project", "new", "demo", "--purpose", "p", "--repo", repo],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = e.forge(
+        "ok.sh",
+        &["initiative", "new", "demo", "--outcome", "a chain"],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let iid = created_id(&o).to_string();
+    let head = e.add(&["--initiative", &iid]);
+    e.add(&["--initiative", &iid, "--after", &head.to_string()]);
+
+    let o = e.forge("ok.sh", &["initiative", "show", &iid]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("tasks      queued=2 (claimable=1 waiting=1) running=0"),
+        "{out}"
+    );
+}

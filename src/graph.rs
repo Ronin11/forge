@@ -367,6 +367,7 @@ mod tests {
                 early_signals: "[]".into(),
                 early_near: "[]".into(),
                 cli_cost_usd: None,
+                rl_synthetic: false,
             })
             .unwrap();
         };

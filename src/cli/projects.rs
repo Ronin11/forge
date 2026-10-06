@@ -229,6 +229,11 @@ fn ref_list(task: i64, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// The tasks line's queue figure: "3 (claimable=1 waiting=2)".
+pub(super) fn queued_text(queued: i64, claimable: i64, waiting: i64) -> String {
+    format!("{queued} (claimable={claimable} waiting={waiting})")
+}
+
 fn print_project_row(r: &crate::view::ProjectRow) {
     out!("name       {}", r.name);
     out!("purpose    {}", r.purpose);
@@ -247,7 +252,7 @@ fn print_project_row(r: &crate::view::ProjectRow) {
     }
     out!(
         "tasks      queued={} running={} succeeded={} failed={} unverified={} blocked={} withdrawn={} capped={}",
-        r.queued,
+        queued_text(r.queued, r.claimable, r.waiting),
         r.running,
         r.succeeded,
         r.failed,
