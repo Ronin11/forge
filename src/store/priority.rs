@@ -71,22 +71,22 @@ impl Store {
         let mut stmt = c.prepare(&format!(
             "SELECT t.id, t.initiative,
                (SELECT d.id FROM json_each(t.after_json) j LEFT JOIN tasks d ON d.id = j.value
-                 WHERE {UNMET_DEP} ORDER BY j.key LIMIT 1),
+                 WHERE {UNMET_DEP} ORDER BY j.key LIMIT 1) AS dep_id,
                (SELECT d.state FROM json_each(t.after_json) j LEFT JOIN tasks d ON d.id = j.value
-                 WHERE {UNMET_DEP} ORDER BY j.key LIMIT 1),
+                 WHERE {UNMET_DEP} ORDER BY j.key LIMIT 1) AS dep_state,
                (SELECT j.value FROM json_each(t.after_json) j LEFT JOIN tasks d ON d.id = j.value
-                 WHERE {UNMET_DEP} ORDER BY j.key LIMIT 1)
+                 WHERE {UNMET_DEP} ORDER BY j.key LIMIT 1) AS dep_raw
              FROM tasks t WHERE t.state='queued' AND t.origin='agent'
              ORDER BY t.priority DESC, t.id ASC"
         ))?;
         let rows = stmt
             .query_map([], |r| {
                 Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, Option<i64>>(1)?,
-                    r.get::<_, Option<i64>>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, i64>("id")?,
+                    r.get::<_, Option<i64>>("initiative")?,
+                    r.get::<_, Option<i64>>("dep_id")?,
+                    r.get::<_, Option<String>>("dep_state")?,
+                    r.get::<_, Option<i64>>("dep_raw")?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
