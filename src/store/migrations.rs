@@ -865,6 +865,12 @@ ALTER TABLE projects ADD COLUMN retired_at INTEGER;
     "
 ALTER TABLE tasks ADD COLUMN early_ending TEXT;
 ",
+    // Whether an attempt's rate-limit sample was synthesized by Forge (a
+    // refusal read from text alone, or a runner's fallback clock) rather
+    // than observed on the provider's stream. NULL for rows from before.
+    "
+ALTER TABLE attempts ADD COLUMN rl_synthetic INTEGER;
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

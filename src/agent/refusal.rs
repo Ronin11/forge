@@ -10,6 +10,7 @@ pub fn hold_text_only(out: &mut Outcome) {
     out.rate_limited = true;
     if out.rate_limits.five_hour.is_none() {
         out.rate_limits.five_hour = Some((1.0, crate::unix_now() + 300));
+        out.rate_limits_synthetic = true;
     }
 }
 

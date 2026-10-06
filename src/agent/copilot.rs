@@ -154,6 +154,7 @@ pub(super) fn apply_copilot_event(
             {
                 out.rate_limited = true;
                 out.rate_limits.five_hour = Some((1.0, crate::unix_now() + 3600));
+                out.rate_limits_synthetic = true;
             } else if refusal::login_failure(&msg) {
                 refusal::login_refused(out);
             }
