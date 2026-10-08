@@ -258,3 +258,46 @@ fn a_retired_project_with_a_missing_repo_is_not_reported_stale() {
     assert!(kept.retired_at.is_some());
     assert_eq!(f.store.project_repos("gone").unwrap().len(), 1);
 }
+
+/// A `secret:NAME` project secret the store does not hold is a warning
+/// naming the project, the variable and the reference, never a value; one
+/// the store holds is fine.
+#[test]
+fn check_project_secrets_names_an_unresolved_reference() {
+    let (_dir, f) = fixture();
+    std::fs::create_dir_all(f.paths.home.join("secrets")).unwrap();
+    std::fs::write(
+        f.paths.home.join("secrets/config.toml"),
+        "backend = 'file'\n",
+    )
+    .unwrap();
+    crate::secret_store::Store::open(&f.paths.home)
+        .unwrap()
+        .set("HELD", "held-value-do-not-print".into())
+        .unwrap();
+    let mut projects = std::collections::BTreeMap::new();
+    projects.insert(
+        "p".to_string(),
+        [
+            ("GOOD".to_string(), "secret:HELD".to_string()),
+            ("LITERAL".to_string(), "plain".to_string()),
+        ]
+        .into(),
+    );
+    let ok = check_project_secrets(&f.paths, &projects).unwrap();
+    assert!(ok.status == Status::Ok, "{}", ok.detail);
+
+    projects
+        .get_mut("p")
+        .unwrap()
+        .insert("BAD".to_string(), "secret:MISSING".to_string());
+    let c = check_project_secrets(&f.paths, &projects).unwrap();
+    assert!(c.status == Status::Warn);
+    assert!(c.detail.contains("p.BAD -> secret:MISSING"), "{}", c.detail);
+    assert!(!c.detail.contains("GOOD"), "{}", c.detail);
+    assert!(!c.detail.contains("held-value"), "{}", c.detail);
+
+    let none: std::collections::BTreeMap<_, _> =
+        [("p".to_string(), [("L".to_string(), "x".to_string())].into())].into();
+    assert!(check_project_secrets(&f.paths, &none).is_none());
+}

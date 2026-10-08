@@ -489,8 +489,47 @@ fn check_config(paths: &Paths) -> Vec<Check> {
     }];
     if let Ok(c) = config::load_home(&paths.home) {
         out.extend(check_unsandboxed_opt_out(&c.trust));
+        out.extend(check_project_secrets(paths, &c.project_secrets));
     }
     out
+}
+
+/// `[projects.<name>.secrets]` values written as `secret:NAME` must resolve
+/// through the secret store, or every job of that project fails before its
+/// first step. Names only, never a value; no row when none is a reference.
+fn check_project_secrets(
+    paths: &Paths,
+    projects: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+) -> Option<Check> {
+    let refs = projects
+        .values()
+        .flat_map(|t| t.values())
+        .filter(|v| v.starts_with(crate::secrets::STORE_PREFIX))
+        .count();
+    if refs == 0 {
+        return None;
+    }
+    let missing = crate::secrets::unresolved_project_refs(&paths.home, projects);
+    Some(if missing.is_empty() {
+        check(
+            "project_secrets",
+            Status::Ok,
+            format!("{refs} secret store reference(s) resolve"),
+            "",
+        )
+    } else {
+        check(
+            "project_secrets",
+            Status::Warn,
+            format!(
+                "{} of {refs} reference(s) do not resolve, so those projects' jobs fail before \
+                 any step: {}",
+                missing.len(),
+                missing.join(", ")
+            ),
+            "forge secret set NAME, or fix [projects.<name>.secrets] in config.toml",
+        )
+    })
 }
 
 /// A `[trust.<level>] allow_unsandboxed = true` lets that level's tasks run

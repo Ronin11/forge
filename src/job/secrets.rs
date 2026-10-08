@@ -269,6 +269,104 @@ pub fn step_grant(
     })
 }
 
+/// The prefix that makes a `[projects.<name>.secrets]` value a reference
+/// into the encrypted secret store (`forge secret set NAME`) rather than
+/// the literal value.
+pub const STORE_PREFIX: &str = "secret:";
+
+/// A project's secrets as a job is given them: every `secret:NAME` value
+/// resolved through the secret store under `home`, every other value
+/// passed through as written. Resolved at run time, never at config load,
+/// so a secret set after the worker started is picked up and loading the
+/// config never needs the store. The redactor covers the resolved values,
+/// each named after the variable it was given as. A reference that does
+/// not resolve is an error naming the variable and the reference, never a
+/// value.
+pub fn project_env(
+    home: &std::path::Path,
+    raw: Option<&BTreeMap<String, String>>,
+) -> Result<(BTreeMap<String, String>, Redactor)> {
+    let mut env = BTreeMap::new();
+    let mut resolved = Vec::new();
+    for (var, value) in raw.into_iter().flatten() {
+        if !value.starts_with(STORE_PREFIX) {
+            env.insert(var.clone(), value.clone());
+            continue;
+        }
+        let stored = crate::secret_store::resolve_at(home, Some(value), None)
+            .ok()
+            .flatten()
+            .filter(|v| !v.is_empty())
+            .with_context(|| {
+                format!(
+                    "project secret {var} = {value:?} does not resolve: no such secret in the \
+                     store, or the store cannot be opened (forge secret set {})",
+                    value.trim_start_matches(STORE_PREFIX)
+                )
+            })?;
+        resolved.push(Secret {
+            name: var.clone(),
+            env_var: var.clone(),
+            value: stored.clone(),
+        });
+        env.insert(var.clone(), stored);
+    }
+    Ok((env, Redactor::new(&resolved)))
+}
+
+/// Every `secret:NAME` reference among the projects' secrets that does not
+/// resolve, as `project.VARIABLE -> secret:NAME`: names only, for `forge
+/// doctor`.
+pub fn unresolved_project_refs(
+    home: &std::path::Path,
+    projects: &BTreeMap<String, BTreeMap<String, String>>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for (project, table) in projects {
+        for (var, value) in table {
+            if value.starts_with(STORE_PREFIX)
+                && !crate::secret_store::resolve_at(home, Some(value), None)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|v| !v.is_empty())
+            {
+                out.push(format!("{project}.{var} -> {value}"));
+            }
+        }
+    }
+    out
+}
+
+/// Every resolved project-secret value Forge can see, for redaction
+/// outside a job (chat tool results): references that do not resolve are
+/// skipped, never an error.
+pub fn resolved_project_values(
+    home: &std::path::Path,
+    projects: &BTreeMap<String, BTreeMap<String, String>>,
+) -> Vec<String> {
+    projects
+        .values()
+        .flat_map(|t| t.values())
+        .filter(|v| v.starts_with(STORE_PREFIX))
+        .filter_map(|v| {
+            crate::secret_store::resolve_at(home, Some(v), None)
+                .ok()
+                .flatten()
+        })
+        .collect()
+}
+
+impl Redactor {
+    /// This redactor and `other`'s needles together.
+    pub fn with(mut self, other: &Redactor) -> Self {
+        self.needles.extend(other.needles.iter().cloned());
+        self.needles
+            .sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.cmp(b)));
+        self.needles.dedup();
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,4 +606,53 @@ mod tests {
         assert!(home_with("[secrets]\nok = { env = \"1X\" }\n").is_err());
         assert!(home_with("[secrets]\nok = { env = \"FORGE_HOME\" }\n").is_err());
     }
+
+    fn store_home(held: &[(&str, &str)]) -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join("secrets")).unwrap();
+        std::fs::write(home.path().join("secrets/config.toml"), "backend = 'file'\n").unwrap();
+        let store = crate::secret_store::Store::open(home.path()).unwrap();
+        for (k, v) in held {
+            store.set(k, v.to_string()).unwrap();
+        }
+        home
+    }
+
+    #[test]
+    fn a_project_secret_reference_resolves_and_a_literal_passes_through() {
+        let home = store_home(&[("ELEVENLABS_API_KEY", "el-stored-value")]);
+        let raw: BTreeMap<String, String> = [
+            ("ELEVENLABS_API_KEY", "secret:ELEVENLABS_API_KEY"),
+            ("PLAIN", "as-written"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let (env, red) = project_env(home.path(), Some(&raw)).unwrap();
+        assert_eq!(env["ELEVENLABS_API_KEY"], "el-stored-value");
+        assert_eq!(env["PLAIN"], "as-written");
+        assert_eq!(
+            red.redact("key el-stored-value, plain as-written"),
+            "key [redacted:ELEVENLABS_API_KEY], plain as-written"
+        );
+        assert_eq!(
+            resolved_project_values(home.path(), &[("p".to_string(), raw)].into()),
+            vec!["el-stored-value".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_unresolved_project_secret_reference_names_the_variable_and_reference_only() {
+        let home = store_home(&[("OTHER", "other-stored-value")]);
+        let raw: BTreeMap<String, String> =
+            [("API_KEY".to_string(), "secret:MISSING".to_string())].into();
+        let e = format!("{:#}", project_env(home.path(), Some(&raw)).unwrap_err());
+        assert!(e.contains("API_KEY") && e.contains("secret:MISSING"), "{e}");
+        assert!(!e.contains("other-stored-value"), "{e}");
+        assert_eq!(
+            unresolved_project_refs(home.path(), &[("p".to_string(), raw)].into()),
+            vec!["p.API_KEY -> secret:MISSING".to_string()]
+        );
+    }
+
 }

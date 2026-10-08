@@ -23,6 +23,9 @@ pub(super) struct OperationStep<'a> {
     pub step: &'a RunStep,
     pub trust: Trust,
     pub env: Vec<(String, String)>,
+    /// Redacts the project's secrets resolved from the secret store; the
+    /// step's own grant is redacted alongside them.
+    pub redactor: &'a secrets::Redactor,
     pub repo_checks: &'a std::collections::BTreeMap<String, Vec<String>>,
     pub scratch: &'a Path,
     pub idir: &'a Path,
@@ -66,6 +69,7 @@ pub(super) async fn run(args: OperationStep<'_>) -> Result<Ran> {
         step,
         trust,
         mut env,
+        redactor,
         repo_checks,
         scratch,
         idir,
@@ -75,7 +79,7 @@ pub(super) async fn run(args: OperationStep<'_>) -> Result<Ran> {
     } = args;
     let action = &step.action;
     let before = log_lines(effect_log).len();
-    let grant = match secrets::step_grant(
+    let mut grant = match secrets::step_grant(
         &action.name,
         secrets::Declared {
             secrets: &step.secrets,
@@ -89,6 +93,7 @@ pub(super) async fn run(args: OperationStep<'_>) -> Result<Ran> {
         Ok(g) => g,
         Err(e) => return Ok(failed_before_running(&action.name, format!("{e:#}"))),
     };
+    grant.redactor = grant.redactor.with(redactor);
     env.extend(grant.env.iter().cloned());
     let cost_file = budget_env(&mut env, idir, seq, step.budget_usd);
     // Bind only this job's input/output directory alongside its scratch tree.

@@ -769,7 +769,6 @@ async fn run_now_inner(args: RunNow<'_>) -> Result<()> {
     let effect_log = idir.join("effects.log");
     std::fs::write(&effect_log, "")?;
 
-    let secrets = f.project_secrets.get(project).cloned().unwrap_or_default();
     let trust = f.store.job_trust(job_id)?.unwrap_or(Trust::Public);
     let timeout = Duration::from_secs(check_timeout_secs);
     let input_bytes = limits.map_or(workflows::default_input_bytes(), |l| l.input_bytes);
@@ -781,6 +780,26 @@ async fn run_now_inner(args: RunNow<'_>) -> Result<()> {
     let mut output_paths: Vec<(String, String)> = Vec::new();
     let mut total_cost = f.store.job_step_cost(job_id)?;
 
+    // The project's secrets, `secret:NAME` references resolved through the
+    // secret store now, at run time (docs/JOBS.md, "The executor"). One
+    // that does not resolve fails the job before anything runs, with a
+    // verdict naming the variable and the reference, never a value.
+    let (secrets, secret_redactor) =
+        match crate::secrets::project_env(&f.paths.home, f.project_secrets.get(project)) {
+            Ok(r) => r,
+            Err(e) => {
+                ok = false;
+                verdict.push(checks::CheckResult {
+                    level: "OP".to_string(),
+                    name: "secrets".to_string(),
+                    ok: false,
+                    tail: format!("{e:#}"),
+                    ..Default::default()
+                });
+                (BTreeMap::new(), crate::secrets::Redactor::default())
+            }
+        };
+
     // The repository's declared `setup` check, once, in the scratch tree
     // before `[skip_if]` and the steps, the way a task's clone has it run
     // before its steps: a step that needs the repository's dependencies
@@ -790,7 +809,7 @@ async fn run_now_inner(args: RunNow<'_>) -> Result<()> {
     // step row of its own, ahead of step 0; a failure ends the job `Failed`
     // with a `setup` verdict row carrying its tail, before anything else.
     let wants_setup = steps.iter().any(|s| s.action.kind == Kind::Operation);
-    if wants_setup && let Some(argv) = repo_checks.get("setup") {
+    if ok && wants_setup && let Some(argv) = repo_checks.get("setup") {
         let env = step_env(StepEnv {
             job_id,
             step_name: "setup",
@@ -806,7 +825,8 @@ async fn run_now_inner(args: RunNow<'_>) -> Result<()> {
             dry_run,
         });
         let started_at = unix_now();
-        let r = checks::run_one("OP", "setup", argv, &scratch, None, timeout, &env).await?;
+        let r = secret_redactor
+            .result(checks::run_one("OP", "setup", argv, &scratch, None, timeout, &env).await?);
         let (tail, output_ref) = record_output(&idir, "setup", &r);
         f.store.append_job_step(&JobStep {
             run: 0,
@@ -854,7 +874,8 @@ async fn run_now_inner(args: RunNow<'_>) -> Result<()> {
             secrets: &secrets,
             dry_run,
         });
-        let r = checks::run_one("L0", name, argv, &scratch, None, timeout, &env).await?;
+        let r = secret_redactor
+            .result(checks::run_one("L0", name, argv, &scratch, None, timeout, &env).await?);
         if r.ok {
             let reason = r.stdout.lines().next().unwrap_or_default().to_string();
             let verdict = vec![checks::CheckResult {
@@ -919,6 +940,7 @@ async fn run_now_inner(args: RunNow<'_>) -> Result<()> {
                         step,
                         trust,
                         env,
+                        redactor: &secret_redactor,
                         repo_checks: &repo_checks,
                         scratch: &scratch,
                         idir: &idir,

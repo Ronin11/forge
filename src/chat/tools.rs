@@ -126,6 +126,10 @@ pub fn redactor(f: &Forge) -> Redactor {
         .values()
         .flat_map(|m| m.values().cloned())
         .collect();
+    secrets.extend(crate::secrets::resolved_project_values(
+        &f.paths.home,
+        &f.project_secrets,
+    ));
     for p in f.providers.values() {
         for reference in [&p.api_key, &p.account_id, &p.cloudflare_api_key]
             .into_iter()
