@@ -809,7 +809,10 @@ async fn run_now_inner(args: RunNow<'_>) -> Result<()> {
     // step row of its own, ahead of step 0; a failure ends the job `Failed`
     // with a `setup` verdict row carrying its tail, before anything else.
     let wants_setup = steps.iter().any(|s| s.action.kind == Kind::Operation);
-    if ok && wants_setup && let Some(argv) = repo_checks.get("setup") {
+    if ok
+        && wants_setup
+        && let Some(argv) = repo_checks.get("setup")
+    {
         let env = step_env(StepEnv {
             job_id,
             step_name: "setup",

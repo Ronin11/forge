@@ -522,10 +522,14 @@ auto_land = false
 # cache_paths = [\"~/.cache/node-gyp\", \"~/.cache/ms-playwright\"]
 
 # A project's secrets, injected as environment for that project's jobs
-# (`forge job start`) and never into a prompt (see docs/JOBS.md).
+# (`forge job start`) and never into a prompt (see docs/JOBS.md). A value
+# written \"secret:NAME\" is read from the encrypted secret store
+# (`forge secret set NAME`) when the job runs, so no key need sit here in
+# plain text; any other value is passed as written.
 #
 # [projects.equitizr.secrets]
 # SIGNAL_TOKEN = \"...\"
+# ELEVENLABS_API_KEY = \"secret:ELEVENLABS_API_KEY\"
 
 # A named secret a run workflow's operation step may declare, resolved to an
 # environment variable the worker process already has (never a value here).

@@ -54,6 +54,7 @@ mod plugin_lock;
 mod plugin_refresh;
 mod plugins;
 mod presence;
+mod project_secrets;
 mod providers;
 mod provision;
 mod questions;

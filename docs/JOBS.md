@@ -411,9 +411,19 @@ A job is claimed by the worker like a task and runs in a sandbox:
    scratch directory (from the repository cache; no clone, no branch).
 2. Write the trigger's inputs as files and environment (`FORGE_INPUT_*`,
    `FORGE_INPUT_DIR`), the workflow's own `[env]` table, and the project's
-   secrets as environment from the operator's store, never into any
-   prompt. `FORGE_PROJECT` and `FORGE_REPO_DIR` name the project and its
-   real, landed repository (unlike the scratch directory a step runs in,
+   secrets (`[projects.<name>.secrets]` in config.toml) as environment,
+   never into any prompt. A value written `"secret:NAME"` is read from the
+   encrypted secret store (`forge secret set NAME`) when the job runs, not
+   when the config loads, so the key never sits in config.toml in plain
+   text: `ELEVENLABS_API_KEY = "secret:ELEVENLABS_API_KEY"`. Any other
+   value is passed as written. A reference that does not resolve fails the
+   job before any step (setup and `[skip_if]` included), with a `secrets`
+   verdict naming the variable and the reference, never a value, and
+   `forge doctor` names it (`project_secrets`). A resolved value is
+   replaced with `[redacted:<VARIABLE>]` in the output of every step that
+   receives it, the way a step's own secret is (below).
+   `FORGE_PROJECT` and `FORGE_REPO_DIR` name the project and its real,
+   landed repository (unlike the scratch directory a step runs in,
    this one has a `.git`) for a step that has to act on the project
    itself, such as filing a task with `forge add`; `FORGE_BIN_DIR` and
    `FORGE_HOME` are where that `forge` binary and the operator's own

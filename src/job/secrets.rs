@@ -610,7 +610,11 @@ mod tests {
     fn store_home(held: &[(&str, &str)]) -> tempfile::TempDir {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir(home.path().join("secrets")).unwrap();
-        std::fs::write(home.path().join("secrets/config.toml"), "backend = 'file'\n").unwrap();
+        std::fs::write(
+            home.path().join("secrets/config.toml"),
+            "backend = 'file'\n",
+        )
+        .unwrap();
         let store = crate::secret_store::Store::open(home.path()).unwrap();
         for (k, v) in held {
             store.set(k, v.to_string()).unwrap();
@@ -654,5 +658,4 @@ mod tests {
             vec!["p.API_KEY -> secret:MISSING".to_string()]
         );
     }
-
 }
