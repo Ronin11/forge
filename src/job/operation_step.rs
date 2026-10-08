@@ -153,6 +153,31 @@ pub(super) async fn run(args: OperationStep<'_>) -> Result<Ran> {
         node: step.node.clone(),
     })?;
     redact_effect_log(effect_log, &grant.redactor);
+    record_effects(f, job_id, seq, effect_log, before, dry_run)?;
+    let ok = r.ok;
+    let stdout = r.stdout.clone();
+    let verdict = if ok {
+        Vec::new()
+    } else {
+        vec![CheckResult { tail, ..r }]
+    };
+    Ok(Ran {
+        ok,
+        verdict,
+        stdout,
+        charged: spend.charged,
+    })
+}
+
+/// Record the effect-log lines this step appended as `job_effects` rows.
+fn record_effects(
+    f: &Forge,
+    job_id: i64,
+    seq: i64,
+    effect_log: &Path,
+    before: usize,
+    dry_run: bool,
+) -> Result<()> {
     for line in log_lines(effect_log).into_iter().skip(before) {
         let mut parts = line.splitn(3, '\t');
         let (Some(kind), Some(target), Some(summary)) = (parts.next(), parts.next(), parts.next())
@@ -169,19 +194,7 @@ pub(super) async fn run(args: OperationStep<'_>) -> Result<Ran> {
             dry_run,
         })?;
     }
-    let ok = r.ok;
-    let stdout = r.stdout.clone();
-    let verdict = if ok {
-        Vec::new()
-    } else {
-        vec![CheckResult { tail, ..r }]
-    };
-    Ok(Ran {
-        ok,
-        verdict,
-        stdout,
-        charged: spend.charged,
-    })
+    Ok(())
 }
 
 fn budget_env(
