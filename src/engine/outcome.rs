@@ -98,6 +98,9 @@ pub(super) enum End {
     Verified,
     /// Landed on the base at this commit.
     Landed(String),
+    /// Verified, pushed and left for a human, with the reason saying why
+    /// and how it lands (a capped task's commits that passed the checks).
+    Held(String),
     /// Verified work that no agent vouched for, or a review that never
     /// finished: pushed, and a human decides.
     Unverified(String),
@@ -148,7 +151,7 @@ pub(super) fn l0_failure_reason(checks: &[CheckResult]) -> Option<String> {
 impl End {
     pub(super) fn pushes(&self) -> bool {
         match self {
-            End::Verified | End::Unverified(_) => true,
+            End::Verified | End::Held(_) | End::Unverified(_) => true,
             End::Landed(_) | End::Filed { .. } => false,
             End::Capped { pushes, .. } => *pushes,
             End::Blocked { demoted, .. } => *demoted,
@@ -158,7 +161,9 @@ impl End {
 
     pub(super) fn task_state(&self) -> TaskState {
         match self {
-            End::Verified | End::Landed(_) | End::Filed { .. } => TaskState::Succeeded,
+            End::Verified | End::Landed(_) | End::Held(_) | End::Filed { .. } => {
+                TaskState::Succeeded
+            }
             End::Unverified(_) => TaskState::Unverified,
             End::Blocked { .. } => TaskState::Blocked,
             End::Failed { .. } => TaskState::Failed,
@@ -184,9 +189,10 @@ impl End {
             End::Filed { n, initiative, .. } => {
                 format!("filed {n} task(s) into initiative {initiative}")
             }
-            End::Unverified(r) | End::Blocked { reason: r, .. } | End::Capped { reason: r, .. } => {
-                r.clone()
-            }
+            End::Held(r)
+            | End::Unverified(r)
+            | End::Blocked { reason: r, .. }
+            | End::Capped { reason: r, .. } => r.clone(),
             End::Failed {
                 reason, counted, ..
             } => {

@@ -15,7 +15,7 @@
 mod capped;
 pub(crate) mod cursor;
 pub(crate) use capped::landable_capped;
-use capped::{check_abort, check_cap};
+use capped::{Salvage, check_abort, check_cap, salvage};
 use cursor::RunCursor;
 mod terminal;
 use terminal::finish;
@@ -236,7 +236,22 @@ pub async fn run_task(f: Arc<Forge>, id: i64, wait: bool) -> Result<TaskState, F
             }
         }
     }
-    let mut end = end.unwrap_or(End::Verified);
+    // A budget cap that left commits has them judged as they stand.
+    let mut end = salvage(
+        Salvage {
+            f: &f,
+            t: &mut t,
+            cfg: &cfg,
+            run: &mut run,
+            repo: &repo,
+            wt: &wt,
+            remote_url: &remote_url,
+            base_cfg: &base_cfg,
+            attempt_no: &mut attempt_no,
+        },
+        end.unwrap_or(End::Verified),
+    )
+    .await?;
 
     let mut compare: Option<String> = None;
     if end.pushes() {
