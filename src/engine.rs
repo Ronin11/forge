@@ -15,7 +15,7 @@
 mod capped;
 pub(crate) mod cursor;
 pub(crate) use capped::landable_capped;
-use capped::{Salvage, check_abort, check_cap, salvage};
+use capped::{Salvage, check_abort, check_cap, remaining, salvage};
 use cursor::RunCursor;
 mod terminal;
 use terminal::conclude;
@@ -135,7 +135,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64, wait: bool) -> Result<TaskState, F
     // The cap is checked at claim as well as before every attempt.
     let mut end = match check_abort(&f, &t)? {
         Some(e) => Some(e),
-        None => check_cap(&f, &mut t, &resolved, &run.done, task_cap, &wt).await?,
+        None => check_cap(&f, &mut t, &resolved, &run.done, task_cap, &wt, false).await?,
     };
     'run: loop {
         if end.is_some() {

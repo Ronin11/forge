@@ -201,6 +201,7 @@ mod tests {
             step: "code",
             provider: &provider,
             resume: None,
+            budget_usd: None,
             writes: true,
             start_sha: "",
             schema: crate::envelope::SCHEMA,

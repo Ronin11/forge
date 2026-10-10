@@ -328,6 +328,7 @@ mod tests {
             step: "big-prompt",
             provider: &provider,
             resume: None,
+            budget_usd: None,
             writes: false,
             start_sha: "",
             schema: crate::envelope::SCHEMA,

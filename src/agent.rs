@@ -84,6 +84,9 @@ pub struct Outcome {
     pub early_near: Vec<&'static str>,
     /// The CLI ended the run at its turn limit.
     pub max_turns_hit: bool,
+    /// The CLI ended the run at its own `--max-budget-usd` cap (result
+    /// subtype `error_max_budget_usd`): the task's budget, not a crash.
+    pub budget_hit: bool,
     /// The provider refused the run for a rate window: not the agent's fault.
     pub rate_limited: bool,
     /// The refusal was of the login itself: held until a probe answers.
@@ -488,6 +491,10 @@ pub struct Launch<'a> {
     pub provider: &'a Provider,
     /// A CLI session to continue instead of starting fresh.
     pub resume: Option<&'a str>,
+    /// What is left of the task's budget (its cap less what earlier
+    /// attempts spent), for a CLI that can stop itself on it; `None`
+    /// outside a task's attempt.
+    pub budget_usd: Option<f64>,
     /// The attempt's own starting commit — the original attempt's, across a
     /// resume, since the agent's report covers the whole session (see
     /// `attempt::new_attempt`). `run_codex`'s nudge loop compares the
@@ -1418,6 +1425,7 @@ mod tests {
             step: "step",
             provider,
             resume,
+            budget_usd: None,
             start_sha: "",
             writes: false,
             schema,

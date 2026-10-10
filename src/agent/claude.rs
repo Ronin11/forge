@@ -34,6 +34,17 @@ pub const ATTEMPT_TOOLS: &str = "Bash,Read,Edit,Write,Glob,Grep";
 /// real CLI). `--tools ""` disables every other built-in tool while leaving
 /// `StructuredOutput` (which is not itself a member of the built-in set)
 /// reachable.
+///
+/// `--max-budget-usd` is what is left of the task's budget (its cap less
+/// what earlier attempts spent; `engine::capped::remaining`), on every
+/// task attempt. The worker's own check before each attempt stays the
+/// authority; the CLI's cap only stops a run inside the turn that would
+/// overshoot. A run it stops ends with result subtype
+/// `error_max_budget_usd` (terminal reason `budget_exhausted`), read into
+/// `Outcome::budget_hit` and capped the way the worker caps
+/// (`engine::capped::check_cap`). Checked against claude 2.1.292
+/// (2026-10-10): `--help` lists the flag ("only works with --print") and
+/// a run given 0.0001 ended with that subtype and terminal reason.
 pub(super) fn claude_argv(bin: &str, l: &Launch<'_>) -> Vec<String> {
     let mut argv = vec![
         bin.to_string(),
@@ -61,6 +72,11 @@ pub(super) fn claude_argv(bin: &str, l: &Launch<'_>) -> Vec<String> {
         },
     ];
     argv.extend(l.provider.extra_args.iter().cloned());
+    if let Some(usd) = l.budget_usd {
+        // Never 0: the worker only launches with something left.
+        argv.push("--max-budget-usd".to_string());
+        argv.push(format!("{:.4}", usd.max(0.0001)));
+    }
     if let Some(id) = l.resume {
         argv.push("--resume".to_string());
         argv.push(id.to_string());
@@ -78,6 +94,8 @@ pub(super) fn apply_claude_result(out: &mut Outcome, v: &Value) {
     out.subtype = v["subtype"].as_str().map(str::to_string);
     out.terminal_reason = v["terminal_reason"].as_str().map(str::to_string);
     out.max_turns_hit = v["subtype"].as_str() == Some("error_max_turns");
+    out.budget_hit = v["subtype"].as_str() == Some("error_max_budget_usd")
+        || v["terminal_reason"].as_str() == Some("budget_exhausted");
     refusal::read_claude_error(out, v);
     out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
     out.cost_usd = v["total_cost_usd"].as_f64();
@@ -291,5 +309,55 @@ mod tests {
         assert_eq!(argv[model_at + 1], "sonnet");
         let resume_at = argv.iter().position(|a| a == "--resume").unwrap();
         assert_eq!(argv[resume_at + 1], "sess-1");
+    }
+
+    #[test]
+    fn claude_argv_caps_the_run_at_the_budget_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = Reporter::new(false, None);
+        let provider = Provider::default();
+        let log_path = dir.path().join("log.jsonl");
+        let mut l = test_launch(dir.path(), &report, &provider, &log_path, "{}", false, None);
+        assert!(
+            !claude_argv("claude", &l)
+                .iter()
+                .any(|a| a == "--max-budget-usd")
+        );
+        // A $5 cap with $1.25 spent by earlier attempts.
+        l.budget_usd = Some(5.0 - 1.25);
+        let argv = claude_argv("claude", &l);
+        let at = argv.iter().position(|a| a == "--max-budget-usd").unwrap();
+        assert_eq!(argv[at + 1], "3.7500", "{argv:?}");
+    }
+
+    /// The result frame of a run the CLI stopped at `--max-budget-usd`,
+    /// as claude 2.1.292 wrote it.
+    #[test]
+    fn a_run_stopped_at_its_budget_is_read_as_capped_not_crashed() {
+        let frame = serde_json::json!({
+            "type": "result",
+            "is_error": true,
+            "subtype": "error_max_budget_usd",
+            "terminal_reason": "budget_exhausted",
+            "errors": ["Reached maximum budget ($0.0001)"],
+            "num_turns": 1,
+            "total_cost_usd": 0.0231688
+        });
+        let mut out = Outcome {
+            exit_code: Some(1),
+            ..Default::default()
+        };
+        apply_claude_result(&mut out, &frame);
+        assert!(out.budget_hit && !out.max_turns_hit);
+        assert_eq!(
+            crate::directive::failure(&out),
+            Some(crate::directive::Failure::BudgetCapped)
+        );
+        let mut done = Outcome::default();
+        apply_claude_result(
+            &mut done,
+            &serde_json::json!({"type": "result", "subtype": "success"}),
+        );
+        assert!(!done.budget_hit);
     }
 }

@@ -139,6 +139,7 @@ pub async fn rule(f: &Forge, t: &Task, deny: &[String], need: &Need) -> Result<R
             writes: false,
             start_sha: &start_sha,
             resume: None,
+            budget_usd: None,
             no_tools: false,
             judgment: None,
             early_ending: f.early_ending,

@@ -41,6 +41,8 @@ pub struct Spec<'a> {
     pub writes: bool,
     pub start_sha: &'a str,
     pub resume: Option<&'a str>,
+    /// See `agent::Launch::budget_usd`.
+    pub budget_usd: Option<f64>,
     pub no_tools: bool,
     /// What a `Runner::Jev` judges; see `agent::Launch::judgment`.
     pub judgment: Option<agent::Judgment<'a>>,
@@ -79,6 +81,7 @@ pub async fn launch(f: &Forge, s: Spec<'_>) -> Result<Outcome> {
         step: s.step,
         provider: s.provider,
         resume: s.resume,
+        budget_usd: s.budget_usd,
         writes: s.writes,
         start_sha: s.start_sha,
         schema: s.schema,
@@ -111,6 +114,9 @@ pub enum Failure {
     /// Forge ended the run itself on signs it was going nowhere.
     EndedEarly(String),
     TimedOut,
+    /// The CLI stopped the run at the task's remaining budget
+    /// (`--max-budget-usd`): the task is capped, as the worker caps it.
+    BudgetCapped,
     /// Work finished without the final structured report.
     StructuredOutput,
     /// The CLI's result frame reported an error, with its own subtype
@@ -134,6 +140,8 @@ pub fn failure(a: &Outcome) -> Option<Failure> {
         Some(Failure::EndedEarly(why.clone()))
     } else if a.timed_out {
         Some(Failure::TimedOut)
+    } else if a.budget_hit {
+        Some(Failure::BudgetCapped)
     } else if a.terminal_reason.as_deref() == Some("structured_output_retry_exhausted")
         || a.subtype.as_deref() == Some("error_max_structured_output_retries")
     {
@@ -170,6 +178,7 @@ impl Failure {
             Failure::LoginRefused => "the provider refused the agent login".into(),
             Failure::EndedEarly(why) => format!("stopped early: {why}"),
             Failure::TimedOut => "agent timed out".into(),
+            Failure::BudgetCapped => "stopped at the task's budget cap".into(),
             Failure::StructuredOutput => {
                 "structured_output_retry_exhausted: envelope missing".into()
             }
@@ -201,6 +210,7 @@ impl Failure {
                 subtype.as_deref().unwrap_or("error")
             )),
             Failure::TimedOut
+            | Failure::BudgetCapped
             | Failure::StructuredOutput
             | Failure::Exit(_)
             | Failure::NoResult => quote(self.reason()),

@@ -151,6 +151,7 @@ async fn model_step(
             writes: false,
             start_sha: "",
             resume: None,
+            budget_usd: None,
             no_tools: true,
             judgment: None,
             early_ending: f.early_ending,

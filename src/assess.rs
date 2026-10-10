@@ -181,6 +181,7 @@ async fn try_run(
             writes: false,
             start_sha: landed_sha,
             resume: None,
+            budget_usd: None,
             no_tools: false,
             judgment: None,
             early_ending: f.early_ending,

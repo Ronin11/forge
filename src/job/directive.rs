@@ -109,6 +109,7 @@ pub(super) async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOut
             writes: false,
             start_sha: "",
             resume: None,
+            budget_usd: None,
             no_tools: true,
             judgment: Some(crate::agent::Judgment {
                 action,
