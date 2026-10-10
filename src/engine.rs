@@ -18,7 +18,7 @@ pub(crate) use capped::landable_capped;
 use capped::{Salvage, check_abort, check_cap, salvage};
 use cursor::RunCursor;
 mod terminal;
-use terminal::finish;
+use terminal::conclude;
 pub(crate) use terminal::{finish_fault, settle_ready_initiatives};
 mod op;
 pub use op::{Classify, Fault};
@@ -236,8 +236,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64, wait: bool) -> Result<TaskState, F
             }
         }
     }
-    // A budget cap that left commits has them judged as they stand.
-    let mut end = salvage(
+    conclude(
         Salvage {
             f: &f,
             t: &mut t,
@@ -251,18 +250,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64, wait: bool) -> Result<TaskState, F
         },
         end.unwrap_or(End::Verified),
     )
-    .await?;
-
-    let mut compare: Option<String> = None;
-    if end.pushes() {
-        run.seq += 1;
-        let (c, failed) = publish(&f, &mut t, &wt, &repo, &remote_url, run.seq).await?;
-        compare = c;
-        if let Some(e) = failed {
-            end = e;
-        }
-    }
-    finish(&f, &mut t, &end, compare, &wt).await
+    .await
 }
 
 /// The run's start on the report: where it works, and which workflow it runs.

@@ -1,5 +1,44 @@
 use super::*;
 
+/// The run's last stretch once `end` is decided: a budget cap that left
+/// commits has them judged as they stand (`capped::salvage`), a branch the
+/// end keeps is published, and the end goes on the record.
+pub(super) async fn conclude(s: Salvage<'_>, end: End) -> Result<TaskState, Fault> {
+    let Salvage {
+        f,
+        t,
+        cfg,
+        run,
+        repo,
+        wt,
+        remote_url,
+        base_cfg,
+        attempt_no,
+    } = s;
+    let s = Salvage {
+        f,
+        t: &mut *t,
+        cfg,
+        run: &mut *run,
+        repo,
+        wt,
+        remote_url,
+        base_cfg,
+        attempt_no,
+    };
+    let mut end = salvage(s, end).await?;
+    let mut compare: Option<String> = None;
+    if end.pushes() {
+        run.seq += 1;
+        let (c, failed) = publish(f, t, wt, repo, remote_url, run.seq).await?;
+        compare = c;
+        if let Some(e) = failed {
+            end = e;
+        }
+    }
+    finish(f, t, &end, compare, wt).await
+}
+
 /// The end of the run on the record: the task's state and reason derived
 /// from `end`, its initiative settled if this was its last task, dependents
 /// released now that it landed, failed or went unverified, and the

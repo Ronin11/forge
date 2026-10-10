@@ -1940,7 +1940,11 @@ fn a_projects_per_task_budget_applies_unless_the_task_overrides_it() {
     // No --budget on the task: the project's default applies and stops
     // it after the first $0.01 attempt, the same way an explicit
     // `--budget 0.005` would (see `task_budget_stops_retries`).
-    assert!(!e.run("flaky.sh", &["--retries", "3"]).status.success());
+    assert!(
+        !e.run("costnocommit.sh", &["--retries", "3"])
+            .status
+            .success()
+    );
     assert_eq!(e.attempts(1).len(), 1);
     assert_eq!(e.task(1).0, "capped", "{}", e.task(1).1);
     assert!(e.task(1).1.contains(" of $0.0"), "{}", e.task(1).1);
