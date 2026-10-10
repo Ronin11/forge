@@ -921,6 +921,45 @@ impl IntegrateReport {
     }
 }
 
+/// Every task's branch fetched into the scratch clone `dir`, with its tip,
+/// in the order `integrate_many` merges them: the ones `git merge-tree`
+/// says merge cleanly onto the base first, in the order named, and the
+/// ones that already conflict with it after them.
+async fn fetch_in_merge_order<'a>(
+    dir: &Path,
+    repo: &Path,
+    remote_url: Option<&str>,
+    tasks: &'a [Task],
+) -> Result<Vec<(&'a Task, String)>> {
+    let mut tips = Vec::new();
+    for t in tasks {
+        // Where the branch lives: the repository, else the remote, else the worktree.
+        let src = if git::ref_exists(repo, &format!("refs/heads/{}", t.branch)).await {
+            repo.display().to_string()
+        } else if let Some(url) = remote_url
+            && git::remote_branch_exists(url, &t.branch).await?
+        {
+            url.to_string()
+        } else if Path::new(&t.worktree).join(".git").exists() {
+            t.worktree.clone()
+        } else {
+            bail!(
+                "task {}'s branch {} is nowhere: not in the repository, the remote, or a worktree",
+                t.id,
+                t.branch
+            );
+        };
+        git::fetch_ref(dir, &src, &t.branch)
+            .await
+            .with_context(|| format!("fetching {} from {src}", t.branch))?;
+        let tip = git::rev_parse(dir, "FETCH_HEAD").await?;
+        let clean = git::would_conflict(dir, "HEAD", &tip).await.is_none();
+        tips.push((clean, t, tip));
+    }
+    tips.sort_by_key(|(clean, _, _)| !clean);
+    Ok(tips.into_iter().map(|(_, t, tip)| (t, tip)).collect())
+}
+
 /// The integrator's merge-and-verify half, by hand, for a repository that
 /// keeps a human at the gate: each named task's branch merged onto the base
 /// in order, every check with every hidden suite after each, the result
@@ -995,39 +1034,11 @@ pub async fn integrate_many(f: &Forge, ids: &[i64]) -> Result<IntegrateReport> {
     // Merging several tasks' branches for a combined verify: no single
     // task's provider resolved this step, so it gets no model endpoint.
     f.allow_egress(&dir, &cfg_base, trust, None);
-    // Every branch fetched up front, so merge-tree can sort them: the ones
-    // that merge cleanly onto the base go first, in the order named, and
-    // the ones that already conflict with it after them.
-    let mut tips = Vec::new();
-    for t in &tasks {
-        // Where the branch lives: the repository, else the remote, else the worktree.
-        let src = if git::ref_exists(&repo, &format!("refs/heads/{}", t.branch)).await {
-            repo.display().to_string()
-        } else if let Some(url) = &remote_url
-            && git::remote_branch_exists(url, &t.branch).await?
-        {
-            url.clone()
-        } else if Path::new(&t.worktree).join(".git").exists() {
-            t.worktree.clone()
-        } else {
-            bail!(
-                "task {}'s branch {} is nowhere: not in the repository, the remote, or a worktree",
-                t.id,
-                t.branch
-            );
-        };
-        git::fetch_ref(&dir, &src, &t.branch)
-            .await
-            .with_context(|| format!("fetching {} from {src}", t.branch))?;
-        let tip = git::rev_parse(&dir, "FETCH_HEAD").await?;
-        let clean = git::would_conflict(&dir, "HEAD", &tip).await.is_none();
-        tips.push((clean, t, tip));
-    }
-    tips.sort_by_key(|(clean, _, _)| !clean);
+    let tips = fetch_in_merge_order(&dir, &repo, remote_url.as_deref(), &tasks).await?;
     let mut steps = Vec::new();
     let mut outcome = IntegrateOutcome::Ready;
     let mut merged_ids: Vec<i64> = Vec::new();
-    for (completed, (_, t, tip)) in tips.into_iter().enumerate() {
+    for (completed, (t, tip)) in tips.into_iter().enumerate() {
         let message = format!("Integrate task {}: {}", t.id, t.branch);
         // Checked again against what is merged so far: two branches that
         // each merge cleanly onto the base can still conflict with each
