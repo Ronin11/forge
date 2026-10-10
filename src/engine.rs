@@ -26,6 +26,7 @@ pub(crate) use op::{OpRow, Timer, op};
 mod needs;
 use needs::{Environment, apply_environment, environment_after};
 mod worktree;
+pub use worktree::TaskEnv;
 use worktree::prepare_worktree;
 pub use worktree::slug;
 mod outcome;

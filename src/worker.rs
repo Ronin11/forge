@@ -1,6 +1,6 @@
 //! The running system: claim, run, repeat, stay up. `drive` is the one
 //! place a fault becomes an outcome: a task fault fails the task; an
-//! environment fault puts the task back in the queue (blocked after repeats).
+//! environment fault puts the task back in the queue and stops the worker.
 //!
 //! `forge work` runs up to `--jobs` tasks at once, polls the queue every
 //! `--poll` seconds when it is empty, and exits when told to. The first
@@ -196,9 +196,9 @@ pub async fn drive_with_wait(f: Arc<Forge>, id: i64, wait: bool) -> Result<TaskS
             crate::audience::emit_recovered(&f, &ended).await?;
             Ok(TaskState::Failed)
         }
-        Err(Fault::Env(e)) => {
-            // The count of consecutive environment errors rides in the
-            // reason the last requeue left: any other outcome rewrites it.
+        Err(Fault::Env(e)) if e.downcast_ref::<engine::TaskEnv>().is_some() => {
+            // The count of consecutive claims rides in the reason the last
+            // requeue left: any other outcome rewrites it.
             let prior = f
                 .store
                 .task(id)?
@@ -208,12 +208,11 @@ pub async fn drive_with_wait(f: Arc<Forge>, id: i64, wait: bool) -> Result<TaskS
             let why = format!("{ENV_REQUEUE_PREFIX} (claim {claims} of {ENV_CLAIM_LIMIT}): {e:#}");
             f.store
                 .requeue(id, &crate::store::Owner::this_process(), &why)?;
+            let mut state = TaskState::Queued;
             if claims >= ENV_CLAIM_LIMIT
                 && let Some(mut t) = f.store.task(id)?
                 && t.state == TaskState::Queued
             {
-                // The same fault on every claim: queueing it again only
-                // repeats it, so it waits for the operator.
                 t.state = TaskState::Blocked;
                 t.reason = format!(
                     "{e:#} (environment error on {claims} consecutive claims; fix it, then forge retry {id})"
@@ -222,7 +221,16 @@ pub async fn drive_with_wait(f: Arc<Forge>, id: i64, wait: bool) -> Result<TaskS
                 t.worker_pid = None;
                 f.store.update_task(&t)?;
                 f.report.emit(id, Event::Note { text: &t.reason });
+                state = TaskState::Blocked;
             }
+            Ok(state)
+        }
+        Err(Fault::Env(e)) => {
+            f.store.requeue(
+                id,
+                &crate::store::Owner::this_process(),
+                &format!("worker environment error: {e:#}"),
+            )?;
             Err(e.context(format!(
                 "worker cannot run task {id}; it is back in the queue"
             )))
@@ -234,8 +242,8 @@ pub async fn drive_with_wait(f: Arc<Forge>, id: i64, wait: bool) -> Result<TaskS
 const ENV_CLAIM_LIMIT: u32 = 3;
 const ENV_REQUEUE_PREFIX: &str = "worker environment error";
 
-/// The claim count recorded in a reason `drive` wrote for an environment
-/// error requeue, `None` for any other reason.
+/// The claim count recorded in a reason `drive` wrote for a task-scoped
+/// environment error requeue, `None` for any other reason.
 fn env_claims(reason: &str) -> Option<u32> {
     let rest = reason
         .strip_prefix("requeued: ")?
@@ -1027,6 +1035,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let (mut done, mut ok) = (0u32, 0u32);
     let (mut jobs_done, mut jobs_ok) = (0u32, 0u32);
     let mut stopping = false;
+    let mut env_error: Option<anyhow::Error> = None;
     let mut claimed = 0u32;
     let mut hold_until: Option<i64> = None;
     let mut last_idle: Option<String> = None;
@@ -1058,6 +1067,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
             slots = free_slots(&f, pid, capacity::refresh(&f, &opts, &mut capacity)?);
             while !stopping
                 && !superseded
+                && env_error.is_none()
                 && running.len() < slots
                 && opts.max_tasks.is_none_or(|m| claimed < m)
             {
@@ -1126,8 +1136,12 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
             let exhausted = opts.max_tasks.is_some_and(|m| claimed >= m);
             // A held window with work waiting: sleep until the reset (or the
             // poll interval), even in --once mode, which means "drain".
-            let held = hold_until
-                .filter(|_| !stopping && !exhausted && f.store.queued_count().unwrap_or(0) > 0);
+            let held = hold_until.filter(|_| {
+                !stopping
+                    && env_error.is_none()
+                    && !exhausted
+                    && f.store.queued_count().unwrap_or(0) > 0
+            });
             match (held, opts.poll.or_else(|| pass_failed.then_some(10))) {
                 (Some(until), poll) => {
                     let wait = (until - unix_now()).max(1) as u64;
@@ -1138,7 +1152,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                         _ = shutdown.recv() => { eprintln!("stopping"); break }
                     }
                 }
-                (None, Some(secs)) if !stopping && !exhausted => {
+                (None, Some(secs)) if !stopping && env_error.is_none() && !exhausted => {
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(secs)) => continue,
                         _ = hangup.recv() => { hup = true; continue }
@@ -1167,14 +1181,14 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     }
                     Ok(WorkResult::Task(id, Err(e))) => {
                         ids.retain(|&x| x != id);
-                        // One task's environment error is that task's: it
-                        // is requeued (or blocked), the worker serves on.
                         eprintln!("======== task {id} could not run: {e:#}");
+                        env_error = Some(e);
+                        stopping = true;
                     }
                     Ok(WorkResult::Job(id, state)) => {
                         // A job's own failure is recorded on the job
                         // (`job::drive` never returns an error); it never
-                        // touches any task's state.
+                        // sets `env_error` or touches any task's state.
                         job_ids.retain(|&x| x != id);
                         jobs_done += 1;
                         if state == JobState::Ok { jobs_ok += 1 }
@@ -1213,7 +1227,10 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
             jobs_done - jobs_ok
         );
     }
-    handover
+    match env_error {
+        Some(e) => Err(e),
+        None => handover,
+    }
 }
 
 #[cfg(test)]

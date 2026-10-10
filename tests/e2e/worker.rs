@@ -611,27 +611,6 @@ fn an_unrecorded_clone_does_not_stop_the_next_worker() {
 }
 
 #[test]
-fn an_environment_fault_never_stops_the_worker() {
-    use std::os::unix::fs::PermissionsExt;
-    let e = Env::new();
-    e.add(&[]);
-    e.add(&[]);
-    // The attempt's log cannot be created: every claim hits the same environment error.
-    let logs = e.home.join("logs");
-    std::fs::create_dir_all(&logs).unwrap();
-    std::fs::set_permissions(&logs, std::fs::Permissions::from_mode(0o555)).unwrap();
-    let o = e.forge("ok.sh", &["work", "--once"]);
-    std::fs::set_permissions(&logs, std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(o.status.success(), "the worker must survive a task's fault");
-    assert!(String::from_utf8_lossy(&o.stderr).contains("back in the queue"));
-    for id in [1, 2] {
-        let (state, reason, _) = e.task(id);
-        assert_ne!(state, "queued", "not requeued forever: {reason}");
-        assert_ne!(state, "running", "{reason}");
-    }
-}
-
-#[test]
 fn a_dirty_worktree_blocks_its_task_and_leaves_the_worker_and_other_tasks_running() {
     let e = Env::new();
     // Run unlanded, so the repository still lacks the answer for the next task.
@@ -655,6 +634,34 @@ fn a_dirty_worktree_blocks_its_task_and_leaves_the_worker_and_other_tasks_runnin
     let (state, reason, _) = e.task(first);
     assert_eq!(state, "blocked", "{reason}");
     assert!(reason.contains("worktree is not clean"), "{reason}");
+}
+
+#[test]
+fn an_environment_fault_requeues_and_stops_the_worker() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Env::new();
+    e.add(&[]);
+    e.add(&[]);
+    // The attempt's log cannot be created: that is the worker's problem, not the task's.
+    let logs = e.home.join("logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    std::fs::set_permissions(&logs, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    std::fs::set_permissions(&logs, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("back in the queue"));
+    assert_eq!(e.task(1).0, "queued");
+    assert!(
+        e.task(1).1.contains("worker environment error"),
+        "{}",
+        e.task(1).1
+    );
+    assert_eq!(
+        e.task(2).0,
+        "queued",
+        "the worker must stop, not fail the rest"
+    );
+    assert!(e.attempts(1)[0].2.starts_with("worker environment error"));
 }
 
 #[test]
