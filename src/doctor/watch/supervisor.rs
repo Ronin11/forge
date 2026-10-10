@@ -57,8 +57,22 @@ mod tests {
     fn every_run_failing_while_a_task_is_blocked_warns_with_the_last_reason() {
         let (_d, s) = store();
         let t = task(&s, "forge", "b1", "blocked");
-        attempt(&s, t, "supervisor", "agent_failed", "exit 1: no model", NOW - 7200);
-        attempt(&s, t, "supervisor", "agent_failed", "exit 1: refused", NOW - 60);
+        attempt(
+            &s,
+            t,
+            "supervisor",
+            "agent_failed",
+            "exit 1: no model",
+            NOW - 7200,
+        );
+        attempt(
+            &s,
+            t,
+            "supervisor",
+            "agent_failed",
+            "exit 1: refused",
+            NOW - 60,
+        );
         let c = watch(&s, NOW);
         assert_eq!(c.status, Status::Warn, "{}", c.detail);
         assert!(c.detail.contains("2 supervisor run(s)"), "{}", c.detail);

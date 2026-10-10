@@ -9,6 +9,13 @@ use crate::agent::Provider;
 use crate::store::Store;
 use std::collections::BTreeMap;
 
+/// The one field of `audit::Outputs` read here.
+#[derive(serde::Deserialize)]
+struct Refusals {
+    #[serde(default)]
+    refused: Vec<crate::egress::Refused>,
+}
+
 pub(super) fn watch(store: &Store, providers: &BTreeMap<String, Provider>, now: i64) -> Vec<Check> {
     let rows = match store.refusals_since(now - DAY) {
         Ok(r) => r,
@@ -26,11 +33,14 @@ pub(super) fn watch(store: &Store, providers: &BTreeMap<String, Provider>, now: 
     let mut other: BTreeMap<(String, String), u64> = BTreeMap::new();
     let mut model: BTreeMap<(String, String, String), u64> = BTreeMap::new();
     for row in rows {
-        let Ok(o) = serde_json::from_str::<crate::audit::Outputs>(&row.outputs_json) else {
+        let Ok(o) = serde_json::from_str::<Refusals>(&row.outputs_json) else {
             continue;
         };
         for r in o.refused {
-            match rules.iter().find(|(_, rule)| rule.matches(&r.host, r.port).is_some()) {
+            match rules
+                .iter()
+                .find(|(_, rule)| rule.matches(&r.host, r.port).is_some())
+            {
                 Some((provider, _)) => {
                     *model
                         .entry((provider.to_string(), r.host, row.repo.clone()))
@@ -111,7 +121,11 @@ mod tests {
         let rows = watch(&s, &providers(), NOW);
         assert_eq!(rows[0].name, "egress_model");
         assert_eq!(rows[0].status, Status::Fail, "{}", rows[0].detail);
-        assert!(rows[0].detail.contains("api.anthropic.com x3 (anthropic"), "{}", rows[0].detail);
+        assert!(
+            rows[0].detail.contains("api.anthropic.com x3 (anthropic"),
+            "{}",
+            rows[0].detail
+        );
     }
 
     #[test]

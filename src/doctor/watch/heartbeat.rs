@@ -40,7 +40,9 @@ pub(super) fn parse(text: &str) -> Heartbeat {
 }
 
 fn age(now: i64, at: Option<i64>) -> String {
-    at.map_or("never".to_string(), |t| format!("{}s ago", (now - t).max(0)))
+    at.map_or("never".to_string(), |t| {
+        format!("{}s ago", (now - t).max(0))
+    })
 }
 
 pub(super) fn watch(home: &Path, enabled: &BTreeSet<String>, now: i64) -> Check {
@@ -103,7 +105,11 @@ mod tests {
         let d = home_with("inbound_at=1000\noutbound_at=1290\npoll_secs=30\n");
         let c = watch(d.path(), &signal(), 1000 + 301);
         assert_eq!(c.status, Status::Warn, "{}", c.detail);
-        assert!(c.detail.contains("signal: inbound 301s ago"), "{}", c.detail);
+        assert!(
+            c.detail.contains("signal: inbound 301s ago"),
+            "{}",
+            c.detail
+        );
     }
 
     #[test]

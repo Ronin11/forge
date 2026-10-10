@@ -166,7 +166,12 @@ mod tests {
     fn an_error_row_trips_as_error() {
         let (d, s) = store();
         let log = d.path().join("events.jsonl");
-        trip(&s, &log, &[check("egress_model", Status::Fail, "x", "")], NOW);
+        trip(
+            &s,
+            &log,
+            &[check("egress_model", Status::Fail, "x", "")],
+            NOW,
+        );
         let text = std::fs::read_to_string(&log).unwrap();
         assert!(text.contains(r#""status":"error""#), "{text}");
     }

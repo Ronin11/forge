@@ -41,8 +41,8 @@ use retry::RetryConnection;
 mod stats;
 mod supersede;
 mod tasks;
-mod webhooks;
 mod watch;
+mod webhooks;
 mod workers;
 
 pub use adoption::{Adoption, ManualStat, Origin};

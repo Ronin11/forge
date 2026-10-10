@@ -61,7 +61,14 @@ mod tests {
         let (_d, s) = store();
         let t = task(&s, "forge", "b", "failed");
         for i in 0..5 {
-            attempt(&s, t, "review", "agent_failed", "no envelope", NOW - 100 + i);
+            attempt(
+                &s,
+                t,
+                "review",
+                "agent_failed",
+                "no envelope",
+                NOW - 100 + i,
+            );
         }
         attempt(&s, t, "code", "succeeded", "", NOW);
         let c = watch(&s);

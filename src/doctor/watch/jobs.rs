@@ -67,14 +67,19 @@ mod tests {
     use super::*;
 
     fn job(s: &Store, workflow: &str, state: &str, at: i64, verdict: &str) {
-        s.lock()
-            .execute(
-                "INSERT INTO jobs (project, workflow, trigger_kind, state, started_at, finished_at,
-                                   verdict_json)
-                 VALUES ('forge', ?1, 'schedule', ?2, ?3, ?3, ?4)",
-                rusqlite::params![workflow, state, at, verdict],
-            )
-            .unwrap();
+        let c = s.lock();
+        c.execute(
+            "INSERT OR IGNORE INTO projects (name, purpose, created_at) VALUES ('forge', 'p', 0)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO jobs (project, workflow, trigger_kind, trigger_ref, state, started_at,
+                               finished_at, verdict_json)
+             VALUES ('forge', ?1, 'schedule', ?3, ?2, ?3, ?3, ?4)",
+            rusqlite::params![workflow, state, at, verdict],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -85,9 +90,14 @@ mod tests {
         job(&s, "doctor-daily", "needs_human", NOW - 3 * 86_400, v);
         let c = watch(&s, NOW);
         assert_eq!(c.status, Status::Warn, "{}", c.detail);
-        assert!(c.detail.contains("(forge/doctor-daily) needs_human"), "{}", c.detail);
         assert!(
-            c.detail.contains("tool produced nothing (check clean, exit 1)"),
+            c.detail.contains("(forge/doctor-daily) needs_human"),
+            "{}",
+            c.detail
+        );
+        assert!(
+            c.detail
+                .contains("tool produced nothing (check clean, exit 1)"),
             "{}",
             c.detail
         );

@@ -28,7 +28,9 @@ pub(super) fn watch(store: &Store, now: i64) -> Check {
     for row in rows.iter().filter(|r| !r.project.is_empty()) {
         let verdict: Vec<CheckResult> = serde_json::from_str(&row.verdict_json).unwrap_or_default();
         for c in verdict {
-            let e = seen.entry((row.project.clone(), c.name.clone())).or_default();
+            let e = seen
+                .entry((row.project.clone(), c.name.clone()))
+                .or_default();
             let t = e
                 .tasks
                 .entry(row.task_id)
@@ -97,7 +99,11 @@ mod tests {
         let c = watch(&s, NOW);
         assert_eq!(c.status, Status::Warn, "{}", c.detail);
         assert!(c.detail.contains("check provision"), "{}", c.detail);
-        assert!(c.detail.contains("environmental, not the agents"), "{}", c.detail);
+        assert!(
+            c.detail.contains("environmental, not the agents"),
+            "{}",
+            c.detail
+        );
         assert!(c.detail.contains("mise: tool not found"), "{}", c.detail);
     }
 

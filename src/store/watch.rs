@@ -115,17 +115,18 @@ impl Store {
     pub fn verdicts_since(&self, since: i64) -> Result<Vec<VerdictRow>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT a.task_id, COALESCE(t.project, '') AS project, t.branch, a.verdict_json
+            "SELECT a.task_id AS task_id, COALESCE(t.project, '') AS project, t.branch AS branch,
+                    a.verdict_json AS verdict_json
              FROM attempts a JOIN tasks t ON t.id = a.task_id
              WHERE a.finished_at >= ?1 AND a.verdict_json != '[]'
              ORDER BY a.id",
         )?;
         let rows = stmt.query_map([since], |r| {
             Ok(VerdictRow {
-                task_id: r.get(0)?,
-                project: r.get(1)?,
-                branch: r.get(2)?,
-                verdict_json: r.get(3)?,
+                task_id: r.get("task_id")?,
+                project: r.get("project")?,
+                branch: r.get("branch")?,
+                verdict_json: r.get("verdict_json")?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -155,7 +156,7 @@ impl Store {
             .retry_query_row(
                 "SELECT pid, stopped_at FROM workers WHERE id < ?1 ORDER BY id DESC LIMIT 1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get("pid")?, r.get("stopped_at")?)),
             )
             .optional()?)
     }
@@ -169,11 +170,11 @@ impl Store {
         )?;
         let rows = stmt.query_map([since], |r| {
             Ok(WorkerStart {
-                id: r.get(0)?,
-                pid: r.get(1)?,
-                started_at: r.get(2)?,
-                restarts: r.get(3)?,
-                exit_reason: r.get(4)?,
+                id: r.get("id")?,
+                pid: r.get("pid")?,
+                started_at: r.get("started_at")?,
+                restarts: r.get("restarts")?,
+                exit_reason: r.get("exit_reason")?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -203,12 +204,14 @@ impl Store {
     pub fn land_rates(&self, since: i64) -> Result<Vec<(String, i64, i64)>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT project, COUNT(*), SUM(landed_sha != '') FROM tasks
+            "SELECT project, COUNT(*) AS finished, SUM(landed_sha != '') AS landed FROM tasks
              WHERE project IS NOT NULL AND origin = 'agent' AND finished_at >= ?1
                AND state IN ('succeeded', 'failed', 'blocked', 'unverified', 'capped')
              GROUP BY project ORDER BY project",
         )?;
-        let rows = stmt.query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        let rows = stmt.query_map([since], |r| {
+            Ok((r.get("project")?, r.get("finished")?, r.get("landed")?))
+        })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -219,7 +222,7 @@ impl Store {
             "SELECT id, worktree FROM tasks WHERE landed_sha != '' AND worktree != ''
                AND worktree_removed_at IS NULL ORDER BY id",
         )?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let rows = stmt.query_map([], |r| Ok((r.get("id")?, r.get("worktree")?)))?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -227,16 +230,17 @@ impl Store {
     pub fn refusals_since(&self, since: i64) -> Result<Vec<RefusalRow>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT a.finished_at, t.repo, a.outputs_json FROM attempts a
+            "SELECT a.finished_at AS at, t.repo AS repo, a.outputs_json AS outputs_json
+             FROM attempts a
              JOIN tasks t ON t.id = a.task_id
              WHERE a.finished_at >= ?1 AND a.outputs_json LIKE '%\"refused\"%'
              ORDER BY a.id",
         )?;
         let rows = stmt.query_map([since], |r| {
             Ok(RefusalRow {
-                at: r.get(0)?,
-                repo: r.get(1)?,
-                outputs_json: r.get(2)?,
+                at: r.get("at")?,
+                repo: r.get("repo")?,
+                outputs_json: r.get("outputs_json")?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -251,9 +255,9 @@ impl Store {
                 [name],
                 |r| {
                     Ok(Mark {
-                        status: r.get(0)?,
-                        detail: r.get(1)?,
-                        at: r.get(2)?,
+                        status: r.get("status")?,
+                        detail: r.get("detail")?,
+                        at: r.get("at")?,
                     })
                 },
             )
@@ -295,7 +299,7 @@ impl Store {
             "SELECT day, value, extra FROM doctor_samples WHERE kind=?1 ORDER BY day DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![kind, n as i64], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            Ok((r.get("day")?, r.get("value")?, r.get("extra")?))
         })?;
         let mut out = rows.collect::<rusqlite::Result<Vec<_>>>()?;
         out.reverse();

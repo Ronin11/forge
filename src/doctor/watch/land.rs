@@ -81,7 +81,11 @@ mod tests {
         }
         let c = watch(&s, AT);
         assert_eq!(c.status, Status::Warn, "{}", c.detail);
-        assert!(c.detail.contains("game 7d 0/5 (0%) 30d 0/5 (0%)"), "{}", c.detail);
+        assert!(
+            c.detail.contains("game 7d 0/5 (0%) 30d 0/5 (0%)"),
+            "{}",
+            c.detail
+        );
     }
 
     #[test]
