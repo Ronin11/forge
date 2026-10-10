@@ -348,16 +348,23 @@ async fn print_adopted(f: &Forge, adopted: &crate::adopt::Adopted) -> Result<()>
 /// The integrator's merge-and-verify half, by hand, for a repository that
 /// keeps a human at the gate: each task's branch merged onto the base in
 /// order, every check with every hidden suite after each, the result left
-/// as a branch. A conflict or a red check stops it and says which.
+/// as a branch. A red check stops it and says which; a branch that would
+/// conflict is left out and its task blocked, the rest still integrated,
+/// and the command fails naming it.
 async fn integrate(ids: Vec<i64>) -> Result<()> {
     let f = Forge::open(true, false)?;
     let report = crate::landing::integrate_many(&f, &ids).await?;
     out!("{}", report.render());
+    let conflicts: Vec<String> = report
+        .conflicts()
+        .iter()
+        .map(|(id, files)| format!("task {id} would conflict in {}", files.join(", ")))
+        .collect();
     match report.outcome {
-        crate::landing::IntegrateOutcome::Ready => Ok(()),
-        crate::landing::IntegrateOutcome::Conflict { task_id, files, .. } => bail!(
-            "task {task_id} conflicts with what came before it: {}",
-            files.join(", ")
+        crate::landing::IntegrateOutcome::Ready if conflicts.is_empty() => Ok(()),
+        crate::landing::IntegrateOutcome::Ready => bail!(
+            "{} conflicts with what came before it, so it is blocked and left out",
+            conflicts.join("; ")
         ),
         crate::landing::IntegrateOutcome::VerifyFailed {
             task_id, reason, ..

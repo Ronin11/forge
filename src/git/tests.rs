@@ -31,6 +31,7 @@ const CALL_SITES: &[&str] = &[
     "rev_parse:repo",
     "merge:dir",
     "merge:dir",
+    "would_conflict:dir",
     "is_ancestor:dir",
     "changed_paths_between:wt",
     "file_patch:wt",
@@ -450,4 +451,111 @@ async fn suite_catch_up_preserves_ahead_tips_and_rejects_divergence() {
         ahead
     );
     assert_eq!(head(remote.path()).await.unwrap(), diverged);
+}
+
+/// `git merge-tree --write-tree` output, captured from git 2.55.
+const MERGE_TREE_CLEAN: &str = "9445adf0eacbb4baa6915f8503b286f996928a13\n";
+const MERGE_TREE_ONE: &str = "8d7adb1b72b520ea0ef62f25d76e602f639e1635
+100644 78981922613b2afb6025042ff6bd878ac1994e85 1\tx.txt
+100644 2638c45f8e7bc5b56f70e92390153572811782c3 2\tx.txt
+100644 62a6e3c9dfcb5f2a009cb85d9562145c1ea803a1 3\tx.txt
+
+Auto-merging x.txt
+CONFLICT (content): Merge conflict in x.txt
+";
+const MERGE_TREE_TWO: &str = "96986be3095312e1b78357aa19256735bb74ea55
+100644 78981922613b2afb6025042ff6bd878ac1994e85 1\tx.txt
+100644 2638c45f8e7bc5b56f70e92390153572811782c3 2\tx.txt
+100644 62a6e3c9dfcb5f2a009cb85d9562145c1ea803a1 3\tx.txt
+100644 61780798228d17af2d34fce4cfbdf35556832472 1\ty.txt
+100644 2638c45f8e7bc5b56f70e92390153572811782c3 2\ty.txt
+100644 62a6e3c9dfcb5f2a009cb85d9562145c1ea803a1 3\ty.txt
+
+Auto-merging x.txt
+CONFLICT (content): Merge conflict in x.txt
+Auto-merging y.txt
+CONFLICT (content): Merge conflict in y.txt
+";
+
+#[test]
+fn merge_tree_reports_a_clean_merge_as_no_conflict() {
+    assert_eq!(parse_merge_tree(Some(0), MERGE_TREE_CLEAN), None);
+}
+
+#[test]
+fn merge_tree_names_the_one_conflicting_file_once() {
+    assert_eq!(
+        parse_merge_tree(Some(1), MERGE_TREE_ONE),
+        Some(vec!["x.txt".to_string()])
+    );
+}
+
+#[test]
+fn merge_tree_names_both_conflicting_files_in_order() {
+    assert_eq!(
+        parse_merge_tree(Some(1), MERGE_TREE_TWO),
+        Some(vec!["x.txt".to_string(), "y.txt".to_string()])
+    );
+    assert_eq!(
+        parse_merge_tree(
+            Some(1),
+            "96986be3095312e1b78357aa19256735bb74ea55\nx.txt\ny.txt\n\nAuto-merging x.txt\n"
+        ),
+        Some(vec!["x.txt".to_string(), "y.txt".to_string()]),
+        "--name-only"
+    );
+}
+
+#[test]
+fn merge_tree_that_could_not_answer_is_no_conflict() {
+    // A bad rev also exits 1, with nothing on stdout; an old git exits 129.
+    assert_eq!(parse_merge_tree(Some(1), ""), None);
+    assert_eq!(parse_merge_tree(Some(129), ""), None);
+    assert_eq!(parse_merge_tree(Some(128), MERGE_TREE_ONE), None);
+    assert_eq!(parse_merge_tree(None, MERGE_TREE_ONE), None);
+}
+
+#[test]
+fn git_version_parses_plain_and_vendor_strings() {
+    assert_eq!(parse_version("git version 2.55.0\n"), Some((2, 55)));
+    assert_eq!(
+        parse_version("git version 2.39.3 (Apple Git-146)"),
+        Some((2, 39))
+    );
+    assert_eq!(parse_version("git version 2.37.1.windows.1"), Some((2, 37)));
+    assert!(parse_version("git version 2.37.1").unwrap() < MERGE_TREE_MIN);
+    assert_eq!(parse_version("nonsense"), None);
+}
+
+#[tokio::test]
+async fn would_conflict_names_the_file_and_leaves_the_tree_alone() {
+    let dir = init_repo();
+    let wt = dir.path();
+    let g = Git::new(wt).with_identity();
+    std::fs::write(wt.join("a.txt"), "one\n").unwrap();
+    std::fs::write(wt.join("b.txt"), "two\n").unwrap();
+    let base = commit_all(wt, "base").await.unwrap().unwrap();
+    g.line(&["checkout", "-q", "-b", "theirs"]).await.unwrap();
+    std::fs::write(wt.join("a.txt"), "theirs\n").unwrap();
+    commit_all(wt, "theirs").await.unwrap().unwrap();
+    g.line(&["checkout", "-q", "-b", "clean", &base])
+        .await
+        .unwrap();
+    std::fs::write(wt.join("b.txt"), "clean\n").unwrap();
+    commit_all(wt, "clean").await.unwrap().unwrap();
+    g.line(&["checkout", "-q", "-b", "ours", &base])
+        .await
+        .unwrap();
+    std::fs::write(wt.join("a.txt"), "ours\n").unwrap();
+    let ours = commit_all(wt, "ours").await.unwrap().unwrap();
+
+    assert_eq!(would_conflict(wt, "clean", "theirs").await, None);
+    assert_eq!(
+        would_conflict(wt, "HEAD", "theirs").await,
+        Some(vec!["a.txt".to_string()])
+    );
+    assert_eq!(would_conflict(wt, "HEAD", "no-such-rev").await, None);
+    assert_eq!(head(wt).await.unwrap(), ours);
+    assert_eq!(std::fs::read_to_string(wt.join("a.txt")).unwrap(), "ours\n");
+    assert!(dirty_paths(wt).await.unwrap().is_empty());
 }
