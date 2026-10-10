@@ -30,6 +30,7 @@ pub fn attempt(s: &Store, task: i64, step: &str, state: &str, reason: &str, at: 
     attempt_with(s, task, step, state, reason, at, "[]", "{}")
 }
 
+// Reason: one attempt row's columns, each a test's own value.
 #[allow(clippy::too_many_arguments)]
 pub fn attempt_with(
     s: &Store,
