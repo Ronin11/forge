@@ -422,10 +422,10 @@ pub async fn integrate(
                         .await
                         .task()?;
                     let d = format!(
-                        "{} moved to {}; would conflict in {}",
+                        "{} moved to {}; would conflict {}",
                         t.base_branch,
                         &main_sha[..8],
-                        files.join(", ")
+                        git::merge_tree::in_files(&files)
                     );
                     op(
                         f,
@@ -813,8 +813,8 @@ impl IntegrateStep {
                 format!("task {task_id:<4} verified with everything before it")
             }
             Self::Conflict { task_id, files } => format!(
-                "task {task_id:<4} CONFLICT in {}; blocked, left out",
-                files.join(", ")
+                "task {task_id:<4} CONFLICT {}; blocked, left out",
+                git::merge_tree::in_files(files)
             ),
         }
     }
@@ -849,8 +849,12 @@ pub struct IntegrateReport {
 /// steps among them (bc36fdb) re-runs a shipped step under a new index.
 fn conflict_feedback(base: &str, placed: &str, files: &[String]) -> String {
     let mut feedback = format!(
-        "The base branch `{base}` has moved since your branch started, and merging it into your branch conflicts in:\n{}\nThe current `{base}` is in your clone as the local branch `{placed}`. Run `git merge {placed}`, resolve those conflicts, run the checks, and commit the merge. Report the files you resolved as your changes.",
-        files.join("\n"),
+        "The base branch `{base}` has moved since your branch started, and merging it into your branch conflicts {}.\nThe current `{base}` is in your clone as the local branch `{placed}`. Run `git merge {placed}`, resolve those conflicts, run the checks, and commit the merge. Report the files you resolved as your changes.",
+        if files.is_empty() {
+            "(git did not report which files; `git merge` will show them)".to_string()
+        } else {
+            format!("in:\n{}", files.join("\n"))
+        },
     );
     if files.iter().any(|f| is_migration_ladder(f)) {
         feedback.push_str(&format!(
@@ -1136,8 +1140,8 @@ fn block_conflicting(
     };
     t.state = TaskState::Blocked;
     t.reason = format!(
-        "would conflict in {} when integrated onto {onto}; merge by hand or retry it on the new base",
-        files.join(", ")
+        "would conflict {} when integrated onto {onto}; merge by hand or retry it on the new base",
+        git::merge_tree::in_files(files)
     );
     t.worker_pid = None;
     f.store.update_task(&t)?;

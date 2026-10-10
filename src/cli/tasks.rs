@@ -358,7 +358,12 @@ async fn integrate(ids: Vec<i64>) -> Result<()> {
     let conflicts: Vec<String> = report
         .conflicts()
         .iter()
-        .map(|(id, files)| format!("task {id} would conflict in {}", files.join(", ")))
+        .map(|(id, files)| {
+            format!(
+                "task {id} would conflict {}",
+                crate::git::merge_tree::in_files(files)
+            )
+        })
         .collect();
     match report.outcome {
         crate::landing::IntegrateOutcome::Ready if conflicts.is_empty() => Ok(()),

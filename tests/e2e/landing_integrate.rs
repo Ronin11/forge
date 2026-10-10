@@ -80,3 +80,65 @@ fn integrate_lands_the_clean_branches_and_blocks_the_one_that_would_conflict_nam
         assert_eq!(e.task(id).0, "succeeded", "task {id}");
     }
 }
+
+/// merge-tree exits 1 for a directory-rename split but names no file: the
+/// branch is still left out and blocked, not mistaken for a clean merge.
+#[test]
+fn integrate_blocks_a_directory_rename_split_conflict_that_names_no_file() {
+    let e = Env::new();
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[checks]\nshell = [\"bash\", \"-n\", \"hello.sh\"]\n",
+    )
+    .unwrap();
+    std::fs::create_dir(e.repo.join("a")).unwrap();
+    for f in ["w", "x", "y", "z"] {
+        std::fs::write(e.repo.join("a").join(f), f).unwrap();
+    }
+    git(&e.repo, &["add", "-A"]);
+    git(
+        &e.repo,
+        &["commit", "-qm", "shell only, a/ with four files"],
+    );
+    for (fake, task) in [
+        ("splitdir.sh", "split a into b and c"),
+        ("splitdir.sh", "add a file to a"),
+        ("addfile.sh", "add extra"),
+    ] {
+        let o = e.forge(
+            fake,
+            &[
+                "run",
+                e.repo.to_str().unwrap(),
+                task,
+                "--no-land",
+                "--retries",
+                "0",
+            ],
+        );
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+    for id in [1, 2, 3] {
+        assert_eq!(e.task(id).0, "succeeded", "task {id}: {}", e.task(id).1);
+    }
+
+    let o = e.forge("ok.sh", &["integrate", "1", "2", "3"]);
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(!o.status.success(), "{out}{err}");
+    assert!(
+        err.contains("task 2 would conflict (files not reported by merge-tree)"),
+        "{err}"
+    );
+    assert!(
+        out.contains("task 2    CONFLICT (files not reported by merge-tree); blocked, left out"),
+        "{out}"
+    );
+    assert!(out.contains("integrated 2 task(s)"), "{out}");
+    let (state, reason, _) = e.task(2);
+    assert_eq!(state, "blocked", "{reason}");
+    assert!(
+        reason.starts_with("would conflict (files not reported by merge-tree)"),
+        "{reason}"
+    );
+}

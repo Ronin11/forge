@@ -9,6 +9,8 @@ pub const MERGE_TREE_MIN: (u32, u32) = (2, 38);
 /// merged tree's oid on the first line and then one `mode oid stage\tpath`
 /// line per conflicted stage (or a bare path, under `--name-only`) up to a
 /// blank line is a conflict. Exit 1 with no tree (a bad rev) is no answer.
+/// A conflict with no per-file section (a directory-rename split) is still
+/// `Some`, with an empty list: the exit code decides, not the file list.
 pub fn parse(code: Option<i32>, stdout: &str) -> Option<Vec<String>> {
     if code != Some(1) {
         return None;
@@ -25,7 +27,17 @@ pub fn parse(code: Option<i32>, stdout: &str) -> Option<Vec<String>> {
             files.push(path.to_string());
         }
     }
-    (!files.is_empty()).then_some(files)
+    Some(files)
+}
+
+/// The tail of "would conflict ...": "in a, b", or the admission that
+/// merge-tree conflicted without naming a file.
+pub fn in_files(files: &[String]) -> String {
+    if files.is_empty() {
+        "(files not reported by merge-tree)".to_string()
+    } else {
+        format!("in {}", files.join(", "))
+    }
 }
 
 /// `(major, minor)` from `git --version`'s "git version 2.43.0" (or a

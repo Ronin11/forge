@@ -506,6 +506,29 @@ fn merge_tree_names_both_conflicting_files_in_order() {
     );
 }
 
+/// A directory-rename split: exit 1, a tree, and no conflicted-file section.
+const MERGE_TREE_DIR_SPLIT: &str = "499c0b11a81f76864eb9074ebedd587712df434c
+
+CONFLICT (directory rename split): Unclear where to rename a to; it was renamed to multiple other directories, with no destination getting a majority of the files.
+";
+
+#[test]
+fn merge_tree_conflict_with_no_file_section_is_a_conflict_with_no_files() {
+    assert_eq!(
+        merge_tree::parse(Some(1), MERGE_TREE_DIR_SPLIT),
+        Some(vec![])
+    );
+    assert_eq!(
+        merge_tree::parse(Some(1), "4b825dc642cb6eb9a060e54bf8d69288fbee4904\n"),
+        Some(vec![])
+    );
+    assert_eq!(
+        merge_tree::in_files(&[]),
+        "(files not reported by merge-tree)"
+    );
+    assert_eq!(merge_tree::in_files(&["a".into(), "b".into()]), "in a, b");
+}
+
 #[test]
 fn merge_tree_that_could_not_answer_is_no_conflict() {
     // A bad rev also exits 1, with nothing on stdout; an old git exits 129.
