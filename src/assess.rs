@@ -160,7 +160,6 @@ async fn try_run(
         .paths
         .logs
         .join(format!("assess-{}-{}.jsonl", t.id, unix_now()));
-    let repo_cfg = crate::config::load_at(Path::new(&t.repo), wt, base_sha).await?;
     let dirty_before = git::dirty_paths(wt).await.unwrap_or_default();
     let outcome = crate::directive::launch(
         f,
@@ -179,10 +178,7 @@ async fn try_run(
             provider,
             schema: SCHEMA,
             sandboxed: true,
-            egress: crate::directive::Egress::Project {
-                cfg: &repo_cfg,
-                trust: t.trust,
-            },
+            egress: crate::directive::task_egress(t, wt, base_sha).await?,
             writes: false,
             start_sha: landed_sha,
             resume: None,

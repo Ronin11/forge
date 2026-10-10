@@ -61,8 +61,24 @@ pub enum Egress<'a> {
         cfg: &'a crate::config::Config,
         trust: crate::store::Trust,
     },
+    /// `Project` with the config `task_egress` read for it.
+    Loaded {
+        cfg: Box<crate::config::Config>,
+        trust: crate::store::Trust,
+    },
     /// A scratch directory no repository owns: nothing else.
     ModelOnly,
+}
+
+/// `Egress::Project` for task `t`'s worktree `wt`, its repository's config
+/// read at `rev`: what a run there may reach, as every other run in that
+/// worktree may.
+pub async fn task_egress(t: &crate::store::Task, wt: &Path, rev: &str) -> Result<Egress<'static>> {
+    let cfg = crate::config::load_at(Path::new(&t.repo), wt, rev).await?;
+    Ok(Egress::Loaded {
+        cfg: Box::new(cfg),
+        trust: t.trust,
+    })
 }
 
 /// Register what a sandboxed run in `s.dir` may reach, with `s.provider`'s
@@ -73,8 +89,9 @@ fn register_egress(f: &Forge, s: &Spec<'_>) {
     if !s.sandboxed {
         return;
     }
-    match s.egress {
-        Egress::Project { cfg, trust } => f.allow_egress_for(s.dir, cfg, trust, Some(s.provider)),
+    match &s.egress {
+        Egress::Project { cfg, trust } => f.allow_egress_for(s.dir, cfg, *trust, Some(s.provider)),
+        Egress::Loaded { cfg, trust } => f.allow_egress_for(s.dir, cfg, *trust, Some(s.provider)),
         Egress::ModelOnly => f.allow_model_egress(s.dir, s.provider),
     }
 }
