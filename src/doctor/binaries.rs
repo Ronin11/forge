@@ -131,9 +131,11 @@ fn check_git_version() -> Option<Check> {
 }
 
 pub(super) fn git_version_row(version: &str) -> Check {
-    let (major, minor) = git::MERGE_TREE_MIN;
-    match git::parse_version(version) {
-        Some(v) if v >= git::MERGE_TREE_MIN => check("git.version", Status::Ok, version, ""),
+    let (major, minor) = git::merge_tree::MERGE_TREE_MIN;
+    match git::merge_tree::parse_version(version) {
+        Some(v) if v >= git::merge_tree::MERGE_TREE_MIN => {
+            check("git.version", Status::Ok, version, "")
+        }
         Some(_) => check(
             "git.version",
             Status::Warn,

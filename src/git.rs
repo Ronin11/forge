@@ -12,6 +12,7 @@ use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
+pub mod merge_tree;
 mod overlay;
 pub use overlay::{clear_recorded_overlay, overlay_manifest_path, remove_empty_dirs};
 
@@ -608,55 +609,12 @@ pub async fn merge(dir: &Path, rev: &str, message: &str) -> Result<Merge> {
     Ok(Merge::Conflict(conflicted))
 }
 
-/// The oldest git whose `merge-tree` has `--write-tree`, the form
-/// `would_conflict` reads.
-pub const MERGE_TREE_MIN: (u32, u32) = (2, 38);
-
-/// The files a merge of `tip` into `base` would conflict in, from
-/// `git merge-tree --write-tree`, which merges in the object store alone:
-/// no working tree, no index, nothing to abort. `None` for a clean merge,
-/// and for anything merge-tree could not answer (an older git, a missing
-/// rev, unrelated histories): a pre-check only, so `merge` still decides.
+/// The files merging `tip` into `base` would conflict in, by `merge-tree`, which
+/// touches no tree or index. `None` when clean or unanswerable: `merge` decides.
 pub async fn would_conflict(dir: &Path, base: &str, tip: &str) -> Option<Vec<String>> {
-    let out = Git::new(dir)
-        .hardened()
-        .output(&["merge-tree", "--write-tree", "--no-messages", base, tip])
-        .await
-        .ok()?;
-    parse_merge_tree(out.status.code(), &String::from_utf8_lossy(&out.stdout))
-}
-
-/// `merge-tree --write-tree`'s answer: exit 0 is clean; exit 1 with the
-/// merged tree's oid on the first line and then one `mode oid stage\tpath`
-/// line per conflicted stage (or a bare path, under `--name-only`) up to a
-/// blank line is a conflict. Exit 1 with no tree (a bad rev) is no answer.
-pub fn parse_merge_tree(code: Option<i32>, stdout: &str) -> Option<Vec<String>> {
-    if code != Some(1) {
-        return None;
-    }
-    let mut lines = stdout.lines();
-    let tree = lines.next()?.trim();
-    if tree.len() < 40 || !tree.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    let mut files: Vec<String> = Vec::new();
-    for line in lines.take_while(|l| !l.is_empty()) {
-        let path = line.split_once('\t').map_or(line, |(_, p)| p);
-        if !files.iter().any(|f| f == path) {
-            files.push(path.to_string());
-        }
-    }
-    (!files.is_empty()).then_some(files)
-}
-
-/// `(major, minor)` from `git --version`'s "git version 2.43.0" (or a
-/// vendor suffix such as "2.39.3 (Apple Git-146)").
-pub fn parse_version(out: &str) -> Option<(u32, u32)> {
-    let v = out.trim().strip_prefix("git version ")?;
-    let mut parts = v.split(|c: char| !c.is_ascii_digit());
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next()?.parse().ok()?;
-    Some((major, minor))
+    let args = ["merge-tree", "--write-tree", "--no-messages", base, tip];
+    let out = Git::new(dir).hardened().output(&args).await.ok()?;
+    merge_tree::parse(out.status.code(), &String::from_utf8_lossy(&out.stdout))
 }
 
 pub async fn is_ancestor(dir: &Path, ancestor: &str, descendant: &str) -> bool {

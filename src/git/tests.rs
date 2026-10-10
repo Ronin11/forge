@@ -479,13 +479,13 @@ CONFLICT (content): Merge conflict in y.txt
 
 #[test]
 fn merge_tree_reports_a_clean_merge_as_no_conflict() {
-    assert_eq!(parse_merge_tree(Some(0), MERGE_TREE_CLEAN), None);
+    assert_eq!(merge_tree::parse(Some(0), MERGE_TREE_CLEAN), None);
 }
 
 #[test]
 fn merge_tree_names_the_one_conflicting_file_once() {
     assert_eq!(
-        parse_merge_tree(Some(1), MERGE_TREE_ONE),
+        merge_tree::parse(Some(1), MERGE_TREE_ONE),
         Some(vec!["x.txt".to_string()])
     );
 }
@@ -493,11 +493,11 @@ fn merge_tree_names_the_one_conflicting_file_once() {
 #[test]
 fn merge_tree_names_both_conflicting_files_in_order() {
     assert_eq!(
-        parse_merge_tree(Some(1), MERGE_TREE_TWO),
+        merge_tree::parse(Some(1), MERGE_TREE_TWO),
         Some(vec!["x.txt".to_string(), "y.txt".to_string()])
     );
     assert_eq!(
-        parse_merge_tree(
+        merge_tree::parse(
             Some(1),
             "96986be3095312e1b78357aa19256735bb74ea55\nx.txt\ny.txt\n\nAuto-merging x.txt\n"
         ),
@@ -509,22 +509,28 @@ fn merge_tree_names_both_conflicting_files_in_order() {
 #[test]
 fn merge_tree_that_could_not_answer_is_no_conflict() {
     // A bad rev also exits 1, with nothing on stdout; an old git exits 129.
-    assert_eq!(parse_merge_tree(Some(1), ""), None);
-    assert_eq!(parse_merge_tree(Some(129), ""), None);
-    assert_eq!(parse_merge_tree(Some(128), MERGE_TREE_ONE), None);
-    assert_eq!(parse_merge_tree(None, MERGE_TREE_ONE), None);
+    assert_eq!(merge_tree::parse(Some(1), ""), None);
+    assert_eq!(merge_tree::parse(Some(129), ""), None);
+    assert_eq!(merge_tree::parse(Some(128), MERGE_TREE_ONE), None);
+    assert_eq!(merge_tree::parse(None, MERGE_TREE_ONE), None);
 }
 
 #[test]
 fn git_version_parses_plain_and_vendor_strings() {
-    assert_eq!(parse_version("git version 2.55.0\n"), Some((2, 55)));
     assert_eq!(
-        parse_version("git version 2.39.3 (Apple Git-146)"),
+        merge_tree::parse_version("git version 2.55.0\n"),
+        Some((2, 55))
+    );
+    assert_eq!(
+        merge_tree::parse_version("git version 2.39.3 (Apple Git-146)"),
         Some((2, 39))
     );
-    assert_eq!(parse_version("git version 2.37.1.windows.1"), Some((2, 37)));
-    assert!(parse_version("git version 2.37.1").unwrap() < MERGE_TREE_MIN);
-    assert_eq!(parse_version("nonsense"), None);
+    assert_eq!(
+        merge_tree::parse_version("git version 2.37.1.windows.1"),
+        Some((2, 37))
+    );
+    assert!(merge_tree::parse_version("git version 2.37.1").unwrap() < merge_tree::MERGE_TREE_MIN);
+    assert_eq!(merge_tree::parse_version("nonsense"), None);
 }
 
 #[tokio::test]
