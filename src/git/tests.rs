@@ -637,3 +637,33 @@ async fn clones_of_one_project_share_the_kernel_repositorys_packs() {
         assert_eq!(remotes, "");
     }
 }
+
+#[tokio::test]
+async fn a_recorded_sha_wins_over_a_base_that_moved_since_it_was_recorded() {
+    let home = tempfile::tempdir().unwrap();
+    let repo = init_repo();
+    std::fs::write(repo.path().join("first.txt"), "first\n").unwrap();
+    commit_all(repo.path(), "first").await.unwrap().unwrap();
+    let base = current_branch(repo.path()).await.unwrap();
+    let recorded = head(repo.path()).await.unwrap();
+    std::fs::write(repo.path().join("later.txt"), "later\n").unwrap();
+    commit_all(repo.path(), "moved").await.unwrap().unwrap();
+    assert_ne!(head(repo.path()).await.unwrap(), recorded);
+    let work = tempfile::tempdir().unwrap();
+    let (a, b) = (work.path().join("a"), work.path().join("b"));
+    for (dir, name) in [(&a, "task-a"), (&b, "task-b")] {
+        let sha = clone_task(
+            home.path(),
+            repo.path(),
+            &base,
+            dir,
+            name,
+            None,
+            Some(&recorded),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sha, recorded);
+        assert!(!dir.join("later.txt").exists());
+    }
+}
