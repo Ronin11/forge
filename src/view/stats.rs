@@ -191,6 +191,10 @@ pub struct StatsStepRow {
     /// Mean input tokens, over attempts that reported usage; `None` when
     /// none did.
     pub mean_input_tokens: Option<f64>,
+    /// True for `step = "integrate"`: such a row is written only when a
+    /// merge's checks fail, so its counts are failures by construction and
+    /// say nothing about how often merges succeed (see `land_rate_7d`).
+    pub failure_only: bool,
     #[serde(flatten)]
     pub legacy: serde_json::Map<String, Value>,
 }
@@ -224,6 +228,7 @@ impl From<&StepStat> for StatsStepRow {
             mean_secs,
             cost_usd: st.cost,
             mean_input_tokens: st.mean_input_tokens,
+            failure_only: st.step == "integrate",
             legacy,
         }
     }
@@ -276,6 +281,12 @@ pub struct StatsProjectRow {
     pub broke_base: i64,
     /// `broke_base` divided by `landed`; `None` when nothing landed.
     pub broke_base_share: Option<f64>,
+    /// Landed of the tasks finished in the last 7 days, as `landed/finished
+    /// (pct)`, or `-` when none finished (the same figure as `forge
+    /// doctor`'s `land_rate` row).
+    pub land_rate_7d: String,
+    /// The same over the last 30 days.
+    pub land_rate_30d: String,
 }
 
 impl From<&crate::store::ProjectStat> for StatsProjectRow {
@@ -287,6 +298,8 @@ impl From<&crate::store::ProjectStat> for StatsProjectRow {
             cost_usd: p.cost,
             broke_base: p.broke_base,
             broke_base_share: (p.landed > 0).then(|| p.broke_base as f64 / p.landed as f64),
+            land_rate_7d: "-".into(),
+            land_rate_30d: "-".into(),
         }
     }
 }
@@ -1021,6 +1034,18 @@ fn time_to_live_project_rows(ttls: &[crate::store::TaskTtl]) -> Vec<TimeToLivePr
 /// `days`, when given, is `forge stats --factors --days N`'s window: only
 /// `factors` reads it, narrowed to tasks that finished in the last `days`
 /// days; every other section reads this scope's whole history, as before.
+/// Fill each project row's land rates over the last 7 and 30 days.
+fn with_land_rates(f: &Forge, mut rows: Vec<StatsProjectRow>) -> Vec<StatsProjectRow> {
+    let rates = crate::doctor::watch::land::rates(&f.store, crate::unix_now());
+    for r in &mut rows {
+        if let Some((week, month)) = rates.get(&r.project) {
+            r.land_rate_7d = crate::doctor::watch::land::rate_text(*week);
+            r.land_rate_30d = crate::doctor::watch::land::rate_text(*month);
+        }
+    }
+    rows
+}
+
 pub async fn stats_doc(
     f: &Forge,
     scope: &crate::store::StatsFilter,
@@ -1042,7 +1067,10 @@ pub async fn stats_doc(
         .unwrap_or_default();
     let (projects, jobs) = if scope.project.is_none() && scope.initiative.is_none() {
         (
-            f.store.project_stats()?.iter().map(Into::into).collect(),
+            with_land_rates(
+                f,
+                f.store.project_stats()?.iter().map(Into::into).collect(),
+            ),
             f.store
                 .job_stats(crate::unix_now() - 86_400)?
                 .iter()
