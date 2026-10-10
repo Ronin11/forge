@@ -16,11 +16,14 @@ const HANDOFF_PREFIX: &str = "stopped by worker for handoff to pid ";
 
 /// Why a supervised plugin is being stopped; the words `forge plugin
 /// status` shows after `stopped:`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum StopReason {
     /// The worker is draining or restarting the plugin.
     #[default]
     Worker,
+    /// The worker process is exiting, for the reason given (a signal, an
+    /// environment fault, a newer release): `worker exiting: <reason>`.
+    Exiting(String),
     /// `forge plugin disable`.
     Disabled,
     /// A successor worker has claimed and takes the plugins over.
@@ -28,9 +31,10 @@ pub enum StopReason {
 }
 
 impl StopReason {
-    pub fn text(self) -> String {
+    pub fn text(&self) -> String {
         match self {
             StopReason::Worker => "stopped by worker".to_string(),
+            StopReason::Exiting(why) => format!("worker exiting: {why}"),
             StopReason::Disabled => "disabled".to_string(),
             StopReason::Handoff(pid) => format!("{HANDOFF_PREFIX}{pid}"),
         }
@@ -129,6 +133,10 @@ mod tests {
         assert_eq!(handoff_target(&text), Some(1759019));
         assert_eq!(handoff_target(&StopReason::Disabled.text()), None);
         assert_eq!(handoff_target(&StopReason::Worker.text()), None);
+        assert_eq!(
+            StopReason::Exiting("signal".into()).text(),
+            "worker exiting: signal"
+        );
     }
 
     /// A live worker claims, and an enabled plugin's record says `running`

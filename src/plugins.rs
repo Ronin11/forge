@@ -675,6 +675,61 @@ impl Drop for GroupGuard {
     }
 }
 
+/// Appends one line of the supervisor's own to the plugin's log, between
+/// the plugin's lines, so the log says why a process went away and not
+/// only what the plugin printed while up.
+fn note_in_log(log_path: &Path, line: &str) {
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+/// Armed while a plugin process runs: if the supervising task is dropped
+/// rather than told to stop (the worker returned an error past
+/// `Supervisor::stop`, or panicked, and the runtime tore the task down),
+/// the drop writes the cause into the plugin's log. Declared after the
+/// `GroupGuard`, so it drops first: the line lands before the SIGKILL.
+struct StopNote<'a> {
+    log_path: &'a Path,
+    armed: bool,
+}
+
+impl Drop for StopNote<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            note_in_log(
+                self.log_path,
+                "stopped: worker exiting: its supervisor was torn down without a stop (the worker failed or panicked)",
+            );
+        }
+    }
+}
+
+/// A run state that says a process is (or is about to be) up, found when
+/// a supervisor first takes the plugin: whoever recorded it never recorded
+/// a stop, so its worker died outright (SIGKILL, a crash) and the plugin
+/// went with it on `PR_SET_PDEATHSIG`. Says so in the log, since nothing
+/// could at the time.
+fn note_unrecorded_stop(home: &Path, name: &str, log_path: &Path) {
+    let what = match read_run_state(home, name) {
+        RunState::Running { pid, .. } => format!("pid {pid}"),
+        RunState::Restarting { count } => format!("restart x{count}"),
+        RunState::Stopped { .. } => return,
+    };
+    note_in_log(
+        log_path,
+        &format!(
+            "stopped: worker exiting: the worker supervising {what} died without stopping it (noticed by worker pid {})",
+            std::process::id()
+        ),
+    );
+}
+
 /// Records that `name` is stopped, and why.
 fn write_stopped(home: &Path, name: &str, why: String) {
     write_run_state(
@@ -707,6 +762,8 @@ async fn supervise_plugin(
         let _ = std::fs::create_dir_all(dir);
     }
 
+    note_unrecorded_stop(&home, &name, &log_path);
+
     let mut backoff = BACKOFF_START;
     let mut restarts: u32 = 0;
 
@@ -718,7 +775,9 @@ async fn supervise_plugin(
         let mut child = match spawn_plugin(&plugin, &home, &state_dir, &log_path, &lock) {
             Ok(c) => c,
             Err(e) => {
-                write_stopped(&home, &name, format!("failed to start: {e:#}"));
+                let why = format!("failed to start: {e:#}");
+                note_in_log(&log_path, &why);
+                write_stopped(&home, &name, why);
                 if plugin.manifest.restart == Restart::Never
                     || wait_backoff_or_stop(&mut stop, backoff).await
                 {
@@ -731,6 +790,10 @@ async fn supervise_plugin(
 
         let pid = child.id().unwrap_or(0) as i64;
         let mut group = GroupGuard(pid as libc::pid_t);
+        let mut note = StopNote {
+            log_path: &log_path,
+            armed: true,
+        };
         let started = Instant::now();
         write_run_state(
             &home,
@@ -748,16 +811,25 @@ async fn supervise_plugin(
 
         let status = match waited {
             None => {
+                // Written before the SIGTERM, so the cause is in the log
+                // even if the plugin's own last words are not.
+                let why = reason_text(&reason);
+                note_in_log(&log_path, &format!("stopped: {why}"));
+                note.armed = false;
                 stop_child(&mut child, &mut group).await;
-                write_stopped(&home, &name, reason_text(&reason));
+                write_stopped(&home, &name, why);
                 return;
             }
             Some(Ok(s)) => s,
             Some(Err(e)) => {
-                write_stopped(&home, &name, format!("wait failed: {e:#}"));
+                let why = format!("wait failed: {e:#}");
+                note_in_log(&log_path, &format!("stopped: {why}"));
+                note.armed = false;
+                write_stopped(&home, &name, why);
                 return;
             }
         };
+        note.armed = false;
 
         let desc = describe_exit(status);
         let should_restart = match plugin.manifest.restart {
@@ -766,6 +838,7 @@ async fn supervise_plugin(
             Restart::Never => false,
         };
         if !should_restart {
+            note_in_log(&log_path, &format!("exited: {desc}"));
             write_stopped(&home, &name, desc);
             return;
         }
@@ -777,7 +850,12 @@ async fn supervise_plugin(
         }
         let wait = backoff;
         backoff = (backoff * 2).min(BACKOFF_MAX);
+        note_in_log(
+            &log_path,
+            &format!("exited: {desc}; restarting in {}s", wait.as_secs()),
+        );
         if wait_backoff_or_stop(&mut stop, wait).await {
+            note_in_log(&log_path, &format!("stopped: {}", reason_text(&reason)));
             write_stopped(&home, &name, desc);
             return;
         }
@@ -1000,10 +1078,10 @@ impl Supervisor {
             if !running.is_empty() {
                 tokio::time::sleep(STOP_SETTLE).await;
             }
-            let why = drained.lock().map(|r| *r).unwrap_or_default();
+            let why = drained.lock().map(|r| r.clone()).unwrap_or_default();
             for s in running.values() {
                 if let Ok(mut r) = s.reason.lock() {
-                    *r = why;
+                    *r = why.clone();
                 }
                 s.signal_stop();
             }
@@ -1028,6 +1106,16 @@ impl Supervisor {
     pub async fn stop(self) {
         let _ = self.stop.send(true);
         self.reconciler.await.ok();
+    }
+
+    /// Stop every plugin because the worker process is exiting for `why`:
+    /// each plugin's log and `forge plugin status` say
+    /// `stopped: worker exiting: <why>`.
+    pub async fn exit(self, why: String) {
+        if let Ok(mut r) = self.drain.lock() {
+            *r = StopReason::Exiting(why);
+        }
+        self.stop().await;
     }
 }
 

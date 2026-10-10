@@ -582,3 +582,118 @@ async fn a_broken_manifest_keeps_its_plugin_running_and_an_absent_one_is_stopped
     );
     sup.stop().await;
 }
+
+fn plugin_log(home: &Path, name: &str) -> String {
+    std::fs::read_to_string(home.join("logs/plugins").join(format!("{name}.log")))
+        .unwrap_or_default()
+}
+
+/// The 2026-10-07..09 crash loop: a plugin restarted ~300 times and its log
+/// said only what the plugin printed. A worker that exits writes why into
+/// each plugin's log before the plugin is signalled, and `forge plugin
+/// status` says the same.
+#[tokio::test]
+async fn a_worker_exit_writes_its_cause_into_the_plugin_log_before_the_plugin_dies() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = forge_enabling(
+        dir.path(),
+        &[(
+            "suite",
+            "trap 'echo got TERM; exit 0' TERM; echo up; sleep 1000 & wait",
+        )],
+    );
+    let sup = Supervisor::start(f.clone());
+    wait_running(dir.path(), "suite").await;
+    sup.exit("environment fault: worktree is dirty".into())
+        .await;
+
+    let log = plugin_log(dir.path(), "suite");
+    let line = "stopped: worker exiting: environment fault: worktree is dirty";
+    let at = log
+        .find(line)
+        .unwrap_or_else(|| panic!("no cause in log:\n{log}"));
+    let term = log
+        .find("got TERM")
+        .unwrap_or_else(|| panic!("no TERM in log:\n{log}"));
+    assert!(
+        at < term,
+        "the cause was written after the plugin died:\n{log}"
+    );
+    assert_eq!(
+        read_run_state(dir.path(), "suite").describe(),
+        "stopped: worker exiting: environment fault: worktree is dirty"
+    );
+}
+
+/// A plugin whose own process exits says so in its log, with the restart
+/// it gets, rather than leaving only its own last line.
+#[tokio::test]
+async fn a_plugins_own_exit_is_written_into_its_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = forge_enabling(dir.path(), &[("brief", "exit 3")]);
+    let sup = Supervisor::start(f.clone());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !plugin_log(dir.path(), "brief").contains("exited: exit 3") {
+        assert!(Instant::now() < deadline, "no exit line in the log");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    sup.stop().await;
+}
+
+/// A worker killed outright cannot write anything; the next supervisor to
+/// take the plugin finds a `running` record nobody closed and says so.
+#[tokio::test]
+async fn a_supervisor_notes_a_predecessor_that_died_without_stopping_the_plugin() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = forge_enabling(dir.path(), &[("orphaned", "sleep 1000")]);
+    write_run_state(
+        dir.path(),
+        "orphaned",
+        &RunState::Running {
+            pid: 4242,
+            since: 1,
+        },
+    );
+    let sup = Supervisor::start(f.clone());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while matches!(running_pid(dir.path(), "orphaned"), None | Some(4242)) {
+        assert!(Instant::now() < deadline, "the plugin never started");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    sup.stop().await;
+    let log = plugin_log(dir.path(), "orphaned");
+    assert!(
+        log.contains(
+            "stopped: worker exiting: the worker supervising pid 4242 died without stopping it"
+        ),
+        "{log}"
+    );
+    assert!(log.contains("stopped: stopped by worker"), "{log}");
+}
+
+/// A supervising task torn down without a stop (the worker returned an
+/// error past `Supervisor::stop`, or panicked) still leaves a cause.
+#[tokio::test]
+async fn a_supervising_task_torn_down_without_a_stop_leaves_a_cause_in_the_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = forge_enabling(dir.path(), &[("dropped", "sleep 1000")]);
+    let catalog = load_catalog(dir.path(), &[]);
+    let plugin = catalog.plugins["dropped"].clone();
+    let lock = try_lock_plugin(&f.paths.home, "dropped").unwrap();
+    let (_stop, rx) = watch::channel(false);
+    let task = tokio::spawn(supervise_plugin(
+        f.paths.home.clone(),
+        plugin,
+        rx,
+        Reason::default(),
+        lock,
+    ));
+    wait_running(dir.path(), "dropped").await;
+    task.abort();
+    let _ = task.await;
+    let log = plugin_log(dir.path(), "dropped");
+    assert!(
+        log.contains("stopped: worker exiting: its supervisor was torn down without a stop"),
+        "{log}"
+    );
+}

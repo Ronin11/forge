@@ -203,6 +203,10 @@ successor excepted).
   minute.
 - **output**: stdout and stderr to `<FORGE_HOME>/logs/plugins/<name>.log`,
   which `forge plugin logs <name>` prints.
+  Forge writes its own lines there too: `stopped: <why>` before it signals
+  the plugin (`stopped: worker exiting: <reason>` when the worker itself
+  exits) and `exited: <status>` when the process ends on its own (see
+  docs/OPS.md, "Plugins stop with the worker, and say why").
 - **stop**: SIGTERM, then SIGKILL after ten seconds.
 
 `forge doctor` reports each enabled plugin: running, restarting, or

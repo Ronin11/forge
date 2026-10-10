@@ -1016,6 +1016,18 @@ fn claim_egress_dir() -> crate::egress::OwnDirGuard {
     crate::egress::OwnDirGuard
 }
 
+/// Why `work` is returning, in the words a stopped plugin's log gets after
+/// `stopped: worker exiting: `. An environment fault outranks whatever
+/// stop it set off; the only way out of the loop with neither is a
+/// spent `--max-tasks`.
+fn exit_cause(env_error: Option<&anyhow::Error>, cause: Option<String>) -> String {
+    match (env_error, cause) {
+        (Some(e), _) => format!("environment fault: {e:#}"),
+        (None, Some(c)) => c,
+        (None, None) => "--max-tasks reached".to_string(),
+    }
+}
+
 pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut shutdown = Shutdown::install();
     crate::egress::raise_nofile_limit();
@@ -1041,6 +1053,8 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let (mut done, mut ok) = (0u32, 0u32);
     let (mut jobs_done, mut jobs_ok) = (0u32, 0u32);
     let mut stopping = false;
+    // Why the worker is exiting, as the plugins it stops are told.
+    let mut cause: Option<String> = None;
     let mut env_error: Option<anyhow::Error> = None;
     let mut claimed = 0u32;
     let mut hold_until: Option<i64> = None;
@@ -1062,6 +1076,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
             superseded = succession.superseded(&f, &mut plugins, stopping).await?;
             if !stopping && succession.stop_requested().await {
                 stopping = true;
+                cause.get_or_insert_with(|| "the unit has a stop job".into());
                 eprintln!(
                     "stopping: the unit has a stop job; {} running attempt(s) will finish",
                     running.len()
@@ -1080,6 +1095,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 crate::login_hold::probe_due(&f).await;
                 let Some(held) = prepare_claim(&f)? else {
                     stopping = true;
+                    cause.get_or_insert_with(|| "the day's budget is reached".into());
                     break;
                 };
                 for line in new_holds(&f, &held) {
@@ -1137,6 +1153,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         if running.is_empty() {
             if superseded {
                 eprintln!("a newer release claims; nothing left to finish, exiting");
+                cause.get_or_insert_with(|| "a newer release claims".into());
                 break;
             }
             let exhausted = opts.max_tasks.is_some_and(|m| claimed >= m);
@@ -1155,14 +1172,14 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(wait)) => continue,
                         _ = hangup.recv() => { hup = true; continue }
-                        _ = shutdown.recv() => { eprintln!("stopping"); break }
+                        _ = shutdown.recv() => { eprintln!("stopping"); cause.get_or_insert_with(|| "stop signal".into()); break }
                     }
                 }
                 (None, Some(secs)) if !stopping && env_error.is_none() && !exhausted => {
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(secs)) => continue,
                         _ = hangup.recv() => { hup = true; continue }
-                        _ = shutdown.recv() => { eprintln!("stopping"); break }
+                        _ = shutdown.recv() => { eprintln!("stopping"); cause.get_or_insert_with(|| "stop signal".into()); break }
                     }
                 }
                 _ => break,
@@ -1203,6 +1220,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     Err(join) => {
                         eprintln!("a task or job panicked: {join}");
                         stopping = true;
+                        cause.get_or_insert_with(|| format!("a task or job panicked: {join}"));
                     }
                 }
             }
@@ -1210,9 +1228,11 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
             _ = shutdown.recv() => {
                 if !stopping {
                     stopping = true;
+                    cause.get_or_insert_with(|| "stop signal".into());
                     eprintln!("stopping: no new tasks or jobs; {} running attempt(s) will finish (signal again to abort them)", running.len());
                 } else {
                     eprintln!("aborting {} running attempt(s) and requeueing their tasks and jobs", running.len());
+                    cause = Some("second stop signal: running attempts aborted".into());
                     running.abort_all();
                     while running.join_next().await.is_some() {}
                     requeue_aborted(&f, &mut ids, &mut job_ids)?;
@@ -1223,7 +1243,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     }
 
     if let Some(p) = plugins {
-        p.stop().await;
+        p.exit(exit_cause(env_error.as_ref(), cause)).await;
     }
     let handover = succession.leave(&f).await;
     eprintln!("worked {done} task(s): {ok} succeeded, {} not", done - ok);
