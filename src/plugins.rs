@@ -619,6 +619,7 @@ fn spawn_plugin(
         .current_dir(&plugin.dir)
         .env_clear()
         .envs(plugin_env(plugin, home, state_dir)?)
+        .env("FORGE2_HOME", home)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file))
@@ -655,7 +656,8 @@ fn spawn_plugin(
 }
 
 /// What a plugin process is given (docs/PLUGINS.md, "Environment"): the
-/// agent pass-through list, then Forge's own variables. Its self-test gets
+/// agent pass-through list, then Forge's own variables (the running plugin
+/// also gets the old home name, see `spawn_plugin`). Its self-test gets
 /// the same, so it sees what the running plugin sees.
 pub(crate) fn plugin_env(
     plugin: &Plugin,
@@ -670,7 +672,6 @@ pub(crate) fn plugin_env(
     let bin = crate::binary::for_home(home)?;
     env.push(("FORGE_BIN".into(), bin.into()));
     env.push(("FORGE_HOME".into(), home.into()));
-    env.push(("FORGE2_HOME".into(), home.into()));
     env.push(("FORGE_PLUGIN_NAME".into(), (&plugin.name).into()));
     env.push(("FORGE_PLUGIN_DIR".into(), (&plugin.dir).into()));
     env.push(("FORGE_PLUGIN_STATE".into(), state_dir.into()));
