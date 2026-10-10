@@ -1,0 +1,73 @@
+# Adapter contract for the copilot-cli runner (src/agent/copilot.rs).
+# See claude-cli.toml for how the test suite uses this file.
+
+runner = "copilot-cli"
+kind = "cli"
+binary = "copilot"
+parser = "copilot::apply_copilot_event"
+transcript = "testdata/copilot-cli/transcript.jsonl"
+synthetic = true
+provenance = "no real capture was available; shapes follow the 1.0.88 frames recorded in the copilot.rs tests, values are invented"
+price_usd_per_premium_request = 0.04
+
+[[always]]
+args = ["--output-format", "json"]
+why = "one JSON frame per line on stdout"
+
+[[always]]
+args = ["--allow-all-tools"]
+why = "non-interactive mode refuses to run without it; the sandbox is the boundary"
+
+[[always]]
+args = ["--allow-all-paths"]
+why = "same: no path prompt can be answered"
+
+[[always]]
+args = ["--disable-builtin-mcps"]
+why = "the bundled GitHub MCP server is off; an attempt gets the repository's tools and no other"
+
+[[always]]
+args = ["--no-auto-update"]
+why = "a run must not replace its own binary"
+
+[[always]]
+args = ["--log-level", "error"]
+why = "the CLI's own logs stay out of the stream"
+
+[[always]]
+args = ["-C"]
+why = "the worktree, as the working root"
+
+[never]
+flags = ["-p"]
+why = "the prompt goes on stdin, never in argv"
+
+[events]
+init = "none: the session id only appears on the result frame"
+assistant = "type=assistant.message: data.content (the last non-empty wins), data.toolRequests"
+tool_use = "type=tool.execution_start: data.toolCallId (counted once), toolName, arguments"
+result = "type=result: sessionId, exitCode, usage.premiumRequests; type=session.error is a failure unless an answer follows"
+usage = "result.usage.premiumRequests, and assistant.usage tokens when the CLI sends them (1.0.88 sends none)"
+
+[session]
+found_in = "the result frame's sessionId"
+resume = "--resume <sessionId>"
+
+[exit_codes]
+usage_limit = "not an exit code: a session.error whose message says rate limit, usage limit or quota; held one hour"
+refusal = "not an exit code: a session.error or stderr naming a failed login"
+crash = "any non-zero exit, or a session.error with no answer after it"
+
+[cannot]
+commits = "the stream never names commits; the engine counts them from git after the run"
+meters = "premium requests, not tokens: 1.0.88 reports no token counts at all"
+schema = "no schema flag: phase two quotes the schema in its prompt and the envelope is read out of the message"
+
+[golden]
+session_id = "00000000-0000-4000-8000-000000000003"
+turns = 3
+tool_calls = 1
+premium_requests = 2
+cost_usd = 0.08
+summary = "wrote 42"
+changes = 1

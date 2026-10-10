@@ -219,6 +219,7 @@ pub(super) async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::contract;
     use super::super::tests::test_launch;
     use super::*;
 
@@ -322,26 +323,9 @@ mod tests {
             );
             l.step = step;
             let argv = claude_argv("claude", &l);
-            for flag in [
-                "--strict-mcp-config",
-                "--disable-slash-commands",
-                "--exclude-dynamic-system-prompt-sections",
-            ] {
-                assert!(
-                    argv.iter().any(|a| a == flag),
-                    "{step}: {flag} missing: {argv:?}"
-                );
-            }
-            let at = argv.iter().position(|a| a == "--setting-sources").unwrap();
-            assert_eq!(argv[at + 1], "project,local", "{step}: {argv:?}");
-            assert!(
-                !argv.iter().any(|a| a == "--bare"),
-                "{step}: --bare refuses OAuth"
-            );
-            assert!(
-                argv.iter().any(|a| a == "--json-schema"),
-                "{step}: {argv:?}"
-            );
+            // The lean flags, --json-schema and the never-flags (--bare
+            // refuses OAuth) are the contract's own list.
+            contract::assert_always(Runner::ClaudeCli, &argv);
         }
     }
 
@@ -363,6 +347,7 @@ mod tests {
         );
         let argv = claude_argv("claude", &l);
         assert_eq!(argv[0], "claude");
+        contract::assert_always(Runner::ClaudeCli, &argv);
         let schema_at = argv.iter().position(|a| a == "--json-schema").unwrap();
         assert_eq!(argv[schema_at + 1], schema);
         let model_at = argv.iter().position(|a| a == "--model").unwrap();

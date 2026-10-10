@@ -573,7 +573,7 @@ pub(super) async fn run(l: Launch<'_>) -> Result<Outcome> {
 /// A Jev response body folded into `out`: its usage and what that cost at
 /// the provider's prices, and its typed answers as the envelope (or the
 /// reason they are not one, as a failed exit).
-fn read_result(
+pub(super) fn read_result(
     out: &mut Outcome,
     provider: &super::Provider,
     action: &crate::workflows::ActionDef,

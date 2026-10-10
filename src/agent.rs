@@ -9,6 +9,8 @@ use bounded::{BoundedLines, CappedLog, read_stderr};
 mod chat;
 mod claude;
 mod codex;
+#[cfg(test)]
+mod contract;
 mod copilot;
 mod inputs;
 mod jev;
@@ -136,6 +138,15 @@ impl Runner {
             Runner::Chat => "chat",
             Runner::Jev => "jev",
         }
+    }
+}
+
+impl Runner {
+    /// Where this runner's adapter contract lives in the Forge source tree:
+    /// its flags, event shapes, exit codes and limits as data, held to the
+    /// parser by the test suite.
+    pub fn contract_path(self) -> String {
+        format!("src/agent/contracts/{}.toml", self.as_str())
     }
 }
 
@@ -696,9 +707,14 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
             }
             log.line(&v.to_string(), None)?;
             let mut on_tool = |name: &str| report.emit(task_id, Event::ToolCall { name });
-            if let Some(text) =
-                apply_claude_frame(&v, &mut out, &mut seen_tools, &mut watch, writes, &mut on_tool)
-            {
+            if let Some(text) = apply_claude_frame(
+                &v,
+                &mut out,
+                &mut seen_tools,
+                &mut watch,
+                writes,
+                &mut on_tool,
+            ) {
                 writeln!(
                     log,
                     "{{\"type\":\"forge_early_end\",\"forge_ms\":{},\"signals\":{}}}",

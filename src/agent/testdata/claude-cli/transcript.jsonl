@@ -1,0 +1,9 @@
+{"type":"forge_fixture","synthetic":true,"runner":"claude-cli","note":"SYNTHETIC: frame shapes follow the claude CLI's stream-json output (--print --verbose); ids, paths, prose and numbers are invented. No real capture was available on the machine this was written on."}
+{"type":"system","subtype":"init","session_id":"00000000-0000-4000-8000-000000000001","model":"sonnet","cwd":"/work/tree","tools":["Bash","Read","Edit","Write","Glob","Grep","StructuredOutput"]}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","unifiedWindows":{"five_hour":{"utilization":0.42,"resetsAt":1800000000},"seven_day":{"utilization":0.13,"resetsAt":1800500000}}}}
+{"type":"assistant","message":{"id":"msg_01","content":[{"type":"text","text":"Writing the answer file."}]}}
+{"type":"assistant","message":{"id":"msg_01","content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"echo 42 > answer.txt && git add answer.txt && git commit -qm 'add answer'"}}]}}
+{"type":"assistant","message":{"id":"msg_01","content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"echo 42 > answer.txt && git add answer.txt && git commit -qm 'add answer'"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"[main abc1234] add answer"}]}}
+{"type":"assistant","message":{"id":"msg_02","content":[{"type":"tool_use","id":"toolu_02","name":"StructuredOutput","input":{"schema_version":1,"summary":"wrote the answer"}}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":3,"result":"done","session_id":"00000000-0000-4000-8000-000000000001","total_cost_usd":0.0842,"usage":{"input_tokens":12,"output_tokens":310,"cache_read_input_tokens":41200,"cache_creation_input_tokens":5100},"structured_output":{"schema_version":1,"summary":"wrote the answer","needs_input":null,"changes":[{"path":"answer.txt","kind":"added"}],"checks_run":[],"claims":[]}}

@@ -1,0 +1,61 @@
+# Adapter contract for the codex-cli runner (src/agent/codex.rs).
+# See claude-cli.toml for how the test suite uses this file.
+
+runner = "codex-cli"
+kind = "cli"
+binary = "codex"
+parser = "codex::apply_codex_event"
+transcript = "testdata/codex-cli/transcript.jsonl"
+synthetic = true
+provenance = "no real capture was available; shapes follow the codex.rs fixtures, values are invented"
+
+[[always]]
+args = ["exec"]
+why = "non-interactive subcommand; the prompt arrives on stdin"
+
+[[always]]
+args = ["--skip-git-repo-check"]
+why = "the worktree is a git clone but codex's own check trips in a sandbox"
+
+[[always]]
+args = ["--json"]
+why = "one JSON event per line on stdout"
+
+[[always]]
+args = ["-c", "mcp_servers={}"]
+why = "no MCP server reaches an untrusted task"
+
+[[always]]
+args = ["-C"]
+why = "the worktree, as the working root"
+
+[events]
+init = "type=thread.started: thread_id"
+assistant = "item.completed with item.type=agent_message: text (the last wins; phase two's is the envelope)"
+tool_use = "item.started with item.type=command_execution: command"
+result = "item.completed agent_message whose text parses as JSON is the structured result; turn.failed and error are failures"
+usage = "turn.completed: usage.input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens (summed per turn)"
+
+[session]
+found_in = "thread.started's thread_id"
+resume = "exec resume <thread_id>, before the phase's other flags"
+
+[exit_codes]
+usage_limit = "not an exit code: a turn.failed or error frame whose message says the usage limit and the time it resets"
+refusal = "not an exit code: a frame or stderr naming a failed login (401, expired refresh token)"
+crash = "any non-zero exit with no agent_message; an error item with no result after it is a failure, one before a result is a warning"
+
+[cannot]
+commits = "the stream never names commits; the engine counts them from git after the run"
+meters = "tokens only: no dollar figure, so cost_usd is priced from tokens at the provider's prices"
+schema = "phase one cannot be held to a schema; a second resumed phase asks for the report"
+
+[golden]
+session_id = "00000000-0000-4000-8000-000000000002"
+turns = 2
+tool_calls = 1
+input_tokens = 120
+output_tokens = 63
+cache_read_input_tokens = 10
+summary = "wrote 42"
+changes = 1

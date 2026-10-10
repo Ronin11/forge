@@ -56,7 +56,12 @@ pub(crate) fn truncated_first_line(text: &str) -> String {
 /// A 2xx `/chat/completions` body folded into `out`: the token counts and
 /// their cost at the provider's prices, and the first choice's content,
 /// trusted as `structured` only when it validates against `schema`.
-fn read_response(out: &mut Outcome, provider: &Provider, resp_json: &Value, schema: &Value) {
+pub(super) fn read_response(
+    out: &mut Outcome,
+    provider: &Provider,
+    resp_json: &Value,
+    schema: &Value,
+) {
     out.exit_code = Some(0);
     out.got_result = true;
     let usage = &resp_json["usage"];

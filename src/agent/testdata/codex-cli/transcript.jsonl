@@ -1,0 +1,10 @@
+{"type":"forge_fixture","synthetic":true,"runner":"codex-cli","note":"SYNTHETIC: event shapes follow `codex exec --json` as recorded in the codex.rs tests; thread id, paths, prose and numbers are invented. Both phases (the work, then the structured report) are in one stream."}
+{"type":"thread.started","thread_id":"00000000-0000-4000-8000-000000000002"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"echo 42 > answer.txt"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"echo 42 > answer.txt","exit_code":0}}
+{"type":"item.completed","item":{"id":"item_1","type":"error","message":"Model metadata not found. Defaulting to fallback metadata"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"wrote 42 to answer.txt"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":10,"output_tokens":50,"reasoning_output_tokens":5}}
+{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"{\"schema_version\":1,\"summary\":\"wrote 42\",\"needs_input\":null,\"changes\":[{\"path\":\"answer.txt\",\"kind\":\"added\"}],\"checks_run\":[],\"claims\":[]}"}}
+{"type":"turn.completed","usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":8,"reasoning_output_tokens":0}}
