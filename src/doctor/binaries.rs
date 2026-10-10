@@ -2,7 +2,7 @@
 //! PATH and under the PATH the worker unit declares.
 
 use super::{Check, Status, check};
-use crate::{agent, config, sandbox, unit_path};
+use crate::{agent, config, git, sandbox, unit_path};
 
 /// FAIL when the worker unit's own PATH cannot find `name`, though the
 /// shell's can: the worker would crash-loop on a check that passes here.
@@ -58,6 +58,9 @@ pub(super) fn check_binaries() -> Vec<Check> {
     let agent_bin = agent::agent_bin();
     out.push(binary(&agent_bin, true, ""));
     out.push(binary("git", true, ""));
+    if let Some(row) = check_git_version() {
+        out.push(row);
+    }
     let sandbox_off = config::env("SANDBOX").as_deref() == Ok("0");
     if !sandbox_off && let Some(fail) = missing_under_unit("bwrap") {
         out.push(fail);
@@ -111,6 +114,41 @@ pub(super) fn check_binaries() -> Vec<Check> {
         ),
     });
     out
+}
+
+/// The installed git's version against what `git::would_conflict` needs:
+/// `merge-tree --write-tree` arrived in 2.38. Older, merges still work,
+/// but each conflict is found by merging and aborting. `None` when there
+/// is no git to ask (the `binary.git` row already says so).
+fn check_git_version() -> Option<Check> {
+    let (_, path) = sandbox::resolve_binary("git").ok()?;
+    let out = std::process::Command::new(&path)
+        .arg("--version")
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    Some(git_version_row(text.trim()))
+}
+
+pub(super) fn git_version_row(version: &str) -> Check {
+    let (major, minor) = git::MERGE_TREE_MIN;
+    match git::parse_version(version) {
+        Some(v) if v >= git::MERGE_TREE_MIN => check("git.version", Status::Ok, version, ""),
+        Some(_) => check(
+            "git.version",
+            Status::Warn,
+            format!(
+                "{version} is older than {major}.{minor}: no `git merge-tree --write-tree`, so landing and `forge integrate` cannot pre-check merges for conflicts"
+            ),
+            format!("install git >= {major}.{minor}"),
+        ),
+        None => check(
+            "git.version",
+            Status::Warn,
+            format!("cannot read the git version from {version:?}"),
+            format!("install git >= {major}.{minor}"),
+        ),
+    }
 }
 
 pub(super) fn check_resource_limits(paths: &config::SandboxPaths) -> Check {
