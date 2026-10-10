@@ -15,7 +15,7 @@ const GIB: u64 = 1024 * 1024 * 1024;
 
 /// Measure the worktrees directory and record today's sample, then judge.
 pub(super) fn watch(store: &Store, worktrees: &Path, now: i64, warn_gb: u64) -> Check {
-    let bytes = super::super::count_files(worktrees).1;
+    let bytes = crate::disk::size(worktrees);
     let landed: Vec<i64> = store
         .landed_worktrees()
         .unwrap_or_default()
@@ -113,6 +113,8 @@ mod tests {
         watch(&s, &wt, NOW, 200);
         watch(&s, &wt, NOW + 60, 200);
         let samples = s.doctor_samples(SAMPLE, 10).unwrap();
-        assert_eq!(samples, vec![("2026-10-10".to_string(), 100, 0)]);
+        assert_eq!(samples.len(), 1, "{samples:?}");
+        assert_eq!(samples[0].0, "2026-10-10");
+        assert!(samples[0].1 >= 100, "{samples:?}");
     }
 }

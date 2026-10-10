@@ -32,10 +32,11 @@ if [ -f "$config" ]; then
     # Refuse a config readable or writable by group or other, regardless
     # of what verb was asked for: it holds an account SID and a token
     # (or API key secret) that can buy numbers on Forge's account.
-    mode=$(stat -c %a "$config" 2>/dev/null)
-    if [ -z "$mode" ]; then
-        mode=$(stat -f %Lp "$config" 2>/dev/null)
-    fi
+    # GNU stat, else BSD's; stderr goes to the plugin log, never /dev/null.
+    case "$(uname)" in
+        Darwin | *BSD) mode=$(stat -f %Lp "$config") ;;
+        *) mode=$(stat -c %a "$config") ;;
+    esac
     if [ -n "$mode" ]; then
         last2=$(printf '%s' "$mode" | sed 's/.*\(..\)$/\1/')
         group=$(printf '%s' "$last2" | cut -c1)
@@ -407,7 +408,7 @@ project_for_contact() {
 # TARGET_REPO's own project, read off the plain-text `forge project
 # list` the same way the signal plugin does.
 target_repo_project() {
-    "$FORGE_BIN" project list 2>/dev/null | awk -v repo="$TARGET_REPO" '
+    "$FORGE_BIN" project list | awk -v repo="$TARGET_REPO" '
         /^name /  { name = $2 }
         /^repo /  { if ($2 == repo) { print name; exit } }
     '
@@ -454,11 +455,11 @@ record_message() {
     esac
     if [ -n "$mr_task" ]; then
         "$FORGE_BIN" message record "$mr_project" --channel sms "$mr_flag" "$mr_contact" \
-            --text "$mr_text" --task "$mr_task" >/dev/null 2>&1 \
+            --text "$mr_text" --task "$mr_task" >/dev/null \
             || log "could not record message for $mr_contact"
     else
         "$FORGE_BIN" message record "$mr_project" --channel sms "$mr_flag" "$mr_contact" \
-            --text "$mr_text" >/dev/null 2>&1 \
+            --text "$mr_text" >/dev/null \
             || log "could not record message for $mr_contact"
     fi
 }
@@ -496,7 +497,7 @@ handle_message() {
             id=${rest%% *}
             text=${rest#* }
             [ "$text" = "$rest" ] && text=""
-            if "$FORGE_BIN" answer "$id" "$text" >/dev/null 2>&1; then
+            if "$FORGE_BIN" answer "$id" "$text" >/dev/null; then
                 msg="answered task $id"
             else
                 msg="could not answer task $id"
@@ -528,7 +529,7 @@ handle_contact_reply() {
     id=$4
     body=$5
     project=$(concierge_project "$name")
-    if "$FORGE_BIN" answer "$id" "$body" --by "$name" >/dev/null 2>&1; then
+    if "$FORGE_BIN" answer "$id" "$body" --by "$name" >/dev/null; then
         msg="answered task $id"
     else
         msg="could not answer task $id"
@@ -659,7 +660,7 @@ poll_once() {
         [ -z "$msg" ] && continue
         sid=$(printf '%s' "$msg" | jq -r '.sid // empty')
         [ -n "$sid" ] || continue
-        grep -qxF "$sid" "$seen_file" 2>/dev/null && continue
+        [ -f "$seen_file" ] && grep -qxF "$sid" "$seen_file" && continue
 
         date_sent=$(printf '%s' "$msg" | jq -r '.date_sent // empty')
         from=$(printf '%s' "$msg" | jq -r '.from // empty')
@@ -733,13 +734,17 @@ code() {
         if [ -f "$inbox" ]; then
             cutoff=0
             [ -n "$since" ] && cutoff=$(($(date +%s) - since))
-            found=$(tac "$inbox" 2>/dev/null || sed '1!G;h;$!d' "$inbox")
+            if command -v tac >/dev/null; then
+                found=$(tac "$inbox")
+            else
+                found=$(sed '1!G;h;$!d' "$inbox")
+            fi
             code_val=$(printf '%s\n' "$found" | while IFS= read -r line; do
                 [ -z "$line" ] && continue
                 to=$(printf '%s' "$line" | jq -r '.to // empty')
                 [ "$to" = "$number" ] || continue
                 ds=$(printf '%s' "$line" | jq -r '.date_sent // empty')
-                epoch=$(date -u -d "$ds" +%s 2>/dev/null || printf '0')
+                epoch=$(date -u -d "$ds" +%s || printf '0')
                 if [ -n "$since" ] && [ "$epoch" -lt "$cutoff" ]; then
                     continue
                 fi
