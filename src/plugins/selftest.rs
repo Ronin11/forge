@@ -5,8 +5,8 @@
 //! doctor` runs it for every enabled plugin that declares one.
 use super::{Plugin, note_in_log, plugin_env};
 use anyhow::{Context, Result};
-use std::path::Path;
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -85,7 +85,10 @@ pub fn run(home: &Path, plugin: &Plugin, timeout: Duration) -> Result<Option<Out
     let mut output = std::fs::read_to_string(&out_path).unwrap_or_default();
     let ok = status.is_some_and(|s| s.success());
     match status {
-        None => output.push_str(&format!("\n[forge] self-test killed after {}s", timeout.as_secs())),
+        None => output.push_str(&format!(
+            "\n[forge] self-test killed after {}s",
+            timeout.as_secs()
+        )),
         Some(s) if !s.success() && output.trim().is_empty() => {
             output = format!("[forge] self-test {s} with no output")
         }

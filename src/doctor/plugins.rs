@@ -75,17 +75,19 @@ fn self_tests(paths: &Paths, store: &Store, cat: &crate::plugins::Catalog) -> Ve
         };
         let row = format!("plugins.{name}.test");
         let timeout = crate::plugins::selftest::TIMEOUT;
-        out.push(match crate::plugins::selftest::run(&paths.home, plugin, timeout) {
-            Ok(None) => continue,
-            Ok(Some(o)) if o.ok => check(&row, Status::Ok, o.last_line(), ""),
-            Ok(Some(o)) => check(
-                &row,
-                Status::Warn,
-                o.last_line(),
-                format!("forge plugin test {name}; its log: forge plugin logs {name}"),
-            ),
-            Err(e) => check(&row, Status::Warn, format!("{e:#}"), ""),
-        });
+        out.push(
+            match crate::plugins::selftest::run(&paths.home, plugin, timeout) {
+                Ok(None) => continue,
+                Ok(Some(o)) if o.ok => check(&row, Status::Ok, o.last_line(), ""),
+                Ok(Some(o)) => check(
+                    &row,
+                    Status::Warn,
+                    o.last_line(),
+                    format!("forge plugin test {name}; its log: forge plugin logs {name}"),
+                ),
+                Err(e) => check(&row, Status::Warn, format!("{e:#}"), ""),
+            },
+        );
     }
     out
 }
