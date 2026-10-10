@@ -102,7 +102,7 @@ async fn judge(f: &Forge, t: &Task, p: &Pass) -> Result<Verdict> {
     if !wt.exists() {
         return Ok(Verdict::Remove("tree already gone"));
     }
-    if t.state == TaskState::Succeeded && !t.landed_sha.is_empty() {
+    if t.is_landed() {
         return Ok(Verdict::Remove("landed"));
     }
     if !wt.join(".git").exists() {

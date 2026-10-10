@@ -239,7 +239,7 @@ pub fn remove_task_trees(id: i64, worktree: &str) -> std::io::Result<()> {
 /// error of the state change itself (see `discard_task_caches`).
 pub fn task_finished(store: &Store, t: &crate::store::Task) {
     use crate::store::TaskState;
-    if t.state == TaskState::Succeeded && !t.landed_sha.is_empty() && !t.worktree.is_empty() {
+    if t.is_landed() && !t.worktree.is_empty() {
         let done = remove_task_trees(t.id, &t.worktree).map_err(anyhow::Error::from);
         if let Err(e) = done.and_then(|()| store.mark_worktree_removed(t.id)) {
             eprintln!("worktree cleanup {}: {e:#}", t.worktree);

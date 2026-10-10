@@ -584,17 +584,30 @@ pub(super) fn count_filed_since(conn: &Connection, trust: Trust, since: i64) -> 
     )?)
 }
 
+impl Task {
+    /// Succeeded with a landed sha: its work is on the base branch.
+    pub fn is_landed(&self) -> bool {
+        self.state == TaskState::Succeeded && !self.landed_sha.is_empty()
+    }
+}
+
 impl Store {
     pub fn insert_task(&self, t: &Task) -> Result<i64> {
         insert_task_row(&self.lock(), t)
     }
 
-    /// Persist the task (see `write_task`), then deal with its disk: a
-    /// landed task's worktree and siblings go, a task finished any other
-    /// way loses its build caches (`disk::task_finished`).
+    /// Persist the task (see `write_task`), then deal with its disk: the
+    /// write that makes a task landed removes its worktree and siblings,
+    /// a task finished any other way loses its build caches
+    /// (`disk::task_finished`). A task already landed is left alone, so the
+    /// updates landing's own effects make (deploy, assessment) never pull
+    /// the tree out from under the step still reading it.
     pub fn update_task(&self, t: &Task) -> Result<()> {
+        let landed = self.task(t.id)?.is_some_and(|p| p.is_landed());
         self.write_task(t)?;
-        crate::disk::task_finished(self, t);
+        if !landed {
+            crate::disk::task_finished(self, t);
+        }
         Ok(())
     }
 
