@@ -196,6 +196,9 @@ pub async fn drive_with_wait(f: Arc<Forge>, id: i64, wait: bool) -> Result<TaskS
             crate::audience::emit_recovered(&f, &ended).await?;
             Ok(TaskState::Failed)
         }
+        Err(Fault::Env(e)) if e.downcast_ref::<engine::TaskEnv>().is_some() => {
+            requeue_or_block_env(&f, id, &e)
+        }
         Err(Fault::Env(e)) => {
             f.store.requeue(
                 id,
@@ -207,6 +210,52 @@ pub async fn drive_with_wait(f: Arc<Forge>, id: i64, wait: bool) -> Result<TaskS
             )))
         }
     }
+}
+
+/// Requeues a task whose own checkout is unusable, and blocks it once it
+/// has failed `ENV_CLAIM_LIMIT` consecutive claims.
+fn requeue_or_block_env(f: &Forge, id: i64, e: &anyhow::Error) -> Result<TaskState> {
+    // The count of consecutive claims rides in the reason the last
+    // requeue left: any other outcome rewrites it.
+    let prior = f
+        .store
+        .task(id)?
+        .and_then(|t| env_claims(&t.reason))
+        .unwrap_or(0);
+    let claims = prior + 1;
+    let why = format!("{ENV_REQUEUE_PREFIX} (claim {claims} of {ENV_CLAIM_LIMIT}): {e:#}");
+    f.store
+        .requeue(id, &crate::store::Owner::this_process(), &why)?;
+    let mut state = TaskState::Queued;
+    if claims >= ENV_CLAIM_LIMIT
+        && let Some(mut t) = f.store.task(id)?
+        && t.state == TaskState::Queued
+    {
+        t.state = TaskState::Blocked;
+        t.reason = format!(
+            "{e:#} (environment error on {claims} consecutive claims; fix it, then forge retry {id})"
+        );
+        t.finished_at = Some(unix_now());
+        t.worker_pid = None;
+        f.store.update_task(&t)?;
+        f.report.emit(id, Event::Note { text: &t.reason });
+        state = TaskState::Blocked;
+    }
+    Ok(state)
+}
+
+/// Consecutive environment-error claims a task may fail before it blocks.
+const ENV_CLAIM_LIMIT: u32 = 3;
+const ENV_REQUEUE_PREFIX: &str = "worker environment error";
+
+/// The claim count recorded in a reason `drive` wrote for a task-scoped
+/// environment error requeue, `None` for any other reason.
+fn env_claims(reason: &str) -> Option<u32> {
+    let rest = reason
+        .strip_prefix("requeued: ")?
+        .strip_prefix(ENV_REQUEUE_PREFIX)?
+        .strip_prefix(" (claim ")?;
+    rest.split(' ').next()?.parse().ok()
 }
 
 /// The kernel's follow-up rule for a task that just ended `Failed`

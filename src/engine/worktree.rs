@@ -131,13 +131,26 @@ pub(super) async fn prepare_worktree(
         .env()?;
     let dirty = git::dirty_paths(Path::new(&t.worktree)).await.env()?;
     if !dirty.is_empty() {
-        return Err(Fault::Env(anyhow::anyhow!(
+        return Err(Fault::Env(anyhow::Error::new(TaskEnv(format!(
             "worktree is not clean after verification cleanup: {}",
             dirty.join(", ")
-        )));
+        )))));
     }
     Ok(merged_base_retry)
 }
+
+/// An environment error that belongs to one task's own checkout: the worker
+/// requeues that task (blocking it on repeats) and keeps serving the rest.
+#[derive(Debug)]
+pub struct TaskEnv(pub String);
+
+impl std::fmt::Display for TaskEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for TaskEnv {}
 
 /// Refiles keep a fresh accounting lineage but inherit their source checkout.
 fn branch_parent(f: &Forge, t: &Task) -> Result<Option<i64>, Fault> {
