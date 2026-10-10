@@ -321,6 +321,15 @@ capped` lists them, `forge stats` counts them apart from `failed`, and an
 initiative counts a capped task as open. If the code step had verified,
 `forge land` takes the branch; otherwise raise the budget and run it again.
 
+A cap that left commits past the base does not throw them away. With no
+agent, the way `forge adopt` judges a hand-made branch, the kernel runs the
+repository's checks on the branch as it stands. If they pass it lands (or is
+held for a human under `--no-land`); if they fail the task ends `blocked`,
+the failing checks' last lines in its reason, the branch pushed for a human
+or a new task to pick up. A tree left dirty is not judged: the task stays
+`capped`, and `forge show` counts the commits it left and names the next
+step, `forge adopt <repo> <branch>`.
+
 ## Cost and choice
 
 Every attempt row carries its step and its task's workflow. Per repo and
