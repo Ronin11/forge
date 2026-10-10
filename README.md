@@ -338,6 +338,8 @@ src/executor.rs     executor contract, backend selection, and guarantees
 src/disk.rs         free-space claim holds, worktree sizes, and build-cache sweeping
 src/sandbox.rs      bubblewrap
 src/secret_store.rs machine-local credentials: persistent backend selection, OS keychain or encrypted file storage, and secret references
+src/job/alerts.rs       what a finished job tells the operator unasked: a failed doctor-daily, new doctor rows, a step that printed nothing
+src/plugins/selftest.rs forge plugin test: a plugin's own end-to-end proof, run by forge doctor while it is enabled
 src/job/secrets.rs      [secrets] names, a run step's declared secrets and egress hosts, and the redaction of their values
 src/login.rs        the agent login: a refreshed token written back over the host file, an empty one never seeded
 src/login_hold.rs   a provider whose agent login was refused, held until a probe answers; the worker's ten-minute probe and doctor's
@@ -346,6 +348,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   mod.rs            types, column lists, open, schema_version, the migration runner
   migrations.rs     MIGRATIONS: every forward-only schema migration, in order
   notifications.rs  durable daily counts of follow-ups, retries, answered questions, and superseded blocks
+  alerts.rs         standing operator alerts (a failed doctor-daily, a doctor WARN/FAIL row) and, through the message record, whether each was sent
   retry.rs          statement retries for SQLite busy and locked errors, with backoff up to one minute
   run_cursor.rs     the task's stored run cursor (tasks.run_json): the step a requeued or orphaned run resumes at
   tasks.rs          tasks: claim, queue, dependents, lineage

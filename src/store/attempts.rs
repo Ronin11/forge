@@ -936,8 +936,11 @@ mod tests {
     fn rl_synthetic_is_an_additive_nullable_column_old_rows_read_as_observed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.db");
-        let last = MIGRATIONS.len() - 1;
-        assert!(MIGRATIONS[last].contains("ADD COLUMN rl_synthetic INTEGER;"));
+        // The store as it stood just before the step, migrated from there.
+        let last = MIGRATIONS
+            .iter()
+            .position(|m| m.contains("ADD COLUMN rl_synthetic INTEGER;"))
+            .unwrap();
         let conn = rusqlite::Connection::open(&path).unwrap();
         for sql in &MIGRATIONS[..last] {
             if !super::super::migrations::is_contract(sql) {

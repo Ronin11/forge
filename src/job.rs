@@ -1373,6 +1373,11 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// With no `bin/current` under the home, the running binary.
+    fn bin() -> String {
+        std::env::current_exe().unwrap().display().to_string()
+    }
+
     #[test]
     fn step_env_for_a_real_run_orders_inputs_outputs_env_then_secrets_last() {
         let mut secrets = std::collections::BTreeMap::new();
@@ -1411,6 +1416,7 @@ mod tests {
                 ("FORGE_REPO_DIR".to_string(), "/repo/acme".to_string()),
                 ("FORGE_HOME".to_string(), "/home/forge".to_string()),
                 ("FORGE_BIN_DIR".to_string(), bin_dir()),
+                ("FORGE_BIN".to_string(), bin()),
                 ("FORGE_INPUT_NAME".to_string(), "bob".to_string()),
                 (
                     "FORGE_OUTPUT_MY_ACTION".to_string(),
@@ -1452,6 +1458,7 @@ mod tests {
                 ("FORGE_REPO_DIR".to_string(), "/repo/acme".to_string()),
                 ("FORGE_HOME".to_string(), "/home/forge".to_string()),
                 ("FORGE_BIN_DIR".to_string(), bin_dir()),
+                ("FORGE_BIN".to_string(), bin()),
                 ("FORGE_DRY_RUN".to_string(), "1".to_string()),
             ]
         );
