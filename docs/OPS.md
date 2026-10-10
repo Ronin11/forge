@@ -65,6 +65,59 @@ build tuning limits parallelism inside each attempt. For example, two Forge
 slots with `CARGO_BUILD_JOBS = "2"` can coexist with game work without adding
 another unrestricted workspace compile.
 
+## Worktree lifecycle: landing, retention, housekeeping
+
+A task's worktree is `FORGE_HOME/worktrees/<id>`, with siblings
+`<id>-overlays`, `-tmp`, `-provider`, `-review-provider`, `-tests`, `-red`
+and `-op`, and the `landing-<id>` tree (and its own siblings) that landing
+and integration make beside it. Measured 2026-10-10, 478 trees held 153 GB,
+381 of them landed tasks holding 96 GB, and `forge gc --dry-run` kept 474 of
+478. Nothing removes a tree by hand any more:
+
+- **Landed.** At the terminal write of a task that landed (state
+  `succeeded` with a landed sha) its worktree and every sibling, the landing
+  tree included, are removed and `worktree_removed_at` is set. The work is
+  on the base branch; whatever uncommitted noise the tree held (untracked
+  `.uid` files, say) is not kept. A `forge land` of a held task does the
+  same once its on-landing deploy and assessment have run.
+- **Every other finished task** (failed, blocked, capped, withdrawn,
+  unverified, or succeeded but not landed) keeps its tree for
+  `worktree_retention_days` (default 7) after it finished, build caches
+  swept at once. Past that, housekeeping commits any uncommitted changes as
+  a WIP commit on the task branch (`forge: leftovers at gc, task N`),
+  publishes the branch (to the project's push remote when it has one, else
+  into the registered repository, the path `forge gc --older-than` always
+  had), then removes the tree and siblings and marks it. A branch that
+  cannot be published keeps its tree, with the reason, until it can: nothing
+  with work is lost, and nothing else stays.
+- **Husks and orphans.** A tracked worktree with no `.git` is removed and
+  marked. A sibling directory whose task directory is gone is removed, and
+  so is a `landing-<id>` tree of a task that is not running once it has sat
+  untouched six hours.
+- **Caches.** `target`, `node_modules` and `.godot` are swept from finished
+  tasks' trees and from the landing trees; trees of running tasks and
+  landings under six hours old are never touched.
+
+```toml
+[worker]
+worktree_retention_days = 7
+```
+
+The worker does this itself, at start and then once an hour, and logs one
+line: `housekeeping: freed N bytes, removed N trees, kept N`. A failed pass
+is a log line too and never stops the worker. `forge gc` is the manual,
+verbose form of the same pass: it names every tree it removes or keeps and
+why, `--dry-run` says what it would do (including "would commit leftovers,
+publish the branch") and does none of it, and `--older-than DAYS` replaces
+the configured retention for that run. Run by hand, it also removes a clean
+tree whose commits are already on the remote before they are old.
+`forge gc --caches` sweeps caches only.
+
+`forge doctor` reports the total size of `worktrees/`, the ten largest
+trees, and how many retained trees are past retention; a nonzero count means
+housekeeping is not keeping up (the worker is down, or a branch could not
+be published; `forge gc` says which).
+
 ## When the event log cannot be written
 
 `FORGE_HOME/events.jsonl` (the record `forge job show` and every client's

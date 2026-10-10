@@ -336,6 +336,7 @@ src/render.rs       text rendering for documents: first sentence, path-like toke
 src/report.rs       typed events; the stderr printer is one consumer
 src/executor.rs     executor contract, backend selection, and guarantees
 src/disk.rs         free-space claim holds, worktree sizes, and build-cache sweeping
+src/housekeeping.rs worktree retention: the worker's hourly pass and `forge gc`
 src/sandbox.rs      bubblewrap
 src/secret_store.rs machine-local credentials: persistent backend selection, OS keychain or encrypted file storage, and secret references
 src/job/secrets.rs      [secrets] names, a run step's declared secrets and egress hosts, and the redaction of their values

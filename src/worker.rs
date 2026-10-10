@@ -719,6 +719,11 @@ async fn run_ticks(
     if let Err(e) = workflows::draft::reconcile(&f.paths.home).await {
         eprintln!("worker tick failed (drafts); continuing: {e:#}");
     }
+    let due = unix_now() - HOUSEKEPT.load(std::sync::atomic::Ordering::Relaxed);
+    if due >= HOUSEKEEPING_SECS {
+        HOUSEKEPT.store(unix_now(), std::sync::atomic::Ordering::Relaxed);
+        housekeeping(f).await;
+    }
     Ok(true)
 }
 
@@ -1039,8 +1044,12 @@ fn exit_cause(env_error: Option<&anyhow::Error>, cause: Option<String>) -> Strin
     }
 }
 
-/// How often the worker sweeps caches and applies worktree retention.
+/// How often the worker sweeps caches and applies worktree retention (the
+/// first pass is at start).
 const HOUSEKEEPING_SECS: i64 = 3600;
+
+/// When this process last ran housekeeping.
+static HOUSEKEPT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
 /// One housekeeping pass (`crate::housekeeping`), logged in one line. A
 /// failure is a log line too: it never stops the worker.
@@ -1089,7 +1098,6 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut hold_until: Option<i64> = None;
     let mut last_idle: Option<String> = None;
     let mut refusals = RefusalLog::default();
-    let mut housekept: Option<i64> = None;
 
     loop {
         // Config reloads between claims: what is claimed from here on runs
@@ -1113,10 +1121,6 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 );
             }
             run_ticks(&f, &mut refusals, superseded, stopping).await?;
-            if !superseded && housekept.is_none_or(|at| unix_now() - at >= HOUSEKEEPING_SECS) {
-                housekept = Some(unix_now());
-                housekeeping(&f).await;
-            }
 
             // Fill free slots, re-reading what the other workers hold.
             slots = free_slots(&f, pid, capacity::refresh(&f, &opts, &mut capacity)?);
