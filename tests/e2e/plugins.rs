@@ -1511,7 +1511,7 @@ fn the_signal_plugin_routes_a_contacts_message_through_the_concierge() {
     )
     .unwrap();
 
-    // A fake `signal-cli`: `receive --json` prints the one scripted
+    // A fake `signal-cli`: `-o json receive` prints the one scripted
     // message the first time it's called and nothing after (the plugin
     // polls in a loop), and `send` records what was sent, to whom, in
     // `$FORGE_PLUGIN_STATE/sent`.
@@ -1522,7 +1522,7 @@ fn the_signal_plugin_routes_a_contacts_message_through_the_concierge() {
 set -u
 shift
 shift
-cmd=$1
+[ "$1" = -o ] && shift 2; cmd=$1
 shift
 case "$cmd" in
     send)
