@@ -20,7 +20,7 @@ mod usage_limit;
 use crate::sandbox::Phase;
 use chat::run_chat;
 pub(super) use chat::truncated_first_line;
-use claude::{apply_claude_result, claude_argv, run_claude};
+use claude::{apply_claude_frame, claude_argv, run_claude};
 use codex::{apply_codex_event, run_codex};
 use copilot::{CopilotTally, apply_copilot_event, run_copilot};
 use inputs::{AgentRun, DriveJsonChild, RunCodexPhase, RunCopilotPhase, RunJsonPhase};
@@ -695,82 +695,24 @@ async fn run_once(args: AgentRun<'_>) -> Result<(Outcome, String)> {
                 );
             }
             log.line(&v.to_string(), None)?;
-            match v["type"].as_str() {
-                Some("assistant") => {
-                    // The CLI repeats a message once per content block; count
-                    // each tool_use id once.
-                    if let Some(blocks) = v["message"]["content"].as_array() {
-                        for b in blocks {
-                            if b["type"] == "tool_use" {
-                                let id = b["id"].as_str().unwrap_or("").to_string();
-                                if seen_tools.insert(id) {
-                                    out.tool_calls += 1;
-                                    let name = b["name"].as_str().unwrap_or("?");
-                                    report.emit(task_id, Event::ToolCall { name });
-                                    watch.saw(name, &b["input"]);
-                                }
-                            }
-                        }
-                    }
-                    if let Some(tripped) = watch.should_end(writes) {
-                        let text = tripped
-                            .iter()
-                            .map(|(_, w)| w.as_str())
-                            .collect::<Vec<_>>()
-                            .join("; ");
-                        writeln!(
-                            log,
-                            "{{\"type\":\"forge_early_end\",\"forge_ms\":{},\"signals\":{}}}",
-                            start.elapsed().as_millis(),
-                            serde_json::to_string(&text)?
-                        )?;
-                        report.emit(
-                            task_id,
-                            Event::Note {
-                                text: &format!("early    stopped: {text}"),
-                            },
-                        );
-                        out.ended_early = Some(text);
-                        break;
-                    }
-                }
-                Some("system") => {
-                    if let Some(id) = v["session_id"].as_str() {
-                        out.session_id = Some(id.to_string());
-                    }
-                }
-                Some("result") => {
-                    apply_claude_result(&mut out, &v);
-                }
-                Some("rate_limit_event") => {
-                    let w = &v["rate_limit_info"]["unifiedWindows"];
-                    let read = |name: &str| {
-                        let win = &w[name];
-                        Some((
-                            win["utilization"].as_f64()?,
-                            win["resetsAt"].as_i64().unwrap_or(0),
-                        ))
-                    };
-                    if let Some(s) = read("five_hour") {
-                        out.rate_limits.five_hour = Some(s);
-                    }
-                    if let Some(s) = read("seven_day") {
-                        out.rate_limits.seven_day = Some(s);
-                    }
-                    // A refused run: hold the shorter window until the reset
-                    // the provider named (or five minutes), whichever the
-                    // sample does not already say.
-                    if v["rate_limit_info"]["status"].as_str() == Some("rejected") {
-                        out.rate_limited = true;
-                        let resets = v["rate_limit_info"]["resetsAt"]
-                            .as_i64()
-                            .unwrap_or_else(|| crate::unix_now() + 300);
-                        let (u, r) = out.rate_limits.five_hour.unwrap_or((1.0, resets));
-                        out.rate_limits.five_hour =
-                            Some((u.max(1.0), if r > 0 { r } else { resets }));
-                    }
-                }
-                _ => {}
+            let mut on_tool = |name: &str| report.emit(task_id, Event::ToolCall { name });
+            if let Some(text) =
+                apply_claude_frame(&v, &mut out, &mut seen_tools, &mut watch, writes, &mut on_tool)
+            {
+                writeln!(
+                    log,
+                    "{{\"type\":\"forge_early_end\",\"forge_ms\":{},\"signals\":{}}}",
+                    start.elapsed().as_millis(),
+                    serde_json::to_string(&text)?
+                )?;
+                report.emit(
+                    task_id,
+                    Event::Note {
+                        text: &format!("early    stopped: {text}"),
+                    },
+                );
+                out.ended_early = Some(text);
+                break;
             }
         }
         Ok::<(), anyhow::Error>(())

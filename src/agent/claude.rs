@@ -68,6 +68,84 @@ pub(super) fn claude_argv(bin: &str, l: &Launch<'_>) -> Vec<String> {
     argv
 }
 
+/// One parsed frame of the claude CLI's `stream-json` output folded into
+/// `out` and `watch`: an `assistant` frame's `tool_use` blocks are counted
+/// once per id (the CLI repeats a message once per content block) and each
+/// new one is handed to `on_tool`; `system` names the session; `result`
+/// is the answer; `rate_limit_event` carries the window samples and a
+/// rejection. Returns the early-ending text when enough signals tripped.
+/// The side effects that need the log or the reporter are the caller's.
+pub(super) fn apply_claude_frame(
+    v: &Value,
+    out: &mut Outcome,
+    seen_tools: &mut HashSet<String>,
+    watch: &mut Watch,
+    writes: bool,
+    on_tool: &mut dyn FnMut(&str),
+) -> Option<String> {
+    match v["type"].as_str() {
+        Some("assistant") => {
+            if let Some(blocks) = v["message"]["content"].as_array() {
+                for b in blocks {
+                    if b["type"] == "tool_use" {
+                        let id = b["id"].as_str().unwrap_or("").to_string();
+                        if seen_tools.insert(id) {
+                            out.tool_calls += 1;
+                            let name = b["name"].as_str().unwrap_or("?");
+                            on_tool(name);
+                            watch.saw(name, &b["input"]);
+                        }
+                    }
+                }
+            }
+            if let Some(tripped) = watch.should_end(writes) {
+                return Some(
+                    tripped
+                        .iter()
+                        .map(|(_, w)| w.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                );
+            }
+        }
+        Some("system") => {
+            if let Some(id) = v["session_id"].as_str() {
+                out.session_id = Some(id.to_string());
+            }
+        }
+        Some("result") => apply_claude_result(out, v),
+        Some("rate_limit_event") => {
+            let w = &v["rate_limit_info"]["unifiedWindows"];
+            let read = |name: &str| {
+                let win = &w[name];
+                Some((
+                    win["utilization"].as_f64()?,
+                    win["resetsAt"].as_i64().unwrap_or(0),
+                ))
+            };
+            if let Some(s) = read("five_hour") {
+                out.rate_limits.five_hour = Some(s);
+            }
+            if let Some(s) = read("seven_day") {
+                out.rate_limits.seven_day = Some(s);
+            }
+            // A refused run: hold the shorter window until the reset
+            // the provider named (or five minutes), whichever the
+            // sample does not already say.
+            if v["rate_limit_info"]["status"].as_str() == Some("rejected") {
+                out.rate_limited = true;
+                let resets = v["rate_limit_info"]["resetsAt"]
+                    .as_i64()
+                    .unwrap_or_else(|| crate::unix_now() + 300);
+                let (u, r) = out.rate_limits.five_hour.unwrap_or((1.0, resets));
+                out.rate_limits.five_hour = Some((u.max(1.0), if r > 0 { r } else { resets }));
+            }
+        }
+        _ => {}
+    }
+    None
+}
+
 /// Read the CLI result independently of the process exit status.
 pub(super) fn apply_claude_result(out: &mut Outcome, v: &Value) {
     out.got_result = true;
