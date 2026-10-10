@@ -1035,6 +1035,7 @@ pub async fn integrate_many(f: &Forge, ids: &[i64]) -> Result<IntegrateReport> {
         _ => None,
     };
     let base_sha = git::clone_task(
+        &f.paths.home,
         &repo,
         &cfg.base_branch,
         &dir,
@@ -1294,7 +1295,16 @@ pub(crate) async fn land_task_outcome(f: &Forge, id: i64, by_hand: bool) -> Resu
             let _ = std::fs::remove_dir_all(&dir);
         }
         let restored = async {
-            git::clone_task(&repo, &t.base_branch, &dir, &t.branch, None, None).await?;
+            git::clone_task(
+                &f.paths.home,
+                &repo,
+                &t.base_branch,
+                &dir,
+                &t.branch,
+                None,
+                None,
+            )
+            .await?;
             git::fetch_ref(&dir, &url, &t.branch).await?;
             git::reset_hard(&dir, "FETCH_HEAD").await
         }

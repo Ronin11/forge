@@ -314,7 +314,7 @@ async fn build_spec(
     };
     Ok(match contract {
         Contract::Code => code_spec(dp, repo, common).await,
-        Contract::Tests => tests_spec(dp, repo, common).await?,
+        Contract::Tests => tests_spec(f, dp, repo, common).await?,
         Contract::Plan if step.action.name == "interview" => Spec {
             dir: PathBuf::from(&t.worktree),
             prompt: interview_prompt(
@@ -387,6 +387,7 @@ async fn code_spec(dp: crate::prompts::DirectivePrompt<'_>, repo: &Path, common:
 /// The tests contract's `Spec`: its own clone of the base, apart from the
 /// coder's, cloned once and reused across the step's attempts.
 async fn tests_spec(
+    f: &Forge,
     dp: crate::prompts::DirectivePrompt<'_>,
     repo: &Path,
     common: Inputs,
@@ -400,6 +401,7 @@ async fn tests_spec(
             .as_ref()
             .map(|n| format!("refs/remotes/{n}/{}", t.base_branch));
         git::clone_task(
+            &f.paths.home,
             repo,
             &t.base_branch,
             &dir,

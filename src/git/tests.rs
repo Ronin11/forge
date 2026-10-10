@@ -20,7 +20,7 @@ const CALL_SITES: &[&str] = &[
     // Caller-named: always hardened, including agent clones.
     "current_branch:repo",
     "ref_exists:repo",
-    "clone_task:repo",
+    "clone_task:&kernel",
     "clone_task:dir",
     "fetch_ref:dir",
     "fetch_full_ref:dir",
@@ -587,4 +587,53 @@ async fn would_conflict_names_the_file_and_leaves_the_tree_alone() {
     assert_eq!(head(wt).await.unwrap(), ours);
     assert_eq!(std::fs::read_to_string(wt.join("a.txt")).unwrap(), "ours\n");
     assert!(dirty_paths(wt).await.unwrap().is_empty());
+
+fn packs(git_dir: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(git_dir.join("objects/pack"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "pack"))
+        .collect();
+    found.sort();
+    found
+}
+
+#[tokio::test]
+async fn clones_of_one_project_share_the_kernel_repositorys_packs() {
+    use std::os::unix::fs::MetadataExt;
+    let home = tempfile::tempdir().unwrap();
+    let repo = init_repo();
+    // Enough objects that the fetch into the kernel repository keeps a pack
+    // rather than unpacking to loose objects.
+    for i in 0..150 {
+        std::fs::write(repo.path().join(format!("f{i}.txt")), format!("{i}\n")).unwrap();
+    }
+    commit_all(repo.path(), "base").await.unwrap().unwrap();
+    let base = current_branch(repo.path()).await.unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let (a, b) = (work.path().join("a"), work.path().join("b"));
+    let sha_a = clone_task(home.path(), repo.path(), &base, &a, "task-a", None, None)
+        .await
+        .unwrap();
+    let sha_b = clone_task(home.path(), repo.path(), &base, &b, "task-b", None, None)
+        .await
+        .unwrap();
+    assert_eq!(sha_a, sha_b);
+    let kernel = kernel_repository(home.path(), repo.path()).await.unwrap();
+    let kernel_packs = packs(&kernel);
+    assert!(!kernel_packs.is_empty());
+    for pack in kernel_packs {
+        let name = pack.file_name().unwrap();
+        let ka = std::fs::metadata(&pack).unwrap();
+        let ca = std::fs::metadata(a.join(".git/objects/pack").join(name)).unwrap();
+        let cb = std::fs::metadata(b.join(".git/objects/pack").join(name)).unwrap();
+        assert_eq!(ka.ino(), ca.ino());
+        assert_eq!(ka.ino(), cb.ino());
+        assert_eq!(ka.nlink(), 3);
+    }
+    // No remote survives in either clone.
+    for dir in [&a, &b] {
+        let remotes = Git::new(dir).line(&["remote"]).await.unwrap();
+        assert_eq!(remotes, "");
+    }
 }

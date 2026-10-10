@@ -159,11 +159,21 @@ pub async fn ref_exists(repo: &Path, full_ref: &str) -> bool {
         .is_ok()
 }
 
-/// A single-branch clone of `base` from the registered checkout, on a new
-/// task branch, with no remote at all: the agent inside cannot fetch
-/// anything, in particular not the verification refs. Forge pushes by URL.
-/// Returns the base commit.
+/// A single-branch clone of `base` on a new task branch, with no remote at
+/// all: the agent inside cannot fetch anything, in particular not the
+/// verification refs. Forge pushes by URL. Returns the base commit.
+///
+/// The clone is made from the kernel repository, after fetching `base` (and
+/// `at_ref`) into it from the registered checkout, never from the checkout
+/// itself: a local clone hardlinks objects, so every clone of one project
+/// shares the kernel repository's packs, where the operator's checkout
+/// repacks under its own auto-gc and would break the sharing between clones
+/// made at different times. The kernel repository therefore never repacks on
+/// its own (`gc.auto=0`, `maintenance.auto=false` on every hardened command);
+/// a repack there costs one private copy of the new packs per live clone
+/// until those clones are removed.
 pub async fn clone_task(
+    home: &Path,
     repo: &Path,
     base: &str,
     dir: &Path,
@@ -173,27 +183,65 @@ pub async fn clone_task(
 ) -> Result<String> {
     let dir_s = dir.to_str().context("clone path is not UTF-8")?;
     let repo_s = repo.to_str().context("repo path is not UTF-8")?;
-    // The clone target does not exist yet, so run from the source repo,
-    // which does.
-    Git::new(repo)
-        .hardened()
-        .raw(&[
+    let _lock = kernel_lock(home, repo).await?;
+    let kernel = kernel_repository(home, repo).await?;
+    let kernel_s = kernel
+        .to_str()
+        .context("kernel path is not UTF-8")?
+        .to_string();
+    let base_ref_name = format!("refs/forge/clone-base/{base}");
+    let ref_staged = {
+        let g = Git::new(&kernel).hardened();
+        g.line(&[
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--",
+            repo_s,
+            &format!("+refs/heads/{base}:refs/heads/{base}"),
+        ])
+        .await?;
+        let staged = match at_ref {
+            Some(r) => g
+                .line(&[
+                    "fetch",
+                    "--quiet",
+                    "--no-tags",
+                    "--no-recurse-submodules",
+                    "--",
+                    repo_s,
+                    &format!("+{r}:{base_ref_name}"),
+                ])
+                .await
+                .is_ok(),
+            None => false,
+        };
+        // Hardlinks are git's default for a local clone; `--no-hardlinks`
+        // stays off so the clones share the kernel repository's packs.
+        g.raw(&[
             "clone",
             "--quiet",
             "--single-branch",
             "--no-tags",
             "--branch",
             base,
-            repo_s,
+            &kernel_s,
             dir_s,
         ])
         .await?;
+        staged
+    };
     let dir_git = Git::new(dir).hardened();
     // The base as the remote has it, not as the registered checkout has it;
     // a recorded sha wins over the ref, so every clone of one task agrees.
     match (at_ref, at_sha) {
         (Some(r), sha) => {
-            let fetched = dir_git.line(&["fetch", "--quiet", repo_s, r]).await.is_ok();
+            let fetched = ref_staged
+                && dir_git
+                    .line(&["fetch", "--quiet", &kernel_s, &base_ref_name])
+                    .await
+                    .is_ok();
             match (fetched, sha) {
                 (true, Some(sha)) | (false, Some(sha)) => {
                     dir_git.line(&["reset", "--hard", "--quiet", sha]).await?;
