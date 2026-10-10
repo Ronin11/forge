@@ -156,15 +156,16 @@ pub fn task_caches(worktree: &str) -> Result<u64> {
     Ok(bytes)
 }
 
-/// Suffixes of the directories Forge keeps beside a task's worktree
+/// Suffixes of the directories Forge keeps (longest first, so a name's
+/// suffix reads unambiguously) beside a task's worktree
 /// (`<worktree><suffix>`): kernel-owned overlay uppers, the private `/tmp`,
 /// the writing and review steps' provider state, the tests clone, the red
 /// scratch clone, and an operation's tree.
 pub const SIBLINGS: &[&str] = &[
     "-overlays",
     "-tmp",
-    "-provider",
     "-review-provider",
+    "-provider",
     "-tests",
     "-red",
     "-op",
@@ -427,11 +428,12 @@ mod tests {
         std::os::unix::fs::symlink(external.path(), dir.path().join("target")).unwrap();
         caches(dir.path(), false).unwrap();
         assert!(external.path().join("keep").exists());
-        std::fs::remove_dir(dir.path().join("node_modules")).unwrap();
+        assert!(!dir.path().join("node_modules").exists());
         std::os::unix::fs::symlink(external.path(), dir.path().join("node_modules")).unwrap();
         std::fs::create_dir(external.path().join(".cache")).unwrap();
         caches(dir.path(), false).unwrap();
         assert!(external.path().join(".cache").exists());
+        assert!(!dir.path().join("node_modules").exists());
     }
 
     #[test]
