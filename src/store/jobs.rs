@@ -259,7 +259,7 @@ pub(super) const JOB_EFFECT_COLUMNS: &[&str] = &[
     "id", "job_id", "seq", "kind", "target", "summary", "dry_run",
 ];
 
-fn job_from_row(r: &Row) -> rusqlite::Result<Job> {
+pub(super) fn job_from_row(r: &Row) -> rusqlite::Result<Job> {
     Ok(Job {
         id: r.get("id")?,
         project: r.get("project")?,

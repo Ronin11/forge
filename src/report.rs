@@ -197,6 +197,16 @@ pub enum Event<'a> {
         text: &'a str,
         audience: &'a str,
     },
+    /// One of `forge doctor`'s watches (docs/OPS.md, "What doctor
+    /// watches") went from OK to WARN or ERROR: written once, when it
+    /// first trips, not on every doctor run that still sees it.
+    /// `status` is `warn` or `error`; `detail` is the row's evidence.
+    DoctorTripped {
+        check: &'a str,
+        status: &'a str,
+        detail: &'a str,
+        audience: &'a str,
+    },
 }
 
 /// Every `type` an event carries in `events.jsonl`, the values a run
@@ -230,6 +240,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "initiative_held",
     "notification_digest",
     "operator_alert",
+    "doctor_tripped",
 ];
 
 impl Event<'_> {
@@ -366,6 +377,12 @@ impl Event<'_> {
             Event::ProviderReleased { provider } => {
                 format!("released {provider}: its login answered")
             }
+            Event::DoctorTripped {
+                check,
+                status,
+                detail,
+                ..
+            } => format!("doctor {check} {status}: {detail}"),
             Event::InitiativeHeld {
                 id, reason, queued, ..
             } => format!(
@@ -735,7 +752,8 @@ fn render(ev: Event) -> Vec<String> {
         }
         Event::InitiativeHeld { .. }
         | Event::NotificationDigest { .. }
-        | Event::OperatorAlert { .. } => vec![summary],
+        | Event::OperatorAlert { .. }
+        | Event::DoctorTripped { .. } => vec![summary],
     }
 }
 

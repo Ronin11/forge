@@ -42,6 +42,7 @@ mod stats;
 mod supersede;
 mod tasks;
 mod webhooks;
+mod watch;
 mod workers;
 
 pub use adoption::{Adoption, ManualStat, Origin};
@@ -74,6 +75,7 @@ pub use tasks::{
     REQUEUE_ABORT, REQUEUE_ORPHAN, REQUEUE_REASONS, RoleRouting, Routed, Task, TaskState,
     TaskUpdate, Trust,
 };
+pub use watch::{Mark, RefusalRow, StepRun, VerdictRow, WorkerStart};
 pub use workers::WorkerRow;
 
 /// Forward-only. Index = version - 1. Never edit a shipped entry; append.
