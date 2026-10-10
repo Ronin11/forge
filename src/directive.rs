@@ -65,19 +65,22 @@ pub enum Egress<'a> {
     ModelOnly,
 }
 
-pub async fn launch(f: &Forge, s: Spec<'_>) -> Result<Outcome> {
-    // Every sandboxed launch registers its own directory with its own
-    // provider, so its proxy never depends on what an earlier run in the
-    // same directory left behind: the supervisor's run in a blocked task's
-    // worktree was refused its model endpoint when it did (2026-10-03).
-    if s.sandboxed {
-        match s.egress {
-            Egress::Project { cfg, trust } => {
-                f.allow_egress_for(s.dir, cfg, trust, Some(s.provider))
-            }
-            Egress::ModelOnly => f.allow_model_egress(s.dir, s.provider),
-        }
+/// Register what a sandboxed run in `s.dir` may reach, with `s.provider`'s
+/// own model endpoints, so its proxy never depends on what an earlier run
+/// in the same directory left behind: the supervisor's run in a blocked
+/// task's worktree was refused its model endpoint when it did (2026-10-03).
+fn register_egress(f: &Forge, s: &Spec<'_>) {
+    if !s.sandboxed {
+        return;
     }
+    match s.egress {
+        Egress::Project { cfg, trust } => f.allow_egress_for(s.dir, cfg, trust, Some(s.provider)),
+        Egress::ModelOnly => f.allow_model_egress(s.dir, s.provider),
+    }
+}
+
+pub async fn launch(f: &Forge, s: Spec<'_>) -> Result<Outcome> {
+    register_egress(f, &s);
     let kernel;
     let identity_repo = match s.identity_repo {
         Some(repo) => repo,
@@ -245,6 +248,137 @@ pub fn agent_failure(a: &Outcome) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sandboxed_forge(home: &Path) -> Forge {
+        let paths = crate::ctx::Paths {
+            worktrees: home.join("worktrees"),
+            logs: home.join("logs"),
+            home: home.to_path_buf(),
+        };
+        std::fs::create_dir_all(&paths.worktrees).unwrap();
+        std::fs::create_dir_all(&paths.logs).unwrap();
+        let store = crate::store::Store::open(&paths.home.join("forge.db")).unwrap();
+        let mut f = Forge::open_with(paths, store).unwrap();
+        let sandbox =
+            crate::sandbox::Sandbox::with_bwrap("/bin/false".into(), home.join("sandbox-home"));
+        f.sandbox = Some(crate::executor::Execution::bwrap_only(sandbox));
+        f
+    }
+
+    fn spec<'a>(
+        f: &Forge,
+        dir: &'a Path,
+        provider: &'a agent::Provider,
+        sandboxed: bool,
+        egress: Egress<'a>,
+    ) -> Spec<'a> {
+        Spec {
+            id: 1,
+            step: "supervisor",
+            dir,
+            identity_repo: None,
+            prompt: "",
+            system: "",
+            model: "opus",
+            max_turns: 1,
+            timeout: Duration::from_secs(1),
+            check_timeout: Duration::ZERO,
+            log_path: dir,
+            provider,
+            schema: "",
+            sandboxed,
+            egress,
+            writes: false,
+            start_sha: "",
+            resume: None,
+            no_tools: false,
+            judgment: None,
+            early_ending: f.early_ending,
+        }
+    }
+
+    fn hosts(f: &Forge, dir: &Path) -> Vec<String> {
+        f.sandbox
+            .as_ref()
+            .unwrap()
+            .policy_for(dir)
+            .rules()
+            .iter()
+            .map(|r| r.to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_sandboxed_launch_registers_its_own_providers_hosts_for_its_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = sandboxed_forge(&tmp.path().join("home"));
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(
+            repo.join("forge.toml"),
+            "[defaults]\nbase_branch = \"main\"\n[sandbox]\negress = [\"registry.npmjs.org\"]\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load_working(&repo).await.unwrap();
+        let claude = agent::Provider::default();
+        // Nothing registered the worktree before: no earlier attempt ran in
+        // this process, as for a supervisor reading a blocked task.
+        assert!(hosts(&f, &repo).is_empty());
+        register_egress(
+            &f,
+            &spec(
+                &f,
+                &repo,
+                &claude,
+                true,
+                Egress::Project {
+                    cfg: &cfg,
+                    trust: crate::store::Trust::Operator,
+                },
+            ),
+        );
+        let got = hosts(&f, &repo);
+        assert!(got.contains(&"*.anthropic.com".to_string()), "{got:?}");
+        assert!(got.contains(&"registry.npmjs.org".to_string()), "{got:?}");
+
+        // The launch's own provider replaces whatever an earlier run with
+        // another provider left for the same directory.
+        let codex = agent::Provider {
+            name: "codex".into(),
+            runner: agent::Runner::CodexCli,
+            ..Default::default()
+        };
+        f.allow_egress_for(&repo, &cfg, crate::store::Trust::Operator, Some(&codex));
+        assert!(!hosts(&f, &repo).contains(&"*.anthropic.com".to_string()));
+        register_egress(
+            &f,
+            &spec(
+                &f,
+                &repo,
+                &claude,
+                true,
+                Egress::Project {
+                    cfg: &cfg,
+                    trust: crate::store::Trust::Operator,
+                },
+            ),
+        );
+        let got = hosts(&f, &repo);
+        assert!(got.contains(&"*.anthropic.com".to_string()), "{got:?}");
+        assert!(!got.contains(&"*.openai.com".to_string()), "{got:?}");
+
+        // A scratch directory reaches the model endpoint alone.
+        let scratch = tmp.path().join("scratch");
+        register_egress(&f, &spec(&f, &scratch, &claude, true, Egress::ModelOnly));
+        let got = hosts(&f, &scratch);
+        assert!(got.contains(&"*.anthropic.com".to_string()), "{got:?}");
+        assert!(!got.contains(&"registry.npmjs.org".to_string()), "{got:?}");
+
+        // An unsandboxed launch registers nothing.
+        let host = tmp.path().join("host");
+        register_egress(&f, &spec(&f, &host, &claude, false, Egress::ModelOnly));
+        assert!(hosts(&f, &host).is_empty());
+    }
 
     #[test]
     fn agent_failure_reasons() {
