@@ -45,6 +45,12 @@ pub const ATTEMPT_TOOLS: &str = "Bash,Read,Edit,Write,Glob,Grep";
 /// (`engine::capped::check_cap`). Checked against claude 2.1.292
 /// (2026-10-10): `--help` lists the flag ("only works with --print") and
 /// a run given 0.0001 ended with that subtype and terminal reason.
+///
+/// `--no-session-persistence` is deliberately not passed. Every step's
+/// claude directory is private to the sandbox and removed with the
+/// worktree, so no session file reaches the operator's `~/.claude/projects`,
+/// and the continuation path needs the session for `--resume`. Checked on
+/// claude 2.1.292: with it, `--resume` fails with 'No conversation found'.
 pub(super) fn claude_argv(bin: &str, l: &Launch<'_>) -> Vec<String> {
     let mut argv = vec![
         bin.to_string(),
@@ -328,6 +334,22 @@ mod tests {
         let argv = claude_argv("claude", &l);
         let at = argv.iter().position(|a| a == "--max-budget-usd").unwrap();
         assert_eq!(argv[at + 1], "3.7500", "{argv:?}");
+    }
+
+    #[test]
+    fn claude_argv_keeps_the_session_so_resume_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = Reporter::new(false, None);
+        let provider = Provider::default();
+        let log_path = dir.path().join("log.jsonl");
+        let mut l = test_launch(dir.path(), &report, &provider, &log_path, "{}", false, None);
+        l.resume = Some("sess-1");
+        let argv = claude_argv("claude", &l);
+        assert!(
+            !argv.iter().any(|a| a == "--no-session-persistence"),
+            "{argv:?}"
+        );
+        assert!(argv.iter().any(|a| a == "--resume"), "{argv:?}");
     }
 
     /// The result frame of a run the CLI stopped at `--max-budget-usd`,
