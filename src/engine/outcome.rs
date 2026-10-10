@@ -298,7 +298,11 @@ mod tests {
                 "landed  @ abc123de",
             ),
             (End::Unverified("reason".to_string()), 1, "reason"),
-            (End::Held("held for a human".to_string()), 1, "held for a human"),
+            (
+                End::Held("held for a human".to_string()),
+                1,
+                "held for a human",
+            ),
             (
                 End::Blocked {
                     reason: "needs input: which one?".to_string(),
