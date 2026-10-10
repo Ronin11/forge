@@ -35,6 +35,40 @@ pub struct Env {
 /// process had forked (the plugins a worker supervises sit in groups of
 /// their own) is remembered as the test signals it, and once the process
 /// is gone none of it may survive: a survivor is killed and reported.
+impl Drop for Env {
+    fn drop(&mut self) {
+        // bubblewrap's overlays leave each attempt's `work/work` directory
+        // mode 000 under the fixture home, which TempDir's removal then
+        // fails on, silently: thousands of them accumulated under every
+        // worktree's target/tmp, and the kernel's cache removal there
+        // failed the same way.
+        readable(self._dir.path());
+        if let Some(r) = &self._releases {
+            readable(r.path());
+        }
+    }
+}
+
+/// Every directory under `path` listable and writable by its owner.
+fn readable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = path.symlink_metadata() else {
+        return;
+    };
+    if !meta.is_dir() {
+        return;
+    }
+    let mode = meta.permissions().mode();
+    if mode & 0o700 != 0o700 {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o700));
+    }
+    if let Ok(rd) = std::fs::read_dir(path) {
+        for e in rd.flatten() {
+            readable(&e.path());
+        }
+    }
+}
+
 pub struct Worker {
     child: Option<Child>,
     seen: RefCell<Vec<Proc>>,

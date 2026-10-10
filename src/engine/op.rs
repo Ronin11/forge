@@ -17,14 +17,18 @@ impl From<Fault> for anyhow::Error {
 }
 
 pub trait Classify<T> {
+    #[track_caller]
     fn task(self) -> Result<T, Fault>;
+    #[track_caller]
     fn env(self) -> Result<T, Fault>;
 }
 
 impl<T, E: Into<anyhow::Error>> Classify<T> for Result<T, E> {
+    #[track_caller]
     fn task(self) -> Result<T, Fault> {
+        let at = std::panic::Location::caller();
         self.map_err(|e| {
-            let error = e.into();
+            let error = located(e.into(), at);
             if error.downcast_ref::<crate::egress::SocketError>().is_some() {
                 Fault::Env(error)
             } else {
@@ -32,8 +36,22 @@ impl<T, E: Into<anyhow::Error>> Classify<T> for Result<T, E> {
             }
         })
     }
+    #[track_caller]
     fn env(self) -> Result<T, Fault> {
-        self.map_err(|e| Fault::Env(e.into()))
+        let at = std::panic::Location::caller();
+        self.map_err(|e| Fault::Env(located(e.into(), at)))
+    }
+}
+
+/// A bare OS error ("Permission denied (os error 13)") names neither a
+/// path nor an operation; the classifying call site is then the one thing
+/// known about where it came from, so it is added. One such fault exited
+/// the worker after some thirty tasks before its source was found.
+fn located(e: anyhow::Error, at: &std::panic::Location<'_>) -> anyhow::Error {
+    if e.chain().count() == 1 && e.downcast_ref::<std::io::Error>().is_some() {
+        e.context(format!("at {}:{}", at.file(), at.line()))
+    } else {
+        e
     }
 }
 

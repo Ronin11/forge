@@ -277,7 +277,7 @@ async fn run(
     let repo = PathBuf::from(&t.repo);
     let wt = PathBuf::from(&t.worktree);
     if wt.exists() {
-        std::fs::remove_dir_all(&wt)?;
+        crate::disk::remove_tree(&wt)?;
     }
     let timer = Timer::now();
     let mut tip = git::clone_task(&repo, &cfg.base_branch, &wt, &t.branch, None, None).await?;

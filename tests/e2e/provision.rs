@@ -2,8 +2,8 @@ use crate::support::*;
 use std::os::unix::fs::PermissionsExt;
 
 /// A fake `hcloud`: records every call, reports the firewall as not found
-/// (forcing the creation path), and answers `server describe` with a fixed
-/// fixture server, already running, at a fixed ipv4 — enough to drive
+/// (forcing the creation path), and answers `server describe`'s template
+/// queries for a fixture server, already running, at a fixed ipv4 — enough to drive
 /// `provision-hetzner.toml`'s firewall, create and wait steps without a
 /// real Hetzner account.
 const FAKE_HCLOUD: &str = r#"#!/bin/bash
@@ -22,9 +22,11 @@ case "$1 $2" in
     exit 0
     ;;
   "server describe")
-    cat <<'JSON'
-{"status": "running", "public_net": {"ipv4": {"ip": "203.0.113.9"}}}
-JSON
+    case "$*" in
+      *'{{.Status}}'*) echo running ;;
+      *'{{.PublicNet.IPv4.IP}}'*) echo 203.0.113.9 ;;
+      *) echo "unexpected describe output option: $*" >&2; exit 1 ;;
+    esac
     ;;
   *)
     echo "unexpected hcloud invocation: $*" >&2
@@ -146,7 +148,7 @@ fn provision_creates_a_firewall_and_server_and_records_the_host_suggestion() {
     assert!(calls.contains("--ssh-key deploy-key"), "{calls}");
     assert!(calls.contains("--ssh-key operator-key"), "{calls}");
     assert!(
-        calls.contains("hcloud server describe box -o json"),
+        calls.contains("hcloud server describe box -o format={{.Status}}"),
         "{calls}"
     );
 

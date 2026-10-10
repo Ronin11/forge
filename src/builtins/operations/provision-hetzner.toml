@@ -40,7 +40,7 @@ hcloud "${create_args[@]}" >/dev/null
 
 tries=0
 while true; do
-  status="$(hcloud server describe "$name" -o json | python3 -c 'import json, sys; print(json.load(sys.stdin).get("status", ""))')"
+  status="$(hcloud server describe "$name" -o 'format={{.Status}}')"
   if [ "$status" = "running" ]; then
     break
   fi
@@ -52,7 +52,7 @@ while true; do
   sleep 2
 done
 
-ipv4="$(hcloud server describe "$name" -o json | python3 -c 'import json, sys; print(json.load(sys.stdin)["public_net"]["ipv4"]["ip"])')"
+ipv4="$(hcloud server describe "$name" -o 'format={{.PublicNet.IPv4.IP}}')"
 
 cat >> "$outdir/ssh-config" <<HOST
 Host $name

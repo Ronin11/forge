@@ -672,7 +672,7 @@ impl Store {
             ],
         )?;
         if !matches!(t.state, TaskState::Running | TaskState::Queued) {
-            crate::disk::task_caches(&t.worktree)?;
+            crate::disk::discard_task_caches(&t.worktree);
         }
         Ok(())
     }
@@ -732,7 +732,7 @@ impl Store {
         if n == 1
             && let Some(t) = self.task(id)?
         {
-            crate::disk::task_caches(&t.worktree)?;
+            crate::disk::discard_task_caches(&t.worktree);
         }
         Ok(n == 1)
     }
@@ -844,7 +844,7 @@ impl Store {
         drop(c);
         for (id, _, _) in &out {
             if let Some(task) = self.task(*id)? {
-                crate::disk::task_caches(&task.worktree)?;
+                crate::disk::discard_task_caches(&task.worktree);
             }
         }
         Ok(out)

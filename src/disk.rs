@@ -65,14 +65,59 @@ pub fn caches(worktree: &Path, dry_run: bool) -> Result<u64> {
         let count = size(&path);
         if !dry_run {
             if meta.is_dir() {
-                std::fs::remove_dir_all(&path)?;
+                remove_tree(&path)?;
             } else {
-                std::fs::remove_file(&path)?;
+                std::fs::remove_file(&path).map_err(|e| named(&path, e))?;
             }
         }
         bytes += count;
     }
     Ok(bytes)
+}
+
+/// Remove `path` with everything under it, like `std::fs::remove_dir_all`,
+/// except that a directory nobody can read does not stop the removal.
+/// overlayfs leaves its `work/work` directory mode 000: bubblewrap's
+/// `--overlay` makes one per attempt under the worktree's overlay state
+/// directory, and Forge's own e2e suite leaves thousands under a
+/// worktree's `target/tmp`. `remove_dir_all` fails on the first one with a
+/// bare "Permission denied" naming no path, which at a task's terminal
+/// state write surfaced as an environment fault and exited the worker
+/// (2026-10-04 to 10-10). Such directories are made readable first, and
+/// every error names its path. A missing `path` is nothing to remove.
+pub fn remove_tree(path: &Path) -> std::io::Result<()> {
+    use std::io::ErrorKind::{NotFound, PermissionDenied};
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => return Ok(()),
+        Err(e) if e.kind() == NotFound => return Ok(()),
+        Err(e) if e.kind() == PermissionDenied => {}
+        Err(e) => return Err(named(path, e)),
+    }
+    make_removable(path)?;
+    std::fs::remove_dir_all(path).map_err(|e| named(path, e))
+}
+
+fn named(path: &Path, e: std::io::Error) -> std::io::Error {
+    std::io::Error::new(e.kind(), format!("{}: {e}", path.display()))
+}
+
+/// Every directory under `path` (symlinks not followed) readable, writable
+/// and searchable by its owner, so its entries can be listed and unlinked.
+fn make_removable(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = path.symlink_metadata().map_err(|e| named(path, e))?;
+    if !meta.is_dir() {
+        return Ok(());
+    }
+    let mode = meta.permissions().mode();
+    if mode & 0o700 != 0o700 {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o700))
+            .map_err(|e| named(path, e))?;
+    }
+    for entry in std::fs::read_dir(path).map_err(|e| named(path, e))? {
+        make_removable(&entry.map_err(|e| named(path, e))?.path())?;
+    }
+    Ok(())
 }
 
 /// Cleanup after a job executor returns, including early errors and skips.
@@ -82,6 +127,17 @@ impl Drop for JobCaches {
         if let Err(error) = caches(&self.0, false) {
             eprintln!("job cache cleanup {}: {error:#}", self.0.display());
         }
+    }
+}
+
+/// `task_caches` for a task that just reached a terminal state: a cache
+/// that still cannot be removed is reported on stderr and left for `forge
+/// gc --caches`, never an error of the state change itself. A failed
+/// removal there once became a bare environment fault that exited the
+/// worker, killing every running attempt and plugin with it.
+pub fn discard_task_caches(worktree: &str) {
+    if let Err(e) = task_caches(worktree) {
+        eprintln!("cache cleanup {worktree}: {e:#}");
     }
 }
 
@@ -247,6 +303,25 @@ mod tests {
         std::fs::create_dir(external.path().join(".cache")).unwrap();
         caches(dir.path(), false).unwrap();
         assert!(external.path().join(".cache").exists());
+    }
+
+    #[test]
+    fn caches_removes_a_target_holding_unreadable_overlay_work_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir
+            .path()
+            .join("target/tmp/.tmpX/home/worktrees/2-overlays/.tmpY/work/work");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(dir.path().join("target/data"), "x").unwrap();
+        std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // The plain removal is what used to run here, and what fails.
+        assert!(std::fs::remove_dir_all(dir.path().join("target")).is_err());
+        caches(dir.path(), false).unwrap();
+        assert!(!dir.path().join("target").exists());
+        // Nothing to remove is not an error; an unremovable file names itself.
+        remove_tree(&dir.path().join("absent")).unwrap();
+        discard_task_caches(dir.path().to_str().unwrap());
     }
 }
 

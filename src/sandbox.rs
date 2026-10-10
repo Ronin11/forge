@@ -331,8 +331,15 @@ fn discard_provider_state_in(
     state: Option<&Path>,
     host_dir: impl Fn(&crate::login::Shape) -> Option<PathBuf>,
 ) {
-    let _ = std::fs::remove_dir_all(overlay_state_dir(worktree));
-    let _ = std::fs::remove_dir_all(tmp_dir(worktree));
+    // The overlay uppers' `work/work` directories are mode 000 (overlayfs
+    // makes them so); a plain removal fails on them and left one directory
+    // per attempt behind, silently, until `forge gc` could not remove the
+    // worktree either.
+    for dir in [overlay_state_dir(worktree), tmp_dir(worktree)] {
+        if let Err(e) = crate::disk::remove_tree(&dir) {
+            eprintln!("sandbox cleanup: {e}");
+        }
+    }
     for contract in [None, Some(Contract::Review)] {
         let dir = provider_dir_for(worktree, contract);
         if let Some(state) = state {

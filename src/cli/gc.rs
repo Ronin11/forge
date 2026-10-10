@@ -112,13 +112,13 @@ fn report_gc(
 /// private provider-state directory (see `sandbox::discard_provider_state`):
 /// otherwise a copy of the login leaks per task (docs/REVIEW-4.md #1.23).
 fn remove_worktree_and_siblings(wt: &Path, worktree: &str) -> Result<()> {
-    std::fs::remove_dir_all(wt)?;
+    crate::disk::remove_tree(wt)?;
     crate::sandbox::discard_provider_state(wt);
     for sibling in [
         crate::attempt::tests_clone_dir(worktree),
         crate::attempt::scratch_dir(worktree),
     ] {
-        let _ = std::fs::remove_dir_all(&sibling);
+        let _ = crate::disk::remove_tree(&sibling);
         crate::sandbox::discard_provider_state(&sibling);
     }
     Ok(())

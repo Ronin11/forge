@@ -8,7 +8,12 @@ outdir="$FORGE_ARG_OUT_DIR"
 mkdir -p "$outdir"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-npm install --no-save --no-audit --no-fund --prefix "$work" playwright >/dev/null 2>&1
+# Pinned: each Playwright release wants its own browser revision under
+# ~/.cache/ms-playwright, and the sandbox cannot download one, so an
+# unpinned install broke every smoke step the day a release shipped
+# (2026-10-09, 1.64.0 wanting chromium_headless_shell-1248). Bump the pin
+# and install its browser together: npx playwright@<v> install chromium-headless-shell
+npm install --no-save --no-audit --no-fund --prefix "$work" playwright@1.64.0 >/dev/null 2>&1
 cat > "$work/smoke.js" <<'NODE'
 const fs = require("fs");
 const { chromium } = require("playwright");
@@ -112,6 +117,11 @@ async function main() {
 }
 
 main().catch((e) => {
+  if (String(e).includes("Executable doesn't exist")) {
+    console.error(
+      "operator: the browser Playwright 1.64.0 wants is not installed; run as the worker's user: npx playwright@1.64.0 install chromium-headless-shell"
+    );
+  }
   try {
     fs.writeFileSync(
       `${process.argv[3]}/smoke.json`,

@@ -61,7 +61,7 @@ pub(super) async fn prepare_worktree(
         let dir = f.paths.worktrees.join(t.id.to_string());
         // An unrecorded clone can only be debris from an interrupted run.
         if dir.exists() {
-            std::fs::remove_dir_all(&dir).env()?;
+            crate::disk::remove_tree(&dir).env()?;
         }
         let timer = Timer::now();
         // The base is the remote's, so a task started after a landing sees it.
