@@ -26,6 +26,8 @@ and the evidence was on disk the whole time.
 
 Smaller things the table turned up:
 
+- The `test` check is not deterministic on this host under load. Landing this two-file documentation branch through `forge adopt` failed three times on three different tests: `naming::forge2_does_not_creep_back…` (real, the script named the data directory), then `agent::relaunch::…bwrap_loses_the_bind_mount_race` and `checks::…not_relaunched` (both pass on main in 0.02 s from a shell), then `resume::the_worker_holds_while_a_rate_window_is_at_its_cap…` after 600 s. With ten tasks running at once, the e2e suite's timing assumptions fail. This is the mechanism behind Forge's 30% land rate: most of its failures are the `test` check, and a share of those are the suite, not the change. Pass two's detector 4 catches the environmental case across tasks; the suite itself needs its timing-sensitive tests isolated or given load-aware timeouts.
+
 - `step/integrate` reads 0/45 ok. Those rows are written only when a merge's checks fail, so the ratio is by construction; the op-level number is 1054/1245. The row is misleading in any stats view and should be labelled.
 - `changelog-line` 0/8 (all on 09-17) and `engineering-weekly` skipped 3 of 4: probably retired or by design; confirm, then remove or fix.
 - Egress refusals: 1,634 for `api.anthropic.com` (all finding 1 and the login refresh probe), 4,124 for Datadog intake, ~1,500 for OpenAI blob hosts and chatgpt.com, 152 for google. The first kind is an error; the rest is telemetry noise. Nothing distinguishes them today.
