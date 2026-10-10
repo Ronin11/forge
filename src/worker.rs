@@ -1016,7 +1016,18 @@ fn claim_egress_dir() -> crate::egress::OwnDirGuard {
     crate::egress::OwnDirGuard
 }
 
-/// Why `work` is returning, in the words a stopped plugin's log gets after
+/// The tasks and jobs this worker ran, and how many went well, as it exits.
+fn report_worked((done, ok): (u32, u32), (jobs_done, jobs_ok): (u32, u32)) {
+    eprintln!("worked {done} task(s): {ok} succeeded, {} not", done - ok);
+    if jobs_done > 0 {
+        eprintln!(
+            "worked {jobs_done} job(s): {jobs_ok} ok, {} not",
+            jobs_done - jobs_ok
+        );
+    }
+}
+
+/// Why `work` is returning (its `cause`, set where it starts stopping), in the words a stopped plugin's log gets after
 /// `stopped: worker exiting: `. An environment fault outranks whatever
 /// stop it set off; the only way out of the loop with neither is a
 /// spent `--max-tasks`.
@@ -1053,7 +1064,6 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let (mut done, mut ok) = (0u32, 0u32);
     let (mut jobs_done, mut jobs_ok) = (0u32, 0u32);
     let mut stopping = false;
-    // Why the worker is exiting, as the plugins it stops are told.
     let mut cause: Option<String> = None;
     let mut env_error: Option<anyhow::Error> = None;
     let mut claimed = 0u32;
@@ -1246,13 +1256,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         p.exit(exit_cause(env_error.as_ref(), cause)).await;
     }
     let handover = succession.leave(&f).await;
-    eprintln!("worked {done} task(s): {ok} succeeded, {} not", done - ok);
-    if jobs_done > 0 {
-        eprintln!(
-            "worked {jobs_done} job(s): {jobs_ok} ok, {} not",
-            jobs_done - jobs_ok
-        );
-    }
+    report_worked((done, ok), (jobs_done, jobs_ok));
     match env_error {
         Some(e) => Err(e),
         None => handover,
