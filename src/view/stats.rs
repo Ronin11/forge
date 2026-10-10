@@ -1067,10 +1067,7 @@ pub async fn stats_doc(
         .unwrap_or_default();
     let (projects, jobs) = if scope.project.is_none() && scope.initiative.is_none() {
         (
-            with_land_rates(
-                f,
-                f.store.project_stats()?.iter().map(Into::into).collect(),
-            ),
+            with_land_rates(f, f.store.project_stats()?.iter().map(Into::into).collect()),
             f.store
                 .job_stats(crate::unix_now() - 86_400)?
                 .iter()
