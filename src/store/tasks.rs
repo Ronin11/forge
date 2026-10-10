@@ -671,9 +671,7 @@ impl Store {
                 t.early_ending,
             ],
         )?;
-        if !matches!(t.state, TaskState::Running | TaskState::Queued) {
-            crate::disk::discard_task_caches(&t.worktree);
-        }
+        crate::disk::task_finished(self, t);
         Ok(())
     }
 

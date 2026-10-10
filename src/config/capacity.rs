@@ -12,6 +12,9 @@ pub struct Settings {
     /// the machine budget, preserving existing single-project workers.
     pub project_slots: Option<usize>,
     pub max_load: Option<f64>,
+    /// Days a finished task's worktree is kept before housekeeping
+    /// publishes its branch and removes it (landed tasks go at landing).
+    pub worktree_retention_days: i64,
     pub projects: BTreeMap<String, usize>,
 }
 
@@ -22,6 +25,7 @@ impl Default for Settings {
             min_free_gb: 50,
             project_slots: None,
             max_load: None,
+            worktree_retention_days: 7,
             projects: BTreeMap::new(),
         }
     }
@@ -33,6 +37,10 @@ impl Settings {
         ensure!(
             self.project_slots != Some(0),
             "worker.project_slots must be positive"
+        );
+        ensure!(
+            self.worktree_retention_days >= 0,
+            "worker.worktree_retention_days must not be negative"
         );
         ensure!(
             self.projects.values().all(|n| *n > 0),

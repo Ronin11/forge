@@ -696,7 +696,7 @@ impl Store {
 
     pub fn mark_worktree_removed(&self, id: i64) -> Result<()> {
         self.lock().retry_execute(
-            "UPDATE tasks SET worktree_removed_at=?2 WHERE id=?1",
+            "UPDATE tasks SET worktree_removed_at=COALESCE(worktree_removed_at, ?2) WHERE id=?1",
             params![id, crate::unix_now()],
         )?;
         Ok(())
