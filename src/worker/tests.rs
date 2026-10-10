@@ -814,3 +814,16 @@ mod idle {
         );
     }
 }
+
+/// The words a stopped plugin's log gets after `stopped: worker exiting: `:
+/// an environment fault outranks the stop it set off.
+#[test]
+fn an_environment_fault_is_the_exit_cause_plugins_are_told() {
+    let e = anyhow::anyhow!("worktree is dirty");
+    assert_eq!(
+        exit_cause(Some(&e), Some("stop signal".into())),
+        "environment fault: worktree is dirty"
+    );
+    assert_eq!(exit_cause(None, Some("stop signal".into())), "stop signal");
+    assert_eq!(exit_cause(None, None), "--max-tasks reached");
+}

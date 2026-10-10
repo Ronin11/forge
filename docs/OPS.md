@@ -500,6 +500,41 @@ Recovery uses the persisted effect rows; it cannot identify an external effect
 that happened before its row was recorded. PID ownership also cannot distinguish
 a dead process from an unrelated process that has reused its PID.
 
+### Plugins stop with the worker, and say why
+
+Plugins run in the worker's process (`plugins::Supervisor`), so every
+worker exit stops every plugin: a long plugin (a full test suite after
+each landing) restarts from scratch each time and, in a crash loop, never
+finishes a run (2026-10-07..09: Exploration's master-suite plugin
+restarted ~300 times). Each plugin's log, `<FORGE_HOME>/logs/plugins/<name>.log`
+(`forge plugin logs <name>`), carries Forge's own lines between the
+plugin's, so the cause is there:
+
+- `stopped: worker exiting: <reason>` when the worker exits, written
+  before the plugin is sent SIGTERM. The reason is the worker's:
+  `stop signal`, `the unit has a stop job`, `environment fault: <error>`
+  (a fault that stops the worker, not a requeued dirty worktree),
+  `a newer release claims`, `the day's budget is reached`, `a task or job
+  panicked: ...`, `second stop signal: running attempts aborted`, or
+  `--max-tasks reached`. `forge plugin status` and `forge doctor` show the
+  same words after `stopped:`.
+- `stopped: worker exiting: its supervisor was torn down without a stop`
+  when the worker returned an error or panicked past its drain; the plugin
+  is SIGKILLed right after.
+- `stopped: worker exiting: the worker supervising pid N died without
+  stopping it` when a worker was killed outright (SIGKILL, OOM, a crash):
+  nothing could write at the time, the plugin got SIGTERM from the kernel
+  (`PR_SET_PDEATHSIG`), and the next worker to take the plugin writes this
+  line before starting it.
+- `stopped: stopped by worker for handoff to pid N`, `stopped: disabled`,
+  and `stopped: stopped by worker` (a `forge plugin restart`) for the
+  other stops, and `exited: <exit 1 | signal 9>[; restarting in Ns]` when
+  the plugin's own process ended.
+
+A plugin restarted many times with `stopped: worker exiting:` lines is a
+worker crash loop: read the worker's journal for the reason the lines
+name, not the plugin.
+
 ## Environment needs
 
 A missing tool is a policy decision, never a human question. When an
