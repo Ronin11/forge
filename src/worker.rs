@@ -1039,6 +1039,25 @@ fn exit_cause(env_error: Option<&anyhow::Error>, cause: Option<String>) -> Strin
     }
 }
 
+/// How often the worker sweeps caches and applies worktree retention.
+const HOUSEKEEPING_SECS: i64 = 3600;
+
+/// One housekeeping pass (`crate::housekeeping`), logged in one line. A
+/// failure is a log line too: it never stops the worker.
+async fn housekeeping(f: &Forge) {
+    let pass = crate::housekeeping::Pass {
+        dry_run: false,
+        manual: false,
+        older_than: None,
+        retention_days: f.worker.worktree_retention_days,
+        now: unix_now(),
+    };
+    match crate::housekeeping::run(f, &pass).await {
+        Ok(report) => eprintln!("housekeeping: {}", report.summary()),
+        Err(e) => eprintln!("housekeeping failed: {e:#}"),
+    }
+}
+
 pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut shutdown = Shutdown::install();
     crate::egress::raise_nofile_limit();
@@ -1070,6 +1089,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut hold_until: Option<i64> = None;
     let mut last_idle: Option<String> = None;
     let mut refusals = RefusalLog::default();
+    let mut housekept: Option<i64> = None;
 
     loop {
         // Config reloads between claims: what is claimed from here on runs
@@ -1093,6 +1113,10 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 );
             }
             run_ticks(&f, &mut refusals, superseded, stopping).await?;
+            if !superseded && housekept.is_none_or(|at| unix_now() - at >= HOUSEKEEPING_SECS) {
+                housekept = Some(unix_now());
+                housekeeping(&f).await;
+            }
 
             // Fill free slots, re-reading what the other workers hold.
             slots = free_slots(&f, pid, capacity::refresh(&f, &opts, &mut capacity)?);

@@ -36,6 +36,7 @@ mod git;
 mod graph;
 mod guard;
 mod handoff;
+mod housekeeping;
 mod init;
 mod intake;
 mod job;

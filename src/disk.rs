@@ -203,21 +203,31 @@ pub fn remove_tree_set(root: &Path, include_root: bool) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Remove a task's worktree and every sibling directory, landing tree
-/// included, whatever is left in them; allocated bytes are returned.
-pub fn remove_task_trees(id: i64, worktree: &str) -> Result<u64> {
+/// Allocated bytes of a task's worktree, siblings and landing tree.
+pub fn task_tree_bytes(id: i64, worktree: &str) -> u64 {
     if worktree.is_empty() {
-        return Ok(0);
+        return 0;
     }
-    let mut bytes = 0;
+    task_roots(id, worktree)
+        .iter()
+        .flat_map(|root| {
+            let siblings = SIBLINGS.iter().map(|s| suffixed(root, s));
+            std::iter::once(root.clone()).chain(siblings)
+        })
+        .map(|path| size(&path))
+        .sum()
+}
+
+/// Remove a task's worktree and every sibling directory, landing tree
+/// included, whatever is left in them.
+pub fn remove_task_trees(id: i64, worktree: &str) -> std::io::Result<()> {
+    if worktree.is_empty() {
+        return Ok(());
+    }
     for root in task_roots(id, worktree) {
-        bytes += size(&root);
-        for suffix in SIBLINGS {
-            bytes += size(&suffixed(&root, suffix));
-        }
         remove_tree_set(&root, true)?;
     }
-    Ok(bytes)
+    Ok(())
 }
 
 /// What the terminal write of `t` does to its disk. A landed task's work
@@ -230,7 +240,7 @@ pub fn task_finished(store: &Store, t: &crate::store::Task) {
     use crate::store::TaskState;
     if t.state == TaskState::Succeeded && !t.landed_sha.is_empty() && !t.worktree.is_empty() {
         let done = remove_task_trees(t.id, &t.worktree).map_err(anyhow::Error::from);
-        if let Err(e) = done.and_then(|_| store.mark_worktree_removed(t.id)) {
+        if let Err(e) = done.and_then(|()| store.mark_worktree_removed(t.id)) {
             eprintln!("worktree cleanup {}: {e:#}", t.worktree);
         }
     } else if !matches!(t.state, TaskState::Running | TaskState::Queued) {
@@ -250,7 +260,10 @@ fn untracked_landing_trees(root: &Path, tx: &rusqlite::Transaction) -> Vec<PathB
     let mut found = Vec::new();
     for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let Some(id) = name.strip_prefix("landing-").and_then(|n| n.parse::<i64>().ok()) else {
+        let Some(id) = name
+            .strip_prefix("landing-")
+            .and_then(|n| n.parse::<i64>().ok())
+        else {
             continue;
         };
         let idle = entry
