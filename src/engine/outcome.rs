@@ -215,6 +215,7 @@ mod tests {
         let cases: Vec<(End, TaskState)> = vec![
             (End::Verified, TaskState::Succeeded),
             (End::Landed("abc123".to_string()), TaskState::Succeeded),
+            (End::Held("held".to_string()), TaskState::Succeeded),
             (End::Unverified("reason".to_string()), TaskState::Unverified),
             (
                 End::Blocked {
@@ -297,6 +298,7 @@ mod tests {
                 "landed  @ abc123de",
             ),
             (End::Unverified("reason".to_string()), 1, "reason"),
+            (End::Held("held for a human".to_string()), 1, "held for a human"),
             (
                 End::Blocked {
                     reason: "needs input: which one?".to_string(),
