@@ -274,11 +274,7 @@ impl Execution {
         egress: Option<&Policy>,
         phase: Phase,
     ) -> anyhow::Result<Command> {
-        let policy = self
-            .bwrap
-            .as_ref()
-            .map(|s| s.policy_for(path))
-            .unwrap_or_else(|_| Policy::new([]));
+        let policy = self.policy_for(path);
         let policy = egress.unwrap_or(&policy);
         if self.backend(path) == Backend::Ssh {
             let remotes = self.remotes.lock().unwrap();
@@ -329,6 +325,14 @@ impl Execution {
         if let Ok(sb) = &self.bwrap {
             sb.write_back_siblings_locked(path);
         }
+    }
+    /// Everything a sandboxed command in `path` may reach; nothing without
+    /// bwrap.
+    pub fn policy_for(&self, path: &Path) -> Policy {
+        self.bwrap
+            .as_ref()
+            .map(|s| s.policy_for(path))
+            .unwrap_or_else(|_| Policy::new([]))
     }
     pub fn set_egress(&self, path: &Path, rules: &[Rule]) {
         if let Ok(sb) = &self.bwrap {

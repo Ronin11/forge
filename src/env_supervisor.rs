@@ -119,6 +119,7 @@ pub async fn rule(f: &Forge, t: &Task, deny: &[String], need: &Need) -> Result<R
     let start_sha = crate::git::head(wt).await.unwrap_or_default();
     let n = f.store.attempts(t.id)?.len() + 1;
     let log_path = f.paths.logs.join(format!("{}-env-{n}.jsonl", t.id));
+    let repo_cfg = crate::config::load_at(Path::new(&t.repo), wt, &t.base_sha).await?;
     let outcome = crate::directive::launch(
         f,
         crate::directive::Spec {
@@ -136,6 +137,10 @@ pub async fn rule(f: &Forge, t: &Task, deny: &[String], need: &Need) -> Result<R
             provider,
             schema: SCHEMA,
             sandboxed: true,
+            egress: crate::directive::Egress::Project {
+                cfg: &repo_cfg,
+                trust: t.trust,
+            },
             writes: false,
             start_sha: &start_sha,
             resume: None,

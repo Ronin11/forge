@@ -38,6 +38,9 @@ pub struct Spec<'a> {
     /// directive step never does: it has no tools. The deploy look does,
     /// in an empty scratch directory with the smoke output bound read-only.
     pub sandboxed: bool,
+    /// What a sandboxed run may reach besides its provider's model
+    /// endpoints; ignored unsandboxed.
+    pub egress: Egress<'a>,
     pub writes: bool,
     pub start_sha: &'a str,
     pub resume: Option<&'a str>,
@@ -49,7 +52,32 @@ pub struct Spec<'a> {
     pub early_ending: crate::config::EarlyEnding,
 }
 
+/// Besides its provider's model endpoints, what a sandboxed run's
+/// directory may reach.
+pub enum Egress<'a> {
+    /// A task's directory: what its repository's trusted config declares,
+    /// as far as the task's trust level lets it (see `Forge::allow_egress`).
+    Project {
+        cfg: &'a crate::config::Config,
+        trust: crate::store::Trust,
+    },
+    /// A scratch directory no repository owns: nothing else.
+    ModelOnly,
+}
+
 pub async fn launch(f: &Forge, s: Spec<'_>) -> Result<Outcome> {
+    // Every sandboxed launch registers its own directory with its own
+    // provider, so its proxy never depends on what an earlier run in the
+    // same directory left behind: the supervisor's run in a blocked task's
+    // worktree was refused its model endpoint when it did (2026-10-03).
+    if s.sandboxed {
+        match s.egress {
+            Egress::Project { cfg, trust } => {
+                f.allow_egress_for(s.dir, cfg, trust, Some(s.provider))
+            }
+            Egress::ModelOnly => f.allow_model_egress(s.dir, s.provider),
+        }
+    }
     let kernel;
     let identity_repo = match s.identity_repo {
         Some(repo) => repo,

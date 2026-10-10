@@ -575,6 +575,10 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         provider,
     })
     .await?;
+    // Read from the task's trusted base, as every other run in this
+    // worktree reads it; the launch registers the worktree's egress for
+    // the supervisor's own provider.
+    let repo_cfg = crate::config::load_at(std::path::Path::new(&t.repo), wt, &t.base_sha).await?;
     let outcome = crate::directive::launch(
         f,
         crate::directive::Spec {
@@ -592,6 +596,10 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
             provider,
             schema: SCHEMA,
             sandboxed: true,
+            egress: crate::directive::Egress::Project {
+                cfg: &repo_cfg,
+                trust: t.trust,
+            },
             writes: false,
             start_sha: &a.start_sha,
             resume: None,
