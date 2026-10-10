@@ -5,6 +5,7 @@
 
 pub mod drift;
 pub mod handoff;
+pub mod selftest;
 
 use crate::ctx::Forge;
 use crate::workflows::Problem;
@@ -86,6 +87,8 @@ struct ManifestRaw {
     description: String,
     run: Vec<String>,
     build: Option<Vec<String>>,
+    #[serde(default)]
+    test: Option<Vec<String>>,
     capabilities: Vec<Capability>,
     #[serde(default)]
     restart: Restart,
@@ -98,6 +101,10 @@ pub struct Manifest {
     pub description: String,
     pub run: Vec<String>,
     pub build: Option<Vec<String>>,
+    /// The plugin's self-test (`forge plugin test`), run in its directory
+    /// with its own environment while it runs; `forge doctor` runs it for
+    /// an enabled plugin. Exit 0 is a pass; its output says why not.
+    pub test: Option<Vec<String>>,
     pub capabilities: BTreeSet<Capability>,
     pub restart: Restart,
 }
@@ -119,6 +126,9 @@ fn parse_manifest(path: &Path, text: &str, dir_name: &str) -> Result<Manifest> {
     if raw.build.as_ref().is_some_and(|b| b.is_empty()) {
         bail!("{}: `build` is empty", path.display());
     }
+    if raw.test.as_ref().is_some_and(|t| t.is_empty()) {
+        bail!("{}: `test` is empty", path.display());
+    }
     let capabilities: BTreeSet<Capability> = raw.capabilities.into_iter().collect();
     if capabilities.is_empty() {
         bail!("{}: `capabilities` is empty", path.display());
@@ -128,6 +138,7 @@ fn parse_manifest(path: &Path, text: &str, dir_name: &str) -> Result<Manifest> {
         description: raw.description,
         run: raw.run,
         build: raw.build,
+        test: raw.test,
         capabilities,
         restart: raw.restart,
     })
@@ -603,18 +614,11 @@ fn spawn_plugin(
         .open(log_path)
         .with_context(|| format!("opening {}", log_path.display()))?;
     let stderr_file = stdout_file.try_clone()?;
-    let bin = crate::binary::for_home(home)?;
     let mut cmd = Command::new(&plugin.manifest.run[0]);
     cmd.args(&plugin.manifest.run[1..])
         .current_dir(&plugin.dir)
         .env_clear()
-        .envs(crate::agent::agent_env(crate::sandbox::Phase::Agent))
-        .env("FORGE_BIN", bin)
-        .env("FORGE_HOME", home)
-        .env("FORGE2_HOME", home)
-        .env("FORGE_PLUGIN_NAME", &plugin.name)
-        .env("FORGE_PLUGIN_DIR", &plugin.dir)
-        .env("FORGE_PLUGIN_STATE", state_dir)
+        .envs(plugin_env(plugin, home, state_dir)?)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file))
@@ -650,6 +654,29 @@ fn spawn_plugin(
         .with_context(|| format!("spawning {:?}", plugin.manifest.run))
 }
 
+/// What a plugin process is given (docs/PLUGINS.md, "Environment"): the
+/// agent pass-through list, then Forge's own variables. Its self-test gets
+/// the same, so it sees what the running plugin sees.
+pub(crate) fn plugin_env(
+    plugin: &Plugin,
+    home: &Path,
+    state_dir: &Path,
+) -> Result<Vec<(String, std::ffi::OsString)>> {
+    let mut env: Vec<(String, std::ffi::OsString)> =
+        crate::agent::agent_env(crate::sandbox::Phase::Agent)
+            .into_iter()
+            .map(|(k, v)| (k, v.into()))
+            .collect();
+    let bin = crate::binary::for_home(home)?;
+    env.push(("FORGE_BIN".into(), bin.into()));
+    env.push(("FORGE_HOME".into(), home.into()));
+    env.push(("FORGE2_HOME".into(), home.into()));
+    env.push(("FORGE_PLUGIN_NAME".into(), (&plugin.name).into()));
+    env.push(("FORGE_PLUGIN_DIR".into(), (&plugin.dir).into()));
+    env.push(("FORGE_PLUGIN_STATE".into(), state_dir.into()));
+    Ok(env)
+}
+
 /// Kills a plugin's whole process group when dropped, however the
 /// supervising task ends (a normal stop, a restart, a panic, the runtime
 /// being torn down): `kill_on_drop` alone reaches only the group leader,
@@ -678,7 +705,7 @@ impl Drop for GroupGuard {
 /// Appends one line of the supervisor's own to the plugin's log, between
 /// the plugin's lines, so the log says why a process went away and not
 /// only what the plugin printed while up.
-fn note_in_log(log_path: &Path, line: &str) {
+pub(crate) fn note_in_log(log_path: &Path, line: &str) {
     use std::io::Write;
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
