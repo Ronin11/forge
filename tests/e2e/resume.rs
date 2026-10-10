@@ -254,7 +254,7 @@ fn a_coder_that_commits_then_runs_out_of_turns_is_verified_by_checks() {
 fn task_budget_stops_retries() {
     let e = Env::new();
     assert!(
-        !e.run("flaky.sh", &["--retries", "3", "--budget", "0.005"])
+        !e.run("costnocommit.sh", &["--retries", "3", "--budget", "0.005"])
             .status
             .success()
     );

@@ -358,6 +358,56 @@ fn print_resume(f: &Forge, t: &crate::store::Task) -> Result<()> {
     Ok(())
 }
 
+/// A capped task: how many commits it left past its base, and what to do
+/// with them. Counted in its worktree, else in the registered repository
+/// (the branch kept there, or as last fetched from the remote).
+fn print_capped(t: &crate::store::Task) {
+    if t.state != crate::store::TaskState::Capped || t.branch.is_empty() {
+        return;
+    }
+    let count = |dir: &str, tip: &str| -> Option<i64> {
+        let o = std::process::Command::new("git")
+            .args(["-C", dir, "rev-list", "--count"])
+            .arg(format!("{}..{tip}", t.base_sha))
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if !o.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&o.stdout).trim().parse().ok()
+    };
+    let in_worktree = (!t.worktree.is_empty()
+        && t.worktree_removed_at.is_none()
+        && Path::new(&t.worktree).join(".git").exists())
+    .then(|| count(&t.worktree, "HEAD"))
+    .flatten();
+    let commits = if t.base_sha.is_empty() {
+        None
+    } else {
+        in_worktree
+            .or_else(|| count(&t.repo, &format!("refs/heads/{}", t.branch)))
+            .or_else(|| count(&t.repo, &format!("refs/remotes/origin/{}", t.branch)))
+    };
+    let adopt = format!("forge adopt {} {}", t.repo, t.branch);
+    match commits {
+        Some(0) => out!(
+            "capped     left no commits past {}; nothing to adopt: forge retry {} starts it again",
+            t.base_branch,
+            t.id
+        ),
+        Some(n) => out!(
+            "capped     left {n} commit(s) on {} past {}; next: run {adopt} to verify and land them",
+            t.branch,
+            t.base_branch
+        ),
+        None => out!(
+            "capped     its commits on {} could not be counted here; next: run {adopt} to verify and land what it left",
+            t.branch
+        ),
+    }
+}
+
 /// An adopted task's origin: whose work it is, and that no agent ran.
 fn print_origin(t: &crate::store::Task) {
     if let Some(a) = &t.adoption {
@@ -407,6 +457,7 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
         }
     );
     print_resume(&f, &t)?;
+    print_capped(&t);
     print_origin(&t);
     out!("trust      {}", t.trust.as_str());
     print_priority(&t);

@@ -110,18 +110,7 @@ pub(super) async fn salvage(s: Salvage<'_>, end: End) -> Result<End, Fault> {
 /// `salvage` for a cap with `capped` as its reason; `None` when there was
 /// nothing to judge.
 async fn judge(s: Salvage<'_>, capped: &str) -> Result<Option<End>, Fault> {
-    let Salvage {
-        f,
-        t,
-        cfg,
-        run,
-        repo,
-        wt,
-        remote_url,
-        base_cfg,
-        attempt_no,
-    } = s;
-    let id = t.id;
+    let (t, wt) = (&s.t, s.wt);
     if t.base_sha.is_empty() || !wt.join(".git").exists() {
         return Ok(None);
     }
@@ -130,7 +119,7 @@ async fn judge(s: Salvage<'_>, capped: &str) -> Result<Option<End>, Fault> {
         return Ok(None);
     }
     let left = format!("{commits} commit(s) past {}", t.base_branch);
-    let adopt = format!("forge adopt {} {}", repo.display(), t.branch);
+    let adopt = format!("forge adopt {} {}", s.repo.display(), t.branch);
     if !git::dirty_paths(wt).await.task()?.is_empty() {
         return Ok(Some(End::Capped {
             reason: format!(
@@ -139,6 +128,24 @@ async fn judge(s: Salvage<'_>, capped: &str) -> Result<Option<End>, Fault> {
             pushes: true,
         }));
     }
+    let v = verify_as_it_stands(&s, &left).await?;
+    s.run.seq += 1;
+    if v.state != AttemptState::Succeeded {
+        return Ok(Some(End::Blocked {
+            reason: failing_reason(capped, &left, &v, &adopt, t.id),
+            demoted: true,
+            to: None,
+        }));
+    }
+    let passed = format!("{capped}; the {left} pass the checks as they stand");
+    land_passed(s, &passed, &adopt).await.map(Some)
+}
+
+/// The repository's checks on the worktree's commits, unchanged, recorded
+/// as a kernel `verify` row at the run's next sequence number.
+async fn verify_as_it_stands(s: &Salvage<'_>, left: &str) -> Result<verify::Verdict, Fault> {
+    let (f, t, repo, wt) = (s.f, &s.t, s.repo, s.wt);
+    let id = t.id;
     f.report.emit(
         id,
         Event::Note {
@@ -155,7 +162,7 @@ async fn judge(s: Salvage<'_>, capped: &str) -> Result<Option<End>, Fault> {
         base_sha: &t.base_sha,
         start_sha: &t.base_sha,
         branch: &t.branch,
-        cfg,
+        cfg: s.cfg,
         task_checks: &t.checks,
         paths: &[],
         allow_protected: t.allow_protected,
@@ -170,13 +177,12 @@ async fn judge(s: Salvage<'_>, capped: &str) -> Result<Option<End>, Fault> {
     .await
     .task()?;
     let ok = v.state == AttemptState::Succeeded;
-    run.seq += 1;
     op(
         f,
         id,
         &timer,
         OpRow {
-            seq: run.seq,
+            seq: s.run.seq + 1,
             name: "verify",
             kernel: true,
             ok,
@@ -192,35 +198,45 @@ async fn judge(s: Salvage<'_>, capped: &str) -> Result<Option<End>, Fault> {
             output: if ok { &head } else { "" },
         },
     )?;
-    if !ok {
-        return Ok(Some(End::Blocked {
-            reason: failing_reason(capped, &left, &v, &adopt, id),
-            demoted: true,
-            to: None,
-        }));
-    }
-    let passed = format!("{capped}; the {left} pass the checks as they stand");
+    Ok(v)
+}
+
+/// Commits that passed as they stand: landed through the integrator, or
+/// held for a human when the task, its trust level or the repository does
+/// not land. A landing that fails leaves the task capped, saying so.
+async fn land_passed(s: Salvage<'_>, passed: &str, adopt: &str) -> Result<End, Fault> {
+    let Salvage {
+        f,
+        t,
+        run,
+        repo,
+        remote_url,
+        base_cfg,
+        attempt_no,
+        ..
+    } = s;
+    let id = t.id;
     f.report.emit(
         id,
         Event::Note {
-            text: &format!("capped   the {left} pass the checks as they stand"),
+            text: "capped   the commits it left pass the checks as they stand",
         },
     );
     if !t.land {
-        return Ok(Some(End::Held(format!(
+        return Ok(End::Held(format!(
             "{passed}; left for a human (--no-land): forge land {id} lands it"
-        ))));
+        )));
     }
     if !f.trust_policy(t.trust).auto_land {
-        return Ok(Some(End::Unverified(format!(
+        return Ok(End::Unverified(format!(
             "{passed}; trust {}: tasks at this level do not land themselves; land it with forge land {id} or from the inbox page",
             t.trust.as_str()
-        ))));
+        )));
     }
     let (Some(url), Some(remote)) = (remote_url, &base_cfg.push_remote) else {
-        return Ok(Some(End::Held(format!(
+        return Ok(End::Held(format!(
             "{passed}; the repository has no push remote to land on"
-        ))));
+        )));
     };
     let lock = crate::landing::repo_lock(f, repo).await?;
     let mut seq = run.seq;
@@ -231,15 +247,15 @@ async fn judge(s: Salvage<'_>, capped: &str) -> Result<Option<End>, Fault> {
             crate::landing::effects::persist(f, t, &landed)?;
             drop(lock);
             crate::landing::effects::run(f, t, &landed).await;
-            Ok(Some(End::Landed(landed.sha)))
+            Ok(End::Landed(landed.sha))
         }
-        Integrate::Rewind { first, .. } | Integrate::Failed(first) => Ok(Some(End::Capped {
+        Integrate::Rewind { first, .. } | Integrate::Failed(first) => Ok(End::Capped {
             reason: format!(
                 "{passed}, but landing them failed: {first}; merge {} into {} and run {adopt}",
                 t.base_branch, t.branch
             ),
             pushes: true,
-        })),
+        }),
     }
 }
 
