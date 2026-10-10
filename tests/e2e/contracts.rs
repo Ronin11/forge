@@ -180,7 +180,7 @@ fn a_reviewer_that_cannot_finish_leaves_the_verified_branch_for_a_human() {
 }
 
 #[test]
-fn a_budget_the_code_step_exhausts_caps_the_task_on_a_verified_branch_that_forge_land_accepts() {
+fn a_budget_the_code_step_exhausts_holds_its_verified_branch_for_forge_land() {
     let e = Env::new();
     let o = e.run(
         "ok.sh",
@@ -193,11 +193,17 @@ fn a_budget_the_code_step_exhausts_caps_the_task_on_a_verified_branch_that_forge
             "0",
         ],
     );
-    assert!(!o.status.success());
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // The cap left a commit past main: the checks ran on it as it stands
+    // and it passed, so it is held for a human (--no-land).
     let (state, reason, pushed) = e.task(1);
-    assert_eq!(state, "capped", "{reason}");
+    assert_eq!(state, "succeeded", "{reason}");
     assert!(
         reason.starts_with("$0.01 of $0.01; code step verified, review not run"),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("pass the checks as they stand") && reason.contains("forge land 1"),
         "{reason}"
     );
     assert!(
