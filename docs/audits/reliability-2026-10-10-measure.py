@@ -9,7 +9,9 @@ import re
 import sqlite3
 import sys
 
-HOME = "/home/ronin/.local/share/forge2"
+import os
+
+HOME = os.environ["FORGE_HOME"]  # the operator's data directory; no default, so the test naming rule holds
 JOURNAL = sys.argv[1]  # journalctl --user -u forge-worker --since "30 days ago" -o short-iso > journal.txt
 DAYS = 30
 TODAY = dt.date(2026, 10, 10)
