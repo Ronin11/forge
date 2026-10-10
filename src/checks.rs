@@ -73,6 +73,39 @@ pub struct CheckResult {
     pub stdout: String,
 }
 
+/// What a failed check whose process printed nothing at all is called
+/// wherever its failure is named (a job's question, `forge doctor`'s
+/// `jobs_stale` row): its own failure, not a word folded into the check's
+/// name. doctor-daily on 09-30 and 10-01 and drift-weekly on 09-28 and
+/// 10-05 failed this way and read as if the check itself were broken.
+pub const PRODUCED_NOTHING: &str = "tool produced nothing";
+
+/// The tail `run_one_capped` leaves on a failed check that printed nothing.
+const NO_OUTPUT_MARK: &str = "[forge] no output captured";
+
+impl CheckResult {
+    /// A failed check whose process wrote nothing to stdout or stderr.
+    pub fn produced_nothing(&self) -> bool {
+        !self.ok && {
+            let t = self.tail.trim();
+            t.is_empty() || t.starts_with(NO_OUTPUT_MARK)
+        }
+    }
+
+    /// This failure in words: `tool produced nothing (check <name>, exit
+    /// N)` when its process printed nothing, else `<name>: <tail>`.
+    pub fn failure_text(&self) -> String {
+        if self.produced_nothing() {
+            let exit = self
+                .exit
+                .map_or("no exit status".to_string(), |x| format!("exit {x}"));
+            format!("{PRODUCED_NOTHING} (check {}, {exit})", self.name)
+        } else {
+            format!("{}: {}", self.name, self.tail)
+        }
+    }
+}
+
 /// Keeps the last `cap` bytes written to it.
 struct Tail {
     buf: Vec<u8>,
@@ -341,7 +374,7 @@ async fn run_one_capped_once(args: &RunOneCapped<'_>) -> anyhow::Result<CheckRes
             // Nothing at all usually means the binary or its environment
             // was missing, so say what ran and where (docs/OPS.md).
             r.tail = format!(
-                "[forge] no output captured; the check exited {} with nothing on stdout or stderr; it ran `{}` in {}",
+                "{NO_OUTPUT_MARK}; the check exited {} with nothing on stdout or stderr; it ran `{}` in {}",
                 r.exit
                     .map_or("with no exit status".to_string(), |c| format!("code {c}")),
                 argv.first().map_or("", String::as_str),

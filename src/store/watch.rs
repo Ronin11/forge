@@ -25,7 +25,6 @@ pub struct VerdictRow {
     pub project: String,
     pub branch: String,
     pub verdict_json: String,
-    pub at: i64,
 }
 
 /// One registered worker start, with what was recorded about it.
@@ -116,8 +115,7 @@ impl Store {
     pub fn verdicts_since(&self, since: i64) -> Result<Vec<VerdictRow>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT a.task_id, COALESCE(t.project, '') AS project, t.branch, a.verdict_json,
-                    a.finished_at
+            "SELECT a.task_id, COALESCE(t.project, '') AS project, t.branch, a.verdict_json
              FROM attempts a JOIN tasks t ON t.id = a.task_id
              WHERE a.finished_at >= ?1 AND a.verdict_json != '[]'
              ORDER BY a.id",
@@ -128,7 +126,6 @@ impl Store {
                 project: r.get(1)?,
                 branch: r.get(2)?,
                 verdict_json: r.get(3)?,
-                at: r.get(4)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
