@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 mod adoption;
+mod alerts;
 mod arms;
 mod attempts;
 mod chat;
@@ -44,6 +45,7 @@ mod webhooks;
 mod workers;
 
 pub use adoption::{Adoption, ManualStat, Origin};
+pub use alerts::Alert;
 pub use attempts::{Attempt, AttemptState, FinishAttempt, Op, RateLimitSample, seed_used};
 pub use chat::{ChatSession, ChatTurn, NewChatTurn};
 pub use daily::DailyStat;

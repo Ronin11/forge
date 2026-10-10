@@ -603,7 +603,7 @@ fn spawn_plugin(
         .open(log_path)
         .with_context(|| format!("opening {}", log_path.display()))?;
     let stderr_file = stdout_file.try_clone()?;
-    let bin = crate::binary::launch_path()?;
+    let bin = crate::binary::for_home(home)?;
     let mut cmd = Command::new(&plugin.manifest.run[0]);
     cmd.args(&plugin.manifest.run[1..])
         .current_dir(&plugin.dir)

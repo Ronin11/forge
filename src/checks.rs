@@ -251,6 +251,8 @@ async fn run_one_capped_once(args: &RunOneCapped<'_>) -> anyhow::Result<CheckRes
         timeout,
         cap_bytes,
         full_log_dir,
+        argv,
+        cwd,
         ..
     } = *args;
     let start = Instant::now();
@@ -336,10 +338,14 @@ async fn run_one_capped_once(args: &RunOneCapped<'_>) -> anyhow::Result<CheckRes
         // A failed check with nothing to show is a gap in the capture,
         // not a clean run: never leave the record silent about why.
         if r.tail.trim().is_empty() {
+            // Nothing at all usually means the binary or its environment
+            // was missing, so say what ran and where (docs/OPS.md).
             r.tail = format!(
-                "[forge] no output captured; the check exited {} with nothing on stdout or stderr",
+                "[forge] no output captured; the check exited {} with nothing on stdout or stderr; it ran `{}` in {}",
                 r.exit
-                    .map_or("with no exit status".to_string(), |c| format!("code {c}"))
+                    .map_or("with no exit status".to_string(), |c| format!("code {c}")),
+                argv.first().map_or("", String::as_str),
+                cwd.display()
             );
         }
         if let (Some(dir), Some(bytes)) = (full_log_dir, &full_bytes) {
