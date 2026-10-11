@@ -341,6 +341,7 @@ src/secret_store.rs machine-local credentials: persistent backend selection, OS 
 src/job/alerts.rs       what a finished job tells the operator unasked: a failed doctor-daily, new doctor rows, a step that printed nothing
 src/plugins/selftest.rs forge plugin test: a plugin's own end-to-end proof, run by forge doctor while it is enabled
 src/job/secrets.rs      [secrets] names, a run step's declared secrets and egress hosts, and the redaction of their values
+src/load.rs        the time scale a loaded host stretches check timeouts and test deadlines by
 src/login.rs        the agent login: a refreshed token written back over the host file, an empty one never seeded
 src/login_hold.rs   a provider whose agent login was refused, held until a probe answers; the worker's ten-minute probe and doctor's
 src/successor.rs     the successor worker: a staged release starts forge work on it, the old worker drains

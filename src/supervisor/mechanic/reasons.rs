@@ -5,7 +5,7 @@
 /// A landing round rewound on a conflict with the base and ran out of
 /// attempts or budget (`engine::land::try_land`'s `Integrate::Rewind` arm):
 /// `"landing failed after N attempt(s): main moved to SHA; conflicts in
-/// FILES; the verified branch is pushed for a human"`.
+/// FILES; the verified branch is pushed; to land it: forge adopt REPO BRANCH"`.
 pub fn is_landing_conflict(reason: &str) -> bool {
     reason.starts_with("landing failed") && reason.contains("conflicts in")
 }
@@ -37,7 +37,7 @@ mod tests {
     #[test]
     fn landing_conflict_matches_a_rewound_landing() {
         assert!(is_landing_conflict(
-            "landing failed after 2 attempt(s): main moved to a6cb6bda; conflicts in src/successor.rs; the verified branch is pushed for a human"
+            "landing failed after 2 attempt(s): main moved to a6cb6bda; conflicts in src/successor.rs; the verified branch is pushed; to land it: forge adopt REPO BRANCH"
         ));
         assert!(!is_landing_conflict(
             "landing failed: fast-forward of main rejected"

@@ -118,14 +118,17 @@ pub(super) async fn try_land(args: TryLand<'_>) -> Result<Option<End>, Fault> {
                 run.rewind(c_idx, feedback);
                 return Ok(None);
             }
+            // The task stays failed (`forge land` takes only a verified
+            // one), so the message names the command that does work.
+            let recover = format!("forge adopt {} {}", t.repo, t.branch);
             Ok(Some(End::Failed {
                 reason: if spent >= task_cap {
                     format!(
-                        "landing failed: {first}; the task budget is spent (${spent:.2} of ${task_cap:.2}), so the verified branch is pushed for a human"
+                        "landing failed: {first}; the task budget is spent (${spent:.2} of ${task_cap:.2}), so the verified branch is pushed; to land it: {recover}"
                     )
                 } else {
                     format!(
-                        "landing failed after {c_used} attempt(s): {first}; the verified branch is pushed for a human"
+                        "landing failed after {c_used} attempt(s): {first}; the verified branch is pushed; to land it: {recover}"
                     )
                 },
                 counted: true,

@@ -109,6 +109,24 @@ deleted within the same attempt passes. Uncommitted files are handled
 by `clean-tree`. Failure details name the stray files and tell the agent
 to delete them and commit the removal.
 
+## Timing: a loaded host makes checks slower, never failed
+
+A check's timeout (`check_timeout_secs`) is a ceiling for an idle host. When
+a check starts, the kernel reads the 1-minute load average per CPU and runs
+the check under `check_timeout_secs * scale`, where `scale =
+max(1, loadavg1 / cpus)`, so a host at load 32 on 8 CPUs gives every check
+4x the time instead of timing out on tests that all pass. The e2e harness
+multiplies its deadlines by the same function (`src/load.rs`, included by
+`tests/e2e/support.rs`), so the two cannot disagree; `FORGE_TEST_TIME_SCALE`
+pins the factor for both.
+
+The factor is capped by `[checks] max_time_scale` (default 4) so a runaway
+host cannot hold a slot forever; a check that still outruns its scaled
+timeout fails as timed out. The verdict row of each check records `scale`
+and `timeout_ms` (the timeout it actually ran under), and the attempt log
+gets a note naming both. The `[forge] timed out after Ns` line states the
+scaled timeout.
+
 ## Timing in tests
 
 *2026-10-10. On that day eleven Forge tasks failed their `test` check on

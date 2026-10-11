@@ -26,7 +26,7 @@ async fn run_one_recorded(
     timeout: Duration,
     env: &[(String, String)],
 ) -> Result<CheckResult> {
-    crate::checks::run_one_capped(crate::checks::RunOneCapped {
+    let r = crate::checks::run_one_capped(crate::checks::RunOneCapped {
         level,
         name,
         argv,
@@ -37,8 +37,23 @@ async fn run_one_recorded(
         cap_bytes: RECORD_TAIL_BYTES,
         full_log_dir: Some(s.logs_dir),
         egress: None,
+        max_scale: s.cfg.max_time_scale,
     })
-    .await
+    .await?;
+    // The attempt log names what the check was held to: a loaded host
+    // stretches the timeout, and a reader of the log should see it did.
+    s.report.emit(
+        s.task_id,
+        Event::Note {
+            text: &format!(
+                "check {level}/{name}  timeout {}s  (time scale {:.2}, base {}s)",
+                r.timeout_ms / 1000,
+                r.scale,
+                s.cfg.check_timeout_secs
+            ),
+        },
+    );
+    Ok(r)
 }
 
 /// The commit L1 and L2 judge is the commit that lands: nothing a check

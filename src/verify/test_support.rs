@@ -54,6 +54,7 @@ pub(super) fn test_cfg() -> Config {
         base_branch: "main".into(),
         push_remote: None,
         check_timeout_secs: 60,
+        max_time_scale: 4.0,
         protected: vec![],
         namespace: vec![],
         egress: vec![],

@@ -739,6 +739,11 @@ up to date.
 - `--no-land` verifies only and leaves the verified branch for a human;
   `forge land <id>` lands it later through the same integrator.
 
+A task whose landing re-run fails ends `failed` with the verified branch
+pushed, and `forge land <id>` refuses it (only a verified task lands). The
+reason names the recovery: `forge adopt <repo> <branch>` re-verifies the
+branch against the moved base and lands it.
+
 Adopted tasks show as manual in `forge log`, `forge show`, the portal ("Made
 by hand") and `forge stats` (a `manual` line), and are kept out of every
 workflow's outcome statistics and the economist's factor data: no agent did
