@@ -84,7 +84,7 @@ forge stats                                                 # outcomes per workf
 forge events                                                # the event log as JSON lines: a client's subscription
 forge snapshot                                              # tasks, requests, the worker, and the event offset to subscribe from, as one JSON object
 forge land <id>                                             # land an already-verified task's branch through the integrator: merge the base in, re-verify, push, fast-forward
-forge integrate <id>...                                     # merge verified tasks' branches together in order and re-verify after each, without landing
+forge integrate <id>...                                     # merge verified tasks' branches together, clean ones first, re-verifying after each, without landing; one that would conflict is blocked naming the files
 forge journal <id>                                          # what every earlier attempt in a task's piece of work said it did, and what the kernel found
 forge gc [--dry-run]                                        # remove worktrees that are clean and whose commits are all on a remote
 ```

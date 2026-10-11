@@ -12,6 +12,7 @@ use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
+pub mod merge_tree;
 mod overlay;
 pub use overlay::{clear_recorded_overlay, overlay_manifest_path, remove_empty_dirs};
 
@@ -606,6 +607,15 @@ pub async fn merge(dir: &Path, rev: &str, message: &str) -> Result<Merge> {
         );
     }
     Ok(Merge::Conflict(conflicted))
+}
+
+/// Files merging `tip` into `base` would conflict in, by `merge-tree` (no tree
+/// or index touched). `Some` on any conflict, empty if it names no file (a
+/// directory-rename split); `None` when clean or unanswerable.
+pub async fn would_conflict(dir: &Path, base: &str, tip: &str) -> Option<Vec<String>> {
+    let args = ["merge-tree", "--write-tree", "--no-messages", base, tip];
+    let out = Git::new(dir).hardened().output(&args).await.ok()?;
+    merge_tree::parse(out.status.code(), &String::from_utf8_lossy(&out.stdout))
 }
 
 pub async fn is_ancestor(dir: &Path, ancestor: &str, descendant: &str) -> bool {
