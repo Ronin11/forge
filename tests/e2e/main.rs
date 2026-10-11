@@ -5,6 +5,7 @@
 mod support;
 
 mod adopt;
+mod alerts;
 mod audience;
 mod audit;
 mod capacity;
@@ -66,6 +67,7 @@ mod resume;
 mod review_notes;
 mod shadowing;
 mod signal;
+mod signal_selftest;
 mod statusline;
 mod successor;
 mod supervisor;

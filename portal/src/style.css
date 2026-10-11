@@ -196,3 +196,4 @@ form.ask.msg.question {
 }
 .notfound h1 { font-size: 22px; }
 .notfound p { color: var(--mute); }
+.alert { border-left: 4px solid #b42318; padding: 0.4em 0.8em; color: #b42318; }

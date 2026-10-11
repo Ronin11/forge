@@ -184,6 +184,19 @@ pub enum Event<'a> {
         queued: usize,
         audience: &'a str,
     },
+    /// Something the operator hears about without asking (docs/OPS.md,
+    /// "What reaches you unasked"): `kind` is `doctor_failed` (a
+    /// doctor-daily run failed), `doctor_row` (a doctor WARN or FAIL row
+    /// first seen) or `tool_silent` (a job's step exited non-zero with no
+    /// output, naming what it ran and where). `key` names the condition;
+    /// `audience` is always "person".
+    OperatorAlert {
+        kind: &'a str,
+        key: &'a str,
+        project: &'a str,
+        text: &'a str,
+        audience: &'a str,
+    },
 }
 
 /// Every `type` an event carries in `events.jsonl`, the values a run
@@ -216,6 +229,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "provider_released",
     "initiative_held",
     "notification_digest",
+    "operator_alert",
 ];
 
 impl Event<'_> {
@@ -347,6 +361,7 @@ impl Event<'_> {
             ),
             Event::DiskHeld { reason, .. } => reason.to_string(),
             Event::NotificationDigest { text, .. } => text.to_string(),
+            Event::OperatorAlert { text, .. } => text.to_string(),
             Event::ProviderHeld { reason, .. } => format!("held {reason}"),
             Event::ProviderReleased { provider } => {
                 format!("released {provider}: its login answered")
@@ -718,7 +733,9 @@ fn render(ev: Event) -> Vec<String> {
         Event::DiskHeld { .. } | Event::ProviderHeld { .. } | Event::ProviderReleased { .. } => {
             vec![summary]
         }
-        Event::InitiativeHeld { .. } | Event::NotificationDigest { .. } => vec![summary],
+        Event::InitiativeHeld { .. }
+        | Event::NotificationDigest { .. }
+        | Event::OperatorAlert { .. } => vec![summary],
     }
 }
 

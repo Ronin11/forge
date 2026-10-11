@@ -91,6 +91,13 @@ while IFS= read -r line; do
                 mv -f "$FORGE_PLUGIN_STATE/digest-day.tmp" "$FORGE_PLUGIN_STATE/digest-day"
             fi
         fi
+    elif [ "$type" = operator_alert ]; then
+        # What reaches the operator unasked (docs/OPS.md): the kernel has
+        # already decided this one is owed, so it always runs the command.
+        kind=$(printf '%s\n' "$line" | json_str kind)
+        text=$(printf '%s\n' "$line" | json_str text)
+        printf '%s' "$line" |
+            sh "$FORGE_PLUGIN_DIR/command" alert "$kind" "$text" || true
     elif [ "$type" = disk_held ]; then
         reason=$(printf '%s\n' "$line" | json_str reason)
         printf '%s' "$line" |

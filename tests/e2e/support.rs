@@ -19,6 +19,43 @@ pub struct Env {
     /// machine running the suite's real `~/.config/systemd/user`.
     pub xdg_config: PathBuf,
     no_sandbox: bool,
+    started: Instant,
+    load_at_start: f64,
+}
+
+/// First field of /proc/loadavg: the 1-minute load average.
+fn load_average() -> f64 {
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|s| s.split_whitespace().next().and_then(|v| v.parse().ok()))
+        .unwrap_or(0.0)
+}
+
+/// Appends one JSON line per finished test to target/tmp/e2e-timing.jsonl
+/// (tests/flake.rs reads it): the test's name, wall time, whether it
+/// passed, and the load average when it started.
+fn record_timing(started: Instant, load: f64) {
+    use std::io::Write;
+    let name = std::thread::current().name().unwrap_or("?").to_string();
+    let line = serde_json::json!({
+        "test": name,
+        "secs": started.elapsed().as_secs_f64(),
+        "load": load,
+        "scale": time_scale(),
+        "passed": !std::thread::panicking(),
+        "at": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs()),
+    });
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("e2e-timing.jsonl");
+    // One write call on an O_APPEND file: concurrent tests' lines never mix.
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = f.write_all(format!("{line}\n").as_bytes());
+    }
 }
 
 /// A spawned `forge work` (or other long-lived process a test drives by
@@ -37,6 +74,8 @@ pub struct Env {
 /// is gone none of it may survive: a survivor is killed and reported.
 impl Drop for Env {
     fn drop(&mut self) {
+        record_timing(self.started, self.load_at_start);
+        release_slot();
         // bubblewrap's overlays leave each attempt's `work/work` directory
         // mode 000 under the fixture home, which TempDir's removal then
         // fails on, silently: thousands of them accumulated under every
@@ -240,7 +279,7 @@ impl Worker {
     /// still running is killed, then reported.
     fn assert_no_survivors(&self) {
         let seen = self.seen.take();
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + scaled(Duration::from_secs(2));
         let mut left: Vec<Proc> = seen.into_iter().filter(alive).collect();
         while !left.is_empty() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(25));
@@ -271,7 +310,7 @@ impl Drop for Worker {
             unsafe {
                 libc::kill(pid, libc::SIGTERM);
             }
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + scaled(Duration::from_secs(5));
             loop {
                 match child.try_wait() {
                     Ok(Some(_)) => break,
@@ -379,6 +418,7 @@ impl Env {
             );
         }
         let xdg_config = dir.path().join("xdg_config");
+        take_slot();
         Env {
             _dir: dir,
             _releases: None,
@@ -387,6 +427,8 @@ impl Env {
             origin,
             xdg_config,
             no_sandbox,
+            started: Instant::now(),
+            load_at_start: load_average(),
         }
     }
 
@@ -575,7 +617,76 @@ pub fn check(verdict: &str, level: &str, name: &str) -> Option<bool> {
         .map(|c| c["ok"].as_bool().unwrap())
 }
 
+/// `FORGE_TEST_TIME_SCALE`: the factor every deadline in the suite is
+/// multiplied by (never below 1). Unset, it is the host's load average per
+/// CPU when that is above 1, so a loaded host waits longer instead of
+/// failing; set it to pin the factor (`1` turns the scaling off).
+pub fn time_scale() -> f64 {
+    static SCALE: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *SCALE.get_or_init(|| {
+        let set = std::env::var("FORGE_TEST_TIME_SCALE")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|v| v.is_finite());
+        set.unwrap_or_else(|| load_average() / cpus()).max(1.0)
+    })
+}
+
+fn cpus() -> f64 {
+    std::thread::available_parallelism().map_or(1, |n| n.get()) as f64
+}
+
+/// At most this many `Env`s (tests) are alive at once: the CPUs the host
+/// has free, never fewer than half of them. The harness bounds its own
+/// concurrency because the test check's command line cannot see the load.
+fn concurrency_limit() -> usize {
+    let free = (cpus() - load_average()).floor();
+    free.clamp((cpus() / 2.0).ceil(), cpus()) as usize
+}
+
+static SLOTS: (std::sync::Mutex<usize>, std::sync::Condvar) =
+    (std::sync::Mutex::new(0), std::sync::Condvar::new());
+
+thread_local! {
+    /// Envs alive on this thread; only the first takes a slot, so a test
+    /// that builds several in a row cannot deadlock against itself.
+    static HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn take_slot() {
+    if HELD.with(|h| h.replace(h.get() + 1)) > 0 {
+        return;
+    }
+    static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let limit = *LIMIT.get_or_init(concurrency_limit);
+    let mut n = SLOTS.0.lock().unwrap_or_else(|e| e.into_inner());
+    while *n >= limit {
+        n = SLOTS.1.wait(n).unwrap_or_else(|e| e.into_inner());
+    }
+    *n += 1;
+}
+
+fn release_slot() {
+    if HELD.with(|h| {
+        h.set(h.get() - 1);
+        h.get()
+    }) == 0
+    {
+        *SLOTS.0.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+        SLOTS.1.notify_one();
+    }
+}
+
+/// A deadline (never a pause) scaled by `time_scale`.
+pub fn scaled(d: Duration) -> Duration {
+    d.mul_f64(time_scale())
+}
+
+/// Polls `pred` until it holds or `timeout` (scaled) passes. The timeout is
+/// a ceiling on how long to wait for an observable event, not a budget the
+/// event is expected to meet.
 pub fn wait_until(pred: impl Fn() -> bool, timeout: Duration) -> bool {
+    let timeout = scaled(timeout);
     let t0 = Instant::now();
     loop {
         if pred() {
@@ -584,8 +695,26 @@ pub fn wait_until(pred: impl Fn() -> bool, timeout: Duration) -> bool {
         if t0.elapsed() >= timeout {
             return false;
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Lets task `id`'s `gated-ok.sh` attempt finish: writes the gate file
+/// into its worktree once the clone is there.
+pub fn open_gate(e: &Env, id: i64) {
+    let git = || -> Option<std::path::PathBuf> {
+        let wt: String = e
+            .db()
+            .query_row("SELECT worktree FROM tasks WHERE id=?1", [id], |r| r.get(0))
+            .ok()?;
+        let git = std::path::Path::new(&wt).join(".git");
+        (!wt.is_empty() && git.is_dir()).then_some(git)
+    };
+    assert!(
+        wait_until(|| git().is_some(), Duration::from_secs(120)),
+        "task {id} never had a worktree to open the gate in"
+    );
+    std::fs::write(git().unwrap().join("gate-open"), "").unwrap();
 }
 
 pub fn tdd_repo(e: &Env) {
