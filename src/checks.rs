@@ -378,7 +378,7 @@ mod tests {
             argv: &argv,
             cwd: &work,
             sandbox: Some(&execution),
-            timeout: Duration::from_secs(10),
+            timeout: crate::test_time::scaled(Duration::from_secs(60)),
             env: &[],
             cap_bytes: TAIL_BYTES,
             full_log_dir: None,
@@ -467,7 +467,7 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            start.elapsed() < Duration::from_secs(10),
+            start.elapsed() < crate::test_time::scaled(Duration::from_secs(10)),
             "took {:?}",
             start.elapsed()
         );

@@ -914,7 +914,7 @@ mod tests {
         let started = std::time::Instant::now();
         let s = Store::open(&path).unwrap();
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
+            started.elapsed() < crate::test_time::scaled(std::time::Duration::from_secs(5)),
             "open waited {:?} behind a held writer",
             started.elapsed()
         );
@@ -942,7 +942,7 @@ mod tests {
         };
         assert!(err.contains("newer than this forge"), "{err}");
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
+            started.elapsed() < crate::test_time::scaled(std::time::Duration::from_secs(5)),
             "open waited {:?} behind a held writer",
             started.elapsed()
         );

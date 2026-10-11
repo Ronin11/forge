@@ -59,24 +59,6 @@ fn stage_old_and_new_releases(root: &std::path::Path) {
     std::os::unix::fs::symlink("releases/old", root.join("current")).unwrap();
 }
 
-/// Lets task `id`'s `gated-ok.sh` attempt finish: writes the gate file
-/// into its worktree once the clone is there.
-fn open_gate(e: &Env, id: i64) {
-    let git = || -> Option<std::path::PathBuf> {
-        let wt: String = e
-            .db()
-            .query_row("SELECT worktree FROM tasks WHERE id=?1", [id], |r| r.get(0))
-            .ok()?;
-        let git = std::path::Path::new(&wt).join(".git");
-        (!wt.is_empty() && git.is_dir()).then_some(git)
-    };
-    assert!(
-        wait_until(|| git().is_some(), Duration::from_secs(120)),
-        "task {id} never had a worktree to open the gate in"
-    );
-    std::fs::write(git().unwrap().join("gate-open"), "").unwrap();
-}
-
 #[test]
 fn a_staged_release_starts_a_successor_that_claims_while_the_old_worker_drains() {
     let e = Env::with_releases();
@@ -589,10 +571,14 @@ fn deploy_taken_over(s: &SelfDeploy, sha: &str) -> std::process::Output {
     let want = format!("releases/{sha}");
     let version = sha.to_string();
     let successor = std::thread::spawn(move || {
-        for _ in 0..600 {
+        // Waits for the observable event (`staged` naming the release), not
+        // for a count of polls: how long staging takes depends on the load.
+        let deadline = std::time::Instant::now() + scaled(Duration::from_secs(150));
+        while std::time::Instant::now() < deadline {
             let staged = std::fs::read_link(bins.join("staged")).unwrap_or_default();
             if staged == std::path::Path::new(&want) {
                 let c = rusqlite::Connection::open(home.join("forge.db")).unwrap();
+                c.busy_timeout(scaled(Duration::from_secs(30))).unwrap();
                 c.execute(
                     "INSERT INTO workers (pid, version, started_at) VALUES (?1, ?2, 0)",
                     rusqlite::params![i64::from(std::process::id()), version],
@@ -964,20 +950,22 @@ fn a_successor_that_dies_after_claiming_gives_the_plugins_back_to_the_worker_tha
     );
 
     // A successor that takes the capability file, as a claiming worker
-    // does, and is gone four seconds later.
+    // does, and is gone once the test has seen the handoff and says so by
+    // writing `successor-exit` (not after a fixed time, which a loaded
+    // host can outlast before the test looks).
     let root = e.home.join("bin");
     let bin = root.join("releases/new/forge");
     std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
     std::fs::write(
         &bin,
-        "#!/bin/sh\necho $$ > \"$FORGE_HOME/bin/successor-capable\"\nexec sleep 4\n",
+        "#!/bin/sh\necho $$ > \"$FORGE_HOME/bin/successor-capable\"\nwhile [ ! -e \"$FORGE_HOME/bin/successor-exit\" ]; do sleep 0.1; done\n",
     )
     .unwrap();
     std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 
     let first = e.add(&["--retries", "0"]);
     let mut old = Worker::spawn(
-        e.cmd("slow-ok.sh")
+        e.cmd("gated-ok.sh")
             .env("FORGE_RELEASE", "old")
             .args(["work", "--poll", "1"]),
     );
@@ -1018,6 +1006,7 @@ fn a_successor_that_dies_after_claiming_gives_the_plugins_back_to_the_worker_tha
     );
 
     // The successor exits; the worker that still claims takes them back.
+    std::fs::write(root.join("successor-exit"), "").unwrap();
     assert!(
         wait_until(
             || running(&e) && keeper_status(&e)["pid"].as_i64() != Some(before),
@@ -1032,6 +1021,7 @@ fn a_successor_that_dies_after_claiming_gives_the_plugins_back_to_the_worker_tha
         "status row: {}",
         plugin_row(&e)
     );
+    open_gate(&e, first);
     old.stop();
 }
 

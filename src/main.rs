@@ -85,6 +85,27 @@ async fn main() -> anyhow::Result<()> {
     cli::main().await
 }
 
+/// The time scale unit tests share with the e2e suite: a deadline in a test
+/// is a ceiling on waiting for an observable event, multiplied by
+/// `FORGE_TEST_TIME_SCALE` (default 1, never below 1) so a loaded host
+/// waits longer rather than failing (docs/CHECKS.md, "Timing in tests").
+#[cfg(test)]
+pub(crate) mod test_time {
+    use std::time::Duration;
+
+    pub(crate) fn scale() -> f64 {
+        std::env::var("FORGE_TEST_TIME_SCALE")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|v| v.is_finite())
+            .map_or(1.0, |v| v.max(1.0))
+    }
+
+    pub(crate) fn scaled(d: Duration) -> Duration {
+        d.mul_f64(scale())
+    }
+}
+
 #[cfg(test)]
 mod readme_layout {
     use std::fs;
