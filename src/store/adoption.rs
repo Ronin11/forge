@@ -116,6 +116,17 @@ pub struct ManualStat {
 }
 
 impl Store {
+    /// Record `pid` as the `forge adopt` waiting on a project slot for the
+    /// queued adopted task `id`, so orphan recovery blocks the task when
+    /// that process dies before it holds the slot.
+    pub fn stamp_adopter(&self, id: i64, pid: i64) -> Result<()> {
+        self.lock().retry_execute(
+            "UPDATE tasks SET worker_pid=?2, worker_start=?3 WHERE id=?1 AND state='queued' AND origin='adopted'",
+            rusqlite::params![id, pid, super::start_of(pid)],
+        )?;
+        Ok(())
+    }
+
     /// Put an envelope on an attempt the kernel wrote: how an adopted
     /// task's question reaches `forge requests` and `forge show`, which
     /// read it from the task's last attempt.
