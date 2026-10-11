@@ -609,10 +609,9 @@ pub async fn merge(dir: &Path, rev: &str, message: &str) -> Result<Merge> {
     Ok(Merge::Conflict(conflicted))
 }
 
-/// The files merging `tip` into `base` would conflict in, by `merge-tree`, which
-/// touches no tree or index. `Some` whenever merge-tree says conflict, with
-/// the list empty if it names no file (a directory-rename split); `None`
-/// when clean or unanswerable: `merge` decides.
+/// Files merging `tip` into `base` would conflict in, by `merge-tree` (no tree
+/// or index touched). `Some` on any conflict, empty if it names no file (a
+/// directory-rename split); `None` when clean or unanswerable.
 pub async fn would_conflict(dir: &Path, base: &str, tip: &str) -> Option<Vec<String>> {
     let args = ["merge-tree", "--write-tree", "--no-messages", base, tip];
     let out = Git::new(dir).hardened().output(&args).await.ok()?;
