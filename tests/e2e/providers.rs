@@ -15,15 +15,11 @@ fn codex_fake(name: &str) -> std::path::PathBuf {
 /// Keep the provider capped until the test explicitly expires its sample.
 /// A three-second fake window can elapse during worktree setup on a busy host.
 fn capped_worker(e: &Env, codex: &str) -> (Worker, PathBuf) {
-    let source = codex_fake("ratelimited.sh");
-    let fake = e.home.join("held-provider.sh");
-    let script = std::fs::read_to_string(&source).unwrap();
-    assert!(script.contains("+ 3"));
-    std::fs::write(&fake, script.replace("+ 3", "+ 3600")).unwrap();
-    std::fs::set_permissions(&fake, std::fs::metadata(source).unwrap().permissions()).unwrap();
+    let fake = codex_fake("ratelimited.sh");
     let log = e.home.join("provider-worker.log");
     let output = std::fs::File::create(&log).unwrap();
     let mut cmd = e.cmd(fake.to_str().unwrap());
+    cmd.env("FAKE_RESET_SECS", "3600");
     cmd.env("FORGE_CODEX_BIN", codex_fake(codex));
     cmd.args(["work", "--once"]);
     cmd.stdout(output.try_clone().unwrap()).stderr(output);
