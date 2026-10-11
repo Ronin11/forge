@@ -1,4 +1,5 @@
 use crate::support::*;
+use std::time::Duration;
 
 #[test]
 fn an_attempt_that_hits_the_turn_cap_with_work_in_hand_is_resumed() {
@@ -292,7 +293,15 @@ fn the_worker_holds_while_a_rate_window_is_at_its_cap_and_resumes_after_the_rese
         "[budget]\nfive_hour_max = 0.9\n",
     )
     .unwrap();
-    let o = e.forge("ratelimited.sh", &["work", "--once"]);
+    // The window must still be at its cap when the worker looks at it, so
+    // the reset is as far off as the host is loaded.
+    let reset_secs = scaled(Duration::from_secs(3)).as_secs().to_string();
+    let o = e
+        .cmd("ratelimited.sh")
+        .env("FAKE_RESET_SECS", reset_secs)
+        .args(["work", "--once"])
+        .output()
+        .unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("rate window 5h at 95% (cap 90%)"), "{err}");

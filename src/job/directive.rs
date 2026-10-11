@@ -106,6 +106,7 @@ pub(super) async fn run_directive(args: RunDirective<'_>) -> Result<DirectiveOut
             provider,
             schema,
             sandboxed: false,
+            egress: crate::directive::Egress::ModelOnly,
             writes: false,
             start_sha: "",
             resume: None,

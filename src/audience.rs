@@ -91,6 +91,7 @@ pub(crate) async fn emit_recovered(f: &Forge, t: &Task) -> Result<()> {
 pub(crate) fn daily_digest(f: &Forge) -> Result<()> {
     let today = crate::unix_now().div_euclid(86_400) * 86_400;
     let text = f.store.notification_digest(today - 86_400, today)?;
+    let text = with_standing(text, &f.store.persisting_alerts(today)?);
     f.report.emit(
         0,
         Event::NotificationDigest {
@@ -99,6 +100,20 @@ pub(crate) fn daily_digest(f: &Forge) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// The digest repeats every alert still standing that was announced on an
+/// earlier day (docs/OPS.md, "What reaches you unasked"): announced once
+/// when first seen, then once a day here, never on every run.
+pub(crate) fn with_standing(mut text: String, standing: &[crate::store::Alert]) -> String {
+    for a in standing {
+        text.push_str(&format!(
+            "\nstill standing since {}: {}",
+            crate::doctor::ymd(a.first_seen),
+            a.text
+        ));
+    }
+    text
 }
 
 fn live_followup(store: &Store, id: i64) -> Result<bool> {

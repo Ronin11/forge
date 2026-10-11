@@ -750,7 +750,7 @@ fn relay_missing_executable_stops_before_launching_agent() {
     assert!(stderr.contains("missing-relay"), "relay stderr: {stderr}");
     assert!(output.stdout.is_empty(), "the agent must not run");
     assert!(began.elapsed() >= std::time::Duration::from_secs(5));
-    assert!(began.elapsed() < std::time::Duration::from_secs(15));
+    assert!(began.elapsed() < crate::test_time::scaled(std::time::Duration::from_secs(15)));
 }
 
 #[test]

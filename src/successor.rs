@@ -966,7 +966,7 @@ mod bounded_tests {
             async { tokio::time::sleep(std::time::Duration::from_millis(10)).await }
         );
         assert!(result.is_none());
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(started.elapsed() < crate::test_time::scaled(std::time::Duration::from_secs(2)));
     }
 
     #[tokio::test]

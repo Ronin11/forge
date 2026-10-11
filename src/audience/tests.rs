@@ -173,3 +173,20 @@ fn dependency_release_keeps_withdrawn_blocks_until_a_replacement_succeeds() {
         TaskState::Queued
     );
 }
+
+#[test]
+fn the_digest_names_each_standing_alert_with_the_day_it_was_first_seen() {
+    let a = crate::store::Alert {
+        key: "row:disk:warn".into(),
+        project: "forge".into(),
+        kind: "doctor_row".into(),
+        text: "doctor disk WARN: 4 GB free".into(),
+        first_seen: 86_400 * 3,
+        last_seen: 86_400 * 4,
+    };
+    assert_eq!(with_standing("yesterday: 0".into(), &[]), "yesterday: 0");
+    assert_eq!(
+        with_standing("yesterday: 0".into(), &[a]),
+        "yesterday: 0\nstill standing since 1970-01-04: doctor disk WARN: 4 GB free"
+    );
+}

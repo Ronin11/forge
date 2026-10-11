@@ -108,3 +108,48 @@ files are not rejected for being modified, and a stray file added and
 deleted within the same attempt passes. Uncommitted files are handled
 by `clean-tree`. Failure details name the stray files and tell the agent
 to delete them and commit the removal.
+
+## Timing in tests
+
+*2026-10-10. On that day eleven Forge tasks failed their `test` check on
+tests that each pass alone in under a second to a few seconds: the host's
+load average was 30-45 with several tasks' suites running at once. Every
+one of them was waiting on a clock instead of on an event.*
+
+**Wait on the event, with a generous deadline.** A test says what it is
+waiting for (a row in the store, a line in a log, a file a fake agent or
+plugin writes, a process exiting) and polls for that, with a deadline that
+is only the ceiling on how long a broken run may hang. Never assume the
+event arrives "within 5 s", and never make a fake's own lifetime a fixed
+sleep the test must beat: gate it on a file the test writes once it has
+looked (`gated-ok.sh`, `feedbackcoder.sh` with `FAKE_GATE`, the dying
+successor in `successor.rs` waiting for `successor-exit`). A reset time
+that must still be in the future when the worker looks (`ratelimited.sh`'s
+`FAKE_RESET_SECS`) is scaled the same way as a deadline.
+
+**Scale every deadline.** `FORGE_TEST_TIME_SCALE` is the factor deadlines
+are multiplied by, never below 1: `support::scaled(Duration)` and
+`wait_until` in the e2e suite, `crate::test_time::scaled` in unit tests.
+Set, it is used as given (`1` turns scaling off). Unset, it is the 1-minute
+load average divided by the CPU count when that is above 1, read once per
+test binary, so a loaded host waits longer rather than failing. It scales
+deadlines, never pauses a test is meant to make.
+
+**Bounded concurrency.** The e2e harness holds at most as many `Env`s alive
+at once as the host has free CPUs (CPU count minus load average, never
+fewer than half the CPUs), whatever `--test-threads` says; a test building
+several `Env`s counts once.
+
+**Seeing flakiness.** Each e2e test appends one line to
+`target/tmp/e2e-timing.jsonl` when its `Env` drops: `test`, `secs`, `load`
+at start, `scale`, `passed`, `at`. `cargo test --test flake -- --nocapture`
+lists the tests whose duration varied more than 5x over their last 20
+runs (ignoring runs under half a second), with the load at the slowest
+one. It prints and never fails. `forge doctor` has a `flaky tests` row:
+WARN when, in the last 24 hours, a `test` check failed and the supervisor's
+mechanic found its failing tests passing again on the base, untouched by
+the branch (its `mechanic-load-flake` decisions, docs/SUPERVISOR.md).
+
+**Not allowed:** `#[ignore]`, and retrying a test until it is green. Both
+hide the fault. A test that varies more than 5x in the report has a
+timing assumption to find.

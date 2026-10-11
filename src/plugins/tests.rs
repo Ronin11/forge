@@ -26,7 +26,7 @@ async fn exiting_leader_leaves_no_child(stop: bool) {
     )
     .unwrap();
     let mut group = GroupGuard(child.id().unwrap() as libc::pid_t);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + crate::test_time::scaled(Duration::from_secs(30));
     while !state.join("ready").exists() {
         assert!(Instant::now() < deadline, "plugin never became ready");
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -38,14 +38,14 @@ async fn exiting_leader_leaves_no_child(stop: bool) {
         .unwrap();
     assert_eq!(unsafe { libc::kill(kid, 0) }, 0);
 
-    let started = Instant::now();
     if stop {
         stop_child(&mut child, &mut group).await;
-        assert!(started.elapsed() < STOP_GRACE, "leader missed the grace");
+        // A leader that missed the grace is killed, not a clean exit,
+        // which the assertion on its status below catches.
     } else {
         std::fs::write(state.join("exit"), "").unwrap();
         tokio::time::timeout(
-            Duration::from_secs(5),
+            crate::test_time::scaled(Duration::from_secs(30)),
             wait_and_sweep(&mut child, &mut group),
         )
         .await
@@ -55,7 +55,7 @@ async fn exiting_leader_leaves_no_child(stop: bool) {
     assert!(child.wait().await.unwrap().success());
     assert_eq!(group.0, 0, "guard must not signal a reaped leader's PID");
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + crate::test_time::scaled(Duration::from_secs(30));
     loop {
         // An orphan zombie has exited too; its final removal depends on
         // the host's init/subreaper, not the plugin supervisor.
@@ -328,7 +328,7 @@ async fn stop_kills_a_shell_plugins_whole_pipeline_not_just_its_leader() {
     let f = Arc::new(f);
     let sup = Supervisor::start(f.clone());
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + crate::test_time::scaled(Duration::from_secs(10));
     let pid = loop {
         if let RunState::Running { pid, .. } = read_run_state(&f.paths.home, "pipeline") {
             break pid;
@@ -341,7 +341,7 @@ async fn stop_kills_a_shell_plugins_whole_pipeline_not_just_its_leader() {
     // pipeline: waited for by pid, not group, so the assertion below
     // is not itself relying on the fix under test (`process_group(0)`)
     // to find them.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + crate::test_time::scaled(Duration::from_secs(10));
     let children = loop {
         let out = std::process::Command::new("pgrep")
             .args(["-P", &pid.to_string()])
@@ -368,7 +368,7 @@ async fn stop_kills_a_shell_plugins_whole_pipeline_not_just_its_leader() {
     // usually), which a busy machine can be slow to get to; a short
     // poll instead of one immediate check keeps this test about the
     // group having been signalled, not about reaper scheduling.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + crate::test_time::scaled(Duration::from_secs(30));
     for kid in children {
         loop {
             let alive = unsafe { libc::kill(kid, 0) } == 0;
@@ -409,7 +409,7 @@ fn forge_enabling(dir: &Path, plugins: &[(&str, &str)]) -> Arc<crate::ctx::Forge
 }
 
 async fn wait_running(home: &Path, name: &str) {
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + crate::test_time::scaled(Duration::from_secs(120));
     while !matches!(read_run_state(home, name), RunState::Running { .. }) {
         assert!(Instant::now() < deadline, "{name} never started");
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -435,12 +435,10 @@ async fn stop_signals_every_plugin_before_waiting_on_any_of_them() {
     wait_running(dir.path(), "b").await;
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let started = Instant::now();
+    // A sequential stop is caught below without a wall-clock budget: the
+    // first plugin would exit before the second was ever signalled, and so
+    // never see its marker.
     sup.stop().await;
-    assert!(
-        started.elapsed() < Duration::from_secs(4),
-        "stop was sequential"
-    );
     for name in ["a", "b"] {
         let seen = dir
             .path()
@@ -484,7 +482,7 @@ async fn a_plugin_whose_lock_is_held_is_skipped_until_it_is_released() {
     // A sibling test's fork can hold a copy of the lock's descriptor
     // for the instant before it execs; the lock is free right after.
     let mut released = false;
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + crate::test_time::scaled(Duration::from_secs(120));
     while Instant::now() < deadline {
         if try_lock_plugin(dir.path(), "held").is_some() {
             released = true;
@@ -566,7 +564,7 @@ async fn a_broken_manifest_keeps_its_plugin_running_and_an_absent_one_is_stopped
     assert!(!cat.plugins.contains_key("broken"));
     std::fs::remove_dir_all(dir.path().join("plugins/gone")).unwrap();
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + crate::test_time::scaled(Duration::from_secs(10));
     while running_pid(dir.path(), "gone").is_some() {
         assert!(
             Instant::now() < deadline,
@@ -632,7 +630,7 @@ async fn a_plugins_own_exit_is_written_into_its_log() {
     let dir = tempfile::tempdir().unwrap();
     let f = forge_enabling(dir.path(), &[("brief", "exit 3")]);
     let sup = Supervisor::start(f.clone());
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + crate::test_time::scaled(Duration::from_secs(30));
     while !plugin_log(dir.path(), "brief").contains("exited: exit 3") {
         assert!(Instant::now() < deadline, "no exit line in the log");
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -655,7 +653,7 @@ async fn a_supervisor_notes_a_predecessor_that_died_without_stopping_the_plugin(
         },
     );
     let sup = Supervisor::start(f.clone());
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + crate::test_time::scaled(Duration::from_secs(30));
     while matches!(running_pid(dir.path(), "orphaned"), None | Some(4242)) {
         assert!(Instant::now() < deadline, "the plugin never started");
         tokio::time::sleep(Duration::from_millis(20)).await;
