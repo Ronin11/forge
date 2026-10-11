@@ -321,6 +321,7 @@ mod tests {
             no_tools: false,
             judgment: None,
             early_ending: f.early_ending,
+            budget_usd: None,
         }
     }
 
