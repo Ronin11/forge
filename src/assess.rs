@@ -178,6 +178,7 @@ async fn try_run(
             provider,
             schema: SCHEMA,
             sandboxed: true,
+            egress: crate::directive::task_egress(t, wt, base_sha).await?,
             writes: false,
             start_sha: landed_sha,
             resume: None,

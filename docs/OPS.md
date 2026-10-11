@@ -79,6 +79,37 @@ permissions for events.jsonl`) once `N` is above zero, so a systemic
 problem is visible even though no single attempt reported it as a
 failure.
 
+## What reaches you unasked
+
+Four things reach the operator without anyone asking, each as an
+`operator_alert` event (audience `person`) that every channel plugin
+(notify, signal) carries, and each recorded in the alerts table so a
+standing condition is not repeated by the next run:
+
+- **A failed `doctor-daily`.** Every run of the `doctor-daily` job that
+  does not pass raises the alert `doctor-failed`, naming the job and each
+  failing step by name with its first line of output. It is announced on
+  every failing run, not only the first: a doctor that keeps failing is
+  news each day it does. A run that passes clears it.
+- **The portal line.** While `doctor-failed` stands, the project's portal
+  carries one line saying so (`PortalDoc.alerts`), until the next run that
+  passes removes it.
+- **Doctor WARN and FAIL rows.** Each WARN or FAIL row `doctor-daily`
+  logs is announced once, by the first run that sees it. The row is keyed
+  by name and status, so a row whose numbers move is still the same row,
+  and it is not sent again by later runs while it stands. The daily digest
+  then repeats every row still standing that was announced on an earlier
+  day as `still standing since <date>: ...`: once when first seen, once a
+  day after, never on every run. A row that is no longer reported is
+  cleared. A run that never reached doctor (no rows and not ok) says
+  nothing about which rows stand, so it clears none.
+- **A silent tool.** A job step or assert that exits non-zero with nothing
+  on stdout or stderr (`[forge] no output captured`: usually its binary or
+  environment is missing) raises a `tool_silent` alert naming the job, the
+  step, what it ran and where.
+
+A dry run, a dropped job and a skipped job owe none of these.
+
 ## The running binary: releases, the pointer, and the successor worker (design, 2026-09-25)
 
 Three incidents in two days came from one cause: a binary replaced in

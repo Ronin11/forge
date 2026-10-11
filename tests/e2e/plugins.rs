@@ -880,7 +880,7 @@ fn the_signal_plugin_notifies_a_blocked_task_and_files_an_answer_from_a_reply() 
         stub_dir.join("signal-cli"),
         format!(
             "#!/bin/sh\n\
-             case \"$3\" in\n\
+             cmd=$3; [ \"$3\" = -o ] && cmd=$5; case \"$cmd\" in\n\
              send)\n\
              shift 3\n\
              msg=\"\"\n\
@@ -1046,7 +1046,7 @@ fn the_signal_plugin_delivers_an_addressed_question_to_its_contact_and_records_h
         stub_dir.join("signal-cli"),
         format!(
             "#!/bin/sh\n\
-             case \"$3\" in\n\
+             cmd=$3; [ \"$3\" = -o ] && cmd=$5; case \"$cmd\" in\n\
              send)\n\
              shift 3\n\
              msg=\"\"\n\
@@ -1278,7 +1278,7 @@ fn the_signal_plugin_sends_a_contact_their_portal_link_on_intake_accept_and_on_r
         stub_dir.join("signal-cli"),
         format!(
             "#!/bin/sh\n\
-             case \"$3\" in\n\
+             cmd=$3; [ \"$3\" = -o ] && cmd=$5; case \"$cmd\" in\n\
              send)\n\
              shift 3\n\
              msg=\"\"\n\
@@ -1511,7 +1511,7 @@ fn the_signal_plugin_routes_a_contacts_message_through_the_concierge() {
     )
     .unwrap();
 
-    // A fake `signal-cli`: `receive --json` prints the one scripted
+    // A fake `signal-cli`: `-o json receive` prints the one scripted
     // message the first time it's called and nothing after (the plugin
     // polls in a loop), and `send` records what was sent, to whom, in
     // `$FORGE_PLUGIN_STATE/sent`.
@@ -1522,7 +1522,7 @@ fn the_signal_plugin_routes_a_contacts_message_through_the_concierge() {
 set -u
 shift
 shift
-cmd=$1
+[ "$1" = -o ] && shift 2; cmd=$1
 shift
 case "$cmd" in
     send)

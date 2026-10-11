@@ -432,7 +432,7 @@ fn landing_reverifies_against_the_moved_base_and_folds_the_hidden_tests() {
     tdd_repo(&e);
     // The coder is slow enough for main to move underneath it.
     let mut c = e.with_role("feedbackcoder.sh", "TESTS", "testwriter.sh");
-    c.env("FAKE_SLEEP", "1");
+    c.env("FAKE_GATE", "1");
     let child = c
         .args([
             "run",
@@ -496,6 +496,7 @@ fn landing_reverifies_against_the_moved_base_and_folds_the_hidden_tests() {
         &other,
         &["push", "-q", e.origin.to_str().unwrap(), "main:main"],
     );
+    open_gate(&e, 1);
     let o = child.wait_with_output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(o.status.success(), "{err}");

@@ -500,6 +500,8 @@ struct ConvMessage {
     #[serde(default)]
     id: i64,
     #[serde(default)]
+    channel: String,
+    #[serde(default)]
     direction: String,
     #[serde(default)]
     text: String,
@@ -530,7 +532,10 @@ struct ConvReply {
 /// side of every channel exchange on record for this project.
 fn conversation_messages(forge: &Forge, project: &str) -> Result<Vec<ConvMessage>> {
     let v = forge.json(&["message", "list", project, "--json"])?;
-    Ok(serde_json::from_value(v)?)
+    let rows: Vec<ConvMessage> = serde_json::from_value(v)?;
+    // What Forge told the operator about its own automation (the `alerts`
+    // channel) is not part of the customer's conversation.
+    Ok(rows.into_iter().filter(|m| m.channel != "alerts").collect())
 }
 
 /// `forge decisions --project <project> --json`, narrowed to the rows
@@ -730,6 +735,14 @@ fn render_running(
     )
 }
 
+/// A failed daily doctor stays at the top of the page until a run passes.
+fn render_alerts(alerts: &[String]) -> String {
+    alerts
+        .iter()
+        .map(|a| format!(r#"<p class="alert">{}</p>"#, esc(a)))
+        .collect()
+}
+
 fn render_page(
     doc: &PortalDoc,
     token: &str,
@@ -740,7 +753,11 @@ fn render_page(
 ) -> String {
     // No purpose paragraph: a project's purpose is the operator's own
     // words, never the customer's (see docs/PORTAL.md).
-    let header = format!(r#"<header><h1>{}</h1></header>"#, esc(&doc.project));
+    let header = format!(
+        r#"<header><h1>{}</h1></header>{}"#,
+        esc(&doc.project),
+        render_alerts(&doc.alerts)
+    );
     let main = format!(
         r#"<main>
 <section><h2>Running for you</h2>{running}</section>

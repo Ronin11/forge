@@ -148,6 +148,7 @@ async fn model_step(
             provider: s.provider,
             schema: &s.schema,
             sandboxed: false,
+            egress: crate::directive::Egress::ModelOnly,
             writes: false,
             start_sha: "",
             resume: None,

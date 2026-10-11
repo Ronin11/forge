@@ -36,6 +36,7 @@ pub struct NewAttempt<'a> {
 struct AttemptLaunch<'a> {
     f: &'a Forge,
     t: &'a Task,
+    cfg: &'a crate::config::Config,
     step: &'a str,
     worktree: &'a Path,
     prompt: &'a str,
@@ -156,6 +157,7 @@ pub async fn run_attempt(
     let outcome = launch(AttemptLaunch {
         f,
         t,
+        cfg,
         step: &step.action.name,
         worktree: &spec.dir,
         prompt: &spec_prompt,
@@ -549,7 +551,7 @@ pub async fn new_attempt(args: NewAttempt<'_>) -> Result<(Attempt, PathBuf), Fau
     let cfg = crate::config::load_at(Path::new(&t.repo), dir, &t.base_sha)
         .await
         .task()?;
-    f.allow_egress(dir, &cfg, t.trust, Some(&t.provider));
+    f.allow_egress_for(dir, &cfg, t.trust, Some(provider));
     let execution = f.execution_inputs(dir);
     inputs.executor = execution.executor;
     inputs.guarantees = execution.guarantees;
@@ -600,6 +602,7 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
     let AttemptLaunch {
         f,
         t,
+        cfg,
         step,
         worktree,
         prompt,
@@ -638,6 +641,10 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
             provider: &provider,
             schema: crate::envelope::SCHEMA,
             sandboxed: true,
+            egress: crate::directive::Egress::Project {
+                cfg,
+                trust: t.trust,
+            },
             writes: contract.writes(),
             start_sha,
             resume,

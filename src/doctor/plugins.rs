@@ -58,6 +58,38 @@ pub(super) fn check_plugins(paths: &Paths, store: &Store) -> Vec<Check> {
         None if drift_hint.is_empty() => check("plugins", Status::Ok, detail, ""),
         None => check("plugins", Status::Warn, detail, drift_hint),
     }]
+    .into_iter()
+    .chain(self_tests(paths, store, &cat))
+    .collect()
+}
+
+/// One `plugins.<name>.test` row per enabled plugin that declares a
+/// self-test (docs/PLUGINS.md, "Self-test"): the plugin proving its own
+/// round trip, e.g. Signal's inbound side seeing a message it sent.
+fn self_tests(paths: &Paths, store: &Store, cat: &crate::plugins::Catalog) -> Vec<Check> {
+    let enabled = store.enabled_plugins().unwrap_or_default();
+    let mut out = Vec::new();
+    for name in enabled {
+        let Some(plugin) = cat.plugins.get(&name) else {
+            continue;
+        };
+        let row = format!("plugins.{name}.test");
+        let timeout = crate::plugins::selftest::TIMEOUT;
+        out.push(
+            match crate::plugins::selftest::run(&paths.home, plugin, timeout) {
+                Ok(None) => continue,
+                Ok(Some(o)) if o.ok => check(&row, Status::Ok, o.last_line(), ""),
+                Ok(Some(o)) => check(
+                    &row,
+                    Status::Warn,
+                    o.last_line(),
+                    format!("forge plugin test {name}; its log: forge plugin logs {name}"),
+                ),
+                Err(e) => check(&row, Status::Warn, format!("{e:#}"), ""),
+            },
+        );
+    }
+    out
 }
 
 #[cfg(test)]

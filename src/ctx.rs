@@ -295,6 +295,20 @@ impl Forge {
         trust: crate::store::Trust,
         provider: Option<&str>,
     ) {
+        let provider = provider.and_then(|name| self.providers.get(name));
+        self.allow_egress_for(worktree, cfg, trust, provider);
+    }
+
+    /// `allow_egress` for a provider already resolved, as a launch carries
+    /// it (its `base_url` and `env` name hosts too; see
+    /// `egress::provider_rules`).
+    pub fn allow_egress_for(
+        &self,
+        worktree: &Path,
+        cfg: &config::Config,
+        trust: crate::store::Trust,
+        provider: Option<&agent::Provider>,
+    ) {
         crate::agent::build_env::configure_env(
             &self.paths.home,
             worktree,
@@ -313,10 +327,19 @@ impl Forge {
                 config::TrustEgress::Declared => sandbox.set_egress(worktree, &cfg.egress),
             }
             let hosts = provider
-                .and_then(|name| self.providers.get(name))
                 .map(crate::egress::provider_rules)
                 .unwrap_or_default();
             sandbox.set_provider_hosts(worktree, &hosts);
+        }
+    }
+
+    /// Let runs in `worktree`, a scratch directory no repository owns,
+    /// reach `provider`'s model endpoints and nothing else. No-op
+    /// unsandboxed.
+    pub fn allow_model_egress(&self, worktree: &Path, provider: &agent::Provider) {
+        if let Some(sandbox) = &self.sandbox {
+            sandbox.set_egress(worktree, &[]);
+            sandbox.set_provider_hosts(worktree, &crate::egress::provider_rules(provider));
         }
     }
 

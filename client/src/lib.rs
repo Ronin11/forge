@@ -998,6 +998,9 @@ pub struct PortalDoc {
     #[serde(default)]
     pub brief: Option<PortalBrief>,
     pub backlog: Vec<PortalBacklogItem>,
+    /// Standing alerts on the project's own automation, one line each.
+    #[serde(default)]
+    pub alerts: Vec<String>,
 }
 
 /// One row of `forge initiative list --json` / `forge initiative show

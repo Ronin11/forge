@@ -478,3 +478,66 @@ fn a_question_addressed_to_someone_else_never_gets_a_supervisor_attempt() {
     let ds: serde_json::Value = e.decisions_json();
     assert!(ds.as_array().unwrap().is_empty(), "{ds}");
 }
+
+/// The supervisor's provider is not the task's: a task's provider routes
+/// the work, never the judge. Its run in the blocked task's worktree must
+/// still reach its own provider's model endpoint through the sandbox's
+/// proxy, rather than whatever the task's attempt registered for that
+/// worktree: every supervisor run was refused it from 2026-10-03 and failed
+/// with ERR_PROXY_TUNNEL after one turn.
+#[test]
+fn the_supervisors_run_reaches_its_own_providers_model_endpoint_through_the_proxy() {
+    let e = Env::new();
+    if e.sandbox_disabled() || !crate::worker::can_unshare_net() {
+        eprintln!("no bwrap network namespace here: skipping");
+        return;
+    }
+    // The fake model endpoint: answers every tunnel the proxy opens to it.
+    let endpoint = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = endpoint.local_addr().unwrap().port();
+    let reached = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hits = reached.clone();
+    std::thread::spawn(move || {
+        for mut s in endpoint.incoming().flatten() {
+            hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = std::io::Write::write_all(&mut s, b"fake-model-ok\n");
+        }
+    });
+    std::fs::create_dir_all(&e.home).unwrap();
+    std::fs::write(
+        e.home.join("config.toml"),
+        format!(
+            "[providers.judge]\nrunner = \"claude-cli\"\n\
+             env = {{ ANTHROPIC_BASE_URL = \"http://127.0.0.1:{port}\" }}\n\
+             [roles]\nsupervisor = \"judge\"\n"
+        ),
+    )
+    .unwrap();
+    let o = supervised(&e, "supervisor-via-proxy.sh", "write 42 to the answer file");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !err.contains("supervisor could not read the record"),
+        "{err}"
+    );
+    assert!(
+        !err.contains(&format!("egress: refused \"CONNECT 127.0.0.1:{port}")),
+        "{err}"
+    );
+    assert!(
+        err.contains("supervisor answered (citing hello.sh, forge.toml)"),
+        "{err}"
+    );
+    assert!(reached.load(std::sync::atomic::Ordering::SeqCst) > 0);
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2, "{a:?}");
+    assert_eq!(a[1].1, "succeeded", "{a:?}");
+    let provider: String = e
+        .db()
+        .query_row(
+            "SELECT provider FROM attempts WHERE task_id=1 AND step='supervisor'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(provider, "judge");
+}
