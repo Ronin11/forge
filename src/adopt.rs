@@ -226,12 +226,12 @@ pub async fn adopt(f: &Forge, req: &AdoptRequest) -> Result<Adopted> {
         ..Default::default()
     };
     t.id = f.store.insert_task(&t)?;
-    // Queued only for the instant it takes to claim it: no worker ever
-    // claims an adopted task (`Store::queued_unblocked`), and one left
-    // running by a `forge adopt` that died blocks rather than requeues.
-    if !f.store.claim(t.id, std::process::id() as i64)? {
-        bail!("task {} could not be claimed", t.id);
-    }
+    // Queued until a slot of its project is free: no worker ever claims
+    // an adopted task (`Store::queued_unblocked`), but this claim counts
+    // against the same slots a worker's does, so a worker will not claim
+    // past the cap while the checks run. One left running by a `forge
+    // adopt` that died blocks rather than requeues.
+    take_slot(f, &t).await?;
     t = f.store.task(t.id)?.context("the task went away")?;
     t.branch = format!("forge/{}-adopt-{}", t.id, crate::engine::slug(&name));
     t.worktree = f
@@ -262,6 +262,28 @@ pub async fn adopt(f: &Forge, req: &AdoptRequest) -> Result<Adopted> {
         block(f, &mut t, &reason, None)?;
     }
     result
+}
+
+/// How often a `forge adopt` waiting on a full project looks again.
+const SLOT_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Claim `t` for this process once its project has a slot free, saying
+/// once what it waits on.
+async fn take_slot(f: &Forge, t: &Task) -> Result<()> {
+    let project = t.project.as_deref().unwrap_or(&t.repo);
+    let pid = std::process::id() as i64;
+    let mut said = false;
+    loop {
+        match crate::worker::capacity::claim_inline(f, t.id, project, pid)? {
+            None => return Ok(()),
+            Some(why) if !said => {
+                eprintln!("task {}: waiting for a slot: {why}", t.id);
+                said = true;
+            }
+            Some(_) => {}
+        }
+        tokio::time::sleep(SLOT_POLL).await;
+    }
 }
 
 /// Everything after the record exists: the clone, the protected-path
