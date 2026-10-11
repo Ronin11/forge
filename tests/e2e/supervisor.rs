@@ -541,3 +541,36 @@ fn the_supervisors_run_reaches_its_own_providers_model_endpoint_through_the_prox
         .unwrap();
     assert_eq!(provider, "judge");
 }
+
+/// The 09-29 break, end to end: a blocked task's supervisor run fails,
+/// and `forge doctor`'s `supervisor` row says so from the attempts rows,
+/// naming the run's reason, and writes one `doctor_tripped` event.
+#[test]
+fn doctor_reports_a_blocked_tasks_failed_supervisor_run() {
+    let e = Env::new();
+    supervised(&e, "supervisor-crash.sh", "write 42 to the answer file");
+    assert_eq!(e.task(1).0, "blocked");
+
+    let o = e.forge("ok.sh", &["doctor", "--json"]);
+    let checks: Vec<serde_json::Value> = serde_json::from_slice(&o.stdout).unwrap();
+    let row = checks
+        .iter()
+        .find(|c| c["name"] == "supervisor")
+        .unwrap_or_else(|| panic!("no supervisor row in {checks:?}"));
+    assert_eq!(row["status"], "warn", "{row}");
+    let detail = row["detail"].as_str().unwrap();
+    assert!(detail.contains("none succeeded"), "{detail}");
+    assert!(detail.contains("1 task(s) blocked"), "{detail}");
+    assert!(detail.contains("agent exit 1"), "{detail}");
+
+    // A second run still warns but writes no second event.
+    e.forge("ok.sh", &["doctor", "--json"]);
+    let log = std::fs::read_to_string(e.home.join("events.jsonl")).unwrap();
+    let trips: Vec<&str> = log
+        .lines()
+        .filter(|l| {
+            l.contains(r#""type":"doctor_tripped""#) && l.contains(r#""check":"supervisor""#)
+        })
+        .collect();
+    assert_eq!(trips.len(), 1, "{log}");
+}

@@ -326,7 +326,11 @@ pub(super) async fn stats(args: StatsOptions) -> Result<()> {
         out!(
             "{:<8} {:<8} {:>5} {:>4} {:>6} {:>6} {:>5} {:>6.1} {:>6} {:>7.0} {:>9} {:>9}",
             st.workflow,
-            st.step,
+            if st.failure_only {
+                format!("{}*", st.step)
+            } else {
+                st.step.clone()
+            },
             st.attempts,
             st.succeeded,
             st.agent_failed,
@@ -341,30 +345,10 @@ pub(super) async fn stats(args: StatsOptions) -> Result<()> {
                 .map_or("-".to_string(), |v| format!("{v:.0}"))
         );
     }
-    if !doc.projects.is_empty() {
-        out!();
-        out!(
-            "{:<16} {:>5} {:>6} {:>9} {:>7}",
-            "PROJECT",
-            "TASKS",
-            "LANDED",
-            "COST",
-            "DEFECT%"
-        );
-        for p in &doc.projects {
-            out!(
-                "{:<16} {:>5} {:>6} {:>9} {:>7}",
-                p.project,
-                p.tasks,
-                p.landed,
-                format!("${:.2}", p.cost_usd),
-                match p.broke_base_share {
-                    Some(s) => format!("{:.0}%", s * 100.0),
-                    None => "-".into(),
-                }
-            );
-        }
+    if doc.steps.iter().any(|st| st.failure_only) {
+        out!("* failure-only: an integrate row is written only when a merge's checks fail");
     }
+    print_projects(&doc.projects);
     if !doc.jobs.is_empty() {
         out!();
         out!(
@@ -389,6 +373,40 @@ pub(super) async fn stats(args: StatsOptions) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The per-project table: tasks, landings, cost, the defect share, and
+/// the land rate over the last 7 and 30 days (landed of finished).
+fn print_projects(projects: &[crate::view::StatsProjectRow]) {
+    if projects.is_empty() {
+        return;
+    }
+    out!();
+    out!(
+        "{:<16} {:>5} {:>6} {:>9} {:>7} {:>14} {:>14}",
+        "PROJECT",
+        "TASKS",
+        "LANDED",
+        "COST",
+        "DEFECT%",
+        "LAND 7D",
+        "LAND 30D"
+    );
+    for p in projects {
+        out!(
+            "{:<16} {:>5} {:>6} {:>9} {:>7} {:>14} {:>14}",
+            p.project,
+            p.tasks,
+            p.landed,
+            format!("${:.2}", p.cost_usd),
+            match p.broke_base_share {
+                Some(s) => format!("{:.0}%", s * 100.0),
+                None => "-".into(),
+            },
+            p.land_rate_7d,
+            p.land_rate_30d
+        );
+    }
 }
 
 /// `forge stats --mechanic [--days N] [--json]`: how many times each

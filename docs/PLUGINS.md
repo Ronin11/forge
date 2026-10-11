@@ -230,6 +230,28 @@ and check gets (`PATH`, `HOME`, and the rest in `src/agent.rs`).
 A plugin's own configuration is a file in its directory, read by the
 plugin. Forge does not parse it and has no opinion about its shape.
 
+## Heartbeat
+
+A plugin that polls or sends writes `$FORGE_PLUGIN_STATE/heartbeat`, plain
+`key=value` lines, rewritten through a temporary file and a rename:
+
+```
+inbound_at=1791590400    unix seconds of the last inbound poll that succeeded
+outbound_at=1791590100   unix seconds of the last outbound send that succeeded
+poll_secs=30             the plugin's own poll interval
+```
+
+Each line is optional: a plugin that polls nothing (notify) writes only
+`outbound_at`. `forge doctor`'s `plugin_heartbeat` row reads it for every
+enabled plugin and warns when `inbound_at` is older than ten times
+`poll_secs`: a process that is up while every poll fails (signal's
+`receive` failing into /dev/null for days) is otherwise invisible. The
+notify and signal plugins write it.
+
+A plugin's stdout and stderr are its log (`forge plugin logs <name>`).
+Plugin scripts send every subprocess's stderr there and never to
+`/dev/null`: the error a failing poll prints is the only record of why.
+
 ## The verbs
 
 ```

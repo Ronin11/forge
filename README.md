@@ -304,7 +304,7 @@ src/ctx.rs          Forge: paths, store, budget, sandbox, reporter, built once
 src/deploy.rs       forge deploy: run a target's method, record the result, roll back on failure
 src/deploy_look.rs  the deploy-look directive: a read-only agent looks at the deployed page
 src/directive.rs    one launcher for every bounded agent run, one reading of how it failed
-src/doctor.rs       forge doctor
+src/doctor.rs       forge doctor (doctor/watch.rs: the reliability watches, docs/OPS.md "What doctor watches")
 src/egress.rs       the egress allowlist and its proxy
 src/engine.rs       run_task / run_attempt, Fault::{Task, Env}
 src/environment.rs  environment needs: the recognizer, the [environment] grant table and the supervisor's ceiling
@@ -341,6 +341,7 @@ src/secret_store.rs machine-local credentials: persistent backend selection, OS 
 src/job/alerts.rs       what a finished job tells the operator unasked: a failed doctor-daily, new doctor rows, a step that printed nothing
 src/plugins/selftest.rs forge plugin test: a plugin's own end-to-end proof, run by forge doctor while it is enabled
 src/job/secrets.rs      [secrets] names, a run step's declared secrets and egress hosts, and the redaction of their values
+src/load.rs        the time scale a loaded host stretches check timeouts and test deadlines by
 src/login.rs        the agent login: a refreshed token written back over the host file, an empty one never seeded
 src/login_hold.rs   a provider whose agent login was refused, held until a probe answers; the worker's ten-minute probe and doctor's
 src/successor.rs     the successor worker: a staged release starts forge work on it, the old worker drains
@@ -372,6 +373,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   initiative_holds.rs  initiative_holds: which initiative holds have been announced and with what reason, so a successor worker never repeats one a predecessor already made
   webhooks.rs       webhook_tokens: per-hook tokens (only their hashes) that let `forge job fire` start a webhook-triggered job
   events.rs         event_cursors: per project and run workflow, the events.jsonl offset its event trigger has examined up to
+  watch.rs          doctor_marks and doctor_samples, and the step runs, verdicts, worker starts, stale jobs and refusals forge doctor's reliability watches read
   schedule.rs       schedule_refusals: the schedules a per_day cap holds back, which the worker's tick records and `forge job list` prints
   stats.rs          forge stats: workflow/step/role/human-attention/time-to-live queries
   questions.rs      forge stats --questions: every task that blocked with a question, and how it was settled

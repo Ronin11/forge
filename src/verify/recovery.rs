@@ -21,6 +21,7 @@ pub(super) async fn resolve(
                     | Failure::LoginRefused
                     | Failure::EndedEarly(_)
                     | Failure::TimedOut
+                    | Failure::BudgetCapped
             )
         )
     {

@@ -25,9 +25,11 @@ pub(super) async fn gc(dry_run: bool, older_than: Option<i64>, caches: bool) -> 
 
 async fn gc_worktrees(f: &Forge, dry_run: bool, older_than: Option<i64>) -> Result<()> {
     let (mut removed, mut kept) = (0, 0);
+    let (mut removed_bytes, mut kept_bytes) = (0u64, 0u64);
     let now = crate::unix_now();
     for t in f.store.tasks_with_worktrees()? {
         let wt = Path::new(&t.worktree);
+        let bytes = crate::disk::size(wt);
         let verdict: Result<Result<(), String>> = async {
             if !wt.exists() {
                 return Ok(Ok(()));
@@ -61,14 +63,20 @@ async fn gc_worktrees(f: &Forge, dry_run: bool, older_than: Option<i64>) -> Resu
         .await;
         if report_gc(&f.store, &t, verdict, dry_run)? {
             removed += 1;
+            removed_bytes += bytes;
         } else {
             kept += 1;
+            kept_bytes += bytes;
         }
     }
 
+    // The last line is the verdict gc-nightly records as its effect: the
+    // counts and the bytes, so the record says what a night freed and
+    // what it left (docs/OPS.md, "What doctor watches").
     out!(
-        "{} {removed}, kept {kept}",
-        if dry_run { "would remove" } else { "removed" }
+        "{} {removed}, kept {kept}; {removed_bytes} bytes {}, {kept_bytes} bytes kept",
+        if dry_run { "would remove" } else { "removed" },
+        if dry_run { "would be freed" } else { "freed" }
     );
     Ok(())
 }

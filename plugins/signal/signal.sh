@@ -67,6 +67,23 @@ log() {
     printf 'signal: %s\n' "$1" >&2
 }
 
+# The heartbeat `forge doctor` reads (docs/PLUGINS.md, "Heartbeat"):
+# `heartbeat inbound` after a receive that succeeded, `heartbeat outbound`
+# after a send that did, each rewriting its own line beside the poll
+# interval. Every subprocess's stderr below goes to this plugin's log,
+# never to /dev/null: a receive that failed for days said so only there.
+heartbeat() {
+    hb="$FORGE_PLUGIN_STATE/heartbeat"
+    hb_tmp="$hb.tmp.$1"
+    {
+        if [ -f "$hb" ]; then
+            grep -v -e "^$1_at=" -e '^poll_secs=' "$hb"
+        fi
+        printf '%s_at=%s\n' "$1" "$(date +%s)"
+        printf 'poll_secs=%s\n' "$POLL_SECONDS"
+    } >"$hb_tmp" && mv -f "$hb_tmp" "$hb"
+}
+
 # A JSON string field's value, escapes and all, from a compact
 # single-line document (an events.jsonl line) on stdin.
 json_str() {
@@ -130,7 +147,7 @@ project_for_contact() {
 # not a document to walk. The same repo->project link `forge add`
 # resolves on its own when a task names no --project.
 target_repo_project() {
-    "$FORGE_BIN" project list 2>/dev/null | awk -v repo="$TARGET_REPO" '
+    "$FORGE_BIN" project list | awk -v repo="$TARGET_REPO" '
         /^name /  { name = $2 }
         /^repo /  { if ($2 == repo) { print name; exit } }
     '
@@ -172,11 +189,11 @@ record_message() {
     esac
     if [ -n "$mr_task" ]; then
         "$FORGE_BIN" message record "$mr_project" --channel signal "$mr_flag" "$mr_contact" \
-            --text "$mr_text" --task "$mr_task" >/dev/null 2>&1 \
+            --text "$mr_text" --task "$mr_task" >/dev/null \
             || log "could not record message for $mr_contact"
     else
         "$FORGE_BIN" message record "$mr_project" --channel signal "$mr_flag" "$mr_contact" \
-            --text "$mr_text" >/dev/null 2>&1 \
+            --text "$mr_text" >/dev/null \
             || log "could not record message for $mr_contact"
     fi
 }
@@ -234,6 +251,7 @@ signal_send() {
                 || { log "send failed: $msg"; return 1; }
             ;;
     esac
+    heartbeat outbound
 }
 
 # The question `forge requests --json` records for one blocked task id.
@@ -307,7 +325,7 @@ send_portal_link() {
     name=$1
     dest=$2
     project=$(contact_project "$name")
-    link=$("$FORGE_BIN" project portal "$project" 2>/dev/null | tail -n1)
+    link=$("$FORGE_BIN" project portal "$project" | tail -n1)
     case "$link" in
         /p/*)
             msg="Your Forge portal: ${PORTAL_URL}${link}"
@@ -403,7 +421,8 @@ outbound() {
 
         if [ "$type" = notification_digest ]; then
             day=$(printf '%s\n' "$line" | sed -n 's/.*"day":\([0-9]*\).*/\1/p')
-            sent=$(cat "$FORGE_PLUGIN_STATE/digest-day" 2>/dev/null || true)
+            sent=
+            [ -f "$FORGE_PLUGIN_STATE/digest-day" ] && sent=$(cat "$FORGE_PLUGIN_STATE/digest-day")
             if [ -n "$day" ] && [ "$day" -gt "${sent:-0}" ]; then
                 msg=$(printf '%s\n' "$line" | json_str text)
                 if signal_send "$SIGNAL_TO" "$msg"; then
@@ -454,7 +473,7 @@ outbound() {
         # question was delivered (docs/PLUGINS.md, "message"). The task's
         # own project, when it has one, else the target repo's.
         if signal_send "$dest" "$msg"; then
-            rec_project=$("$FORGE_BIN" show "$task" --json 2>/dev/null | json_str_pretty project | head -n1)
+            rec_project=$("$FORGE_BIN" show "$task" --json | json_str_pretty project | head -n1)
             [ -n "$rec_project" ] || rec_project=$(target_repo_project)
             record_message "$rec_project" out "$notify_contact" "$msg" "$task"
         fi
@@ -486,7 +505,7 @@ handle_message() {
             id=${rest%% *}
             text=${rest#* }
             [ "$text" = "$rest" ] && text=""
-            if "$FORGE_BIN" answer "$id" "$text" >/dev/null 2>&1; then
+            if "$FORGE_BIN" answer "$id" "$text" >/dev/null; then
                 msg="answered task $id"
             else
                 msg="could not answer task $id"
@@ -536,7 +555,7 @@ handle_contact_reply() {
     body=$4
     project=$(contact_project "$name")
     record_message "$project" in "$name" "$body" "$id"
-    if "$FORGE_BIN" answer "$id" "$body" --by "$name" >/dev/null 2>&1; then
+    if "$FORGE_BIN" answer "$id" "$body" --by "$name" >/dev/null; then
         msg="answered task $id"
     else
         msg="could not answer task $id"
@@ -591,13 +610,19 @@ handle_envelope() {
     fi
 }
 
-# "<unix time> ok" after a receive that worked, "<unix time> exit <n>"
-# after one that did not: how `selftest` (and a person) tells a running
-# receive loop from a dead or failing one.
+# The heartbeat file's first line is "<unix time> ok" after a receive that
+# worked, "<unix time> exit <n>" after one that did not: how `selftest`
+# (and a person) tells a running receive loop from a dead or failing one.
+# The `key=value` lines below it are `heartbeat`'s, kept as they are.
 heartbeat="$FORGE_PLUGIN_STATE/heartbeat"
 
 beat() {
-    printf '%s %s\n' "$(date +%s)" "$1" >"$heartbeat.tmp" && mv -f "$heartbeat.tmp" "$heartbeat"
+    {
+        printf '%s %s\n' "$(date +%s)" "$1"
+        if [ -f "$heartbeat" ]; then
+            grep '=' "$heartbeat" || true
+        fi
+    } >"$heartbeat.beat" && mv -f "$heartbeat.beat" "$heartbeat"
 }
 
 # `-o json` is signal-cli's global output flag; `receive --json` is not an
@@ -609,6 +634,7 @@ inbound() {
     while :; do
         if "$SIGNAL_CLI" -a "$SIGNAL_ACCOUNT" -o json receive >"$received"; then
             beat ok
+            heartbeat inbound
         else
             rc=$?
             log "signal-cli receive exited $rc"
@@ -674,13 +700,16 @@ inbound &
 in_pid=$!
 
 cleanup() {
-    kill "$out_pid" "$in_pid" 2>/dev/null
+    for pid in "$out_pid" "$in_pid"; do
+        if ps -p "$pid" >/dev/null; then kill "$pid"; fi
+    done
 }
 trap cleanup EXIT
 
 # If either loop ever exits, so does this script, so the supervisor's
 # restart policy brings both back rather than leaving one running alone.
-while kill -0 "$out_pid" 2>/dev/null && kill -0 "$in_pid" 2>/dev/null; do
+# `ps -p` rather than `kill -0`, which would print to the log once a loop is gone.
+while ps -p "$out_pid" >/dev/null && ps -p "$in_pid" >/dev/null; do
     sleep 1
 done
 log "a loop exited; stopping so the supervisor restarts both"

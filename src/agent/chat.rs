@@ -326,6 +326,7 @@ mod tests {
             step: "extract",
             provider,
             resume: None,
+            budget_usd: None,
             start_sha: "",
             writes: false,
             schema,

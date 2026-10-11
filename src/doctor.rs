@@ -145,6 +145,7 @@ mod flaky;
 use flaky::check_flaky_tests;
 mod worktrees;
 use worktrees::check_worktrees;
+pub mod watch;
 
 /// What an attempt can reach: whether bwrap can give it a network namespace
 /// at all, the model endpoints that are always allowed, and each project's
@@ -1346,6 +1347,7 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     out.extend(check_flaky_tests(&store));
     out.extend(check_worktrees(&store));
     out.extend(check_logs(&paths));
+    out.extend(watch::run(&paths, &store, unix_now()));
 
     if let Ok(f) = Forge::open_with(paths, store) {
         out.extend(check_initiatives(&f));

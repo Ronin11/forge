@@ -143,6 +143,26 @@ fn a_capped_task_whose_commits_pass_is_held_for_a_human_with_no_land() {
 }
 
 #[test]
+fn a_run_the_cli_stops_at_its_budget_is_capped_and_its_commits_judged() {
+    let e = Env::new();
+    // The CLI is handed what is left ($5, nothing spent yet) and stops the
+    // run on it: capped as the worker caps, never retried as a crash.
+    let o = e.run("budgetstop.sh", &["--budget", "5", "--retries", "3"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    assert!(
+        reason.starts_with("$0.02 of $5.00; the agent CLI stopped the attempt at its budget"),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("1 commit(s) past main pass the checks as they stand"),
+        "{reason}"
+    );
+    assert_eq!(e.attempts(1).len(), 1, "no agent ran after the CLI's cap");
+}
+
+#[test]
 fn a_capped_task_whose_commits_fail_as_they_stand_blocks_with_the_check_lines() {
     let e = Env::new();
     std::fs::write(

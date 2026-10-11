@@ -79,16 +79,7 @@ pub(super) fn failure_reason(
     let failed = verdict
         .iter()
         .find(|c| !c.ok)
-        .map(|c| {
-            if c.tail.trim().is_empty() {
-                let exit = c
-                    .exit
-                    .map_or("no exit status".to_string(), |x| format!("exit {x}"));
-                format!("{}: {exit}, no output", c.name)
-            } else {
-                format!("{}: {}", c.name, c.tail)
-            }
-        })
+        .map(checks::CheckResult::failure_text)
         .unwrap_or_else(|| "no check recorded which one failed".to_string());
     let effects = if effects.is_empty() {
         "none".to_string()
@@ -378,6 +369,26 @@ mod tests {
             reason.contains("sonnet resolved to claude-sonnet-4-5"),
             "{reason}"
         );
+    }
+
+    #[test]
+    fn a_check_that_printed_nothing_is_named_as_its_own_failure() {
+        for tail in [
+            "",
+            "[forge] no output captured; the check exited code 1 with nothing on stdout or stderr",
+        ] {
+            let verdict = vec![checks::CheckResult {
+                name: "clean".into(),
+                exit: Some(1),
+                tail: tail.into(),
+                ..Default::default()
+            }];
+            let reason = failure_reason(7, "doctor-daily", &verdict, &[]);
+            assert!(
+                reason.contains("failed: tool produced nothing (check clean, exit 1)"),
+                "{reason}"
+            );
+        }
     }
 
     #[test]

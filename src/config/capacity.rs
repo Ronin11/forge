@@ -13,6 +13,10 @@ pub struct Settings {
     pub project_slots: Option<usize>,
     pub max_load: Option<f64>,
     pub projects: BTreeMap<String, usize>,
+    /// `forge doctor`'s `worktrees_disk` row warns once everything under
+    /// `FORGE_HOME/worktrees` passes this many GiB (docs/OPS.md, "What
+    /// doctor watches").
+    pub worktrees_warn_gb: u64,
 }
 
 impl Default for Settings {
@@ -23,6 +27,7 @@ impl Default for Settings {
             project_slots: None,
             max_load: None,
             projects: BTreeMap::new(),
+            worktrees_warn_gb: 200,
         }
     }
 }

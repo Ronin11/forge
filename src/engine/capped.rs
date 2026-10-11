@@ -23,7 +23,10 @@ pub(crate) fn landable_capped(t: &Task, attempts: &[crate::store::Attempt]) -> b
 /// spent plus what the next attempt is expected to cost (the task's mean
 /// attempt so far, else the workflow's measured mean) against the cap.
 /// When it would cross, the task ends `capped`: the session and the last
-/// handoff go on the row, and the reason names spent and cap.
+/// handoff go on the row, and the reason names spent and cap. `cli` is an
+/// attempt the CLI itself stopped at what was left (`--max-budget-usd`,
+/// see `remaining`): it ends the task the same way, whatever the record
+/// says was spent.
 pub(super) async fn check_cap(
     f: &Forge,
     t: &mut Task,
@@ -31,10 +34,11 @@ pub(super) async fn check_cap(
     done: &HashSet<i64>,
     cap: f64,
     wt: &Path,
+    cli: bool,
 ) -> Result<Option<End>, Fault> {
     let spent = f.store.task_cost(t.id).env()?;
     let expected = f.store.expected_attempt_cost(t.id, &t.workflow).env()?;
-    if spent < cap && spent + expected <= cap {
+    if !cli && spent < cap && spent + expected <= cap {
         return Ok(None);
     }
     let attempts = f.store.attempts(t.id).env()?;
@@ -44,6 +48,9 @@ pub(super) async fn check_cap(
         t.handoff = crate::handoff::build(f, t, wt, &a.start_sha, Path::new(&a.log_path)).await;
     }
     let mut reason = format!("${spent:.2} of ${cap:.2}");
+    if cli {
+        reason.push_str("; the agent CLI stopped the attempt at its budget");
+    }
     if code_verified(resolved, done) {
         let next = resolved
             .steps
@@ -61,6 +68,13 @@ pub(super) async fn check_cap(
         reason,
         pushes: last.is_some(),
     }))
+}
+
+/// What is left of the task's budget before an attempt: the cap less what
+/// earlier attempts spent. The CLI is given it as its own cap, so a run
+/// stops inside the turn that crosses it rather than at the next check.
+pub(super) fn remaining(f: &Forge, t: &Task, cap: f64) -> Result<f64, Fault> {
+    Ok(cap - f.store.task_cost(t.id).env()?)
 }
 
 /// An operator's `forge withdraw --abort` on this running task (a
