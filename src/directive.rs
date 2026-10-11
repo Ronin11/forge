@@ -397,6 +397,54 @@ mod tests {
         assert!(hosts(&f, &host).is_empty());
     }
 
+    #[tokio::test]
+    async fn launch_registers_egress_before_entering_the_runner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = sandboxed_forge(&tmp.path().join("home"));
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(
+            repo.join("forge.toml"),
+            "[defaults]\nbase_branch = \"main\"\n[sandbox]\negress = [\"registry.npmjs.org\"]\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load_working(&repo).await.unwrap();
+        let provider = agent::Provider {
+            name: "judge".into(),
+            runner: agent::Runner::CodexCli,
+            base_url: Some("https://judge.example/v1".into()),
+            ..Default::default()
+        };
+        // Public tasks get only model hosts, even when the directory's
+        // previous operator run could reach the project's declared hosts.
+        f.allow_egress_for(
+            &repo,
+            &cfg,
+            crate::store::Trust::Operator,
+            Some(&agent::Provider::default()),
+        );
+        let mut s = spec(
+            &f,
+            &repo,
+            &provider,
+            true,
+            Egress::Project {
+                cfg: &cfg,
+                trust: crate::store::Trust::Public,
+            },
+        );
+        s.identity_repo = Some(&repo);
+        // Codex rejects tool-free runs before spawning a CLI. This exercises
+        // launch itself without requiring a real agent or network access.
+        s.no_tools = true;
+        let err = launch(&f, s).await.unwrap_err();
+        assert!(err.to_string().contains("cannot yet guarantee no tool use"));
+        let got = hosts(&f, &repo);
+        assert!(got.contains(&"judge.example".to_string()), "{got:?}");
+        assert!(!got.contains(&"*.anthropic.com".to_string()), "{got:?}");
+        assert!(!got.contains(&"registry.npmjs.org".to_string()), "{got:?}");
+    }
+
     #[test]
     fn agent_failure_reasons() {
         let ok = Outcome {

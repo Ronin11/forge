@@ -551,7 +551,7 @@ pub async fn new_attempt(args: NewAttempt<'_>) -> Result<(Attempt, PathBuf), Fau
     let cfg = crate::config::load_at(Path::new(&t.repo), dir, &t.base_sha)
         .await
         .task()?;
-    f.allow_egress(dir, &cfg, t.trust, Some(&t.provider));
+    f.allow_egress_for(dir, &cfg, t.trust, Some(provider));
     let execution = f.execution_inputs(dir);
     inputs.executor = execution.executor;
     inputs.guarantees = execution.guarantees;
