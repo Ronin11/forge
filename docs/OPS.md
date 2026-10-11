@@ -79,6 +79,73 @@ permissions for events.jsonl`) once `N` is above zero, so a systemic
 problem is visible even though no single attempt reported it as a
 failure.
 
+## What reaches you unasked
+
+Four things reach the operator without anyone asking, each as an
+`operator_alert` event (audience `person`) that every channel plugin
+(notify, signal) carries, and each recorded in the alerts table so a
+standing condition is not repeated by the next run:
+
+- **A failed `doctor-daily`.** Every run of the `doctor-daily` job that
+  does not pass raises the alert `doctor-failed`, naming the job and each
+  failing step by name with its first line of output. It is announced on
+  every failing run, not only the first: a doctor that keeps failing is
+  news each day it does. A run that passes clears it.
+- **The portal line.** While `doctor-failed` stands, the project's portal
+  carries one line saying so (`PortalDoc.alerts`), until the next run that
+  passes removes it.
+- **Doctor WARN and FAIL rows.** Each WARN or FAIL row `doctor-daily`
+  logs is announced once, by the first run that sees it. The row is keyed
+  by name and status, so a row whose numbers move is still the same row,
+  and it is not sent again by later runs while it stands. The daily digest
+  then repeats every row still standing that was announced on an earlier
+  day as `still standing since <date>: ...`: once when first seen, once a
+  day after, never on every run. A row that is no longer reported is
+  cleared. A run that never reached doctor (no rows and not ok) says
+  nothing about which rows stand, so it clears none.
+- **A silent tool.** A job step or assert that exits non-zero with nothing
+  on stdout or stderr (`[forge] no output captured`: usually its binary or
+  environment is missing) raises a `tool_silent` alert naming the job, the
+  step, what it ran and where.
+
+A dry run, a dropped job and a skipped job owe none of these.
+
+## What doctor watches
+
+In the week to 2026-10-10 five subsystems failed every time for between 2
+and 22 days, with their evidence in the store, the event log and the
+journal, while every `forge doctor` row said OK. Each watch below is one
+doctor row (OK, WARN or ERROR, with the evidence in the row's text),
+computed from the store or the event log and never from the journal,
+which keeps seven days (the supervisor's break on 09-29 was only
+recoverable from its attempts rows). The first time a row goes from OK to
+WARN or ERROR, doctor appends one `doctor_tripped` event to `events.jsonl`
+(`check`, `status` `warn` or `error`, `detail`, audience `person`); a row
+that stays tripped is not written again, and one that clears and trips
+again is. The notify plugin passes it to its command as `doctor <check>
+<status> <detail>`. What a watch remembers between runs is in the store's
+`doctor_marks` (each row's last status, and when doctor last ran) and
+`doctor_samples` (one sample per kind per day). The code is
+`src/doctor/watch/`.
+
+| # | Row | Reads | Trips when | Status |
+|---|---|---|---|---|
+| 1 | `supervisor` | `attempts` with `step = supervisor`, blocked tasks | the last 24h had supervisor runs, none succeeded, and at least one task is blocked; names the last run's reason | WARN |
+| 2 | `worker_restarts` | `workers` (each start records systemd's `NRestarts` and how the run before ended) | more than 3 worker starts since the last doctor run (the last 24h on a first run); names the last exit reason | WARN |
+| 3 | `steps` | `attempts` by step, `ops` by name, for `code`, `review`, `verify`, `supervisor`, `land`, `adopt` | a kind with zero successes over its last runs (the last 10, at least 5 of them) | WARN |
+| 4 | `environmental` | the verdicts of attempts in the last 24h | one named check failed on every task of a project that ran it, across at least 3 different branches: "environmental, not the agents", with the check's tail | WARN |
+| 5 | `worktrees_disk` | bytes under `FORGE_HOME/worktrees` and landed tasks whose tree still exists, sampled once a day | above `[worker] worktrees_warn_gb` (default 200), or 3 day-over-day increases in a row | WARN |
+| 6 | `plugin_heartbeat` | each enabled plugin's `$FORGE_PLUGIN_STATE/heartbeat` (docs/PLUGINS.md, "Heartbeat") | the last successful inbound poll is older than 10 times the plugin's poll interval | WARN |
+| 7 | `egress_model` / `egress_refusals` | the hosts the proxy refused each attempt in the last 24h (`refused` on its outputs) | a configured provider's own model host (`egress::provider_rules`) was refused: ERROR. Every other host is counted per host per day on one OK line, never one line per connection | ERROR / OK |
+| 8 | `jobs_stale` | `jobs`, `job_resolutions` | a job `needs_human` or `failed` for more than 48h, not answered and not followed by an `ok` run of the same workflow; names the job and its failing check, and a check whose process printed nothing as `tool produced nothing` | WARN |
+| 9 | `land_rate` | finished agent tasks per project | a project finished at least 5 tasks in 7 days and landed none; the row (and `forge stats`) shows every project's land rate over 7 and 30 days | WARN |
+
+`forge stats` marks `step = integrate` rows with `*`, failure-only: one
+is written only when a merge's checks fail, so it measures nothing about
+how often merges succeed; the per-project land rate is that measure.
+`forge gc`'s last line, which gc-nightly records as its effect, carries
+the removed and kept counts and their bytes.
+
 ## The running binary: releases, the pointer, and the successor worker (design, 2026-09-25)
 
 Three incidents in two days came from one cause: a binary replaced in
@@ -671,6 +738,11 @@ up to date.
   agent's: the integrator still never lands a change to `forge.toml`.
 - `--no-land` verifies only and leaves the verified branch for a human;
   `forge land <id>` lands it later through the same integrator.
+
+A task whose landing re-run fails ends `failed` with the verified branch
+pushed, and `forge land <id>` refuses it (only a verified task lands). The
+reason names the recovery: `forge adopt <repo> <branch>` re-verifies the
+branch against the moved base and lands it.
 
 Adopted tasks show as manual in `forge log`, `forge show`, the portal ("Made
 by hand") and `forge stats` (a `manual` line), and are kept out of every

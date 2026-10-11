@@ -3,3 +3,6 @@ description = "reaches a human over Signal when a task needs one, and files task
 run = ["./signal.sh"]
 capabilities = ["events", "intake", "message"]
 restart = "on-failure"
+# `forge plugin test signal`, also run by `forge doctor` while enabled:
+# sends itself a message and waits for the receive loop to see it.
+test = ["./signal.sh", "selftest"]

@@ -592,6 +592,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
             provider,
             schema: SCHEMA,
             sandboxed: true,
+            egress: crate::directive::task_egress(&t, wt, &t.base_sha).await?,
             writes: false,
             start_sha: &a.start_sha,
             resume: None,

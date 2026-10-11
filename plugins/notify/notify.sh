@@ -45,6 +45,27 @@ if [ -z "$offset" ]; then
     exit 1
 fi
 
+# The heartbeat `forge doctor` reads (docs/PLUGINS.md, "Heartbeat"):
+# notify polls nothing, so it writes only `outbound_at`, the last time the
+# operator's command succeeded. The command's stderr goes to this
+# plugin's log, never to /dev/null.
+heartbeat() {
+    hb="$FORGE_PLUGIN_STATE/heartbeat"
+    {
+        if [ -f "$hb" ]; then
+            grep -v -e "^$1_at=" "$hb"
+        fi
+        printf '%s_at=%s\n' "$1" "$(date +%s)"
+    } >"$hb.tmp" && mv -f "$hb.tmp" "$hb"
+}
+
+# The operator's command with these arguments, the event on stdin; a
+# success is a send.
+run_command() {
+    sh "$FORGE_PLUGIN_DIR/command" "$@" || return 1
+    heartbeat outbound
+}
+
 # A JSON string field's value, escapes and all, from a compact
 # single-line document (an events.jsonl line) on stdin.
 json_str() {
@@ -79,28 +100,36 @@ while IFS= read -r line; do
             sed -n 's/.*"reason":"\(.*\)","state":.*/\1/p' | sed 's/\\n.*//')
         if [ "$send" = 1 ]; then
             printf '%s' "$line" |
-                sh "$FORGE_PLUGIN_DIR/command" "$task" "$state" "$reason" || true
+                run_command "$task" "$state" "$reason" || true
         fi
     elif [ "$type" = notification_digest ]; then
         day=$(printf '%s\n' "$line" | sed -n 's/.*"day":\([0-9]*\).*/\1/p')
-        sent=$(cat "$FORGE_PLUGIN_STATE/digest-day" 2>/dev/null || true)
+        sent=
+        [ -f "$FORGE_PLUGIN_STATE/digest-day" ] && sent=$(cat "$FORGE_PLUGIN_STATE/digest-day")
         if [ -n "$day" ] && [ "$day" -gt "${sent:-0}" ]; then
             text=$(printf '%s\n' "$line" | json_str text)
-            if printf '%s' "$line" | sh "$FORGE_PLUGIN_DIR/command" digest "$day" "$text"; then
+            if printf '%s' "$line" | run_command digest "$day" "$text"; then
                 printf '%s\n' "$day" >"$FORGE_PLUGIN_STATE/digest-day.tmp"
                 mv -f "$FORGE_PLUGIN_STATE/digest-day.tmp" "$FORGE_PLUGIN_STATE/digest-day"
             fi
         fi
+    elif [ "$type" = operator_alert ]; then
+        # What reaches the operator unasked (docs/OPS.md): the kernel has
+        # already decided this one is owed, so it always runs the command.
+        kind=$(printf '%s\n' "$line" | json_str kind)
+        text=$(printf '%s\n' "$line" | json_str text)
+        printf '%s' "$line" |
+            sh "$FORGE_PLUGIN_DIR/command" alert "$kind" "$text" || true
     elif [ "$type" = disk_held ]; then
         reason=$(printf '%s\n' "$line" | json_str reason)
         printf '%s' "$line" |
-            sh "$FORGE_PLUGIN_DIR/command" disk held "$reason" || true
+            run_command disk held "$reason" || true
     elif [ "$type" = provider_held ]; then
         # Once per hold, however many attempts the refused login met.
         provider=$(printf '%s\n' "$line" | json_str provider)
         reason=$(printf '%s\n' "$line" | json_str reason)
         printf '%s' "$line" |
-            sh "$FORGE_PLUGIN_DIR/command" provider "$provider" held "$reason" || true
+            run_command provider "$provider" held "$reason" || true
     elif [ "$type" = initiative_held ]; then
         # Once per hold, for a person: only they decide to continue it.
         # The text names the reason, the queue behind it and the remedy.
@@ -109,8 +138,16 @@ while IFS= read -r line; do
             id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
             text=$(printf '%s\n' "$line" | json_str text)
             printf '%s' "$line" |
-                sh "$FORGE_PLUGIN_DIR/command" initiative "$id" held "$text" || true
+                run_command initiative "$id" held "$text" || true
         fi
+    elif [ "$type" = doctor_tripped ]; then
+        # A doctor watch went from OK to WARN or ERROR (docs/OPS.md, "What
+        # doctor watches"): once per trip, for a person.
+        check=$(printf '%s\n' "$line" | json_str check)
+        status=$(printf '%s\n' "$line" | json_str status)
+        detail=$(printf '%s\n' "$line" | json_str detail)
+        printf '%s' "$line" |
+            run_command doctor "$check" "$status" "$detail" || true
     elif [ "$type" = deploy_finished ]; then
         ok=$(printf '%s\n' "$line" | sed -n 's/.*"ok":\(true\|false\).*/\1/p')
         if [ "$ok" = false ] || [ "$NOTIFY_DEPLOY_OK" = 1 ]; then
@@ -126,7 +163,7 @@ while IFS= read -r line; do
                 status=failed
             fi
             printf '%s' "$line" |
-                sh "$FORGE_PLUGIN_DIR/command" deploy "$project" "$target" "$sha" "$status" || true
+                run_command deploy "$project" "$target" "$sha" "$status" || true
         fi
     fi
     # Through a temporary file and a rename, so a kill mid-write never

@@ -86,9 +86,9 @@ case "${1:-}" in
 esac
 
 if [ -z "$SOURCE" ]; then
-    if command -v omarchy-shell >/dev/null 2>&1; then
+    if command -v omarchy-shell >/dev/null; then
         SOURCE=omarchy
-    elif command -v swayidle >/dev/null 2>&1; then
+    elif command -v swayidle >/dev/null; then
         SOURCE=swayidle
     else
         SOURCE=none
@@ -105,7 +105,7 @@ case "$SOURCE" in
         # The state at start, from the shell's own idle service, so a
         # restart never leaves the wrong weight in place until the next
         # transition happens to come along.
-        json=$(timeout 5 omarchy-shell idle status 2>/dev/null || true)
+        json=$(timeout 5 omarchy-shell idle status || true)
         case "$json" in
             *'"idle":true'*) apply idle ;;
             *) apply active ;;
@@ -113,7 +113,7 @@ case "$SOURCE" in
         # -n0: transitions from now on; the state above already covered
         # "now". Inhibitor-aware (a playing video is not idle) and no
         # polling: the shell's own idle monitor logs every transition.
-        journalctl --user -f -n0 -o cat SYSLOG_IDENTIFIER=omarchy-shell 2>/dev/null |
+        journalctl --user -f -n0 -o cat SYSLOG_IDENTIFIER=omarchy-shell |
             grep --line-buffered -oE 'idle-monitor: (idle|active)$' |
             while read -r line; do apply "${line##*: }"; done
         ;;

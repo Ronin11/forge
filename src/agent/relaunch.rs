@@ -10,6 +10,16 @@ const MAX_RELAUNCHES: u32 = 3;
 /// got as far as running anything.
 const QUICK_EXIT: Duration = Duration::from_secs(2);
 
+/// `QUICK_EXIT`, stretched in tests by the host's load: a fake bwrap that
+/// takes seconds to start on a loaded machine is still a launch that never
+/// ran anything.
+fn quick_exit() -> Duration {
+    #[cfg(test)]
+    return crate::test_time::scaled(QUICK_EXIT);
+    #[cfg(not(test))]
+    QUICK_EXIT
+}
+
 /// The launch race this covers: two sandboxes seed `$HOME/.claude.json`
 /// from the same host file at once, or the operator's own claude rewrites
 /// it while a launch binds it, and bwrap's own bind-mount setup (not the
@@ -41,7 +51,7 @@ impl Relaunch {
     /// did or did not hit its timeout) should be relaunched; counts it
     /// when so.
     pub(crate) fn again(&mut self, stderr: &str, timed_out: bool, wall: Duration) -> bool {
-        let quick = !timed_out && wall < QUICK_EXIT;
+        let quick = !timed_out && wall < quick_exit();
         if quick && self.count < MAX_RELAUNCHES && is_transient_bwrap_failure(stderr) {
             self.count += 1;
             return true;
@@ -158,7 +168,7 @@ mod tests {
             "a timeout is not a launch failure"
         );
         assert!(
-            !r.again(msg, false, Duration::from_secs(5)),
+            !r.again(msg, false, quick_exit() + Duration::from_secs(5)),
             "a slow exit ran"
         );
         assert!(!r.again("other", false, quick));
@@ -193,7 +203,7 @@ mod tests {
             system: "",
             model: "fake-model",
             max_turns: 30,
-            timeout: Duration::from_secs(10),
+            timeout: crate::test_time::scaled(Duration::from_secs(60)),
             check_timeout: Duration::ZERO,
             log_path: &log_path,
             sandbox: Some(&execution),

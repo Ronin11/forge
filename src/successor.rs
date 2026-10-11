@@ -87,6 +87,7 @@ impl Succession {
             let id = f.store.register_worker(pid, &version)?;
             f.store
                 .set_worker_slots(id, crate::worker::capacity::slots(f, opts))?;
+            record_start(&f.store, id);
             id
         } else {
             0
@@ -509,6 +510,53 @@ async fn unit_state_async(unit: &str) -> Option<String> {
     let out = bounded_output(&mut command, std::time::Duration::from_secs(2)).await?;
     let word = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (!word.is_empty()).then_some(word)
+}
+
+/// Record on this start's row what `forge doctor`'s `worker_restarts`
+/// watch reads (docs/OPS.md, "What doctor watches"): the unit's systemd
+/// `NRestarts`, and how the run before this one ended: systemd's
+/// `Result` when it was not a success, else whether the previous worker
+/// row was closed by a clean stop. Best effort: a start never fails here.
+fn record_start(store: &crate::store::Store, id: i64) {
+    let (restarts, result) = unit_restarts(WORKER_UNIT);
+    let reason = match result {
+        Some((result, status)) if result != "success" => {
+            format!("systemd: {result} (status {status})")
+        }
+        _ => match store.previous_worker(id) {
+            Ok(Some((pid, Some(_)))) => format!("worker {pid} stopped cleanly"),
+            Ok(Some((pid, None))) => format!("worker {pid} ended without a clean stop"),
+            _ => String::new(),
+        },
+    };
+    let _ = store.record_worker_start(id, restarts, &reason);
+}
+
+/// `systemctl --user show <unit>`'s `NRestarts`, and its `Result` with
+/// `ExecMainStatus`; `None`s when systemctl cannot be run or knows no
+/// such unit.
+fn unit_restarts(unit: &str) -> (Option<i64>, Option<(String, String)>) {
+    let Ok(out) = Command::new("systemctl")
+        .args(["--user", "show", unit, "-p", "NRestarts", "-p", "Result"])
+        .args(["-p", "ExecMainStatus", "-p", "LoadState"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return (None, None);
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let prop = |k: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(k)?.strip_prefix('='))
+            .map(str::to_string)
+    };
+    if prop("LoadState").as_deref() != Some("loaded") {
+        return (None, None);
+    }
+    let restarts = prop("NRestarts").and_then(|n| n.parse().ok());
+    let result = prop("Result").map(|r| (r, prop("ExecMainStatus").unwrap_or_default()));
+    (restarts, result)
 }
 
 /// `systemctl --user is-active <unit>`'s word for it: active,
@@ -966,7 +1014,7 @@ mod bounded_tests {
             async { tokio::time::sleep(std::time::Duration::from_millis(10)).await }
         );
         assert!(result.is_none());
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(started.elapsed() < crate::test_time::scaled(std::time::Duration::from_secs(2)));
     }
 
     #[tokio::test]

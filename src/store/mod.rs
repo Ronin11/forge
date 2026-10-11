@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 mod adoption;
+mod alerts;
 mod arms;
 mod attempts;
 mod chat;
@@ -40,10 +41,12 @@ use retry::RetryConnection;
 mod stats;
 mod supersede;
 mod tasks;
+mod watch;
 mod webhooks;
 mod workers;
 
 pub use adoption::{Adoption, ManualStat, Origin};
+pub use alerts::Alert;
 pub use attempts::{Attempt, AttemptState, FinishAttempt, Op, RateLimitSample, seed_used};
 pub use chat::{ChatSession, ChatTurn, NewChatTurn};
 pub use daily::DailyStat;
@@ -72,6 +75,7 @@ pub use tasks::{
     REQUEUE_ABORT, REQUEUE_ORPHAN, REQUEUE_REASONS, RoleRouting, Routed, Task, TaskState,
     TaskUpdate, Trust,
 };
+pub use watch::Mark;
 pub use workers::WorkerRow;
 
 /// Forward-only. Index = version - 1. Never edit a shipped entry; append.
@@ -912,7 +916,7 @@ mod tests {
         let started = std::time::Instant::now();
         let s = Store::open(&path).unwrap();
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
+            started.elapsed() < crate::test_time::scaled(std::time::Duration::from_secs(5)),
             "open waited {:?} behind a held writer",
             started.elapsed()
         );
@@ -940,7 +944,7 @@ mod tests {
         };
         assert!(err.contains("newer than this forge"), "{err}");
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
+            started.elapsed() < crate::test_time::scaled(std::time::Duration::from_secs(5)),
             "open waited {:?} behind a held writer",
             started.elapsed()
         );

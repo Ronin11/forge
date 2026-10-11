@@ -67,6 +67,23 @@ log() {
     printf 'signal: %s\n' "$1" >&2
 }
 
+# The heartbeat `forge doctor` reads (docs/PLUGINS.md, "Heartbeat"):
+# `heartbeat inbound` after a receive that succeeded, `heartbeat outbound`
+# after a send that did, each rewriting its own line beside the poll
+# interval. Every subprocess's stderr below goes to this plugin's log,
+# never to /dev/null: a receive that failed for days said so only there.
+heartbeat() {
+    hb="$FORGE_PLUGIN_STATE/heartbeat"
+    hb_tmp="$hb.tmp.$1"
+    {
+        if [ -f "$hb" ]; then
+            grep -v -e "^$1_at=" -e '^poll_secs=' "$hb"
+        fi
+        printf '%s_at=%s\n' "$1" "$(date +%s)"
+        printf 'poll_secs=%s\n' "$POLL_SECONDS"
+    } >"$hb_tmp" && mv -f "$hb_tmp" "$hb"
+}
+
 # A JSON string field's value, escapes and all, from a compact
 # single-line document (an events.jsonl line) on stdin.
 json_str() {
@@ -130,7 +147,7 @@ project_for_contact() {
 # not a document to walk. The same repo->project link `forge add`
 # resolves on its own when a task names no --project.
 target_repo_project() {
-    "$FORGE_BIN" project list 2>/dev/null | awk -v repo="$TARGET_REPO" '
+    "$FORGE_BIN" project list | awk -v repo="$TARGET_REPO" '
         /^name /  { name = $2 }
         /^repo /  { if ($2 == repo) { print name; exit } }
     '
@@ -172,11 +189,11 @@ record_message() {
     esac
     if [ -n "$mr_task" ]; then
         "$FORGE_BIN" message record "$mr_project" --channel signal "$mr_flag" "$mr_contact" \
-            --text "$mr_text" --task "$mr_task" >/dev/null 2>&1 \
+            --text "$mr_text" --task "$mr_task" >/dev/null \
             || log "could not record message for $mr_contact"
     else
         "$FORGE_BIN" message record "$mr_project" --channel signal "$mr_flag" "$mr_contact" \
-            --text "$mr_text" >/dev/null 2>&1 \
+            --text "$mr_text" >/dev/null \
             || log "could not record message for $mr_contact"
     fi
 }
@@ -226,14 +243,15 @@ signal_send() {
     msg=$2
     case "$dest" in
         group.*)
-            "$SIGNAL_CLI" -a "$SIGNAL_ACCOUNT" send -m "$msg" -g "$dest" >/dev/null 2>&1 \
+            "$SIGNAL_CLI" -a "$SIGNAL_ACCOUNT" send -m "$msg" -g "$dest" >/dev/null \
                 || { log "send failed: $msg"; return 1; }
             ;;
         *)
-            "$SIGNAL_CLI" -a "$SIGNAL_ACCOUNT" send -m "$msg" "$dest" >/dev/null 2>&1 \
+            "$SIGNAL_CLI" -a "$SIGNAL_ACCOUNT" send -m "$msg" "$dest" >/dev/null \
                 || { log "send failed: $msg"; return 1; }
             ;;
     esac
+    heartbeat outbound
 }
 
 # The question `forge requests --json` records for one blocked task id.
@@ -307,7 +325,7 @@ send_portal_link() {
     name=$1
     dest=$2
     project=$(contact_project "$name")
-    link=$("$FORGE_BIN" project portal "$project" 2>/dev/null | tail -n1)
+    link=$("$FORGE_BIN" project portal "$project" | tail -n1)
     case "$link" in
         /p/*)
             msg="Your Forge portal: ${PORTAL_URL}${link}"
@@ -378,6 +396,18 @@ outbound() {
             continue
         fi
 
+        # What reaches the operator unasked (docs/OPS.md): a failed
+        # doctor-daily, a doctor row first seen, a job step that printed
+        # nothing. The kernel already decided it is owed; send it as is.
+        if [ "$type" = operator_alert ]; then
+            msg=$(printf '%s\n' "$line" | json_str text)
+            project=$(printf '%s\n' "$line" | json_str project)
+            if signal_send "$SIGNAL_TO" "$msg"; then
+                record_message "$project" out operator "$msg"
+            fi
+            continue
+        fi
+
         if [ "$type" = project_created ]; then
             project=$(printf '%s\n' "$line" | json_str project)
             person=$(printf '%s\n' "$line" | json_str person)
@@ -391,7 +421,8 @@ outbound() {
 
         if [ "$type" = notification_digest ]; then
             day=$(printf '%s\n' "$line" | sed -n 's/.*"day":\([0-9]*\).*/\1/p')
-            sent=$(cat "$FORGE_PLUGIN_STATE/digest-day" 2>/dev/null || true)
+            sent=
+            [ -f "$FORGE_PLUGIN_STATE/digest-day" ] && sent=$(cat "$FORGE_PLUGIN_STATE/digest-day")
             if [ -n "$day" ] && [ "$day" -gt "${sent:-0}" ]; then
                 msg=$(printf '%s\n' "$line" | json_str text)
                 if signal_send "$SIGNAL_TO" "$msg"; then
@@ -442,7 +473,7 @@ outbound() {
         # question was delivered (docs/PLUGINS.md, "message"). The task's
         # own project, when it has one, else the target repo's.
         if signal_send "$dest" "$msg"; then
-            rec_project=$("$FORGE_BIN" show "$task" --json 2>/dev/null | json_str_pretty project | head -n1)
+            rec_project=$("$FORGE_BIN" show "$task" --json | json_str_pretty project | head -n1)
             [ -n "$rec_project" ] || rec_project=$(target_repo_project)
             record_message "$rec_project" out "$notify_contact" "$msg" "$task"
         fi
@@ -474,7 +505,7 @@ handle_message() {
             id=${rest%% *}
             text=${rest#* }
             [ "$text" = "$rest" ] && text=""
-            if "$FORGE_BIN" answer "$id" "$text" >/dev/null 2>&1; then
+            if "$FORGE_BIN" answer "$id" "$text" >/dev/null; then
                 msg="answered task $id"
             else
                 msg="could not answer task $id"
@@ -524,7 +555,7 @@ handle_contact_reply() {
     body=$4
     project=$(contact_project "$name")
     record_message "$project" in "$name" "$body" "$id"
-    if "$FORGE_BIN" answer "$id" "$body" --by "$name" >/dev/null 2>&1; then
+    if "$FORGE_BIN" answer "$id" "$body" --by "$name" >/dev/null; then
         msg="answered task $id"
     else
         msg="could not answer task $id"
@@ -533,46 +564,135 @@ handle_contact_reply() {
     record_message "$project" out "$name" "$msg" "$id"
 }
 
+# One received envelope (a line of `signal-cli -o json receive`). A
+# self-test's message is noted and never routed: it is the plugin talking
+# to itself, not work.
+handle_envelope() {
+    line=$1
+    case "$line" in
+        *forge-selftest-*)
+            nonce=$(printf '%s\n' "$line" | sed -n 's/.*\(forge-selftest-[0-9a-z-]*\).*/\1/p' | head -n1)
+            printf '%s\n' "$nonce" >>"$FORGE_PLUGIN_STATE/selftest-seen"
+            log "self-test message $nonce received"
+            return 0
+            ;;
+        *'"dataMessage"'*) ;;
+        *) return 0 ;;
+    esac
+    sender=$(printf '%s\n' "$line" | json_str sourceNumber)
+    [ -n "$sender" ] || sender=$(printf '%s\n' "$line" | json_str source)
+    body=$(printf '%s\n' "$line" | json_str message)
+    name=$(contact_name "$sender")
+    id=""
+    [ -n "$name" ] && id=$(task_for_contact "$name")
+    if [ -n "$name" ] && [ "$body" = "/portal" ]; then
+        send_portal_link "$name" "$sender"
+    elif [ -n "$name" ] && [ -n "$id" ]; then
+        handle_contact_reply "$name" "$sender" "$id" "$body"
+    elif [ -n "$name" ]; then
+        case "$body" in
+            /answer\ * | /status | /help)
+                handle_message "$body" "$sender"
+                ;;
+            *)
+                project=$(concierge_project "$name")
+                if [ -n "$project" ]; then
+                    concierge_reply "$name" "$body" "$project" "$sender"
+                else
+                    log "no project for $name (PROJECTS names none and TARGET_REPO's is not on record); ignoring"
+                fi
+                ;;
+        esac
+    elif allowed "$sender"; then
+        handle_message "$body" "$SIGNAL_TO"
+    else
+        log "ignoring message from ${sender:-an unknown sender}, not in SIGNAL_ALLOWED or CONTACTS"
+    fi
+}
+
+# The heartbeat file's first line is "<unix time> ok" after a receive that
+# worked, "<unix time> exit <n>" after one that did not: how `selftest`
+# (and a person) tells a running receive loop from a dead or failing one.
+# The `key=value` lines below it are `heartbeat`'s, kept as they are.
+heartbeat="$FORGE_PLUGIN_STATE/heartbeat"
+
+beat() {
+    {
+        printf '%s %s\n' "$(date +%s)" "$1"
+        if [ -f "$heartbeat" ]; then
+            grep '=' "$heartbeat" || true
+        fi
+    } >"$heartbeat.beat" && mv -f "$heartbeat.beat" "$heartbeat"
+}
+
+# `-o json` is signal-cli's global output flag; `receive --json` is not an
+# option signal-cli has had for years, and an unknown option is an exit
+# with a usage error on stderr. That stderr goes to this plugin's log (the
+# supervisor's), never to /dev/null, so a receive that fails says why.
 inbound() {
+    received="$FORGE_PLUGIN_STATE/received.jsonl"
     while :; do
-        "$SIGNAL_CLI" -a "$SIGNAL_ACCOUNT" receive --json 2>/dev/null | while IFS= read -r line; do
-            case "$line" in
-                *'"dataMessage"'*) ;;
-                *) continue ;;
-            esac
-            sender=$(printf '%s\n' "$line" | json_str sourceNumber)
-            [ -n "$sender" ] || sender=$(printf '%s\n' "$line" | json_str source)
-            body=$(printf '%s\n' "$line" | json_str message)
-            name=$(contact_name "$sender")
-            id=""
-            [ -n "$name" ] && id=$(task_for_contact "$name")
-            if [ -n "$name" ] && [ "$body" = "/portal" ]; then
-                send_portal_link "$name" "$sender"
-            elif [ -n "$name" ] && [ -n "$id" ]; then
-                handle_contact_reply "$name" "$sender" "$id" "$body"
-            elif [ -n "$name" ]; then
-                case "$body" in
-                    /answer\ * | /status | /help)
-                        handle_message "$body" "$sender"
-                        ;;
-                    *)
-                        project=$(concierge_project "$name")
-                        if [ -n "$project" ]; then
-                            concierge_reply "$name" "$body" "$project" "$sender"
-                        else
-                            log "no project for $name (PROJECTS names none and TARGET_REPO's is not on record); ignoring"
-                        fi
-                        ;;
-                esac
-            elif allowed "$sender"; then
-                handle_message "$body" "$SIGNAL_TO"
-            else
-                log "ignoring message from ${sender:-an unknown sender}, not in SIGNAL_ALLOWED or CONTACTS"
-            fi
-        done
+        if "$SIGNAL_CLI" -a "$SIGNAL_ACCOUNT" -o json receive >"$received"; then
+            beat ok
+            heartbeat inbound
+        else
+            rc=$?
+            log "signal-cli receive exited $rc"
+            beat "exit $rc"
+        fi
+        while IFS= read -r line || [ -n "$line" ]; do
+            handle_envelope "$line"
+        done <"$received"
         sleep "$POLL_SECONDS"
     done
 }
+
+# `forge plugin test signal` (the manifest's `test`): proves the inbound
+# side end to end. The running plugin's receive loop must have beaten
+# recently and its last receive must have worked; then a message carrying
+# a fresh nonce goes to SELFTEST_TO (the bot's own number by default, the
+# note-to-self a linked device sees come back) and the loop must see it
+# within SELFTEST_WAIT seconds. Exit 0 and one line on success, exit 1 and
+# the reason otherwise.
+selftest() {
+    to=${SELFTEST_TO:-$SIGNAL_ACCOUNT}
+    wait=${SELFTEST_WAIT:-$((POLL_SECONDS * 2 + 30))}
+    stale=$((POLL_SECONDS * 3 + 60))
+    if [ ! -f "$heartbeat" ]; then
+        echo "signal self-test: no heartbeat ($heartbeat): the receive loop has never finished a receive; is the plugin running? (forge plugin status signal)"
+        return 1
+    fi
+    read -r at status <"$heartbeat"
+    age=$(($(date +%s) - at))
+    if [ "$age" -gt "$stale" ]; then
+        echo "signal self-test: heartbeat ${age}s old (over ${stale}s): the receive loop is not running"
+        return 1
+    fi
+    if [ "$status" != ok ]; then
+        echo "signal self-test: the last receive failed ($status); its stderr is in forge plugin logs signal"
+        return 1
+    fi
+    nonce="forge-selftest-$(date +%s)-$$"
+    if ! signal_send "$to" "$nonce (Forge checking its Signal inbound; nothing to do)"; then
+        echo "signal self-test: sending to $to failed; its stderr is above"
+        return 1
+    fi
+    start=$(date +%s)
+    while [ $(($(date +%s) - start)) -lt "$wait" ]; do
+        if grep -qx "$nonce" "$FORGE_PLUGIN_STATE/selftest-seen" 2>/dev/null; then
+            echo "signal self-test: ok, sent $nonce to $to and the receive loop saw it after $(($(date +%s) - start))s"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "signal self-test: sent $nonce to $to but the receive loop did not see it within ${wait}s"
+    return 1
+}
+
+if [ "${1:-}" = selftest ]; then
+    selftest
+    exit $?
+fi
 
 outbound &
 out_pid=$!
@@ -580,13 +700,16 @@ inbound &
 in_pid=$!
 
 cleanup() {
-    kill "$out_pid" "$in_pid" 2>/dev/null
+    for pid in "$out_pid" "$in_pid"; do
+        if ps -p "$pid" >/dev/null; then kill "$pid"; fi
+    done
 }
 trap cleanup EXIT
 
 # If either loop ever exits, so does this script, so the supervisor's
 # restart policy brings both back rather than leaving one running alone.
-while kill -0 "$out_pid" 2>/dev/null && kill -0 "$in_pid" 2>/dev/null; do
+# `ps -p` rather than `kill -0`, which would print to the log once a loop is gone.
+while ps -p "$out_pid" >/dev/null && ps -p "$in_pid" >/dev/null; do
     sleep 1
 done
 log "a loop exited; stopping so the supervisor restarts both"

@@ -254,6 +254,7 @@ pub async fn run(
             provider,
             schema: SCHEMA,
             sandboxed: true,
+            egress: crate::directive::Egress::ModelOnly,
             writes: false,
             start_sha: "",
             resume: None,

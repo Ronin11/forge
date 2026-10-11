@@ -27,6 +27,14 @@ provider)
 initiative)
     notify-send --urgency=critical "forge initiative $2 $3" "$4"
     ;;
+alert)
+    # $2 is doctor_failed, doctor_row or tool_silent; $3 the text.
+    notify-send --urgency=critical "forge: $2" "$3"
+    ;;
+doctor)
+    # $2 is the watch, $3 warn or error, $4 its evidence.
+    notify-send --urgency=critical "forge doctor: $2 $3" "$4"
+    ;;
 *)
     task="$1"
     state="$2"

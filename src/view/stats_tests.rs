@@ -471,3 +471,25 @@ fn journal_row_computes_succeeded_share_and_carries_options_through() {
     assert!(v["succeeded_share"].is_null());
     assert!(v["mean_first_edit"].is_null());
 }
+
+#[test]
+fn an_integrate_step_row_is_labelled_failure_only() {
+    let st = |step: &str| StepStat {
+        workflow: "reviewed".into(),
+        step: step.into(),
+        attempts: 3,
+        succeeded: 0,
+        agent_failed: 0,
+        checks_failed: 3,
+        needs_input: 0,
+        mean_turns: 0.0,
+        cost: 0.0,
+        mean_ms: 0.0,
+        mean_first_edit: None,
+        mean_input_tokens: None,
+    };
+    let v = serde_json::to_value(StatsStepRow::from(&st("integrate"))).unwrap();
+    assert_eq!(v["failure_only"], true);
+    let v = serde_json::to_value(StatsStepRow::from(&st("code"))).unwrap();
+    assert_eq!(v["failure_only"], false);
+}

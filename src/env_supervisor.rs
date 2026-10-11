@@ -136,6 +136,7 @@ pub async fn rule(f: &Forge, t: &Task, deny: &[String], need: &Need) -> Result<R
             provider,
             schema: SCHEMA,
             sandboxed: true,
+            egress: crate::directive::task_egress(t, wt, &t.base_sha).await?,
             writes: false,
             start_sha: &start_sha,
             resume: None,

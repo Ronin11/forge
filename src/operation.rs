@@ -223,6 +223,7 @@ pub(crate) async fn run_operation(
             cap_bytes: checks::FULL_OUTPUT_BYTES,
             full_log_dir: None,
             egress: None,
+            max_scale: cfg.max_time_scale,
         })
         .await
     } else {
@@ -445,6 +446,7 @@ pub(crate) async fn run_job_operation(
         egress,
         cap_bytes: 16 * 1024,
         full_log_dir: None,
+        max_scale: checks::DEFAULT_MAX_TIME_SCALE,
     })
     .await
 }
@@ -707,6 +709,7 @@ mod tests {
             base_branch: "main".into(),
             push_remote: None,
             check_timeout_secs: 60,
+            max_time_scale: 4.0,
             protected: vec![],
             namespace,
             egress: vec![],

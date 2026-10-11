@@ -80,7 +80,7 @@ intake_loop() {
 
 intake_loop &
 intake_pid=$!
-trap 'kill "$intake_pid" 2>/dev/null; rm -f "$FORGE_PLUGIN_STATE/events.fifo"' EXIT INT TERM
+trap 'if ps -p "$intake_pid" >/dev/null; then kill "$intake_pid"; fi; rm -f "$FORGE_PLUGIN_STATE/events.fifo"' EXIT INT TERM
 
 cursor="$FORGE_PLUGIN_STATE/cursor"
 if [ -f "$cursor" ]; then

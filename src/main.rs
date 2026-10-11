@@ -31,6 +31,7 @@ mod envelope;
 mod environment;
 mod executor;
 mod experiment;
+mod load;
 
 mod git;
 mod graph;
@@ -83,6 +84,25 @@ pub fn unix_now() -> i64 {
 async fn main() -> anyhow::Result<()> {
     let _own_egress_dir = egress::MadeDirGuard;
     cli::main().await
+}
+
+/// The time scale unit tests share with the e2e suite: a deadline in a test
+/// is a ceiling on waiting for an observable event, multiplied by
+/// `FORGE_TEST_TIME_SCALE` (never below 1) so a loaded host
+/// waits longer rather than failing (docs/CHECKS.md, "Timing in tests").
+#[cfg(test)]
+pub(crate) mod test_time {
+    use std::time::Duration;
+
+    /// The one scale function (`crate::load`), cached for the process.
+    pub(crate) fn scale() -> f64 {
+        static SCALE: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+        *SCALE.get_or_init(crate::load::time_scale)
+    }
+
+    pub(crate) fn scaled(d: Duration) -> Duration {
+        d.mul_f64(scale())
+    }
 }
 
 #[cfg(test)]

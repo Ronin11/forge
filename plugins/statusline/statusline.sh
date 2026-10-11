@@ -107,7 +107,9 @@ events_pid=$!
 reader_pid=$!
 
 cleanup() {
-    kill "$events_pid" "$reader_pid" 2>/dev/null || true
+    for pid in "$events_pid" "$reader_pid"; do
+        if ps -p "$pid" >/dev/null; then kill "$pid"; fi
+    done
     rm -f "$fifo"
 }
 trap cleanup EXIT

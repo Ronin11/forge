@@ -304,7 +304,7 @@ src/ctx.rs          Forge: paths, store, budget, sandbox, reporter, built once
 src/deploy.rs       forge deploy: run a target's method, record the result, roll back on failure
 src/deploy_look.rs  the deploy-look directive: a read-only agent looks at the deployed page
 src/directive.rs    one launcher for every bounded agent run, one reading of how it failed
-src/doctor.rs       forge doctor
+src/doctor.rs       forge doctor (doctor/watch.rs: the reliability watches, docs/OPS.md "What doctor watches")
 src/egress.rs       the egress allowlist and its proxy
 src/engine.rs       run_task / run_attempt, Fault::{Task, Env}
 src/environment.rs  environment needs: the recognizer, the [environment] grant table and the supervisor's ceiling
@@ -338,7 +338,10 @@ src/executor.rs     executor contract, backend selection, and guarantees
 src/disk.rs         free-space claim holds, worktree sizes, and build-cache sweeping
 src/sandbox.rs      bubblewrap
 src/secret_store.rs machine-local credentials: persistent backend selection, OS keychain or encrypted file storage, and secret references
+src/job/alerts.rs       what a finished job tells the operator unasked: a failed doctor-daily, new doctor rows, a step that printed nothing
+src/plugins/selftest.rs forge plugin test: a plugin's own end-to-end proof, run by forge doctor while it is enabled
 src/job/secrets.rs      [secrets] names, a run step's declared secrets and egress hosts, and the redaction of their values
+src/load.rs        the time scale a loaded host stretches check timeouts and test deadlines by
 src/login.rs        the agent login: a refreshed token written back over the host file, an empty one never seeded
 src/login_hold.rs   a provider whose agent login was refused, held until a probe answers; the worker's ten-minute probe and doctor's
 src/successor.rs     the successor worker: a staged release starts forge work on it, the old worker drains
@@ -346,6 +349,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   mod.rs            types, column lists, open, schema_version, the migration runner
   migrations.rs     MIGRATIONS: every forward-only schema migration, in order
   notifications.rs  durable daily counts of follow-ups, retries, answered questions, and superseded blocks
+  alerts.rs         standing operator alerts (a failed doctor-daily, a doctor WARN/FAIL row) and, through the message record, whether each was sent
   retry.rs          statement retries for SQLite busy and locked errors, with backoff up to one minute
   run_cursor.rs     the task's stored run cursor (tasks.run_json): the step a requeued or orphaned run resumes at
   tasks.rs          tasks: claim, queue, dependents, lineage
@@ -358,6 +362,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   job_runs.rs       recovered job run numbers and cumulative step costs
   deploys.rs        deploys, deploy_targets, assessments
   descendants.rs    the live tasks below and beside a task in its retry lineage, and the `withdraw --abort` decision a worker reads
+  doctor/flaky.rs   doctor's flaky-tests row: test-check failures in the last 24h whose failing tests pass again on the base
   lineage.rs        task_ids_since/roots_since: which lineage roots had activity in a window, for forge audit and doctor's dangling row
   supersede.rs      tasks.supersedes: the newest task that superseded one, and the check that reopens a blocked task once its re-pointed `--after` is past blocking
   projects.rs       projects, project_repos, backlog, initiatives, portal_tokens
@@ -368,6 +373,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   initiative_holds.rs  initiative_holds: which initiative holds have been announced and with what reason, so a successor worker never repeats one a predecessor already made
   webhooks.rs       webhook_tokens: per-hook tokens (only their hashes) that let `forge job fire` start a webhook-triggered job
   events.rs         event_cursors: per project and run workflow, the events.jsonl offset its event trigger has examined up to
+  watch.rs          doctor_marks and doctor_samples, and the step runs, verdicts, worker starts, stale jobs and refusals forge doctor's reliability watches read
   schedule.rs       schedule_refusals: the schedules a per_day cap holds back, which the worker's tick records and `forge job list` prints
   stats.rs          forge stats: workflow/step/role/human-attention/time-to-live queries
   questions.rs      forge stats --questions: every task that blocked with a question, and how it was settled

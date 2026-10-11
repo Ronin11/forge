@@ -996,6 +996,10 @@ pub struct PortalDoc {
     pub requests: Vec<PortalRequest>,
     pub brief: Option<PortalBrief>,
     pub backlog: Vec<PortalBacklogItem>,
+    /// What stands against this project's own automation and the operator
+    /// must hear of: a failed `doctor-daily`, one line until the next run
+    /// that passes (docs/OPS.md, "What reaches you unasked").
+    pub alerts: Vec<String>,
 }
 
 pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
@@ -1276,6 +1280,12 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
         requests,
         brief,
         backlog,
+        alerts: f
+            .store
+            .alerts(Some(&p.name), Some("doctor_failed"))?
+            .into_iter()
+            .map(|a| format!("Since {}: {}", crate::doctor::ymd(a.first_seen), a.text))
+            .collect(),
     })
 }
 

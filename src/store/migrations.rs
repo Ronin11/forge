@@ -871,6 +871,44 @@ ALTER TABLE tasks ADD COLUMN early_ending TEXT;
     "
 ALTER TABLE attempts ADD COLUMN rl_synthetic INTEGER;
 ",
+    // What reaches the operator unasked (src/store/alerts.rs): one row per
+    // condition still standing — doctor-daily failing, a doctor WARN or
+    // FAIL row — kept from when it was first seen until the run that no
+    // longer sees it deletes it. Whether it was sent is the message
+    // record's to say, not a flag here.
+    "
+CREATE TABLE alerts (
+  key TEXT PRIMARY KEY,
+  project TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  text TEXT NOT NULL,
+  first_seen INTEGER NOT NULL,
+  last_seen INTEGER NOT NULL
+);
+",
+    // What `forge doctor`'s watches remember between runs (docs/OPS.md,
+    // "What doctor watches"): each watch's last status, so its event is
+    // written once when it first trips; one sample per kind per day (the
+    // worktrees' bytes, the landed trees still on disk); and each worker
+    // start's restart count and the exit reason of the run before it.
+    "
+CREATE TABLE doctor_marks (
+  name TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  at INTEGER NOT NULL
+);
+CREATE TABLE doctor_samples (
+  kind TEXT NOT NULL,
+  day TEXT NOT NULL,
+  value INTEGER NOT NULL,
+  extra INTEGER NOT NULL DEFAULT 0,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (kind, day)
+);
+ALTER TABLE workers ADD COLUMN restarts INTEGER;
+ALTER TABLE workers ADD COLUMN exit_reason TEXT NOT NULL DEFAULT '';
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs
