@@ -496,7 +496,6 @@ fn landing_reverifies_against_the_moved_base_and_folds_the_hidden_tests() {
         &other,
         &["push", "-q", e.origin.to_str().unwrap(), "main:main"],
     );
-    // Main has moved: only now may the coder answer.
     open_gate(&e, 1);
     let o = child.wait_with_output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
