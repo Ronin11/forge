@@ -361,6 +361,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   job_runs.rs       recovered job run numbers and cumulative step costs
   deploys.rs        deploys, deploy_targets, assessments
   descendants.rs    the live tasks below and beside a task in its retry lineage, and the `withdraw --abort` decision a worker reads
+  doctor/flaky.rs   doctor's flaky-tests row: test-check failures in the last 24h whose failing tests pass again on the base
   lineage.rs        task_ids_since/roots_since: which lineage roots had activity in a window, for forge audit and doctor's dangling row
   supersede.rs      tasks.supersedes: the newest task that superseded one, and the check that reopens a blocked task once its re-pointed `--after` is past blocking
   projects.rs       projects, project_repos, backlog, initiatives, portal_tokens

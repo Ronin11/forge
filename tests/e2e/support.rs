@@ -75,6 +75,7 @@ fn record_timing(started: Instant, load: f64) {
 impl Drop for Env {
     fn drop(&mut self) {
         record_timing(self.started, self.load_at_start);
+        release_slot();
         // bubblewrap's overlays leave each attempt's `work/work` directory
         // mode 000 under the fixture home, which TempDir's removal then
         // fails on, silently: thousands of them accumulated under every
@@ -417,6 +418,7 @@ impl Env {
             );
         }
         let xdg_config = dir.path().join("xdg_config");
+        take_slot();
         Env {
             _dir: dir,
             _releases: None,
@@ -615,15 +617,64 @@ pub fn check(verdict: &str, level: &str, name: &str) -> Option<bool> {
         .map(|c| c["ok"].as_bool().unwrap())
 }
 
-/// `FORGE_TEST_TIME_SCALE` (default 1, never below 1): the factor every
-/// deadline in the suite is multiplied by. The test check sets it from the
-/// host's load average, so a loaded host waits longer instead of failing.
+/// `FORGE_TEST_TIME_SCALE`: the factor every deadline in the suite is
+/// multiplied by (never below 1). Unset, it is the host's load average per
+/// CPU when that is above 1, so a loaded host waits longer instead of
+/// failing; set it to pin the factor (`1` turns the scaling off).
 pub fn time_scale() -> f64 {
-    std::env::var("FORGE_TEST_TIME_SCALE")
-        .ok()
-        .and_then(|v| v.trim().parse::<f64>().ok())
-        .filter(|v| v.is_finite())
-        .map_or(1.0, |v| v.max(1.0))
+    static SCALE: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *SCALE.get_or_init(|| {
+        let set = std::env::var("FORGE_TEST_TIME_SCALE")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|v| v.is_finite());
+        set.unwrap_or_else(|| load_average() / cpus()).max(1.0)
+    })
+}
+
+fn cpus() -> f64 {
+    std::thread::available_parallelism().map_or(1, |n| n.get()) as f64
+}
+
+/// At most this many `Env`s (tests) are alive at once: the CPUs the host
+/// has free, never fewer than half of them. The harness bounds its own
+/// concurrency because the test check's command line cannot see the load.
+fn concurrency_limit() -> usize {
+    let free = (cpus() - load_average()).floor();
+    free.clamp((cpus() / 2.0).ceil(), cpus()) as usize
+}
+
+static SLOTS: (std::sync::Mutex<usize>, std::sync::Condvar) =
+    (std::sync::Mutex::new(0), std::sync::Condvar::new());
+
+thread_local! {
+    /// Envs alive on this thread; only the first takes a slot, so a test
+    /// that builds several in a row cannot deadlock against itself.
+    static HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn take_slot() {
+    if HELD.with(|h| h.replace(h.get() + 1)) > 0 {
+        return;
+    }
+    static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let limit = *LIMIT.get_or_init(concurrency_limit);
+    let mut n = SLOTS.0.lock().unwrap_or_else(|e| e.into_inner());
+    while *n >= limit {
+        n = SLOTS.1.wait(n).unwrap_or_else(|e| e.into_inner());
+    }
+    *n += 1;
+}
+
+fn release_slot() {
+    if HELD.with(|h| {
+        h.set(h.get() - 1);
+        h.get()
+    }) == 0
+    {
+        *SLOTS.0.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+        SLOTS.1.notify_one();
+    }
 }
 
 /// A deadline (never a pause) scaled by `time_scale`.

@@ -141,6 +141,8 @@ mod succession;
 use succession::check_succession;
 mod dangling;
 use dangling::check_dangling;
+mod flaky;
+use flaky::check_flaky_tests;
 mod worktrees;
 use worktrees::check_worktrees;
 
@@ -1341,6 +1343,7 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     out.extend(check_deliveries(&store, unix_now()));
     out.extend(capacity::disk(&paths, &store));
     out.extend(check_dangling(&store));
+    out.extend(check_flaky_tests(&store));
     out.extend(check_worktrees(&store));
     out.extend(check_logs(&paths));
 
