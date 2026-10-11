@@ -5,6 +5,7 @@
 mod support;
 
 mod adopt;
+mod adopt_wait;
 mod alerts;
 mod audience;
 mod audit;

@@ -712,6 +712,17 @@ impl Store {
         Ok(None)
     }
 
+    /// Record `pid` as the `forge adopt` waiting on a project slot for the
+    /// queued adopted task `id`, so orphan recovery blocks the task when
+    /// that process dies before it holds the slot.
+    pub fn stamp_adopter(&self, id: i64, pid: i64) -> Result<()> {
+        self.lock().retry_execute(
+            "UPDATE tasks SET worker_pid=?2, worker_start=?3 WHERE id=?1 AND state='queued' AND origin='adopted'",
+            params![id, pid, start_of(pid)],
+        )?;
+        Ok(())
+    }
+
     /// Atomically take one specific queued task.
     pub fn claim(&self, id: i64, pid: i64) -> Result<bool> {
         let n = self.lock().retry_execute(
@@ -973,7 +984,8 @@ impl Store {
              worker_pid=NULL, worker_start=NULL,
              reason=CASE WHEN origin='adopted' THEN ?2 || '; forge retry ' || id || ' verifies the adopted branch again' ELSE ?2 END,
              run_json=COALESCE(?5, run_json)
-             WHERE id=?1 AND state='running' AND worker_pid IS ?3 AND worker_start IS ?4",
+             WHERE id=?1 AND worker_pid IS ?3 AND worker_start IS ?4
+               AND (state='running' OR (state='queued' AND origin='adopted'))",
             params![
                 id,
                 format!("requeued: {why}"),
@@ -992,7 +1004,8 @@ impl Store {
         Ok(n == 1)
     }
 
-    /// Tasks left in `running` by a worker that no longer exists, each with
+    /// Tasks left in `running` by a worker that no longer exists (or queued
+    /// for a slot by a dead `forge adopt`), each with
     /// the owner it was found under, which `requeue` is then guarded on.
     pub fn orphans(
         &self,
@@ -1000,8 +1013,10 @@ impl Store {
         alive: impl Fn(i64) -> bool,
     ) -> Result<Vec<(i64, Owner)>> {
         let c = self.lock();
-        let mut stmt =
-            c.prepare("SELECT id, worker_pid, worker_start FROM tasks WHERE state='running'")?;
+        let mut stmt = c.prepare(
+            "SELECT id, worker_pid, worker_start FROM tasks WHERE state='running'
+             OR (state='queued' AND origin='adopted' AND worker_pid IS NOT NULL)",
+        )?;
         let running: Vec<(i64, Owner)> = stmt
             .query_map([], |r| {
                 Ok((
