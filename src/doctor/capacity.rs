@@ -67,6 +67,7 @@ fn details(paths: &Paths, store: &Store) -> anyhow::Result<String> {
             }
         }
     }
+    parts.extend(inline_adopts(store)?);
     parts.extend(active_environments(paths, store)?);
     parts.push(format!("default build env: {}", env_text(&build_env)));
     let load = worker::capacity::load_per_core();
@@ -83,6 +84,28 @@ fn details(paths: &Paths, store: &Store) -> anyhow::Result<String> {
         (None, _) => "load cap disabled".into(),
     });
     Ok(parts.join("; "))
+}
+
+/// `forge adopt` runs its checks in its own process, not the worker's,
+/// on one of its project's slots: named here so a full project that no
+/// worker attempt explains is accounted for.
+fn inline_adopts(store: &Store) -> anyhow::Result<Vec<String>> {
+    let conn = store.lock();
+    let mut stmt = conn.prepare(
+        "SELECT id, COALESCE(project, repo), COALESCE(worker_pid, 0) FROM tasks
+         WHERE state='running' AND origin='adopted' ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(format!(
+                "task {} running: forge adopt inline (pid {}) on a project {} slot",
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(1)?
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 fn active_environments(paths: &Paths, store: &Store) -> anyhow::Result<Vec<String>> {
