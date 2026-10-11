@@ -243,7 +243,36 @@ forge plugin refresh <name>|--all copy the repo's current files over the install
 forge plugin uninstall <name>     stop it, clear its enabled flag, remove the installed copy;
                                    its plugins-state is left alone
 forge plugin logs <name> [-f]     its log
+forge plugin test <name>          run its self-test; see "Self-test"
 ```
+
+## Self-test
+
+A manifest may declare `test`, an argv run in the plugin's directory with
+the environment the running plugin has (so it can look at what that
+process left in `FORGE_PLUGIN_STATE`). It is the plugin's own proof that
+it works end to end: exit 0 and a one-line verdict on success, non-zero
+and a line saying what is wrong otherwise. `forge plugin test <name>`
+runs it and exits non-zero on failure; `forge doctor` runs it for every
+enabled plugin that declares one and reports a `plugins.<name>.test` row
+(WARN when it fails, with the last line of its output). A test that runs
+over five minutes is killed and counts as a failure. Its output is kept at
+`<FORGE_HOME>/logs/plugins/<name>.test.log`.
+
+The signal plugin's test (`forge plugin test signal`) checks the receive
+loop. The loop writes a heartbeat file, `plugins-state/signal/heartbeat`,
+containing `<unix time> ok` after each `signal-cli receive` that worked
+and `<unix time> exit <n>` after one that failed. The test fails if there
+is no heartbeat, if it is older than three poll intervals plus a minute,
+or if the last receive failed. Otherwise it sends a fresh
+`forge-selftest-...` message to `SELFTEST_TO` (the bot's own number by
+default) and waits up to `SELFTEST_WAIT` seconds for the receive loop to
+see it. That message is noted and never routed as a task or a question.
+
+Inbound receives run `signal-cli -o json receive`, and the receive's
+stderr goes to the plugin's log (`forge plugin logs signal`), never to
+`/dev/null`, so a receive that fails says why; a non-zero exit also adds
+`signal-cli receive exited <n>` there.
 
 ## Drift
 
