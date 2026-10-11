@@ -23,13 +23,11 @@ pub struct Env {
     load_at_start: f64,
 }
 
-/// First field of /proc/loadavg: the 1-minute load average.
-fn load_average() -> f64 {
-    std::fs::read_to_string("/proc/loadavg")
-        .ok()
-        .and_then(|s| s.split_whitespace().next().and_then(|v| v.parse().ok()))
-        .unwrap_or(0.0)
-}
+// The kernel's own time-scale function, so a check's timeout and the
+// suite's deadlines are scaled by the same factor.
+#[path = "../../src/load.rs"]
+mod load;
+use load::{cpus, load_average};
 
 /// Appends one JSON line per finished test to target/tmp/e2e-timing.jsonl
 /// (tests/flake.rs reads it): the test's name, wall time, whether it
@@ -623,17 +621,7 @@ pub fn check(verdict: &str, level: &str, name: &str) -> Option<bool> {
 /// failing; set it to pin the factor (`1` turns the scaling off).
 pub fn time_scale() -> f64 {
     static SCALE: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
-    *SCALE.get_or_init(|| {
-        let set = std::env::var("FORGE_TEST_TIME_SCALE")
-            .ok()
-            .and_then(|v| v.trim().parse::<f64>().ok())
-            .filter(|v| v.is_finite());
-        set.unwrap_or_else(|| load_average() / cpus()).max(1.0)
-    })
-}
-
-fn cpus() -> f64 {
-    std::thread::available_parallelism().map_or(1, |n| n.get()) as f64
+    *SCALE.get_or_init(load::time_scale)
 }
 
 /// At most this many `Env`s (tests) are alive at once: the CPUs the host

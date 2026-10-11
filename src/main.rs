@@ -31,6 +31,7 @@ mod envelope;
 mod environment;
 mod executor;
 mod experiment;
+mod load;
 
 mod git;
 mod graph;
@@ -93,22 +94,10 @@ async fn main() -> anyhow::Result<()> {
 pub(crate) mod test_time {
     use std::time::Duration;
 
-    /// Unset, the host's load average per CPU (see tests/e2e/support.rs,
-    /// whose `time_scale` this mirrors).
+    /// The one scale function (`crate::load`), cached for the process.
     pub(crate) fn scale() -> f64 {
         static SCALE: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
-        *SCALE.get_or_init(|| {
-            let set = std::env::var("FORGE_TEST_TIME_SCALE")
-                .ok()
-                .and_then(|v| v.trim().parse::<f64>().ok())
-                .filter(|v| v.is_finite());
-            let load = std::fs::read_to_string("/proc/loadavg")
-                .ok()
-                .and_then(|s| s.split_whitespace().next()?.parse::<f64>().ok())
-                .unwrap_or(0.0);
-            let cpus = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
-            set.unwrap_or(load / cpus).max(1.0)
-        })
+        *SCALE.get_or_init(crate::load::time_scale)
     }
 
     pub(crate) fn scaled(d: Duration) -> Duration {

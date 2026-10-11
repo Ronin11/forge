@@ -64,6 +64,8 @@ mod tests {
             exit: Some(if ok { 0 } else { 2 }),
             ms: 1,
             timed_out: false,
+            scale: 1.0,
+            timeout_ms: 0,
             tail: tail.into(),
             failing_tests: vec![],
             log_path: String::new(),

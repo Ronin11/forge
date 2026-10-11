@@ -639,3 +639,42 @@ fn verification_does_not_execute_agent_git_metadata() {
         assert!(!e.home.join("worktrees").join(name).exists(), "{name}");
     }
 }
+
+/// A loaded host makes a check slower, never failed: with the time scale
+/// pinned at 2, a 3 s command passes under a 2 s timeout, and the verdict
+/// row names the scale and the 4 s it actually ran under.
+#[test]
+fn a_check_passes_under_a_scaled_timeout_and_the_verdict_records_it() {
+    let e = Env::new();
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[defaults]\ncheck_timeout_secs = 2\n[checks]\nslow = [\"sleep\", \"3\"]\n",
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "a slow check"]);
+    let o = e
+        .cmd("ok.sh")
+        .env("FORGE_TEST_TIME_SCALE", "2")
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--no-land",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    let a = e.attempts(1);
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&a[0].4).unwrap();
+    let row = rows
+        .iter()
+        .find(|c| c["level"] == "L1" && c["name"] == "slow")
+        .unwrap_or_else(|| panic!("no L1 slow row in {}", a[0].4));
+    assert_eq!(row["ok"], true, "{row}");
+    assert_eq!(row["scale"].as_f64(), Some(2.0), "{row}");
+    assert_eq!(row["timeout_ms"].as_u64(), Some(4000), "{row}");
+}

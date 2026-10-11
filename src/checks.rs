@@ -28,6 +28,18 @@ pub struct RunOneCapped<'a> {
     /// its own (a job step's declared hosts). A backend that cannot bound
     /// the network is refused before the command is launched.
     pub egress: Option<&'a crate::egress::Policy>,
+    /// `[checks] max_time_scale`: the ceiling on the factor `timeout` is
+    /// stretched by on a loaded host.
+    pub max_scale: f64,
+}
+
+/// `[checks] max_time_scale` when the repository sets none.
+pub const DEFAULT_MAX_TIME_SCALE: f64 = 4.0;
+
+/// The factor a check's timeout is multiplied by, read when the check
+/// starts: `load::time_scale` (never below 1) capped at `max`.
+pub fn time_scale(max: f64) -> f64 {
+    crate::load::time_scale().min(max.max(1.0))
 }
 
 use crate::executor::Execution;
@@ -59,6 +71,13 @@ pub struct CheckResult {
     pub exit: Option<i32>,
     pub ms: u128,
     pub timed_out: bool,
+    /// The factor the timeout was scaled by (1 on an idle host), and the
+    /// timeout the check actually ran under, in ms. Zero on rows recorded
+    /// before the kernel scaled timeouts.
+    #[serde(default)]
+    pub scale: f64,
+    #[serde(default)]
+    pub timeout_ms: u128,
     pub tail: String,
     #[serde(default)]
     pub failing_tests: Vec<String>,
@@ -157,6 +176,7 @@ pub async fn run_one(
         cap_bytes: TAIL_BYTES,
         full_log_dir: None,
         egress: None,
+        max_scale: DEFAULT_MAX_TIME_SCALE,
     })
     .await
 }
@@ -186,8 +206,12 @@ fn save_full_log(dir: &Path, level: &str, name: &str, bytes: &[u8]) -> Option<St
 /// for `FULL_OUTPUT_BYTES` here.
 pub async fn run_one_capped(args: RunOneCapped<'_>) -> anyhow::Result<CheckResult> {
     let mut relaunch = crate::agent::Relaunch::default();
+    let scale = time_scale(args.max_scale);
+    let timeout = args.timeout.mul_f64(scale);
     loop {
-        let r = run_one_capped_once(&args).await?;
+        let mut r = run_one_capped_once(&args, timeout).await?;
+        r.scale = scale;
+        r.timeout_ms = timeout.as_millis();
         // A check that ran and failed has its stderr merged into `tail`;
         // a launch that bwrap lost never ran the command at all.
         let wall = Duration::from_millis(r.ms as u64);
@@ -244,11 +268,13 @@ async fn launch(args: &RunOneCapped<'_>) -> anyhow::Result<tokio::process::Child
 }
 
 /// One launch of `run_one_capped`, without the bwrap relaunch.
-async fn run_one_capped_once(args: &RunOneCapped<'_>) -> anyhow::Result<CheckResult> {
+async fn run_one_capped_once(
+    args: &RunOneCapped<'_>,
+    timeout: Duration,
+) -> anyhow::Result<CheckResult> {
     let RunOneCapped {
         level,
         name,
-        timeout,
         cap_bytes,
         full_log_dir,
         argv,
@@ -383,6 +409,7 @@ mod tests {
             cap_bytes: TAIL_BYTES,
             full_log_dir: None,
             egress: None,
+            max_scale: DEFAULT_MAX_TIME_SCALE,
         })
         .await
         .unwrap();
@@ -530,6 +557,7 @@ mod tests {
             cap_bytes,
             full_log_dir: Some(logs.path()),
             egress: None,
+            max_scale: DEFAULT_MAX_TIME_SCALE,
         })
         .await
         .unwrap();

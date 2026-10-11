@@ -62,6 +62,10 @@ struct RepoSandboxRaw {
 struct ChecksRaw {
     #[serde(default)]
     fixable: BTreeMap<String, Vec<String>>,
+    /// `[checks] max_time_scale`: the most a loaded host may stretch a
+    /// check's timeout (`crate::load`). Default 4.
+    #[serde(default)]
+    max_time_scale: Option<f64>,
     #[serde(flatten)]
     checks: BTreeMap<String, Vec<String>>,
 }
@@ -144,6 +148,9 @@ pub struct Config {
     /// such remote or `push = false`.
     pub push_remote: Option<String>,
     pub check_timeout_secs: u64,
+    /// `[checks] max_time_scale`: ceiling on the load-derived factor a
+    /// check's timeout is multiplied by; at least 1.
+    pub max_time_scale: f64,
     pub protected: Vec<String>,
     pub namespace: Vec<String>,
     /// `[sandbox] egress`: the hosts an attempt on this repository may
@@ -235,6 +242,12 @@ async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result
         base_branch,
         push_remote,
         check_timeout_secs: raw.defaults.check_timeout_secs.unwrap_or(600),
+        max_time_scale: raw
+            .checks
+            .max_time_scale
+            .filter(|v| v.is_finite())
+            .unwrap_or(crate::checks::DEFAULT_MAX_TIME_SCALE)
+            .max(1.0),
         // `forge.toml` by name is the long-standing convention for
         // protecting the repository's own config; when the config actually
         // lives elsewhere, that convention must protect the real path.
