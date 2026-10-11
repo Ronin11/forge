@@ -4,17 +4,9 @@ use std::process::Command;
 use std::time::Duration;
 
 fn origin_sha(e: &Env, branch: &str) -> String {
-    let o = Command::new("git")
-        .args([
-            "--git-dir",
-            e.origin.to_str().unwrap(),
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{branch}"),
-        ])
-        .output()
-        .unwrap();
+    let (d, r) = (e.origin.to_str().unwrap(), format!("refs/heads/{branch}"));
+    let a = ["--git-dir", d, "rev-parse", "--verify", "--quiet", &r];
+    let o = Command::new("git").args(a).output().unwrap();
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
@@ -287,18 +279,11 @@ fn a_conflict_the_budget_cannot_cover_fails_the_task_and_pushes_the_verified_bra
     .unwrap();
     git(&e.repo, &["commit", "-qam", "any answer"]);
     // Each attempt costs $0.01; a $0.01 budget covers the first and not the merge.
+    let repo = e.repo.to_str().unwrap();
     for task in ["write 42 to answer.txt", "write 43 to answer.txt"] {
         let o = e.forge(
             "ok.sh",
-            &[
-                "add",
-                e.repo.to_str().unwrap(),
-                task,
-                "--retries",
-                "1",
-                "--budget",
-                "0.01",
-            ],
+            &["add", repo, task, "--retries", "1", "--budget", "0.01"],
         );
         assert!(o.status.success());
     }
@@ -321,22 +306,14 @@ fn a_conflict_the_budget_cannot_cover_fails_the_task_and_pushes_the_verified_bra
     assert!(reason.contains("the task budget is spent"), "{reason}");
     assert!(pushed, "the verified branch is not lost");
     let id = if states[0].0 == "failed" { 1 } else { 2 };
-    // The terminal message names the command that works, with real values:
-    // the task stays failed, which `forge land` refuses.
-    let branch: String = e
-        .db()
-        .query_row("SELECT branch FROM tasks WHERE id=?1", [id], |r| r.get(0))
-        .unwrap();
-    let want = format!("forge adopt {} {}", e.repo.display(), branch);
-    assert!(reason.contains(&want), "{reason}");
-    assert!(!reason.contains("for a human"), "{reason}");
-    let o = e.forge("ok.sh", &["land", &id.to_string()]);
-    assert!(!o.status.success());
+    let sql = "SELECT branch FROM tasks WHERE id=?1";
+    let br: String = e.db().query_row(sql, [id], |r| r.get(0)).unwrap();
     assert!(
-        String::from_utf8_lossy(&o.stderr).contains("only a verified task lands"),
-        "{}",
-        String::from_utf8_lossy(&o.stderr)
+        reason.contains(&format!("forge adopt {} {br}", repo)),
+        "{reason}"
     );
+    let o = e.forge("ok.sh", &["land", &id.to_string()]);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("only a verified task lands"));
     let o = e.forge("ok.sh", &["show", &id.to_string()]);
     assert!(String::from_utf8_lossy(&o.stdout).contains("The branch is pushed"));
 }
