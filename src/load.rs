@@ -4,6 +4,9 @@
 //! two can never disagree. A loaded host makes checks slower, never failed
 //! (docs/CHECKS.md, "Timing").
 
+/// `[checks] max_time_scale` when the repository sets none.
+pub const DEFAULT_MAX_TIME_SCALE: f64 = 4.0;
+
 /// Never-below-1 factor: `FORGE_TEST_TIME_SCALE` when set to a finite
 /// number, else the 1-minute load average per CPU. Read fresh on each call,
 /// so a check scales by the load at the moment it starts. Uncapped; the

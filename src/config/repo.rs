@@ -246,7 +246,7 @@ async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result
             .checks
             .max_time_scale
             .filter(|v| v.is_finite())
-            .unwrap_or(crate::checks::DEFAULT_MAX_TIME_SCALE)
+            .unwrap_or(crate::load::DEFAULT_MAX_TIME_SCALE)
             .max(1.0),
         // `forge.toml` by name is the long-standing convention for
         // protecting the repository's own config; when the config actually

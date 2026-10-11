@@ -26,6 +26,7 @@ pub struct Env {
 // The kernel's own time-scale function, so a check's timeout and the
 // suite's deadlines are scaled by the same factor.
 #[path = "../../src/load.rs"]
+#[allow(dead_code)] // the kernel reads the rest of the file
 mod load;
 use load::{cpus, load_average};
 

@@ -33,8 +33,7 @@ pub struct RunOneCapped<'a> {
     pub max_scale: f64,
 }
 
-/// `[checks] max_time_scale` when the repository sets none.
-pub const DEFAULT_MAX_TIME_SCALE: f64 = 4.0;
+pub use crate::load::DEFAULT_MAX_TIME_SCALE;
 
 /// The factor a check's timeout is multiplied by, read when the check
 /// starts: `load::time_scale` (never below 1) capped at `max`.
