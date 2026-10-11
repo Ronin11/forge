@@ -6,10 +6,14 @@
 /// attempts or budget (`engine::land::try_land`'s `Integrate::Rewind` arm):
 /// `"landing failed after N attempt(s): main moved to SHA; would conflict in
 /// FILES; the verified branch is pushed; to land it: forge adopt REPO BRANCH"`
-/// (`conflicts in` before the merge-tree pre-check).
+/// (`conflicts in` before the merge-tree pre-check). When merge-tree names no
+/// file (a directory-rename split) the middle reads `would conflict (files
+/// not reported by merge-tree)`.
 pub fn is_landing_conflict(reason: &str) -> bool {
     reason.starts_with("landing failed")
-        && (reason.contains("would conflict in") || reason.contains("conflicts in"))
+        && (reason.contains("would conflict in")
+            || reason.contains("would conflict (files not reported by merge-tree)")
+            || reason.contains("conflicts in"))
 }
 
 /// The coder ran out of turns with commits on the branch and the checks
@@ -43,6 +47,9 @@ mod tests {
         ));
         assert!(is_landing_conflict(
             "landing failed after 2 attempt(s): main moved to a6cb6bda; would conflict in src/successor.rs; the verified branch is pushed; to land it: forge adopt REPO BRANCH"
+        ));
+        assert!(is_landing_conflict(
+            "landing failed after 2 attempt(s): main moved to a6cb6bda; would conflict (files not reported by merge-tree); the verified branch is pushed; to land it: forge adopt REPO BRANCH"
         ));
         assert!(!is_landing_conflict(
             "landing failed: fast-forward of main rejected"
