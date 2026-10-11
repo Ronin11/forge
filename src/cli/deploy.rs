@@ -99,6 +99,10 @@ pub(super) enum PluginCmd {
     /// Stop a plugin, clear its enabled flag, and remove the installed
     /// copy; its FORGE_HOME/plugins-state is left alone
     Uninstall { name: String },
+    /// Run a plugin's self-test (its manifest's `test`) against the
+    /// running plugin: prints what it said, exits non-zero on a failure.
+    /// `forge doctor` runs it for every enabled plugin that has one
+    Test { name: String },
     /// A plugin's stdout/stderr log
     Logs {
         name: String,
@@ -354,6 +358,25 @@ fn plugin_restart(name: String) -> Result<()> {
     Ok(())
 }
 
+/// `forge plugin test`: see `plugins::selftest`.
+fn plugin_test(name: String) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let home_cfg = config::load_home(&f.paths.home)?;
+    let cat = crate::plugins::load_catalog(&f.paths.home, &home_cfg.plugin_dirs);
+    let Some(plugin) = cat.plugins.get(&name) else {
+        bail!("no such plugin: {name:?}");
+    };
+    let timeout = crate::plugins::selftest::TIMEOUT;
+    let Some(o) = crate::plugins::selftest::run(&f.paths.home, plugin, timeout)? else {
+        bail!("plugin {name:?} declares no `test` in its plugin.toml");
+    };
+    out!("{}", o.output.trim_end());
+    if !o.ok {
+        bail!("{name} self-test failed: {}", o.last_line());
+    }
+    Ok(())
+}
+
 /// `forge plugin refresh`: see `plugins::drift::refresh`. Each plugin is
 /// reported on its own line; any refusal makes the command fail after every
 /// plugin has been looked at.
@@ -488,6 +511,7 @@ async fn dispatch_plugin(cmd: Cmd) -> Result<()> {
             } => plugin_refresh(name, force, from),
             PluginCmd::Install { path } => plugin_install(path),
             PluginCmd::Uninstall { name } => plugin_uninstall(name),
+            PluginCmd::Test { name } => plugin_test(name),
             PluginCmd::Logs { name, follow } => plugin_logs(name, follow),
         },
         _ => unreachable!("command routed to the wrong family"),

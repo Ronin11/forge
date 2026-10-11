@@ -48,6 +48,8 @@ fn signal_fixture(repo: &str) -> SignalFixture {
 set -u
 shift
 shift
+# `-o json` is signal-cli's global output flag, before the subcommand.
+[ "$1" = -o ] && shift 2
 cmd=$1
 shift
 case "$cmd" in

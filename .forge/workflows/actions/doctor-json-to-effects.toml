@@ -1,6 +1,6 @@
 name = "doctor-json-to-effects"
 kind = "operation"
-description = "runs `forge doctor --json` and logs a row effect for every WARN or FAIL row it reports. When no row is a FAIL, marks today (UTC) as doctor's last clean day under FORGE_HOME (FORGE_HOME from the job's environment, or $HOME/.local/share/forge by default), the marker doctor-daily's own [skip_if] reads."
+description = "runs `forge doctor --json` (FORGE_BIN, the home's own forge) and logs a row effect for every WARN or FAIL row it reports; a doctor that exits with no report is itself a FAIL row naming the binary, its exit status and its stderr. When no row is a FAIL, marks today (UTC) as doctor's last clean day under FORGE_HOME (FORGE_HOME from the job's environment, or $HOME/.local/share/forge by default), the marker doctor-daily's own [skip_if] reads."
 run = ["bash", "-c", '''
 set +e
 home="${FORGE_HOME:-$HOME/.local/share/forge}"
@@ -9,9 +9,16 @@ mkdir -p "$home"
 suffix=""
 [ "${FORGE_DRY_RUN:-}" = "1" ] && suffix=" (dry run)"
 
-out=$(forge doctor --json 2>/dev/null)
-if [ -z "$out" ]; then
-  printf "row\tdoctor\tFAIL: forge doctor --json produced no output%s\n" "$suffix" >> "$FORGE_EFFECT_LOG"
+# The home's own forge (FORGE_BIN, set by the job), never whichever one
+# PATH happens to find first.
+forge="${FORGE_BIN:-forge}"
+err=$(mktemp)
+out=$("$forge" doctor --json 2>"$err")
+rc=$?
+why=$(tail -n 3 "$err" | tr '\n' ' ')
+rm -f "$err"
+if [ -z "$out" ] || ! echo "$out" | jq -e 'type == "array"' >/dev/null 2>&1; then
+  printf "row\tdoctor\tFAIL: %s doctor --json exited %s with no report: %s%s\n" "$forge" "$rc" "${why:-nothing on stderr}" "$suffix" >> "$FORGE_EFFECT_LOG"
   exit 0
 fi
 

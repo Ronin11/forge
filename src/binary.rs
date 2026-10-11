@@ -8,6 +8,19 @@ pub fn launch_path() -> Result<PathBuf> {
     Ok(through_current(absolute_launch_path()?))
 }
 
+/// The forge a plugin or a job runs: `<home>/bin/current/forge` whenever
+/// the release layout has one, never a launch path that a rebuilt or
+/// deleted checkout can pull out from under them (a plugin once
+/// crash-looped on a removed `target/release/forge`); the launch path
+/// only where there is no release layout at all.
+pub fn for_home(home: &Path) -> Result<PathBuf> {
+    let current = home.join("bin").join("current").join("forge");
+    if current.is_file() {
+        return Ok(current);
+    }
+    launch_path()
+}
+
 /// `<bin>/releases/<id>/<name>` -> `<bin>/current/<name>` when `<bin>/current` exists.
 pub fn through_current(path: PathBuf) -> PathBuf {
     let Some(name) = path.file_name() else {
@@ -70,6 +83,22 @@ mod tests {
         assert_eq!(
             through_current(PathBuf::from("/x/forge")),
             Path::new("/x/forge")
+        );
+    }
+
+    #[test]
+    fn plugins_and_jobs_run_the_homes_current_forge_when_there_is_one() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_ne!(
+            for_home(dir.path()).unwrap(),
+            dir.path().join("bin/current/forge")
+        );
+        std::fs::create_dir_all(dir.path().join("bin/releases/abc")).unwrap();
+        std::fs::write(dir.path().join("bin/releases/abc/forge"), "").unwrap();
+        std::os::unix::fs::symlink("releases/abc", dir.path().join("bin/current")).unwrap();
+        assert_eq!(
+            for_home(dir.path()).unwrap(),
+            dir.path().join("bin/current/forge")
         );
     }
 

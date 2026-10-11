@@ -111,6 +111,7 @@ struct RunNow<'a> {
     recorded: &'a BTreeMap<String, serde_json::Value>,
 }
 
+mod alerts;
 mod directive;
 mod directive_text;
 mod failure;
@@ -224,14 +225,18 @@ fn step_env(args: StepEnv<'_>) -> Vec<(String, String)> {
         ("FORGE_PROJECT".to_string(), project.to_string()),
         ("FORGE_REPO_DIR".to_string(), repo.display().to_string()),
         ("FORGE_HOME".to_string(), home.display().to_string()),
-        (
-            "FORGE_BIN_DIR".to_string(),
-            std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.display().to_string()))
-                .unwrap_or_default(),
-        ),
     ];
+    // The home's own `bin/current/forge` when it has one (docs/OPS.md,
+    // "What reaches you unasked"), so a step never runs a stale checkout's.
+    let bin = crate::binary::for_home(home)
+        .ok()
+        .filter(|p| p.starts_with(home))
+        .or_else(|| std::env::current_exe().ok());
+    if let Some(bin) = bin {
+        let dir = bin.parent().map(|d| d.display().to_string());
+        env.push(("FORGE_BIN_DIR".to_string(), dir.unwrap_or_default()));
+        env.push(("FORGE_BIN".to_string(), bin.display().to_string()));
+    }
     if dry_run {
         env.push(("FORGE_DRY_RUN".to_string(), "1".to_string()));
     }
@@ -1152,6 +1157,18 @@ async fn run_now_inner(args: RunNow<'_>) -> Result<()> {
         },
     );
 
+    // Before the digest, so a row this run no longer sees is not repeated.
+    let finished = alerts::Finished {
+        job_id,
+        project,
+        workflow,
+        state,
+        dry_run,
+        verdict: &verdict,
+    };
+    if let Err(e) = alerts::after_job(f, &finished) {
+        eprintln!("forge: job {job_id}'s alerts: {e:#}");
+    }
     if !dry_run && workflow == "doctor-daily" && state == JobState::Ok {
         crate::audience::daily_digest(f)?;
     }
@@ -1356,6 +1373,11 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// With no `bin/current` under the home, the running binary.
+    fn bin() -> String {
+        std::env::current_exe().unwrap().display().to_string()
+    }
+
     #[test]
     fn step_env_for_a_real_run_orders_inputs_outputs_env_then_secrets_last() {
         let mut secrets = std::collections::BTreeMap::new();
@@ -1394,6 +1416,7 @@ mod tests {
                 ("FORGE_REPO_DIR".to_string(), "/repo/acme".to_string()),
                 ("FORGE_HOME".to_string(), "/home/forge".to_string()),
                 ("FORGE_BIN_DIR".to_string(), bin_dir()),
+                ("FORGE_BIN".to_string(), bin()),
                 ("FORGE_INPUT_NAME".to_string(), "bob".to_string()),
                 (
                     "FORGE_OUTPUT_MY_ACTION".to_string(),
@@ -1435,6 +1458,7 @@ mod tests {
                 ("FORGE_REPO_DIR".to_string(), "/repo/acme".to_string()),
                 ("FORGE_HOME".to_string(), "/home/forge".to_string()),
                 ("FORGE_BIN_DIR".to_string(), bin_dir()),
+                ("FORGE_BIN".to_string(), bin()),
                 ("FORGE_DRY_RUN".to_string(), "1".to_string()),
             ]
         );
