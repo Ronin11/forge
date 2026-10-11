@@ -577,6 +577,7 @@ fn list_providers(json: bool) -> Result<()> {
                 serde_json::json!({
                     "name": p.name,
                     "runner": p.runner.as_str(),
+                    "contract": p.runner.contract_path(),
                     "model": p.model,
                     "base_url": p.base_url,
                     "api_key": p.api_key,
@@ -601,6 +602,7 @@ fn list_providers(json: bool) -> Result<()> {
             p.runner.as_str(),
             p.model.as_deref().unwrap_or("(runner default)"),
         );
+        out!("             contract {}", p.runner.contract_path());
         if let Some(n) = &p.notes {
             out!("             {n}");
         }

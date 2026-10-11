@@ -565,12 +565,26 @@ pub(super) async fn run(l: Launch<'_>) -> Result<Outcome> {
             return Ok(out);
         }
     };
+    read_result(&mut out, l.provider, judgment.action, &result);
+    out.wall_ms = start.elapsed().as_millis();
+    Ok(out)
+}
+
+/// A Jev response body folded into `out`: its usage and what that cost at
+/// the provider's prices, and its typed answers as the envelope (or the
+/// reason they are not one, as a failed exit).
+pub(super) fn read_result(
+    out: &mut Outcome,
+    provider: &super::Provider,
+    action: &crate::workflows::ActionDef,
+    result: &Value,
+) {
     let usage = &result["usage"];
     out.input_tokens = usage["input_tokens"].as_i64();
     out.output_tokens = usage["output_tokens"].as_i64();
-    out.cost_usd = usage_cost(l.provider, out.input_tokens, out.output_tokens);
+    out.cost_usd = usage_cost(provider, out.input_tokens, out.output_tokens);
     out.exit_code = Some(0);
-    match envelope(judgment.action, &result["answers"]) {
+    match envelope(action, &result["answers"]) {
         Ok(env) => {
             out.got_result = true;
             out.result_text = env.to_string();
@@ -581,8 +595,6 @@ pub(super) async fn run(l: Launch<'_>) -> Result<Outcome> {
             out.stderr_text = format!("{e:#}");
         }
     }
-    out.wall_ms = start.elapsed().as_millis();
-    Ok(out)
 }
 
 /// Why a POST gave no JSON: an HTTP status (with the first line of its

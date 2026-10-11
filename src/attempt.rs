@@ -14,6 +14,9 @@ pub struct RunAttempt<'a> {
     pub attempt_no: i64,
     pub feedback: Option<&'a str>,
     pub resume: Option<&'a Resume>,
+    /// What is left of the task's budget, for the CLI's own cap (see
+    /// `engine::capped::remaining`).
+    pub budget_usd: Option<f64>,
     /// The run cursor to store, in the same transaction as the attempt's
     /// state, if the attempt verifies: the step after this one.
     pub cursor: Option<RunCursor>,
@@ -42,6 +45,7 @@ struct AttemptLaunch<'a> {
     prompt: &'a str,
     log_path: &'a Path,
     resume: Option<&'a str>,
+    budget_usd: Option<f64>,
     contract: Contract,
     start_sha: &'a str,
     provider: &'a agent::Provider,
@@ -110,6 +114,7 @@ pub async fn run_attempt(
         attempt_no,
         feedback,
         resume,
+        budget_usd,
         cursor,
     } = args;
     let contract = step.action.contract;
@@ -165,6 +170,7 @@ pub async fn run_attempt(
         resume: resume
             .filter(|r| r.fresh_from.is_none())
             .map(|r| r.session.as_str()),
+        budget_usd,
         contract,
         start_sha: &a.start_sha,
         provider,
@@ -608,6 +614,7 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
         prompt,
         log_path,
         resume,
+        budget_usd,
         contract,
         start_sha,
         provider,
@@ -648,6 +655,7 @@ async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
             writes: contract.writes(),
             start_sha,
             resume,
+            budget_usd,
             no_tools: false,
             judgment: None,
             early_ending: f.effective_early_ending(t),

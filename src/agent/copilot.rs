@@ -461,21 +461,14 @@ mod tests {
         );
         let argv = copilot_argv("copilot", &l, Some("sess-1"));
         assert_eq!(argv[0], "copilot");
-        for flag in [
-            "--allow-all-tools",
-            "--allow-all-paths",
-            "--disable-builtin-mcps",
-            "--no-auto-update",
-        ] {
-            assert!(argv.contains(&flag.to_string()), "{flag}: {argv:?}");
-        }
+        super::super::contract::assert_always(Runner::CopilotCli, &argv);
         let at = |f: &str| argv.iter().position(|a| a == f).unwrap();
         assert_eq!(argv[at("--output-format") + 1], "json");
         assert_eq!(argv[at("-C") + 1], dir.path().display().to_string());
         assert_eq!(argv[at("--model") + 1], "sonnet");
         assert_eq!(argv[at("--reasoning-effort") + 1], "high");
         assert_eq!(argv[at("--resume") + 1], "sess-1");
-        assert!(!argv.iter().any(|a| a == "-p" || a == l.prompt));
+        assert!(!argv.iter().any(|a| a == l.prompt));
         assert!(
             !copilot_argv("copilot", &l, None).contains(&"--resume".to_string()),
             "no resume on a fresh session"

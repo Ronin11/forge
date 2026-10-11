@@ -434,7 +434,7 @@ pub(super) async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::thresholds;
+    use super::super::tests::{test_launch, thresholds};
     use super::*;
     use crate::config::EarlyEnding;
     use std::path::PathBuf;
@@ -464,6 +464,24 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn codex_argv_carries_the_contracts_always_flags_and_resumes_a_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = Reporter::new(false, None);
+        let provider = Provider {
+            runner: Runner::CodexCli,
+            ..Provider::default()
+        };
+        let log_path = dir.path().join("log.jsonl");
+        let l = test_launch(dir.path(), &report, &provider, &log_path, "{}", false, None);
+        let argv = codex_phase_argv("codex", &l, Some("thread-1"));
+        assert_eq!(argv[0], "codex");
+        super::super::contract::assert_always(Runner::CodexCli, &argv);
+        let at = argv.iter().position(|a| a == "resume").unwrap();
+        assert_eq!(argv[at + 1], "thread-1");
+        assert!(!codex_phase_argv("codex", &l, None).contains(&"resume".to_string()));
     }
 
     #[test]
@@ -639,6 +657,7 @@ mod tests {
             step,
             provider: &provider,
             resume: None,
+            budget_usd: None,
             writes: true,
             start_sha,
             schema: crate::envelope::SCHEMA,

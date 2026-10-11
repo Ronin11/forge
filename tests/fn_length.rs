@@ -15,12 +15,6 @@ const ALLOWLIST: &[(&str, &str, usize, &str)] = &[
         "existing function awaiting a focused split",
     ),
     (
-        "src/agent/chat.rs",
-        "run_chat",
-        161,
-        "existing function awaiting a focused split",
-    ),
-    (
         "src/agent/codex.rs",
         "run_codex",
         202,

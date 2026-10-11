@@ -1,0 +1,99 @@
+# Adapter contract for the claude-cli runner (src/agent/claude.rs).
+# Read by the test suite (src/agent/contract.rs): the argv tests take their
+# always-flags from here and the golden transcript is replayed through the
+# real parser and held to [golden]. Change a flag in claude_argv and this
+# file together, or a test fails.
+
+runner = "claude-cli"
+kind = "cli"
+binary = "claude"
+parser = "claude::apply_claude_frame"
+transcript = "testdata/claude-cli/transcript.jsonl"
+synthetic = true
+provenance = "no real capture was available; shapes follow the stream-json frames the parser reads, values are invented"
+
+[[always]]
+args = ["--print"]
+why = "non-interactive: the prompt arrives on stdin and the run ends with its result frame"
+
+[[always]]
+args = ["--verbose"]
+why = "stream-json under --print is refused without it"
+
+[[always]]
+args = ["--output-format", "stream-json"]
+why = "one JSON frame per line, so tool calls and rate limits are seen as they happen"
+
+[[always]]
+args = ["--dangerously-skip-permissions"]
+why = "no human answers a prompt; the sandbox, not the CLI, is the boundary"
+
+[[always]]
+args = ["--strict-mcp-config"]
+why = "no MCP server the operator configured reaches an untrusted task"
+
+[[always]]
+args = ["--disable-slash-commands"]
+why = "no skills: about 16k tokens saved per turn and no operator tooling exposed"
+
+[[always]]
+args = ["--setting-sources", "project,local"]
+why = "the operator's user settings stay out; the repository's own may apply"
+
+[[always]]
+args = ["--exclude-dynamic-system-prompt-sections"]
+why = "keeps the prompt prefix stable so sessions reuse the cache"
+
+[[always]]
+args = ["--json-schema"]
+why = "the structured result every step is held to; the schema follows as one argument"
+
+[[always]]
+args = ["--tools"]
+why = "exactly the attempt tools, or empty for a bounded judgment (never --disallowedTools *)"
+
+[[always]]
+args = ["--model"]
+why = "the provider's model, always named"
+
+[[always]]
+args = ["--max-turns"]
+why = "the step's turn cap"
+
+[never]
+flags = ["--bare", "--disallowedTools"]
+why = "--bare refuses OAuth; --disallowedTools * also denies StructuredOutput so the run ends at error_max_turns"
+
+[events]
+init = "type=system: session_id"
+assistant = "type=assistant: message.content blocks, repeated once per content block"
+tool_use = "assistant content block type=tool_use: id (counted once), name, input"
+result = "type=result: is_error, subtype, num_turns, result, structured_output, total_cost_usd, session_id"
+usage = "result.usage: input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens; type=rate_limit_event: unifiedWindows five_hour/seven_day utilization and resetsAt"
+
+[session]
+found_in = "the system frame's session_id, then the result frame's"
+resume = "--resume <session_id>"
+
+[exit_codes]
+usage_limit = "not an exit code: a rate_limit_event with status rejected, or an is_error result whose text says rate limit"
+refusal = "not an exit code: an is_error result (or stderr) naming a failed login, read by refusal::login_failure"
+crash = "any non-zero exit with no result frame; the result frame is read whatever the exit status"
+limit = "result subtype error_max_turns is the turn cap, not a crash"
+
+[cannot]
+commits = "the stream never names commits; the engine counts them from git after the run"
+meters = "tokens and a dollar figure (total_cost_usd), repriced from tokens for non-Anthropic providers"
+
+[golden]
+session_id = "00000000-0000-4000-8000-000000000001"
+turns = 3
+tool_calls = 2
+cost_usd = 0.0842
+input_tokens = 12
+output_tokens = 310
+cache_read_input_tokens = 41200
+cache_creation_input_tokens = 5100
+five_hour_utilization = 0.42
+summary = "wrote the answer"
+changes = 1

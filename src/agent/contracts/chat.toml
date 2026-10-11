@@ -1,0 +1,51 @@
+# Adapter contract for the chat runner (src/agent/chat.rs).
+# See claude-cli.toml for how the test suite uses this file.
+
+runner = "chat"
+kind = "http"
+binary = "none"
+parser = "chat::read_response"
+transcript = "testdata/chat/transcript.jsonl"
+synthetic = true
+provenance = "no real capture was available; the OpenAI-compatible response shape with invented content and counts"
+schema = '{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}'
+price_input_per_million = 1.0
+price_output_per_million = 2.0
+
+[[always]]
+args = ["POST {base_url}/chat/completions"]
+why = "the whole step is one request to an OpenAI-compatible endpoint"
+
+[[always]]
+args = ["response_format=json_schema"]
+why = "asks the endpoint to hold the model to the schema; dropped on a non-2xx for a plain instruction"
+
+[events]
+init = "none: there is no stream and no session"
+assistant = "choices[0].message.content"
+tool_use = "none: the runner has no tools"
+result = "the content, trusted as structured only when it validates against the schema"
+usage = "usage.prompt_tokens, usage.completion_tokens"
+
+[session]
+found_in = "none: every call is a fresh one"
+resume = "none"
+
+[exit_codes]
+usage_limit = "none: a non-2xx on both requests is exit 1 with the status in stderr"
+refusal = "none"
+crash = "exit 1 when both requests fail, or when the provider has no base_url or key"
+
+[cannot]
+tools = "no tools of any kind"
+steps = "only a job's directive step; refused for a code step"
+session = "no session to resume"
+commits = "writes nothing: no worktree is touched"
+
+[golden]
+turns = 0
+tool_calls = 0
+input_tokens = 100
+output_tokens = 20
+cost_usd = 0.00014
+summary = "a bug in the parser"

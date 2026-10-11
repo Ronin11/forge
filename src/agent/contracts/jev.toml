@@ -1,0 +1,50 @@
+# Adapter contract for the jev runner (src/agent/jev.rs).
+# See claude-cli.toml for how the test suite uses this file.
+
+runner = "jev"
+kind = "http"
+binary = "none"
+parser = "jev::read_result"
+transcript = "testdata/jev/transcript.jsonl"
+synthetic = true
+provenance = "no real capture was available; TypeSafe's documented systemone body with invented answers and counts"
+price_input_per_million = 0.042
+
+[[always]]
+args = ["POST <endpoint>"]
+why = "one typed-judgment call, retried on 429/529 with backoff"
+
+[[always]]
+args = ["Authorization: Bearer <key>"]
+why = "TypeSafe and Cloudflare both take a bearer token"
+
+[events]
+init = "none: there is no stream and no session"
+assistant = "none: answers are typed, never text"
+tool_use = "none: jev has no tools"
+result = "answers: outcome is a choice question, read into the envelope's outcome, confidence, probabilities"
+usage = "usage.input_tokens, usage.output_tokens"
+
+[session]
+found_in = "none: every call is a fresh one"
+resume = "none"
+
+[exit_codes]
+usage_limit = "none: a 429 or 529 past every retry holds the provider like a spent window, exit 1"
+refusal = "none"
+crash = "exit 1 on any other failed call, or answers that are not an envelope"
+
+[cannot]
+tools = "jev has no tools"
+text = "never produces prose, only typed answers"
+steps = "only a directive step whose action declares outcomes"
+commits = "writes nothing: no worktree is touched"
+
+[golden]
+turns = 0
+tool_calls = 0
+input_tokens = 500
+output_tokens = 87
+cost_usd = 0.000021
+outcome = "reply"
+confidence = 0.91

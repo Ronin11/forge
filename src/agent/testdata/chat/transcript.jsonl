@@ -1,0 +1,2 @@
+{"type":"forge_fixture","synthetic":true,"runner":"chat","note":"SYNTHETIC: the OpenAI-compatible /chat/completions response shape (docs of the API) with invented content and counts; the chat runner never had a capture to redact."}
+{"type":"forge_chat_response","body":{"id":"chatcmpl-0","object":"chat.completion","model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"{\"summary\":\"a bug in the parser\"}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}}}

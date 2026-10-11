@@ -108,9 +108,10 @@ pub(super) async fn run_attempt_loop(
         let ts = per_step_task(f, t, step, role)?;
         // Would the next attempt cross the cap? A decision for a human,
         // not a failure: see `check_cap`.
-        if let Some(end) = check_cap(f, t, resolved, &run.done, task_cap, wt).await? {
+        if let Some(end) = check_cap(f, t, resolved, &run.done, task_cap, wt, false).await? {
             return Ok(Some(StepFlow::End(end)));
         }
+        let budget = remaining(f, t, task_cap)?;
         *run.used.entry(seq).or_insert(0) += 1;
         let n = run.used[&seq];
         *attempt_no += 1;
@@ -137,6 +138,7 @@ pub(super) async fn run_attempt_loop(
             attempt_no: *attempt_no,
             feedback: state.feedback.as_deref(),
             resume: state.resume.as_ref(),
+            budget_usd: Some(budget),
             cursor: Some(run.cursor(t, *attempt_no).after(*attempt_no)),
         })
         .await?;
@@ -154,6 +156,13 @@ pub(super) async fn run_attempt_loop(
             .as_ref()
             .and_then(|e| e.needs_input.as_ref())
             .and_then(|q| crate::envelope::addressee(q.to.as_deref()));
+        // The CLI stopped the run at what was left of the budget: the task
+        // is capped as `check_cap` caps it, not retried as a failed attempt.
+        if outcome.budget_hit
+            && let Some(end) = check_cap(f, t, resolved, &run.done, task_cap, wt, true).await?
+        {
+            return Ok(Some(StepFlow::End(end)));
+        }
         let flow = match bookkeeping::retry_after_attempt(args, state, &ts, &a, &verdict, &outcome)
             .await?
         {

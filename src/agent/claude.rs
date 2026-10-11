@@ -34,6 +34,23 @@ pub const ATTEMPT_TOOLS: &str = "Bash,Read,Edit,Write,Glob,Grep";
 /// real CLI). `--tools ""` disables every other built-in tool while leaving
 /// `StructuredOutput` (which is not itself a member of the built-in set)
 /// reachable.
+///
+/// `--max-budget-usd` is what is left of the task's budget (its cap less
+/// what earlier attempts spent; `engine::capped::remaining`), on every
+/// task attempt. The worker's own check before each attempt stays the
+/// authority; the CLI's cap only stops a run inside the turn that would
+/// overshoot. A run it stops ends with result subtype
+/// `error_max_budget_usd` (terminal reason `budget_exhausted`), read into
+/// `Outcome::budget_hit` and capped the way the worker caps
+/// (`engine::capped::check_cap`). Checked against claude 2.1.292
+/// (2026-10-10): `--help` lists the flag ("only works with --print") and
+/// a run given 0.0001 ended with that subtype and terminal reason.
+///
+/// `--no-session-persistence` is deliberately not passed. Every step's
+/// claude directory is private to the sandbox and removed with the
+/// worktree, so no session file reaches the operator's `~/.claude/projects`,
+/// and the continuation path needs the session for `--resume`. Checked on
+/// claude 2.1.292: with it, `--resume` fails with 'No conversation found'.
 pub(super) fn claude_argv(bin: &str, l: &Launch<'_>) -> Vec<String> {
     let mut argv = vec![
         bin.to_string(),
@@ -61,11 +78,94 @@ pub(super) fn claude_argv(bin: &str, l: &Launch<'_>) -> Vec<String> {
         },
     ];
     argv.extend(l.provider.extra_args.iter().cloned());
+    if let Some(usd) = l.budget_usd {
+        // Never 0: the worker only launches with something left.
+        argv.push("--max-budget-usd".to_string());
+        argv.push(format!("{:.4}", usd.max(0.0001)));
+    }
     if let Some(id) = l.resume {
         argv.push("--resume".to_string());
         argv.push(id.to_string());
     }
     argv
+}
+
+/// One parsed frame of the claude CLI's `stream-json` output folded into
+/// `out` and `watch`: an `assistant` frame's `tool_use` blocks are counted
+/// once per id (the CLI repeats a message once per content block) and each
+/// new one is handed to `on_tool`; `system` names the session; `result`
+/// is the answer; `rate_limit_event` carries the window samples and a
+/// rejection. Returns the early-ending text when enough signals tripped.
+/// The side effects that need the log or the reporter are the caller's.
+pub(super) fn apply_claude_frame(
+    v: &Value,
+    out: &mut Outcome,
+    seen_tools: &mut HashSet<String>,
+    watch: &mut Watch,
+    writes: bool,
+    on_tool: &mut dyn FnMut(&str),
+) -> Option<String> {
+    match v["type"].as_str() {
+        Some("assistant") => {
+            if let Some(blocks) = v["message"]["content"].as_array() {
+                for b in blocks {
+                    if b["type"] == "tool_use" {
+                        let id = b["id"].as_str().unwrap_or("").to_string();
+                        if seen_tools.insert(id) {
+                            out.tool_calls += 1;
+                            let name = b["name"].as_str().unwrap_or("?");
+                            on_tool(name);
+                            watch.saw(name, &b["input"]);
+                        }
+                    }
+                }
+            }
+            if let Some(tripped) = watch.should_end(writes) {
+                return Some(
+                    tripped
+                        .iter()
+                        .map(|(_, w)| w.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                );
+            }
+        }
+        Some("system") => {
+            if let Some(id) = v["session_id"].as_str() {
+                out.session_id = Some(id.to_string());
+            }
+        }
+        Some("result") => apply_claude_result(out, v),
+        Some("rate_limit_event") => {
+            let w = &v["rate_limit_info"]["unifiedWindows"];
+            let read = |name: &str| {
+                let win = &w[name];
+                Some((
+                    win["utilization"].as_f64()?,
+                    win["resetsAt"].as_i64().unwrap_or(0),
+                ))
+            };
+            if let Some(s) = read("five_hour") {
+                out.rate_limits.five_hour = Some(s);
+            }
+            if let Some(s) = read("seven_day") {
+                out.rate_limits.seven_day = Some(s);
+            }
+            // A refused run: hold the shorter window until the reset
+            // the provider named (or five minutes), whichever the
+            // sample does not already say.
+            if v["rate_limit_info"]["status"].as_str() == Some("rejected") {
+                out.rate_limited = true;
+                let resets = v["rate_limit_info"]["resetsAt"]
+                    .as_i64()
+                    .unwrap_or_else(|| crate::unix_now() + 300);
+                let (u, r) = out.rate_limits.five_hour.unwrap_or((1.0, resets));
+                out.rate_limits.five_hour = Some((u.max(1.0), if r > 0 { r } else { resets }));
+            }
+        }
+        _ => {}
+    }
+    None
 }
 
 /// Read the CLI result independently of the process exit status.
@@ -78,6 +178,8 @@ pub(super) fn apply_claude_result(out: &mut Outcome, v: &Value) {
     out.subtype = v["subtype"].as_str().map(str::to_string);
     out.terminal_reason = v["terminal_reason"].as_str().map(str::to_string);
     out.max_turns_hit = v["subtype"].as_str() == Some("error_max_turns");
+    out.budget_hit = v["subtype"].as_str() == Some("error_max_budget_usd")
+        || v["terminal_reason"].as_str() == Some("budget_exhausted");
     refusal::read_claude_error(out, v);
     out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
     out.cost_usd = v["total_cost_usd"].as_f64();
@@ -141,6 +243,7 @@ pub(super) async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::contract;
     use super::super::tests::test_launch;
     use super::*;
 
@@ -244,26 +347,9 @@ mod tests {
             );
             l.step = step;
             let argv = claude_argv("claude", &l);
-            for flag in [
-                "--strict-mcp-config",
-                "--disable-slash-commands",
-                "--exclude-dynamic-system-prompt-sections",
-            ] {
-                assert!(
-                    argv.iter().any(|a| a == flag),
-                    "{step}: {flag} missing: {argv:?}"
-                );
-            }
-            let at = argv.iter().position(|a| a == "--setting-sources").unwrap();
-            assert_eq!(argv[at + 1], "project,local", "{step}: {argv:?}");
-            assert!(
-                !argv.iter().any(|a| a == "--bare"),
-                "{step}: --bare refuses OAuth"
-            );
-            assert!(
-                argv.iter().any(|a| a == "--json-schema"),
-                "{step}: {argv:?}"
-            );
+            // The lean flags, --json-schema and the never-flags (--bare
+            // refuses OAuth) are the contract's own list.
+            contract::assert_always(Runner::ClaudeCli, &argv);
         }
     }
 
@@ -285,11 +371,78 @@ mod tests {
         );
         let argv = claude_argv("claude", &l);
         assert_eq!(argv[0], "claude");
+        contract::assert_always(Runner::ClaudeCli, &argv);
         let schema_at = argv.iter().position(|a| a == "--json-schema").unwrap();
         assert_eq!(argv[schema_at + 1], schema);
         let model_at = argv.iter().position(|a| a == "--model").unwrap();
         assert_eq!(argv[model_at + 1], "sonnet");
         let resume_at = argv.iter().position(|a| a == "--resume").unwrap();
         assert_eq!(argv[resume_at + 1], "sess-1");
+    }
+
+    #[test]
+    fn claude_argv_caps_the_run_at_the_budget_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = Reporter::new(false, None);
+        let provider = Provider::default();
+        let log_path = dir.path().join("log.jsonl");
+        let mut l = test_launch(dir.path(), &report, &provider, &log_path, "{}", false, None);
+        assert!(
+            !claude_argv("claude", &l)
+                .iter()
+                .any(|a| a == "--max-budget-usd")
+        );
+        // A $5 cap with $1.25 spent by earlier attempts.
+        l.budget_usd = Some(5.0 - 1.25);
+        let argv = claude_argv("claude", &l);
+        let at = argv.iter().position(|a| a == "--max-budget-usd").unwrap();
+        assert_eq!(argv[at + 1], "3.7500", "{argv:?}");
+    }
+
+    #[test]
+    fn claude_argv_keeps_the_session_so_resume_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = Reporter::new(false, None);
+        let provider = Provider::default();
+        let log_path = dir.path().join("log.jsonl");
+        let mut l = test_launch(dir.path(), &report, &provider, &log_path, "{}", false, None);
+        l.resume = Some("sess-1");
+        let argv = claude_argv("claude", &l);
+        assert!(
+            !argv.iter().any(|a| a == "--no-session-persistence"),
+            "{argv:?}"
+        );
+        assert!(argv.iter().any(|a| a == "--resume"), "{argv:?}");
+    }
+
+    /// The result frame of a run the CLI stopped at `--max-budget-usd`,
+    /// as claude 2.1.292 wrote it.
+    #[test]
+    fn a_run_stopped_at_its_budget_is_read_as_capped_not_crashed() {
+        let frame = serde_json::json!({
+            "type": "result",
+            "is_error": true,
+            "subtype": "error_max_budget_usd",
+            "terminal_reason": "budget_exhausted",
+            "errors": ["Reached maximum budget ($0.0001)"],
+            "num_turns": 1,
+            "total_cost_usd": 0.0231688
+        });
+        let mut out = Outcome {
+            exit_code: Some(1),
+            ..Default::default()
+        };
+        apply_claude_result(&mut out, &frame);
+        assert!(out.budget_hit && !out.max_turns_hit);
+        assert_eq!(
+            crate::directive::failure(&out),
+            Some(crate::directive::Failure::BudgetCapped)
+        );
+        let mut done = Outcome::default();
+        apply_claude_result(
+            &mut done,
+            &serde_json::json!({"type": "result", "subtype": "success"}),
+        );
+        assert!(!done.budget_hit);
     }
 }

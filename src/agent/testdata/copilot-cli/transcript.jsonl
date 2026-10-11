@@ -1,0 +1,11 @@
+{"type":"forge_fixture","synthetic":true,"runner":"copilot-cli","note":"SYNTHETIC: frame shapes follow `copilot --output-format json` 1.0.88 as recorded in the copilot.rs tests; session id, paths, prose and numbers are invented. Both phases are in one stream."}
+{"type":"assistant.message","data":{"content":"","toolRequests":[{"toolCallId":"call_0","name":"bash","arguments":{"command":"echo 42 > answer.txt"}}]}}
+{"type":"tool.execution_start","data":{"toolCallId":"call_0","toolName":"bash","arguments":{"command":"echo 42 > answer.txt"}}}
+{"type":"tool.execution_complete","data":{"toolCallId":"call_0","success":true}}
+{"type":"model.call_finished","data":{"turnId":"0"}}
+{"type":"assistant.message","data":{"content":"wrote 42 to answer.txt","toolRequests":[]}}
+{"type":"model.call_finished","data":{"turnId":"1"}}
+{"type":"result","sessionId":"00000000-0000-4000-8000-000000000003","exitCode":0,"usage":{"premiumRequests":1}}
+{"type":"assistant.message","data":{"content":"{\"schema_version\":1,\"summary\":\"wrote 42\",\"needs_input\":null,\"changes\":[{\"path\":\"answer.txt\",\"kind\":\"added\"}],\"checks_run\":[],\"claims\":[]}","toolRequests":[]}}
+{"type":"model.call_finished","data":{"turnId":"2"}}
+{"type":"result","sessionId":"00000000-0000-4000-8000-000000000003","exitCode":0,"usage":{"premiumRequests":1}}

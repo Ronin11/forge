@@ -53,6 +53,38 @@ pub(crate) fn truncated_first_line(text: &str) -> String {
     first.chars().take(300).collect()
 }
 
+/// A 2xx `/chat/completions` body folded into `out`: the token counts and
+/// their cost at the provider's prices, and the first choice's content,
+/// trusted as `structured` only when it validates against `schema`.
+pub(super) fn read_response(
+    out: &mut Outcome,
+    provider: &Provider,
+    resp_json: &Value,
+    schema: &Value,
+) {
+    out.exit_code = Some(0);
+    out.got_result = true;
+    let usage = &resp_json["usage"];
+    out.input_tokens = usage["prompt_tokens"].as_i64();
+    out.output_tokens = usage["completion_tokens"].as_i64();
+    if let (Some(i), Some(o)) = (out.input_tokens, out.output_tokens) {
+        out.cost_usd = Some(
+            i as f64 * provider.price_input_per_million / 1_000_000.0
+                + o as f64 * provider.price_output_per_million / 1_000_000.0,
+        );
+    }
+    let content = resp_json["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    out.result_text = content.clone();
+    if let Ok(instance) = serde_json::from_str::<Value>(&content)
+        && jsonschema::validate(schema, &instance).is_ok()
+    {
+        out.structured = Some(content);
+    }
+}
+
 /// A job's directive step (docs/JOBS.md, "Steps") run with no agent CLI at
 /// all: one chat completion against the provider's OpenAI-compatible
 /// endpoint is the whole step. `run` refuses this runner for anything but
@@ -182,27 +214,7 @@ pub(super) async fn run_chat(l: Launch<'_>) -> Result<Outcome> {
         "{{\"type\":\"forge_chat_response\",\"body\":{resp_json}}}"
     )?;
 
-    out.exit_code = Some(0);
-    out.got_result = true;
-    let usage = &resp_json["usage"];
-    out.input_tokens = usage["prompt_tokens"].as_i64();
-    out.output_tokens = usage["completion_tokens"].as_i64();
-    if let (Some(i), Some(o)) = (out.input_tokens, out.output_tokens) {
-        out.cost_usd = Some(
-            i as f64 * l.provider.price_input_per_million / 1_000_000.0
-                + o as f64 * l.provider.price_output_per_million / 1_000_000.0,
-        );
-    }
-    let content = resp_json["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
-    out.result_text = content.clone();
-    if let Ok(instance) = serde_json::from_str::<Value>(&content)
-        && jsonschema::validate(&schema_value, &instance).is_ok()
-    {
-        out.structured = Some(content);
-    }
+    read_response(&mut out, l.provider, &resp_json, &schema_value);
     out.wall_ms = start.elapsed().as_millis();
     Ok(out)
 }
@@ -314,6 +326,7 @@ mod tests {
             step: "extract",
             provider,
             resume: None,
+            budget_usd: None,
             start_sha: "",
             writes: false,
             schema,

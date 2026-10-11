@@ -1325,6 +1325,7 @@ the built-in `anthropic`, which needs no entry.
 |---|---|---|
 | `name` | string | The provider's name, as `--provider NAME` and `[providers.<name>]` name it. |
 | `runner` | string | `claude-cli`, `codex-cli`, `copilot-cli`, `chat`, or `jev`. |
+| `contract` | string | The runner's adapter contract in the Forge source tree (`src/agent/contracts/<runner>.toml`): its always-passed flags, event shapes, session ids, exit codes and what it cannot do, held to the parser by the test suite. |
 | `model` | string or null | The model this provider runs when a task or its workflow step names none; `null` leaves it to the runner's own default. |
 | `base_url` | string or null | Set for `runner = "chat"` and an OpenAI-compatible endpoint that isn't the default; for `runner = "jev"`, TypeSafe's endpoint (default `https://api.typesafe.ai/v1/systemone`). |
 | `api_key_env` | string or null | The environment variable holding the provider's API key; never the key itself. A `jev` provider's defaults to `TYPESAFE_API_KEY`. |
