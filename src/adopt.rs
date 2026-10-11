@@ -225,10 +225,11 @@ pub async fn adopt(f: &Forge, req: &AdoptRequest) -> Result<Adopted> {
         priority,
         ..Default::default()
     };
-    t.id = f.store.insert_task(&t)?;
-    // Stamped with this process, so a wait that dies blocks the task
-    // (`Store::orphans`) rather than leaving it queued for no one.
-    f.store.stamp_adopter(t.id, i64::from(std::process::id()))?;
+    // Owned by this process from the insert, so a wait that dies blocks
+    // the task (`Store::orphans`) rather than leaving it queued for no one.
+    t.id = f
+        .store
+        .insert_adopted_waiting(&t, i64::from(std::process::id()))?;
     // Queued until a slot of its project is free: no worker ever claims
     // an adopted task (`Store::queued_unblocked`), but this claim counts
     // against the same slots a worker's does, so a worker will not claim
