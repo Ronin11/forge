@@ -321,6 +321,22 @@ fn a_conflict_the_budget_cannot_cover_fails_the_task_and_pushes_the_verified_bra
     assert!(reason.contains("the task budget is spent"), "{reason}");
     assert!(pushed, "the verified branch is not lost");
     let id = if states[0].0 == "failed" { 1 } else { 2 };
+    // The terminal message names the command that works, with real values:
+    // the task stays failed, which `forge land` refuses.
+    let branch: String = e
+        .db()
+        .query_row("SELECT branch FROM tasks WHERE id=?1", [id], |r| r.get(0))
+        .unwrap();
+    let want = format!("forge adopt {} {}", e.repo.display(), branch);
+    assert!(reason.contains(&want), "{reason}");
+    assert!(!reason.contains("for a human"), "{reason}");
+    let o = e.forge("ok.sh", &["land", &id.to_string()]);
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("only a verified task lands"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     let o = e.forge("ok.sh", &["show", &id.to_string()]);
     assert!(String::from_utf8_lossy(&o.stdout).contains("The branch is pushed"));
 }
