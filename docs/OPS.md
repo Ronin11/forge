@@ -81,7 +81,7 @@ failure.
 
 ## What reaches you unasked
 
-Three things reach the operator without anyone asking, each as an
+Four things reach the operator without anyone asking, each as an
 `operator_alert` event (audience `person`) that every channel plugin
 (notify, signal) carries, and each recorded in the alerts table so a
 standing condition is not repeated by the next run:
