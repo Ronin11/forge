@@ -4,6 +4,7 @@
 //! as feedback, pushes on success, and records every attempt. `forge add`
 //! queues the same thing and `forge work` drains the queue.
 
+mod admission;
 mod adopt;
 mod agent;
 #[cfg(test)]

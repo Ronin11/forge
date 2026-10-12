@@ -3,6 +3,7 @@
 //! the trusted base commit so the branch under test cannot change what it
 //! is verified against. `<FORGE_HOME>/config.toml` is the operator's.
 
+mod admission;
 pub(crate) mod capacity;
 mod home;
 mod measure;
@@ -11,6 +12,7 @@ mod repo;
 mod resilience;
 mod trust;
 
+pub use admission::Admission;
 #[allow(unused_imports)] // HomeConfig is named directly only by secrets.rs's tests
 pub use home::{
     Budget, EarlyEnding, HomeConfig, Intake, SandboxLimits, SandboxPaths, Supervisor,

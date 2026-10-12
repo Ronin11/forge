@@ -1140,8 +1140,15 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     eprintln!("{line}");
                 }
                 if let Some(t) = claim::task(&f, &opts, pid, &held, |t| {
-                    provider_is_held(&f, t) || intake_is_held(&f, t)
+                    provider_is_held(&f, t)
+                        || intake_is_held(&f, t)
+                        || crate::admission::capped(&f, t)
                 })? {
+                    // Jev admits (or blocks) the task it has just been
+                    // handed, once; a blocked one is nobody's to start.
+                    let Some(t) = crate::admission::at_claim(&f, t).await? else {
+                        continue;
+                    };
                     hold_until = None;
                     claimed += 1;
                     eprintln!(

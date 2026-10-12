@@ -292,7 +292,9 @@ Worth stating so the gap list is not read as a deficit list.
    dead-man on the worker and supervisor units (2.1). This is the
    audit's pass two with a known shape.
 2. Jev admission and the judgment band at claim (2.2). Forge has every
-   part already; it is two questions and a cap.
+   part already; it is two questions and a cap. **Built:** `admission`
+   and `[admission]` (docs/EXECUTION.md, "Admission and the judgment
+   band"). The band is recorded, not routed on.
 3. Cache-hit ratio as a doctor row and a hold, and a cold-forecast
    input to `continuation=fresh` (2.3). **Built 2026-10-11:** the
    `prompt_cache` doctor watch (docs/OPS.md, row 10) and `[cache]`

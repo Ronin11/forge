@@ -281,6 +281,8 @@ const TASK_COLUMNS: &[&str] = &[
     "priority",
     "supersedes",
     "early_ending",
+    "band",
+    "band_p",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -387,6 +389,8 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         priority: r.get("priority")?,
         supersedes: r.get("supersedes")?,
         early_ending: r.get("early_ending")?,
+        band: r.get("band")?,
+        band_p: r.get("band_p")?,
     })
 }
 

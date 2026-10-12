@@ -909,6 +909,13 @@ CREATE TABLE doctor_samples (
 ALTER TABLE workers ADD COLUMN restarts INTEGER;
 ALTER TABLE workers ADD COLUMN exit_reason TEXT NOT NULL DEFAULT '';
 ",
+    // The judgment band Jev put a task in when a worker claimed it
+    // (`admission`, docs/EXECUTION.md): `judgment` or `mechanical`, and
+    // the probability of that label. Empty and NULL when never asked.
+    "
+ALTER TABLE tasks ADD COLUMN band TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN band_p REAL;
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

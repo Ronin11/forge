@@ -214,6 +214,12 @@ pub struct Task {
     /// `max_turns` is; `None` means the operator's `[early_ending]` config
     /// applies.
     pub early_ending: Option<String>,
+    /// The judgment band Jev put the task in when a worker claimed it,
+    /// `"judgment"` or `"mechanical"`, and the probability of that label
+    /// (`admission::at_claim`). Empty and `None` when it was never asked.
+    /// Recorded only; nothing routes on it.
+    pub band: String,
+    pub band_p: Option<f64>,
     /// Show the agents the journal of earlier attempts (the default);
     /// false for the control arm of a measurement.
     pub journal: bool,
@@ -644,6 +650,15 @@ impl Store {
             }
         }
         Ok(None)
+    }
+
+    /// Record the judgment band of a task (see `Task::band`).
+    pub fn set_band(&self, id: i64, band: &str, p: f64) -> Result<()> {
+        self.lock().retry_execute(
+            "UPDATE tasks SET band=?2, band_p=?3 WHERE id=?1",
+            params![id, band, p],
+        )?;
+        Ok(())
     }
 
     /// Atomically take one specific queued task.

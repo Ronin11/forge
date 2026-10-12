@@ -32,6 +32,8 @@ struct HomeRaw {
     infra: super::resilience::InfraRaw,
     #[serde(default)]
     mechanic: super::resilience::MechanicRaw,
+    #[serde(default)]
+    admission: super::admission::AdmissionRaw,
     /// Extra roots to discover plugins under, beyond `<FORGE_HOME>/plugins`
     /// (see `src/plugins.rs`). `~` expands; a relative path resolves against
     /// this config file's own directory (`<FORGE_HOME>`).
@@ -215,6 +217,8 @@ pub struct HomeConfig {
     pub cache: super::resilience::Cache,
     pub infra: super::resilience::Infra,
     pub mechanic: super::resilience::Mechanic,
+    /// `[admission]`: see `config::admission`.
+    pub admission: super::admission::Admission,
     /// Extra plugin roots, in the order given, resolved to absolute paths.
     pub plugin_dirs: Vec<PathBuf>,
     pub measure: Measure,
@@ -383,6 +387,22 @@ limit = 3
 strong_lane = true
 strong_model = \"opus\"
 strong_per_day = 10
+
+[admission]
+# When a worker is about to claim a task, Jev is asked once whether it is
+# fit for an automated worker (tasks filed at contact or public trust
+# only; yours are admitted as they are) and which judgment band it is in
+# (recorded, routes nothing). Off when no jev provider is configured.
+# `threshold` is the probability of yes that admits; under it the task
+# blocks with a question for you. `exclude` is a list of regexes over the
+# task text that block it outright without asking Jev; the default list is
+# secrets, money and customer-data deletion, and yours replaces it.
+# `per_day` caps admissions in a rolling day, counted from decision rows.
+# enabled = true
+# provider = \"jev\"
+# threshold = 0.9
+# per_day = 10
+# exclude = [\"(?i)\\\\bsecrets?\\\\b\"]
 
 [measure]
 # Fixed fraction of tasks assigned to the journal's control arm (run with
@@ -675,6 +695,7 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
         cache: super::resilience::build_cache(raw.cache),
         infra: super::resilience::build_infra(raw.infra),
         mechanic: super::resilience::build_mechanic(raw.mechanic),
+        admission: super::admission::build(raw.admission)?,
         plugin_dirs: raw
             .plugin_dirs
             .iter()
@@ -872,6 +893,7 @@ mod tests {
         assert_eq!(from_template.cache, from_defaults.cache);
         assert_eq!(from_template.infra, from_defaults.infra);
         assert_eq!(from_template.mechanic, from_defaults.mechanic);
+        assert_eq!(from_template.admission, from_defaults.admission);
     }
 
     #[test]

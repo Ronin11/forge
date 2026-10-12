@@ -256,6 +256,51 @@ but a job's directive step whose action declares outcomes; the step's
 `schema` is not what it answers against, the outcomes are. It runs on the
 host, never in a sandbox, so it adds no rule to the egress allowlist.
 
+### Admission and the judgment band
+
+Jev also stands at the claim (docs/research/06-one-person-factories.md,
+2.2). When a worker has just claimed a task it asks Jev, once and in one
+request, up to two questions. Only a `jev` provider answers (never a
+claude lane); with none configured, or `[admission] enabled = false`, the
+whole step is off.
+
+```toml
+[admission]
+# enabled = true
+# provider = "jev"      # else the first jev provider by name
+# threshold = 0.9
+# per_day = 10
+# exclude = ["(?i)\\bsecrets?\\b"]   # replaces the default list
+```
+
+1. **Admission**, for tasks filed at `contact` or `public` trust; an
+   operator-filed task is admitted as it is. The question is: "Admit this
+   task for an automated worker now? Yes only if the described change is
+   concrete, scoped to this repository, with a clear way to tell it is
+   done, that a coding worker can finish without asking anyone anything
+   and without a product, pricing, legal, security or customer-data
+   decision." A probability of `yes` of `threshold` or more admits.
+   Otherwise the task blocks with a question for the operator (answered
+   like any other, `forge answer`) that quotes the probability and the
+   gap Jev named (`vague`, `scope`, `done`, `decision`, `question`).
+   Task text matching an `exclude` regex (default: secrets, money,
+   customer-data deletion) skips Jev and blocks outright. At most
+   `per_day` tasks are admitted in a rolling 24 hours, counted from the
+   `admission-admit` decision rows, so a re-run cannot over-admit; a task
+   over the cap stays queued until the day rolls on. A Jev error admits
+   an operator task and parks any other (`admission-park`). Each outcome
+   is a decision row (`admission-admit`, `-block`, `-exclude`, `-park`);
+   the task is asked once, and an answered block retries as a task on the
+   same lineage, which is not asked again.
+2. **The band**, asked of every claimed task: one choice, `judgment`
+   versus `mechanical`. It is recorded as `band` and `band_p` (the
+   probability of that label) on the task and as a `band` decision row,
+   shown by `forge show`, for `forge stats` and the economist's
+   experiment arms to take as a feature. Nothing routes on it.
+
+Cost is the usage tokens at the provider's price, not yet recorded against
+the task; the request is on no log.
+
 ### Measuring it: `forge eval jev`
 
 Before anything routes through Jev, `forge eval jev --provider jev` scores it against
