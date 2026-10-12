@@ -60,6 +60,11 @@ pub struct Inputs {
     /// attempt continued a capped one.
     #[serde(default)]
     pub continuation: Option<String>,
+    /// What Forge forecast for the previous session's prompt cache when
+    /// it decided this continuation (`warm` or `cold`, see
+    /// `handoff::cache_cold`); only on a continuation.
+    #[serde(default)]
+    pub cache_forecast: Option<String>,
     /// The journal the agent was shown: every earlier attempt in this piece
     /// of work, what it said it did, and what the kernel found. Verbatim.
     #[serde(default)]

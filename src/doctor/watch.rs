@@ -12,6 +12,7 @@ use crate::ctx::Paths;
 use crate::store::{Mark, Store};
 use std::path::Path;
 
+mod cache;
 mod egress;
 mod environmental;
 pub mod heartbeat;
@@ -44,6 +45,7 @@ const WATCHES: &[&str] = &[
     "egress_refusals",
     "jobs_stale",
     "land_rate",
+    "prompt_cache",
 ];
 
 /// `text`'s first `n` characters on one line, with `…` when cut.
@@ -65,6 +67,11 @@ pub(super) fn run(paths: &Paths, store: &Store, now: i64) -> Vec<Check> {
         |c| c.worker.worktrees_warn_gb,
     );
     let enabled = store.enabled_plugins().unwrap_or_default();
+    let warn_below = cfg
+        .as_ref()
+        .map_or_else(crate::config::Cache::default_warn_below, |c| {
+            c.cache.warn_below
+        });
     let providers = cfg.map(|c| c.providers).unwrap_or_default();
     let mut rows = vec![
         supervisor::watch(store, now),
@@ -77,6 +84,7 @@ pub(super) fn run(paths: &Paths, store: &Store, now: i64) -> Vec<Check> {
     rows.extend(egress::watch(store, &providers, now));
     rows.push(jobs::watch(store, now));
     rows.push(land::watch(store, now));
+    rows.push(cache::watch(store, now, warn_below));
     trip(store, &paths.home.join("events.jsonl"), &rows, now);
     let _ = store.set_doctor_mark(
         LAST_RUN,

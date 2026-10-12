@@ -256,6 +256,7 @@ mod tests {
                 session: "session".into(),
                 start_sha: "base".into(),
                 fresh_from: None,
+                cold: false,
             }),
             ..Default::default()
         };

@@ -26,6 +26,8 @@ struct HomeRaw {
     supervisor: SupervisorRaw,
     #[serde(default)]
     early_ending: EarlyEndingRaw,
+    #[serde(default)]
+    cache: super::resilience::CacheRaw,
     /// Extra roots to discover plugins under, beyond `<FORGE_HOME>/plugins`
     /// (see `src/plugins.rs`). `~` expands; a relative path resolves against
     /// this config file's own directory (`<FORGE_HOME>`).
@@ -205,6 +207,8 @@ pub struct HomeConfig {
     pub sandbox: SandboxPaths,
     pub supervisor: Supervisor,
     pub early_ending: EarlyEnding,
+    /// `[cache]`: see `config::resilience`.
+    pub cache: super::resilience::Cache,
     /// Extra plugin roots, in the order given, resolved to absolute paths.
     pub plugin_dirs: Vec<PathBuf>,
     pub measure: Measure,
@@ -340,6 +344,18 @@ no_edit_calls = 30
 edits_without_commit = 15
 repeats = 5
 signals_to_end = 2
+
+[cache]
+# The provider's prompt cache as Forge assumes it: a cached prefix lives
+# this long after its last use, so a session continued later than this
+# re-reads its whole context at full price. On the `fresh` continuation
+# arm a cold session hands off past `cold_context_tokens` of context
+# instead of the warm threshold (120k). `forge doctor`'s prompt_cache row
+# warns when a claude provider read less than `warn_below` of its prompt
+# tokens from the cache over the last 24h.
+ttl_secs = 300
+cold_context_tokens = 60000
+warn_below = 0.5
 
 [measure]
 # Fixed fraction of tasks assigned to the journal's control arm (run with
@@ -629,6 +645,7 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
             repeats: raw.early_ending.repeats.unwrap_or(5),
             signals_to_end: raw.early_ending.signals_to_end.unwrap_or(2),
         },
+        cache: super::resilience::build_cache(raw.cache),
         plugin_dirs: raw
             .plugin_dirs
             .iter()
@@ -823,6 +840,20 @@ mod tests {
             from_defaults.early_ending.signals_to_end
         );
         assert_eq!(from_template.trust, from_defaults.trust);
+        assert_eq!(from_template.cache, from_defaults.cache);
+    }
+
+    #[test]
+    fn cache_overrides_from_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[cache]\nttl_secs = 3600\n[infra]\nlimit = 1",
+        )
+        .unwrap();
+        let c = load_home(dir.path()).unwrap();
+        assert_eq!(c.cache.ttl_secs, 3600);
+        assert_eq!(c.cache.warn_below, 0.5);
     }
 
     #[test]

@@ -84,6 +84,11 @@ pub struct Resume {
     /// log, from which a handoff is built for a new session. `None` resumes
     /// the session.
     pub fresh_from: Option<PathBuf>,
+    /// The cache forecast when this continuation was decided: `true` when
+    /// the previous session's prefix had outlived `[cache] ttl_secs`, so
+    /// resuming would re-read the whole context at the input price
+    /// (`handoff::cache_cold`). Recorded as `Inputs::cache_forecast`.
+    pub cold: bool,
 }
 
 /// What one contract's attempt differs in.
@@ -288,6 +293,7 @@ async fn build_spec(
             }
             .to_string()
         }),
+        cache_forecast: resume.map(|r| if r.cold { "cold" } else { "warm" }.to_string()),
         journal: journal.clone(),
         context: context.clone(),
         ..Default::default()

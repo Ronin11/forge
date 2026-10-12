@@ -139,6 +139,7 @@ again is. The notify plugin passes it to its command as `doctor <check>
 | 7 | `egress_model` / `egress_refusals` | the hosts the proxy refused each attempt in the last 24h (`refused` on its outputs) | a configured provider's own model host (`egress::provider_rules`) was refused: ERROR. Every other host is counted per host per day on one OK line, never one line per connection | ERROR / OK |
 | 8 | `jobs_stale` | `jobs`, `job_resolutions` | a job `needs_human` or `failed` for more than 48h, not answered and not followed by an `ok` run of the same workflow; names the job and its failing check, and a check whose process printed nothing as `tool produced nothing` | WARN |
 | 9 | `land_rate` | finished agent tasks per project | a project finished at least 5 tasks in 7 days and landed none; the row (and `forge stats`) shows every project's land rate over 7 and 30 days | WARN |
+| 10 | `prompt_cache` | the token counts of counted attempts in the last 24h, per provider (`input_tokens` and the two cache columns) | a claude provider with at least 3 attempts and 200k prompt tokens read less than `[cache] warn_below` (default 50%) of them from the cache; the OK line shows every claude provider's read, written and uncached shares. Codex folds cache reads into input and is not judged | WARN |
 
 `forge stats` marks `step = integrate` rows with `*`, failure-only: one
 is written only when a merge's checks fail, so it measures nothing about
