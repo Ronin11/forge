@@ -156,11 +156,14 @@ async fn sync_one(f: &Forge, row: &Check, now: i64, opened: &mut Vec<i64>) -> Re
     if !is_work(row) {
         return Ok(());
     }
-    if let Some(m) = standing {
-        if now - m.at < RECHECK_SECS {
+    if let Some(m) = &mark {
+        let task: i64 = m.detail.parse().unwrap_or(0);
+        // An open mark is looked at only every six hours; a handled mark
+        // whose task is still open (capped or running tasks are not
+        // withdrawn) is taken back rather than filed again.
+        if m.status == "open" && now - m.at < RECHECK_SECS {
             return Ok(());
         }
-        let task: i64 = m.detail.parse().unwrap_or(0);
         if f.store.task(task)?.is_some_and(|t| is_open(t.state)) {
             return remember(f, &row.name, "open", task, now);
         }

@@ -187,6 +187,28 @@ async fn a_watch_going_ok_marks_the_key_handled_and_a_new_trip_opens_again() {
 }
 
 #[tokio::test]
+async fn a_handled_key_whose_capped_task_is_still_open_is_reopened_not_refiled() {
+    let (_d, f) = fixture();
+    let bad = vec![check("jobs_stale", Status::Warn, "job 1", "fix")];
+    let ok = vec![check("jobs_stale", Status::Ok, "fine", "")];
+    let first = sync(&f, &bad, NOW).await.unwrap()[0];
+    close(&f, first, "capped");
+    sync(&f, &ok, NOW + 60).await.unwrap();
+    let m = f.store.doctor_mark("alert.jobs_stale").unwrap().unwrap();
+    assert_eq!(m.status, "handled");
+    assert_eq!(
+        f.store.task(first).unwrap().unwrap().state,
+        TaskState::Capped
+    );
+    let again = sync(&f, &bad, NOW + 120).await.unwrap();
+    assert!(again.is_empty());
+    let m = f.store.doctor_mark("alert.jobs_stale").unwrap().unwrap();
+    assert_eq!(m.status, "open");
+    assert_eq!(m.detail, first.to_string());
+    assert_eq!(alert_decisions(&f, "jobs_stale"), 1);
+}
+
+#[tokio::test]
 async fn the_worker_tick_runs_the_watches_and_leaves_the_last_run_mark_alone() {
     let (_d, f) = fixture();
     let opened = tick(&f).await.unwrap();
