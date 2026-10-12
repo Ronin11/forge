@@ -28,6 +28,8 @@ struct HomeRaw {
     early_ending: EarlyEndingRaw,
     #[serde(default)]
     cache: super::resilience::CacheRaw,
+    #[serde(default)]
+    infra: super::resilience::InfraRaw,
     /// Extra roots to discover plugins under, beyond `<FORGE_HOME>/plugins`
     /// (see `src/plugins.rs`). `~` expands; a relative path resolves against
     /// this config file's own directory (`<FORGE_HOME>`).
@@ -207,8 +209,9 @@ pub struct HomeConfig {
     pub sandbox: SandboxPaths,
     pub supervisor: Supervisor,
     pub early_ending: EarlyEnding,
-    /// `[cache]`: see `config::resilience`.
+    /// `[cache]`, `[infra]`: see `config::resilience`.
     pub cache: super::resilience::Cache,
+    pub infra: super::resilience::Infra,
     /// Extra plugin roots, in the order given, resolved to absolute paths.
     pub plugin_dirs: Vec<PathBuf>,
     pub measure: Measure,
@@ -356,6 +359,17 @@ signals_to_end = 2
 ttl_secs = 300
 cold_context_tokens = 60000
 warn_below = 0.5
+
+[infra]
+# A dead attempt that was the host's or the provider's fault does not
+# count against the task: timed out while the host carried more than
+# `load_per_core` or swapped more than `swap_gb` GiB, or ended with no
+# result inside `router_secs` on a provider or network error. `limit` in
+# a row fails the task uncounted rather than looping on a dead host.
+load_per_core = 5.0
+swap_gb = 4.0
+router_secs = 600
+limit = 3
 
 [measure]
 # Fixed fraction of tasks assigned to the journal's control arm (run with
@@ -646,6 +660,7 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
             signals_to_end: raw.early_ending.signals_to_end.unwrap_or(2),
         },
         cache: super::resilience::build_cache(raw.cache),
+        infra: super::resilience::build_infra(raw.infra),
         plugin_dirs: raw
             .plugin_dirs
             .iter()
@@ -841,10 +856,11 @@ mod tests {
         );
         assert_eq!(from_template.trust, from_defaults.trust);
         assert_eq!(from_template.cache, from_defaults.cache);
+        assert_eq!(from_template.infra, from_defaults.infra);
     }
 
     #[test]
-    fn cache_overrides_from_config() {
+    fn cache_and_infra_override_from_config() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
@@ -854,6 +870,7 @@ mod tests {
         let c = load_home(dir.path()).unwrap();
         assert_eq!(c.cache.ttl_secs, 3600);
         assert_eq!(c.cache.warn_below, 0.5);
+        assert_eq!(c.infra.limit, 1);
     }
 
     #[test]

@@ -315,6 +315,7 @@ src/git.rs          the few git operations Forge performs
 src/graph.rs        forge graph: the module graph as data, from forge-repomap edges
 src/guard.rs        the landing guard: a pre-receive hook rejecting hand pushes to the base branch, and the emergency override
 src/handoff.rs      the fresh continuation arm: a handoff built from git, the journal and the log
+src/host.rs         the host at a moment: load per core and swap in use, sampled when an agent process dies
 src/init.rs         forge init: data directory, config template, committed workflow catalog, web.token, systemd units
 src/unit_path.rs    the PATH the systemd units carry: composed at init, read back from the unit by doctor and the worker
 src/intake.rs       intake acceptance: a confirmed brief becomes a project

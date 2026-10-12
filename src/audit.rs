@@ -100,6 +100,10 @@ pub struct Outputs {
     /// times: recorded by the sandbox's relay whether or not a tool said so.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refused: Vec<crate::egress::Refused>,
+    /// The host when the agent process died, for a run that timed out or
+    /// returned no answer (`host::Sample`); what the infra classifier read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_at_death: Option<crate::host::Sample>,
 }
 
 /// A diagnosis line: what happened, and what the operator can do.

@@ -7,6 +7,7 @@ use super::*;
 mod attempts;
 mod bookkeeping;
 mod continuation;
+mod infra;
 mod provider_hold;
 mod success;
 

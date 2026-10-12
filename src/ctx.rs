@@ -154,6 +154,7 @@ pub struct Forge {
     pub supervisor: config::Supervisor,
     pub early_ending: config::EarlyEnding,
     pub cache: config::Cache,
+    pub infra: config::Infra,
     pub measure: config::Measure,
     pub intake: config::Intake,
     /// `[trust.<level>]`: the policy each of the three trust levels a
@@ -227,6 +228,7 @@ impl Forge {
             supervisor: home.supervisor,
             early_ending: home.early_ending,
             cache: home.cache,
+            infra: home.infra,
             measure: home.measure,
             intake: home.intake,
             trust: home.trust,
@@ -269,6 +271,7 @@ impl Forge {
             supervisor: home.supervisor,
             early_ending: home.early_ending,
             cache: home.cache,
+            infra: home.infra,
             measure: home.measure,
             intake: home.intake,
             trust: home.trust,

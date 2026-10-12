@@ -23,7 +23,7 @@ pub use repo::{
     load_working_checks, load_working_egress, load_working_execution, load_working_push_remote,
     shared_target_enabled,
 };
-pub use resilience::Cache;
+pub use resilience::{Cache, Infra};
 pub use trust::{TrustEgress, TrustPolicies, TrustPolicy};
 
 /// `FORGE_<NAME>`, falling back to `FORGE2_<NAME>` for one release: the
