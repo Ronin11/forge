@@ -37,6 +37,9 @@ pub struct WorkerStart {
     pub restarts: Option<i64>,
     /// How the run before this one ended, as far as anything recorded it.
     pub exit_reason: String,
+    /// The pid of the worker that started this one on a staged release:
+    /// a handoff, not a restart. `None` for any other start.
+    pub successor_of: Option<i64>,
 }
 
 /// One per-attempt egress record: when it finished, its repository, and
@@ -188,16 +191,18 @@ impl Store {
     }
 
     /// Record what worker `id` learned at its start: the unit's restart
-    /// count, and how the run before it ended.
+    /// count, how the run before it ended, and the worker that started it
+    /// on a staged release, when one did.
     pub fn record_worker_start(
         &self,
         id: i64,
         restarts: Option<i64>,
         exit_reason: &str,
+        successor_of: Option<i64>,
     ) -> Result<()> {
         self.lock().retry_execute(
-            "UPDATE workers SET restarts=?2, exit_reason=?3 WHERE id=?1",
-            params![id, restarts, exit_reason],
+            "UPDATE workers SET restarts=?2, exit_reason=?3, successor_of=?4 WHERE id=?1",
+            params![id, restarts, exit_reason, successor_of],
         )?;
         Ok(())
     }
@@ -220,7 +225,7 @@ impl Store {
     pub fn worker_starts_since(&self, since: i64) -> Result<Vec<WorkerStart>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT id, pid, started_at, restarts, exit_reason FROM workers
+            "SELECT id, pid, started_at, restarts, exit_reason, successor_of FROM workers
              WHERE started_at >= ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map([since], |r| {
@@ -230,6 +235,7 @@ impl Store {
                 started_at: r.get("started_at")?,
                 restarts: r.get("restarts")?,
                 exit_reason: r.get("exit_reason")?,
+                successor_of: r.get("successor_of")?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

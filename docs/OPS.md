@@ -184,7 +184,7 @@ again is. The notify plugin passes it to its command as `doctor <check>
 | # | Row | Reads | Trips when | Status |
 |---|---|---|---|---|
 | 1 | `supervisor` | `attempts` with `step = supervisor`, blocked tasks | the last 24h had supervisor runs, none succeeded, and at least one task is blocked; names the last run's reason | WARN |
-| 2 | `worker_restarts` | `workers` (each start records systemd's `NRestarts` and how the run before ended) | more than 3 worker starts since the last doctor run (the last 24h on a first run); names the last exit reason | WARN |
+| 2 | `worker_restarts` | `workers` (each start records systemd's `NRestarts` and how the run before ended) | more than 3 worker starts since the last doctor run (the last 24h on a first run), not counting a successor started on a staged release (a handoff, recorded in `workers.successor_of`); names the last exit reason | WARN |
 | 3 | `steps` | `attempts` by step, `ops` by name, for `code`, `review`, `verify`, `supervisor`, `land`, `adopt` | a kind with zero successes over its last runs (the last 10, at least 5 of them) | WARN |
 | 4 | `environmental` | the verdicts of attempts in the last 24h | one named check failed on every task of a project that ran it, across at least 3 different branches: "environmental, not the agents", with the check's tail | WARN |
 | 5 | `worktrees_disk` | bytes under `FORGE_HOME/worktrees` and landed tasks whose tree still exists, sampled once a day | above `[worker] worktrees_warn_gb` (default 200), or 3 day-over-day increases in a row | WARN |
