@@ -38,6 +38,7 @@ mod graph;
 mod guard;
 mod handoff;
 mod host;
+mod housekeeping;
 mod init;
 mod intake;
 mod job;

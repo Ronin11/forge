@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const CACHES: &[&str] = &["target", "node_modules/.cache", ".godot"];
+const CACHES: &[&str] = &["target", "node_modules", ".godot"];
 const GB: u64 = 1024 * 1024 * 1024;
 
 pub fn free_bytes(path: &Path) -> Result<u64> {
@@ -156,6 +156,135 @@ pub fn task_caches(worktree: &str) -> Result<u64> {
     Ok(bytes)
 }
 
+/// Suffixes of the directories Forge keeps (longest first, so a name's
+/// suffix reads unambiguously) beside a task's worktree
+/// (`<worktree><suffix>`): kernel-owned overlay uppers, the private `/tmp`,
+/// the writing and review steps' provider state, the tests clone, the red
+/// scratch clone, and an operation's tree.
+pub const SIBLINGS: &[&str] = &[
+    "-overlays",
+    "-tmp",
+    "-review-provider",
+    "-provider",
+    "-tests",
+    "-red",
+    "-op",
+];
+
+pub fn suffixed(path: &Path, suffix: &str) -> PathBuf {
+    PathBuf::from(format!("{}{suffix}", path.display()))
+}
+
+/// The task's worktree and the tree `landing::integrate` makes for it
+/// beside the worktree, each one the root of its own sibling set.
+pub fn task_roots(id: i64, worktree: &str) -> Vec<PathBuf> {
+    let wt = PathBuf::from(worktree);
+    let landing = wt.parent().map(|dir| dir.join(format!("landing-{id}")));
+    std::iter::once(wt).chain(landing).collect()
+}
+
+/// Every directory of `root`'s set: the root itself (when `include_root`),
+/// its tests and red clones, and each one's overlays, `/tmp` and private
+/// provider state (through `sandbox::discard_provider_state`, which writes
+/// a fresher login back before it goes, docs/REVIEW-4.md #1.23).
+pub fn remove_tree_set(root: &Path, include_root: bool) -> std::io::Result<()> {
+    for tree in [
+        root.to_path_buf(),
+        suffixed(root, "-tests"),
+        suffixed(root, "-red"),
+    ] {
+        crate::sandbox::discard_provider_state(&tree);
+        if include_root || tree != root {
+            remove_tree(&tree)?;
+        }
+    }
+    for suffix in ["-overlays", "-tmp", "-op"] {
+        remove_tree(&suffixed(root, suffix))?;
+    }
+    Ok(())
+}
+
+/// Allocated bytes of a task's worktree, siblings and landing tree.
+pub fn task_tree_bytes(id: i64, worktree: &str) -> u64 {
+    if worktree.is_empty() {
+        return 0;
+    }
+    task_roots(id, worktree)
+        .iter()
+        .flat_map(|root| {
+            let siblings = SIBLINGS.iter().map(|s| suffixed(root, s));
+            std::iter::once(root.clone()).chain(siblings)
+        })
+        .map(|path| size(&path))
+        .sum()
+}
+
+/// Remove a task's worktree and every sibling directory, landing tree
+/// included, whatever is left in them.
+pub fn remove_task_trees(id: i64, worktree: &str) -> std::io::Result<()> {
+    if worktree.is_empty() {
+        return Ok(());
+    }
+    for root in task_roots(id, worktree) {
+        remove_tree_set(&root, true)?;
+    }
+    Ok(())
+}
+
+/// What the terminal write of `t` does to its disk. A landed task's work
+/// is on the base branch, so its tree and siblings go at once and are
+/// marked removed, uncommitted leftovers and all; any other finished task
+/// keeps its tree (for the retention pass) minus the build caches. A
+/// removal that fails is reported and left for housekeeping, never an
+/// error of the state change itself (see `discard_task_caches`).
+pub fn task_finished(store: &Store, t: &crate::store::Task) {
+    use crate::store::TaskState;
+    if t.is_landed() && !t.worktree.is_empty() {
+        let done = remove_task_trees(t.id, &t.worktree).map_err(anyhow::Error::from);
+        if let Err(e) = done.and_then(|()| store.mark_worktree_removed(t.id)) {
+            eprintln!("worktree cleanup {}: {e:#}", t.worktree);
+        }
+    } else if !matches!(t.state, TaskState::Running | TaskState::Queued) {
+        discard_task_caches(&t.worktree);
+    }
+}
+
+/// How long a `landing-<id>` tree nothing tracks must have sat untouched
+/// before its caches or the tree itself are fair game: a `forge land` may be
+/// building in it right now, and it is not a task's worktree to claim.
+pub const LANDING_GRACE_SECS: i64 = 6 * 3600;
+
+/// `root/landing-<id>` trees whose task is not running and that have been
+/// idle for `LANDING_GRACE_SECS`.
+fn untracked_landing_trees(root: &Path, tx: &rusqlite::Transaction) -> Vec<PathBuf> {
+    let now = crate::unix_now();
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(id) = name
+            .strip_prefix("landing-")
+            .and_then(|n| n.parse::<i64>().ok())
+        else {
+            continue;
+        };
+        let idle = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+            .is_some_and(|m| now - m.as_secs() as i64 >= LANDING_GRACE_SECS);
+        let running = tx
+            .query_row("SELECT state FROM tasks WHERE id=?1", [id], |r| {
+                r.get::<_, String>(0)
+            })
+            .is_ok_and(|state| state == "running");
+        if idle && !running {
+            found.push(entry.path());
+        }
+    }
+    found
+}
+
 /// Keep the claim transaction excluded throughout deletion: a queued task
 /// must not start building while gc removes its cache.
 pub fn sweep(store: &Store, root: &Path, dry_run: bool) -> Result<u64> {
@@ -179,6 +308,7 @@ pub fn sweep(store: &Store, root: &Path, dry_run: bool) -> Result<u64> {
                 trees.extend(paths);
             }
         }
+        trees.extend(untracked_landing_trees(root, &tx));
         let mut stmt = tx.prepare("SELECT id, state FROM jobs")?;
         for row in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
             let (id, state) = row?;
@@ -298,11 +428,12 @@ mod tests {
         std::os::unix::fs::symlink(external.path(), dir.path().join("target")).unwrap();
         caches(dir.path(), false).unwrap();
         assert!(external.path().join("keep").exists());
-        std::fs::remove_dir(dir.path().join("node_modules")).unwrap();
+        assert!(!dir.path().join("node_modules").exists());
         std::os::unix::fs::symlink(external.path(), dir.path().join("node_modules")).unwrap();
         std::fs::create_dir(external.path().join(".cache")).unwrap();
         caches(dir.path(), false).unwrap();
         assert!(external.path().join(".cache").exists());
+        assert!(!dir.path().join("node_modules").exists());
     }
 
     #[test]

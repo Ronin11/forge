@@ -40,6 +40,7 @@ mod schedule;
 use retry::RetryConnection;
 mod stats;
 mod supersede;
+mod task_write;
 mod tasks;
 mod watch;
 mod webhooks;

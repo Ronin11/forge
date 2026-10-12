@@ -584,95 +584,29 @@ pub(super) fn count_filed_since(conn: &Connection, trust: Trust, since: i64) -> 
     )?)
 }
 
+impl Task {
+    /// Succeeded with a landed sha: its work is on the base branch.
+    pub fn is_landed(&self) -> bool {
+        self.state == TaskState::Succeeded && !self.landed_sha.is_empty()
+    }
+}
+
 impl Store {
     pub fn insert_task(&self, t: &Task) -> Result<i64> {
         insert_task_row(&self.lock(), t)
     }
 
-    /// Persist every column the struct carries, except the id, the
-    /// creation time, `trust` (set once at insert and never revisited),
-    /// and `worktree_removed_at`, which gc owns. A field mutated after
-    /// insert used to be silently dropped here.
+    /// Persist the task (see `write_task`), then deal with its disk: the
+    /// write that makes a task landed removes its worktree and siblings,
+    /// a task finished any other way loses its build caches
+    /// (`disk::task_finished`). A task already landed is left alone, so the
+    /// updates landing's own effects make (deploy, assessment) never pull
+    /// the tree out from under the step still reading it.
     pub fn update_task(&self, t: &Task) -> Result<()> {
-        self.lock().retry_execute(
-            "UPDATE tasks SET repo=?2, task=?3, base_branch=?4, base_sha=?5, branch=?6, worktree=?7, model=?8,
-             max_turns=?9, max_attempts=?10, timeout_secs=?11, checks_json=?12, state=?13, reason=?14,
-             started_at=?15, finished_at=?16, pushed=?17, worker_pid=?18, worker_start=CASE WHEN ?18 IS NULL THEN NULL ELSE worker_start END, budget_usd=?19, allow_protected=?20,
-             workflow=?21, workflow_hash=?22, workflow_text=?23, actions_json=?24, interface=?25, show_checks=?26,
-             land=?27, after_json=?28, verify_base=?29, retry_of=?30, journal=?31, context=?32,
-             context_enabled=?33, resume_on_failure=?34, plan=?35, landed_sha=?36, journal_arm=?37,
-             project=?38, initiative=?39, provider=?40, question_to=?41, explore_json=?42,
-             concierge_json=?43, proposal_json=?44, proposal_answer=?45, proposal_initiative=?46,
-             title=?47, landed_at=?48, hand_landed=?49, shape_text_len=?50, shape_path_tokens=?51,
-             shape_tdd=?52, shape_declared_checks=?53, model_source=?54, workflow_source=?55,
-             routing_json=?56, session_id=?57, handoff=?58, deploy_id=?59, supersedes=?60,
-             early_ending=?61 WHERE id=?1",
-            params![
-                t.id,
-                t.repo,
-                t.task,
-                t.base_branch,
-                t.base_sha,
-                t.branch,
-                t.worktree,
-                t.model,
-                t.max_turns,
-                t.max_attempts,
-                t.timeout_secs,
-                serde_json::to_string(&t.checks)?,
-                t.state.as_str(),
-                t.reason,
-                t.started_at,
-                t.finished_at,
-                t.pushed as i64,
-                t.worker_pid,
-                t.budget_usd,
-                t.allow_protected as i64,
-                t.workflow,
-                t.workflow_hash,
-                t.workflow_text,
-                t.actions_json,
-                t.interface,
-                t.show_checks as i64,
-                t.land as i64,
-                serde_json::to_string(&t.after)?,
-                t.verify_base,
-                t.retry_of,
-                t.journal as i64,
-                t.context,
-                t.context_enabled as i64,
-                t.resume_on_failure as i64,
-                t.plan,
-                t.landed_sha,
-                t.journal_arm,
-                t.project,
-                t.initiative,
-                t.provider,
-                t.question_to,
-                serde_json::to_string(&t.explore)?,
-                t.concierge_json,
-                t.proposal_json,
-                t.proposal_answer,
-                t.proposal_initiative,
-                t.title,
-                t.landed_at,
-                t.hand_landed as i64,
-                t.shape_text_len,
-                t.shape_path_tokens,
-                t.shape_tdd as i64,
-                t.shape_declared_checks,
-                t.model_source,
-                t.workflow_source,
-                serde_json::to_string(&t.routing)?,
-                t.session_id,
-                t.handoff,
-                t.deploy_id,
-                t.supersedes,
-                t.early_ending,
-            ],
-        )?;
-        if !matches!(t.state, TaskState::Running | TaskState::Queued) {
-            crate::disk::discard_task_caches(&t.worktree);
+        let landed = self.task(t.id)?.is_some_and(|p| p.is_landed());
+        self.write_task(t)?;
+        if !landed {
+            crate::disk::task_finished(self, t);
         }
         Ok(())
     }

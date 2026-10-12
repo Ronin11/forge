@@ -719,6 +719,11 @@ async fn run_ticks(
     if let Err(e) = workflows::draft::reconcile(&f.paths.home).await {
         eprintln!("worker tick failed (drafts); continuing: {e:#}");
     }
+    let due = unix_now() - HOUSEKEPT.load(std::sync::atomic::Ordering::Relaxed);
+    if due >= HOUSEKEEPING_SECS {
+        HOUSEKEPT.store(unix_now(), std::sync::atomic::Ordering::Relaxed);
+        housekeeping(f).await;
+    }
     Ok(true)
 }
 
@@ -1036,6 +1041,29 @@ fn exit_cause(env_error: Option<&anyhow::Error>, cause: Option<String>) -> Strin
         (Some(e), _) => format!("environment fault: {e:#}"),
         (None, Some(c)) => c,
         (None, None) => "--max-tasks reached".to_string(),
+    }
+}
+
+/// How often the worker sweeps caches and applies worktree retention (the
+/// first pass is at start).
+const HOUSEKEEPING_SECS: i64 = 3600;
+
+/// When this process last ran housekeeping.
+static HOUSEKEPT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// One housekeeping pass (`crate::housekeeping`), logged in one line. A
+/// failure is a log line too: it never stops the worker.
+async fn housekeeping(f: &Forge) {
+    let pass = crate::housekeeping::Pass {
+        dry_run: false,
+        manual: false,
+        older_than: None,
+        retention_days: f.worker.worktree_retention_days,
+        now: unix_now(),
+    };
+    match crate::housekeeping::run(f, &pass).await {
+        Ok(report) => eprintln!("housekeeping: {}", report.summary()),
+        Err(e) => eprintln!("housekeeping failed: {e:#}"),
     }
 }
 

@@ -1214,7 +1214,7 @@ fn a_bwrap_without_overlay_support_still_runs_the_attempt_with_no_overlay_flags(
 #[test]
 fn an_overlay_left_by_a_dead_worker_is_removed_before_the_next_attempt() {
     let e = Env::new();
-    let id = e.add(&[]);
+    let id = e.add(&["--no-land"]);
     assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
     let wt: String = e
         .db()

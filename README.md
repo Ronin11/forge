@@ -337,6 +337,7 @@ src/render.rs       text rendering for documents: first sentence, path-like toke
 src/report.rs       typed events; the stderr printer is one consumer
 src/executor.rs     executor contract, backend selection, and guarantees
 src/disk.rs         free-space claim holds, worktree sizes, and build-cache sweeping
+src/housekeeping.rs worktree retention: the worker's hourly pass and `forge gc`
 src/sandbox.rs      bubblewrap
 src/secret_store.rs machine-local credentials: persistent backend selection, OS keychain or encrypted file storage, and secret references
 src/job/alerts.rs       what a finished job tells the operator unasked: a failed doctor-daily, new doctor rows, a step that printed nothing
@@ -346,7 +347,7 @@ src/load.rs        the time scale a loaded host stretches check timeouts and tes
 src/login.rs        the agent login: a refreshed token written back over the host file, an empty one never seeded
 src/login_hold.rs   a provider whose agent login was refused, held until a probe answers; the worker's ten-minute probe and doctor's
 src/successor.rs     the successor worker: a staged release starts forge work on it, the old worker drains
-src/store/          SQLite, forward-only migrations by user_version, one file per table family (workers.rs: the registered workers and their releases; owners.rs: a running row's owner, pid plus start time, and orphan detection)
+src/store/          SQLite, forward-only migrations by user_version, one file per table family (task_write.rs: the one write of a task row; workers.rs: the registered workers and their releases; owners.rs: a running row's owner, pid plus start time, and orphan detection)
   mod.rs            types, column lists, open, schema_version, the migration runner
   migrations.rs     MIGRATIONS: every forward-only schema migration, in order
   notifications.rs  durable daily counts of follow-ups, retries, answered questions, and superseded blocks

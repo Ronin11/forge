@@ -39,6 +39,18 @@ pub(super) fn check_worktrees(store: &Store) -> Vec<Check> {
     }]
 }
 
+/// Retained trees of finished tasks older than `days`: what the worker's
+/// next housekeeping pass is going to publish and remove (or could not).
+pub(super) fn past_retention(store: &Store, days: i64, now: i64) -> usize {
+    store
+        .tasks_with_worktrees()
+        .unwrap_or_default()
+        .iter()
+        .filter(|t| !matches!(t.state, TaskState::Running | TaskState::Queued))
+        .filter(|t| now - t.finished_at.unwrap_or(t.created_at) >= days * 86_400)
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,6 +72,24 @@ mod tests {
             workflow: "direct".into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn past_retention_counts_only_finished_trees_older_than_the_days() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("forge.db")).unwrap();
+        let now = unix_now();
+        for (state, age_days) in [
+            (TaskState::Failed, 8),
+            (TaskState::Failed, 2),
+            (TaskState::Running, 30),
+        ] {
+            let mut t = fixture_task(state, "/wt/x", Some(now - age_days * 86_400));
+            t.id = store.insert_task(&t).unwrap();
+            store.update_task(&t).unwrap();
+        }
+        assert_eq!(past_retention(&store, 7, now), 1);
+        assert_eq!(past_retention(&store, 1, now), 2);
     }
 
     #[test]

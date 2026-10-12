@@ -1321,9 +1321,11 @@ async fn land_integrated(
                 t.state = TaskState::Succeeded;
                 t.finished_at = Some(crate::unix_now());
             }
-            f.store.update_task(&t)?;
+            f.store.write_task(&t)?;
             drop(lock);
             effects::run(f, &mut t, &landed).await;
+            // Deploy and assessment read the tree; only now may it go.
+            crate::disk::task_finished(&f.store, &t);
             crate::queue::settle_superseded(f, id)?;
             if let Some(iid) = t.initiative {
                 crate::view::maybe_settle_initiative(f, id, iid)?;

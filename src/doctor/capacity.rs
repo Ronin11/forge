@@ -133,8 +133,17 @@ fn active_environments(paths: &Paths, store: &Store) -> anyhow::Result<Vec<Strin
 pub(super) fn disk(paths: &Paths, store: &Store) -> Vec<Check> {
     let mut rows = super::check_worktrees(store);
     let sizes = crate::disk::worktrees(&paths.worktrees);
+    let days = config::load_home(&paths.home)
+        .map(|h| h.worker.worktree_retention_days)
+        .unwrap_or(7);
+    let past = super::worktrees::past_retention(store, days, crate::unix_now());
     for row in &mut rows {
         row.detail.push_str(&format!("; {sizes}"));
+        row.detail
+            .push_str(&format!("; {past} retained past {days}d retention"));
+        if past > 0 && row.status == Status::Ok {
+            row.status = Status::Warn;
+        }
     }
     rows.push(check_disk(paths));
     rows
