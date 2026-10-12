@@ -478,6 +478,7 @@ async fn dispatch_retry(cmd: Cmd) -> Result<()> {
                     timeout_secs,
                     workflow,
                     provider,
+                    model: None,
                     allow_protected,
                 },
             )

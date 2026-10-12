@@ -82,27 +82,60 @@ fn a_ratchet_check_failure_is_refiled_with_guidance_and_no_retry_of() {
 }
 
 #[test]
-fn a_failure_of_no_recognized_kind_raises_a_decision_and_leaves_the_task_failed() {
+fn a_failure_of_no_recognized_kind_is_retried_once_on_the_strong_lane_then_raised() {
     let e = Env::new();
+    let strong = |args: &[&str]| {
+        let mut c = e.cmd("ok.sh");
+        c.env("FORGE_STRONG_LANE", "1").args(args);
+        c.output().expect("forge")
+    };
     assert!(
-        !e.run(
-            "ok.sh",
-            &["--retries", "0", "--check", "grep -qx 43 answer.txt"]
-        )
+        !strong(&[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--no-land",
+            "--retries",
+            "0",
+            "--check",
+            "grep -qx 43 answer.txt",
+        ])
         .status
         .success()
     );
     let (state, reason, _) = e.task(1);
     assert_eq!(state, "failed");
 
+    // The agent ran and its checks failed in no mechanical way: once on
+    // the strong model, pinned, with the branch as the starting tree.
     let (kind, retry_id, citations) = mechanic_decision(&e, 1);
+    assert_eq!(kind, "mechanic-strong-lane");
+    let retry_id = retry_id.expect("the strong lane files a retry");
+    assert!(citations.contains(&reason), "{citations}");
+    let (retry_state, model, model_source, retry_of): (String, String, String, Option<i64>) = e
+        .db()
+        .query_row(
+            "SELECT state, model, model_source, retry_of FROM tasks WHERE id=?1",
+            [retry_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (retry_state.as_str(), model.as_str(), model_source.as_str()),
+        ("queued", "opus", "flag")
+    );
+    assert_eq!(retry_of, Some(1));
+
+    // The retry fails the same way: the lane is spent, the operator's turn.
+    let out = strong(&["work", "--once"]);
+    let (state, reason, _) = e.task(retry_id);
+    assert_eq!(
+        state,
+        "failed",
+        "{reason}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let (kind, third, _) = mechanic_decision(&e, retry_id);
     assert_eq!(kind, "mechanic-block");
-    assert!(
-        retry_id.is_none(),
-        "no follow-up task for an unrecognized failure"
-    );
-    assert!(
-        citations.contains(&reason) || !citations.is_empty(),
-        "{citations}"
-    );
+    assert!(third.is_none(), "no third attempt by the mechanic");
 }

@@ -328,7 +328,85 @@ async fn a_failing_test_the_branch_touched_is_not_a_load_flake() {
     );
     act(&f, t.id).await.unwrap();
     let d = only_decision(&f, t.id);
-    assert_eq!(d.kind, BLOCK_KIND, "touched by the branch, not a flake");
+    assert_eq!(
+        d.kind,
+        Kind::StrongLane.as_str(),
+        "touched by the branch, not a flake: the agent's own failure goes to the strong lane"
+    );
+}
+
+/// The agent ran and its checks failed in a way no mechanical kind fits.
+fn touched_failure(f: &Forge, repo: &std::path::Path, base: &str) -> Task {
+    let t = fixture_task(f, repo, base, "L1 failed: test (after 1 attempt(s))");
+    fail_checks(
+        f,
+        t.id,
+        vec![CheckResult {
+            level: "L1".into(),
+            name: "test".into(),
+            ok: false,
+            tail: "failures:\n    branch::a_test\n".into(),
+            failing_tests: vec!["branch::a_test".into()],
+            ..Default::default()
+        }],
+    );
+    t
+}
+
+#[tokio::test]
+async fn the_strong_lane_retries_once_per_lineage_on_the_strong_model_then_blocks() {
+    let (repo, base) = repo_fixture();
+    let f = fixture_forge(repo.path());
+    let t = touched_failure(&f, repo.path(), &base);
+    act(&f, t.id).await.unwrap();
+    let d = only_decision(&f, t.id);
+    assert_eq!(d.kind, Kind::StrongLane.as_str());
+    assert!(d.answer.contains("once on opus"), "{}", d.answer);
+    let retried = f.store.task(d.retry_id.unwrap()).unwrap().unwrap();
+    assert_eq!(retried.retry_of, Some(t.id));
+    assert_eq!(retried.model, "opus");
+    assert_eq!(retried.model_source, "flag");
+    assert_eq!(
+        retried.task, t.task,
+        "the text is the task's own; the branch and journal carry the context"
+    );
+
+    // The retry fails the same way: the lane is spent on this lineage.
+    let mut again = retried.clone();
+    again.state = TaskState::Failed;
+    again.reason = "L1 failed: test (after 1 attempt(s))".into();
+    f.store.update_task(&again).unwrap();
+    fail_checks(&f, again.id, vec![]);
+    act(&f, again.id).await.unwrap();
+    let ds = f.store.decisions_in_lineage(again.id).unwrap();
+    let last = ds.last().unwrap();
+    assert_eq!(last.kind, BLOCK_KIND);
+    assert!(
+        last.answer.contains("already tried on this lineage"),
+        "{}",
+        last.answer
+    );
+    assert!(last.retry_id.is_none());
+}
+
+#[tokio::test]
+async fn a_task_already_on_the_strong_model_or_past_the_daily_cap_goes_to_the_operator() {
+    let (repo, base) = repo_fixture();
+    let mut f = fixture_forge(repo.path());
+    let mut t = touched_failure(&f, repo.path(), &base);
+    t.model = "opus".into();
+    f.store.update_task(&t).unwrap();
+    act(&f, t.id).await.unwrap();
+    let d = only_decision(&f, t.id);
+    assert_eq!(d.kind, BLOCK_KIND);
+    assert!(d.answer.contains("already on opus"), "{}", d.answer);
+
+    f.mechanic.strong_per_day = 0;
+    let t2 = touched_failure(&f, repo.path(), &base);
+    act(&f, t2.id).await.unwrap();
+    let d = only_decision(&f, t2.id);
+    assert_eq!(d.kind, BLOCK_KIND);
+    assert!(d.answer.contains("cap of 0 a day"), "{}", d.answer);
 }
 
 #[tokio::test]

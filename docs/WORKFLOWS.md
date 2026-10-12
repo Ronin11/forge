@@ -117,14 +117,27 @@ mechanical kinds by `src/supervisor/mechanic.rs`, run right after the task ends
 - **L0 clean-tree**: retried once with a line appended saying to commit
   or gitignore everything.
 
-Anything else, or a kind already spent on this lineage, is left for the
-operator: a decision names the failure and what was tried, and the task
-stays `Failed` (already actionable with `forge retry`/`forge withdraw`,
-so nothing here reopens it). Every action, including that hand-off, is a
-decision row (`answered_by: "mechanic"`, `kind` one of
-`mechanic-load-flake`, `mechanic-landing-conflict`, `mechanic-ratchet`,
-`mechanic-turn-cap`, `mechanic-clean-tree`, or `mechanic-block`), which
-`forge stats --mechanic` counts per kind. A ratchet refile links back to
+Anything else, or a kind already spent on this lineage, goes to the
+**strong lane** before the operator: when the task's agent actually ran
+and failed (an attempt ended `ChecksFailed`, or `AgentFailed` after at
+least one turn), its provider is a claude lane, its model is not already
+`[mechanic] strong_model` (default `opus`), the lane has not been tried
+on this lineage, and fewer than `[mechanic] strong_per_day` (default 10)
+strong-lane retries were filed in the last day, the task is retried once
+with `--model <strong_model>` pinned (`[mechanic] strong_lane = false`,
+or `FORGE_STRONG_LANE=0` for one process, turns the rung off; the e2e
+harness runs with it off, as it does the supervisor). Nothing is appended to the text:
+the retry starts from the failed branch (`worktree::reuse_branch`) and
+carries the lineage's journal, which is the failed attempt as context.
+A task that does not qualify, or whose strong-lane retry failed again, is
+left for the operator: a decision names the failure, what was tried and
+why the lane did not apply, and the task stays `Failed` (already
+actionable with `forge retry`/`forge withdraw`, so nothing here reopens
+it). Every action, including that hand-off, is a decision row
+(`answered_by: "mechanic"`, `kind` one of `mechanic-load-flake`,
+`mechanic-landing-conflict`, `mechanic-ratchet`, `mechanic-turn-cap`,
+`mechanic-clean-tree`, `mechanic-strong-lane`, or `mechanic-block`),
+which `forge stats --mechanic` counts per kind. A ratchet refile links back to
 the task it supersedes only through that decision's citations until task
 1057's `supersedes` column lands; `src/supervisor/mechanic.rs` marks with a `TODO`
 where to switch to `--supersedes` once it does.

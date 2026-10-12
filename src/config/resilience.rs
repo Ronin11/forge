@@ -86,6 +86,41 @@ pub(super) fn build_infra(raw: InfraRaw) -> Infra {
     }
 }
 
+#[derive(Deserialize, Default)]
+pub(super) struct MechanicRaw {
+    strong_lane: Option<bool>,
+    strong_model: Option<String>,
+    strong_per_day: Option<u32>,
+}
+
+/// The mechanic's strong lane: a failed task the mechanic recognizes no
+/// mechanical kind for (or whose kind is spent) is retried once per
+/// lineage on this model, with its branch and journal as context, before
+/// it reaches the operator (docs/WORKFLOWS.md, "Mechanic").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mechanic {
+    /// Whether the strong lane runs at all. `FORGE_STRONG_LANE=0` turns
+    /// it off for one process, the way `FORGE_SUPERVISOR=0` does the
+    /// supervisor: the e2e harness's default, since every failed run
+    /// would otherwise file a retry.
+    pub strong_lane: bool,
+    /// The claude model name the strong-lane retry pins (`--model`); a task
+    /// already on it, or on a non-claude provider, goes to the operator.
+    pub strong_model: String,
+    /// Strong-lane retries allowed per rolling day across every lineage:
+    /// the lane costs several times a normal attempt.
+    pub strong_per_day: u32,
+}
+
+pub(super) fn build_mechanic(raw: MechanicRaw) -> Mechanic {
+    Mechanic {
+        strong_lane: raw.strong_lane.unwrap_or(true)
+            && super::env("STRONG_LANE").map(|v| v != "0").unwrap_or(true),
+        strong_model: raw.strong_model.unwrap_or_else(|| "opus".into()),
+        strong_per_day: raw.strong_per_day.unwrap_or(10),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +136,9 @@ mod tests {
             (i.load_per_core, i.swap_gb, i.router_secs, i.limit),
             (5.0, 4.0, 600, 3)
         );
+        let m = build_mechanic(MechanicRaw::default());
+        assert_eq!((m.strong_model.as_str(), m.strong_per_day), ("opus", 10));
+        assert!(m.strong_lane);
 
         let c: CacheRaw =
             toml::from_str("ttl_secs = 3600\ncold_context_tokens = 80000\nwarn_below = 0.7\n")
@@ -118,5 +156,15 @@ mod tests {
             (i.load_per_core, i.swap_gb, i.router_secs, i.limit),
             (8.0, 1.5, 120, 1)
         );
+        let m: MechanicRaw = toml::from_str(
+            "strong_lane = false\nstrong_model = \"claude-opus-5-5\"\nstrong_per_day = 2\n",
+        )
+        .unwrap();
+        let m = build_mechanic(m);
+        assert_eq!(
+            (m.strong_model.as_str(), m.strong_per_day),
+            ("claude-opus-5-5", 2)
+        );
+        assert!(!m.strong_lane);
     }
 }
