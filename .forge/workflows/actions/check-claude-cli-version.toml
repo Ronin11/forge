@@ -1,17 +1,22 @@
 name = "check-claude-cli-version"
 kind = "operation"
-description = "compares the installed claude CLI's version against npm's latest @anthropic-ai/claude-code and logs an http effect naming both when the installed one is behind. Never installs anything itself — the effect names the command for the operator to run at the next worker restart."
+description = "compares the installed claude CLI's version against npm's latest @anthropic-ai/claude-code, prints both as its verdict, and logs an http effect naming both when the installed one is behind. Never installs anything itself — the effect names the command for the operator to run at the next worker restart. Exits 1, logging nothing, when either version cannot be read: a check that could not run. A job input's `claude_installed` and `claude_latest` (FORGE_INPUT_CLAUDE_INSTALLED/LATEST) stand in for the two probes, so a fixture replays a week without the CLI or the network."
 run = ["bash", "-c", '''
 set +e
-installed=""
-if command -v claude >/dev/null 2>&1; then
+installed="${FORGE_INPUT_CLAUDE_INSTALLED:-}"
+if [ -z "$installed" ] && command -v claude >/dev/null 2>&1; then
   installed=$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
 fi
-latest=""
-if command -v npm >/dev/null 2>&1; then
+latest="${FORGE_INPUT_CLAUDE_LATEST:-}"
+if [ -z "$latest" ] && command -v npm >/dev/null 2>&1; then
   latest=$(npm view @anthropic-ai/claude-code version 2>/dev/null | tr -d '[:space:]')
 fi
-if [ -n "$installed" ] && [ -n "$latest" ] && [ "$installed" != "$latest" ]; then
+if [ -z "$installed" ] || [ -z "$latest" ]; then
+  echo "claude CLI: could not read a version (installed: ${installed:-none}, npm: ${latest:-none})"
+  exit 1
+fi
+echo "claude CLI: installed $installed, npm has $latest"
+if [ "$installed" != "$latest" ]; then
   suffix=""
   [ "${FORGE_DRY_RUN:-}" = "1" ] && suffix=" (dry run)"
   # The command depends on how the CLI got here: a mise-managed install

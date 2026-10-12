@@ -1,23 +1,79 @@
 name = "check-cargo-audit"
 kind = "operation"
-description = "runs `cargo audit` on the workspace, installing cargo-audit first if it is missing, and logs one row effect per advisory it reports."
+description = "runs `cargo audit` on the workspace, installing cargo-audit first if it is missing, prints one verdict line per advisory with its severity (from the advisory's CVSS 3 vector; `unscored` when it has none this can score), and logs one row effect per advisory it reports. Advisories are a report, not a failure, except one at or above `ask_at` (high: high or critical), which is a decision: the step exits 1 after logging, naming it, so the job asks. Exits 1, logging nothing, when cargo-audit cannot be installed or prints no report: a check that could not run. A job input's `audit_json` (cargo audit's --json report) stands in for the run, so a fixture replays a week without the advisory database."
 run = ["bash", "-c", '''
 set +e
-if ! command -v cargo-audit >/dev/null 2>&1; then
-  cargo install cargo-audit --locked >/dev/null 2>&1
+# The severity from which an advisory asks the operator instead of only
+# being reported: none < low < medium < high < critical.
+ask_at="high"
+rank() {
+  case "$1" in
+    critical) echo 4 ;; high) echo 3 ;; medium) echo 2 ;; low) echo 1 ;; *) echo 0 ;;
+  esac
+}
+if ! command -v jq >/dev/null 2>&1; then
+  echo "cargo audit: jq is not installed, the report could not be read"
+  exit 1
 fi
-if ! command -v cargo-audit >/dev/null 2>&1; then
-  exit 0
+report="${FORGE_INPUT_AUDIT_JSON:-}"
+if [ -z "$report" ]; then
+  if ! command -v cargo-audit >/dev/null 2>&1; then
+    cargo install cargo-audit --locked >/dev/null 2>&1
+  fi
+  if ! command -v cargo-audit >/dev/null 2>&1; then
+    echo "cargo audit: cargo-audit is not installed and could not be installed"
+    exit 1
+  fi
+  report=$(cargo audit --json 2>/dev/null)
 fi
-report=$(cargo audit --json 2>/dev/null)
-[ -z "$report" ] && exit 0
+if [ -z "$report" ] || ! echo "$report" | jq -e '.vulnerabilities' >/dev/null 2>&1; then
+  echo "cargo audit: printed no report"
+  exit 1
+fi
 suffix=""
 [ "${FORGE_DRY_RUN:-}" = "1" ] && suffix=" (dry run)"
-echo "$report" | jq -c '.vulnerabilities.list[]? // empty' 2>/dev/null | while IFS= read -r adv; do
+# CVSS 3.x base score (FIRST's specification, section 7) from a vector
+# string, then its qualitative rating; anything else is "unscored".
+severity='
+  def roundup: (. * 100000 | round) as $i
+    | if $i % 10000 == 0 then $i / 100000 else (($i / 10000 | floor) + 1) / 10 end;
+  (.advisory.cvss // "") as $v
+  | if ($v | test("^CVSS:3\\.[01]/")) | not then "unscored" else
+    ($v | split("/")[1:] | map(split(":") | {(.[0]): .[1]}) | add) as $m
+    | ($m.S == "C") as $changed
+    | ({"H": 0.56, "L": 0.22, "N": 0}) as $cia
+    | (1 - (1 - $cia[$m.C]) * (1 - $cia[$m.I]) * (1 - $cia[$m.A])) as $iss
+    | (if $changed then 7.52 * ($iss - 0.029) - 3.25 * pow($iss - 0.02; 15)
+       else 6.42 * $iss end) as $impact
+    | (8.22 * {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2}[$m.AV]
+        * {"L": 0.77, "H": 0.44}[$m.AC]
+        * (if $changed then {"N": 0.85, "L": 0.68, "H": 0.5} else {"N": 0.85, "L": 0.62, "H": 0.27} end)[$m.PR]
+        * {"N": 0.85, "R": 0.62}[$m.UI]) as $expl
+    | (if $impact <= 0 then 0
+       elif $changed then [1.08 * ($impact + $expl), 10] | min | roundup
+       else [$impact + $expl, 10] | min | roundup end) as $score
+    | if $score == 0 then "none" elif $score < 4 then "low" elif $score < 7 then "medium"
+      elif $score < 9 then "high" else "critical" end
+  end'
+count=0
+asks=""
+while IFS= read -r adv; do
   id=$(echo "$adv" | jq -r '.advisory.id // "unknown"')
   title=$(echo "$adv" | jq -r '.advisory.title // "advisory"')
   pkg=$(echo "$adv" | jq -r '.package.name // "unknown"')
+  sev=$(echo "$adv" | jq -r "$severity" 2>/dev/null)
+  [ -z "$sev" ] && sev="unscored"
+  count=$((count + 1))
+  echo "cargo audit: $id in $pkg is $sev: $title"
   printf "row\t%s\t%s: %s (%s)%s\n" "$id" "$pkg" "$title" "$id" "$suffix" >> "$FORGE_EFFECT_LOG"
-done
+  if [ "$(rank "$sev")" -ge "$(rank "$ask_at")" ]; then
+    asks="$asks $id ($pkg, $sev)"
+  fi
+done < <(echo "$report" | jq -c '.vulnerabilities.list[]? // empty' 2>/dev/null)
+echo "cargo audit: $count advisory(ies)"
+if [ -n "$asks" ]; then
+  echo "cargo audit: at or above $ask_at, a decision for the operator:$asks"
+  exit 1
+fi
 exit 0
 ''']

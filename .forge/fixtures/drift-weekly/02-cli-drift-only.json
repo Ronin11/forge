@@ -1,0 +1,20 @@
+{
+  "input": {
+    "claude_installed": "2.1.38",
+    "claude_latest": "2.1.40",
+    "audit_json": "{\"database\":{\"advisory-count\":900},\"vulnerabilities\":{\"found\":false,\"count\":0,\"list\":[]}}",
+    "equitizr_status": "200",
+    "equitizr_meta": "{\"meta\":{\"built_at\":1791676800000}}",
+    "now": "1791763200"
+  },
+  "expect": {
+    "state": "ok",
+    "effects": [
+      {
+        "kind": "http",
+        "target": "claude-code",
+        "summary_contains": "installed 2.1.38, npm has 2.1.40"
+      }
+    ]
+  }
+}

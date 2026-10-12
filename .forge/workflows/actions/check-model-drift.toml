@@ -1,8 +1,12 @@
 name = "check-model-drift"
 kind = "operation"
-description = "reads the `model` field of the `system`/`init` frame (and `message.model` of assistant frames) in every attempt log under FORGE_HOME/logs (FORGE_HOME from the job's environment, or $HOME/.local/share/forge by default), buckets each id it names by model family (opus/sonnet/haiku) and by the week its log was written, and logs a row effect for a family whose resolved model id this week differs from last week's."
+description = "reads the `model` field of the `system`/`init` frame (and `message.model` of assistant frames) in every attempt log under FORGE_HOME/logs (FORGE_HOME from the job's environment, or $HOME/.local/share/forge by default), buckets each id it names by model family (opus/sonnet/haiku) and by the week its log was written, and logs a row effect for a family whose resolved model id this week differs from last week's. Prints one verdict line per family seen this week (or that no attempt log was read), and exits 1 without one when jq is missing: a check that could not run."
 run = ["bash", "-c", '''
 set +e
+if ! command -v jq >/dev/null 2>&1; then
+  echo "model drift: jq is not installed, no attempt log could be read"
+  exit 1
+fi
 home="${FORGE_HOME:-$HOME/.local/share/forge}"
 logs="$home/logs"
 now=$(date +%s)
@@ -40,12 +44,18 @@ fi
 
 suffix=""
 [ "${FORGE_DRY_RUN:-}" = "1" ] && suffix=" (dry run)"
+seen=""
 for fam in opus sonnet haiku other; do
   cur="${this_week[$fam]:-}"
   prev="${last_week[$fam]:-}"
+  if [ -n "$cur" ]; then
+    seen=1
+    echo "model drift: $fam resolved to $cur this week, ${prev:-nothing seen} last week"
+  fi
   if [ -n "$cur" ] && [ -n "$prev" ] && [ "$cur" != "$prev" ]; then
     printf "row\t%s\t%s%s\n" "$fam" "$fam resolved to $prev last week, $cur this week" "$suffix" >> "$FORGE_EFFECT_LOG"
   fi
 done
+[ -z "$seen" ] && echo "model drift: no attempt log under $logs named a model this week"
 exit 0
 ''']
