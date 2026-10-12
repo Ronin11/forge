@@ -159,6 +159,45 @@ mod tests {
     }
 
     #[test]
+    fn an_inline_claim_waits_for_its_projects_slot() {
+        let (_dir, mut f) = crate::worker::tests::fixture();
+        f.worker.min_free_gb = 0;
+        f.worker.slots = 2;
+        f.worker.project_slots = Some(1);
+        let busy = enqueue(&f, "heavy");
+        let adopted = enqueue(&f, "heavy");
+        let pid = i64::from(std::process::id());
+        assert_eq!(
+            task(&f, &opts(), pid, &[], |_| false).unwrap().unwrap().id,
+            busy
+        );
+        let why = capacity::claim_inline(&f, adopted, "heavy", pid).unwrap();
+        assert_eq!(
+            why.as_deref(),
+            Some("project heavy runs 1 of 1, the machine 1 of 2")
+        );
+        assert_eq!(
+            f.store.task(adopted).unwrap().unwrap().state,
+            TaskState::Queued
+        );
+        let mut done = f.store.task(busy).unwrap().unwrap();
+        done.state = TaskState::Succeeded;
+        f.store.update_task(&done).unwrap();
+        assert!(
+            capacity::claim_inline(&f, adopted, "heavy", pid)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            f.store.task(adopted).unwrap().unwrap().state,
+            TaskState::Running
+        );
+        // Held, the inline claim keeps the worker off the project.
+        enqueue(&f, "heavy");
+        assert!(task(&f, &opts(), pid, &[], |_| false).unwrap().is_none());
+    }
+
+    #[test]
     fn capacity_claim_is_atomic_across_competing_workers() {
         let (_dir, mut f) = crate::worker::tests::fixture();
         f.worker.min_free_gb = 0;

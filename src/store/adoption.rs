@@ -116,6 +116,22 @@ pub struct ManualStat {
 }
 
 impl Store {
+    /// Insert the queued adopted task `t` already owned by `pid`, the
+    /// `forge adopt` waiting on a project slot, in one transaction, so
+    /// orphan recovery blocks the task when that process dies before it
+    /// holds the slot and no reader ever sees it unowned.
+    pub fn insert_adopted_waiting(&self, t: &Task, pid: i64) -> Result<i64> {
+        let mut c = self.lock();
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let id = super::tasks::insert_task_row(&tx, t)?;
+        tx.execute(
+            "UPDATE tasks SET worker_pid=?2, worker_start=?3 WHERE id=?1",
+            rusqlite::params![id, pid, super::start_of(pid)],
+        )?;
+        tx.commit()?;
+        Ok(id)
+    }
+
     /// Put an envelope on an attempt the kernel wrote: how an adopted
     /// task's question reaches `forge requests` and `forge show`, which
     /// read it from the task's last attempt.

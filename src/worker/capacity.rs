@@ -26,6 +26,43 @@ pub fn used(store: &Store) -> Result<BTreeMap<String, usize>> {
     usage(&store.lock())
 }
 
+/// The budget an inline claim outside the worker is held to: the live
+/// claiming worker's published slots and settings (a `--jobs` override
+/// included), else `config.toml`'s as this process loaded them.
+pub fn budget(f: &Forge) -> (usize, crate::config::capacity::Settings) {
+    match snapshot(&f.paths) {
+        Some(s) => (s.slots, s.settings),
+        None => (f.worker.slots, f.worker.clone()),
+    }
+}
+
+/// Claim queued task `id` for `pid` the way the worker claims one: only
+/// while its project and the machine have a slot free, checked and taken
+/// in one write transaction, so `forge adopt` and a worker never spend one
+/// slot twice. `Ok(None)` when it claimed; else why not, as the line a
+/// waiting caller prints.
+pub fn claim_inline(f: &Forge, id: i64, project: &str, pid: i64) -> Result<Option<String>> {
+    let (total, settings) = budget(f);
+    let mut conn = f.store.lock();
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let used = usage(&tx)?;
+    if !settings.allows(total, &used, project) {
+        return Ok(Some(format!(
+            "project {project} runs {} of {}, the machine {} of {total}",
+            used.get(project).copied().unwrap_or(0),
+            settings.project_cap(project, total),
+            used.values().sum::<usize>()
+        )));
+    }
+    let changed = tx.execute(
+        "UPDATE tasks SET state='running', worker_pid=?2, worker_start=?3, started_at=?4 WHERE id=?1 AND state='queued'",
+        rusqlite::params![id, pid, crate::store::start_of(pid), crate::unix_now()],
+    )?;
+    tx.commit()?;
+    anyhow::ensure!(changed == 1, "task {id} could not be claimed");
+    Ok(None)
+}
+
 /// The one-minute system load divided by online CPUs (not the current
 /// process's affinity, which may be narrower than the machine).
 pub fn load_per_core() -> Option<f64> {

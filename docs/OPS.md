@@ -739,6 +739,15 @@ up to date.
   agent's: the integrator still never lands a change to `forge.toml`.
 - `--no-land` verifies only and leaves the verified branch for a human;
   `forge land <id>` lands it later through the same integrator.
+- Adopt counts against the project's slots. Its checks run in the
+  `forge adopt` process, not the worker's, but the adopted task is claimed
+  the way a worker claims one: only while its project (`[projects.<name>]
+  slots`, else `[worker] project_slots`) and the machine (`[worker] slots`,
+  or the running worker's `--jobs`) have a slot free, checked and taken in
+  one store transaction. With the slots full, `forge adopt` says so on
+  stderr and waits; while it verifies, the worker does not claim past the
+  cap. `forge log` lists the task as running and the `forge doctor` worker
+  row names it (`task N running: forge adopt inline`).
 
 A task whose landing re-run fails ends `failed` with the verified branch
 pushed, and `forge land <id>` refuses it (only a verified task lands). The
