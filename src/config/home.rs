@@ -34,6 +34,7 @@ struct HomeRaw {
     mechanic: super::resilience::MechanicRaw,
     #[serde(default)]
     admission: super::admission::AdmissionRaw,
+    #[serde(default)]
     alerts: super::resilience::AlertsRaw,
     /// Extra roots to discover plugins under, beyond `<FORGE_HOME>/plugins`
     /// (see `src/plugins.rs`). `~` expands; a relative path resolves against
