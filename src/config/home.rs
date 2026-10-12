@@ -26,6 +26,12 @@ struct HomeRaw {
     supervisor: SupervisorRaw,
     #[serde(default)]
     early_ending: EarlyEndingRaw,
+    #[serde(default)]
+    cache: super::resilience::CacheRaw,
+    #[serde(default)]
+    infra: super::resilience::InfraRaw,
+    #[serde(default)]
+    mechanic: super::resilience::MechanicRaw,
     /// Extra roots to discover plugins under, beyond `<FORGE_HOME>/plugins`
     /// (see `src/plugins.rs`). `~` expands; a relative path resolves against
     /// this config file's own directory (`<FORGE_HOME>`).
@@ -205,6 +211,10 @@ pub struct HomeConfig {
     pub sandbox: SandboxPaths,
     pub supervisor: Supervisor,
     pub early_ending: EarlyEnding,
+    /// `[cache]`, `[infra]`, `[mechanic]`: see `config::resilience`.
+    pub cache: super::resilience::Cache,
+    pub infra: super::resilience::Infra,
+    pub mechanic: super::resilience::Mechanic,
     /// Extra plugin roots, in the order given, resolved to absolute paths.
     pub plugin_dirs: Vec<PathBuf>,
     pub measure: Measure,
@@ -340,6 +350,39 @@ no_edit_calls = 30
 edits_without_commit = 15
 repeats = 5
 signals_to_end = 2
+
+[cache]
+# The provider's prompt cache as Forge assumes it: a cached prefix lives
+# this long after its last use, so a session continued later than this
+# re-reads its whole context at full price. On the `fresh` continuation
+# arm a cold session hands off past `cold_context_tokens` of context
+# instead of the warm threshold (120k). `forge doctor`'s prompt_cache row
+# warns when a claude provider read less than `warn_below` of its prompt
+# tokens from the cache over the last 24h.
+ttl_secs = 300
+cold_context_tokens = 60000
+warn_below = 0.5
+
+[infra]
+# A dead attempt that was the host's or the provider's fault does not
+# count against the task: timed out while the host carried more than
+# `load_per_core` or swapped more than `swap_gb` GiB, or ended with no
+# result inside `router_secs` on a provider or network error. `limit` in
+# a row fails the task uncounted rather than looping on a dead host.
+load_per_core = 5.0
+swap_gb = 4.0
+router_secs = 600
+limit = 3
+
+[mechanic]
+# A failed task no mechanical kind fits is retried once per lineage on
+# this model, with its branch and journal as context, before it reaches
+# you; at most `strong_per_day` such retries a day across every lineage.
+# `strong_lane = false` (or FORGE_STRONG_LANE=0 for one process) turns the
+# rung off: every such failure is then yours.
+strong_lane = true
+strong_model = \"opus\"
+strong_per_day = 10
 
 [measure]
 # Fixed fraction of tasks assigned to the journal's control arm (run with
@@ -629,6 +672,9 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
             repeats: raw.early_ending.repeats.unwrap_or(5),
             signals_to_end: raw.early_ending.signals_to_end.unwrap_or(2),
         },
+        cache: super::resilience::build_cache(raw.cache),
+        infra: super::resilience::build_infra(raw.infra),
+        mechanic: super::resilience::build_mechanic(raw.mechanic),
         plugin_dirs: raw
             .plugin_dirs
             .iter()
@@ -823,6 +869,24 @@ mod tests {
             from_defaults.early_ending.signals_to_end
         );
         assert_eq!(from_template.trust, from_defaults.trust);
+        assert_eq!(from_template.cache, from_defaults.cache);
+        assert_eq!(from_template.infra, from_defaults.infra);
+        assert_eq!(from_template.mechanic, from_defaults.mechanic);
+    }
+
+    #[test]
+    fn cache_infra_and_mechanic_override_from_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[cache]\nttl_secs = 3600\n[infra]\nlimit = 1\n[mechanic]\nstrong_model = \"sonnet\"\n",
+        )
+        .unwrap();
+        let c = load_home(dir.path()).unwrap();
+        assert_eq!(c.cache.ttl_secs, 3600);
+        assert_eq!(c.cache.warn_below, 0.5);
+        assert_eq!(c.infra.limit, 1);
+        assert_eq!(c.mechanic.strong_model, "sonnet");
     }
 
     #[test]

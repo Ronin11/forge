@@ -112,7 +112,7 @@ fn the_base_moving_twice_during_merged_tree_verification_conflicts_once_and_stil
     let (state, reason, _) = e.task(1);
     assert_eq!(state, "succeeded", "{reason}");
     assert!(reason.starts_with("landed main @ "), "{reason}");
-    assert!(err.contains("conflicts in"), "{err}");
+    assert!(err.contains("would conflict in answer.txt"), "{err}");
     assert_eq!(e.attempts(1).len(), 2, "the coder ran once more to merge");
     assert!(
         e.log_text(1, 2).contains("git merge forge/main"),

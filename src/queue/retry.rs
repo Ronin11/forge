@@ -38,6 +38,9 @@ pub struct RetryOverrides {
     pub timeout_secs: Option<u32>,
     pub workflow: Option<String>,
     pub provider: Option<String>,
+    /// The model the retry pins (`--model`), for the mechanic's strong
+    /// lane; `None` keeps the task's own.
+    pub model: Option<String>,
     /// The operator's flag letting this retry change protected paths, for
     /// an adopted task whose original adoption lacked it (`adopt::retry`);
     /// never lowers what the task it retries already allowed.
@@ -54,6 +57,7 @@ impl RetryOverrides {
             timeout_secs: None,
             workflow: None,
             provider: None,
+            model: None,
             allow_protected: false,
         }
     }
@@ -73,7 +77,11 @@ pub fn retry_request(
         repo: PathBuf::from(&t.repo),
         task: task.unwrap_or_else(|| t.task.clone()),
         title: t.title.clone(),
-        model: Some(t.model.clone()),
+        model: Some(if first {
+            o.model.clone().unwrap_or_else(|| t.model.clone())
+        } else {
+            t.model.clone()
+        }),
         // Empty means the original task named no `--provider` and
         // resolved per role; a retry should resolve the same way, not
         // pin whatever "code" happened to pick at the time.

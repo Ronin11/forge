@@ -96,6 +96,13 @@ pub(super) async fn retry_after_attempt(
         return Ok(Some(AttemptFlow::Continue));
     }
     state.consecutive_refusals = 0;
+    // A death that was the host's or the provider's is refunded the same
+    // way, and the session goes again (`infra`).
+    if a.state != AttemptState::Unverified
+        && let Some(flow) = infra::absorb(f, state, run, seq, id, a, outcome)?
+    {
+        return Ok(Some(flow));
+    }
     // An environment need the policy covers (a refused host, a host cache) is
     // applied and rerun without counting; anything else falls through.
     match environment_after(f, t, cfg, a, verdict).await? {
@@ -256,6 +263,7 @@ mod tests {
                 session: "session".into(),
                 start_sha: "base".into(),
                 fresh_from: None,
+                cold: false,
             }),
             ..Default::default()
         };

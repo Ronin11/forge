@@ -7,6 +7,7 @@ use super::*;
 mod attempts;
 mod bookkeeping;
 mod continuation;
+mod infra;
 mod provider_hold;
 mod success;
 
@@ -402,6 +403,7 @@ fn nudge_placeholder_question(
             session: sid.clone(),
             start_sha: a.start_sha.clone(),
             fresh_from: fresh_arm(t).then(|| PathBuf::from(&a.log_path)),
+            cold: false,
         },
         "there is no open question; finish the task and return a result".to_string(),
     ))

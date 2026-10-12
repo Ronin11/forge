@@ -63,3 +63,33 @@ pub fn op(s: &Store, task: i64, name: &str, ok: bool, detail: &str, at: i64) {
         )
         .unwrap();
 }
+
+/// A counted attempt of `task` on `provider` (runner `runner`) finished at
+/// `at`, whose result frame reported these prompt-token counts.
+pub fn attempt_tokens(
+    s: &Store,
+    task: i64,
+    provider: &str,
+    runner: &str,
+    at: i64,
+    (input, cache_read, cache_creation): (i64, i64, i64),
+) -> i64 {
+    let c = s.lock();
+    c.execute(
+        "INSERT INTO attempts (task_id, attempt_no, state, reason, started_at, finished_at, step,
+                               provider, runner, input_tokens, output_tokens,
+                               cache_read_input_tokens, cache_creation_input_tokens)
+         VALUES (?1, 1, 'succeeded', '', ?2, ?2, 'code', ?3, ?4, ?5, 1, ?6, ?7)",
+        params![
+            task,
+            at,
+            provider,
+            runner,
+            input,
+            cache_read,
+            cache_creation
+        ],
+    )
+    .unwrap();
+    c.last_insert_rowid()
+}

@@ -100,6 +100,10 @@ pub struct Outcome {
     pub subtype: Option<String>,
     /// The CLI’s terminal diagnosis, including exhausted structured-output retries.
     pub terminal_reason: Option<String>,
+    /// The host the moment the process ended, sampled only for a run that
+    /// timed out or returned no answer (`attempt::run_attempt`), so
+    /// `engine::step::infra` can tell a starved host from a stuck agent.
+    pub host: Option<crate::host::Sample>,
     /// Everything the agent wrote to stderr across the run. A directive job
     /// step's failure tail quotes the last lines of this.
     pub stderr_text: String,

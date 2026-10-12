@@ -391,7 +391,14 @@ pub async fn integrate(
         }
         if main_sha != base_sha && !git::is_ancestor(wt, &main_sha, "HEAD").await {
             let message = format!("Merge {} into {}", t.base_branch, t.branch);
-            match git::merge(wt, &main_sha, &message).await.task()? {
+            // merge-tree answers in the object store alone: a doomed merge
+            // never touches the landing tree, and only one it calls clean
+            // is made for real.
+            let merged = match git::would_conflict(wt, "HEAD", &main_sha).await {
+                Some(files) => git::Merge::Conflict(files),
+                None => git::merge(wt, &main_sha, &message).await.task()?,
+            };
+            match merged {
                 git::Merge::UpToDate => {}
                 git::Merge::Merged(m) => {
                     detail = format!(
@@ -415,10 +422,10 @@ pub async fn integrate(
                         .await
                         .task()?;
                     let d = format!(
-                        "{} moved to {}; conflicts in {}",
+                        "{} moved to {}; would conflict {}",
                         t.base_branch,
                         &main_sha[..8],
-                        files.join(", ")
+                        git::merge_tree::in_files(&files)
                     );
                     op(
                         f,
@@ -785,6 +792,12 @@ pub enum IntegrateStep {
     Verified {
         task_id: i64,
     },
+    /// merge-tree said this branch would conflict with what was merged
+    /// before it: left out, and the task blocked naming the files.
+    Conflict {
+        task_id: i64,
+        files: Vec<String>,
+    },
 }
 
 impl IntegrateStep {
@@ -799,19 +812,19 @@ impl IntegrateStep {
             Self::Verified { task_id } => {
                 format!("task {task_id:<4} verified with everything before it")
             }
+            Self::Conflict { task_id, files } => format!(
+                "task {task_id:<4} CONFLICT {}; blocked, left out",
+                git::merge_tree::in_files(files)
+            ),
         }
     }
 }
 
-/// How `integrate_many` ended: every named branch merged and left as a
-/// branch on the base, or the task where it stopped and why.
+/// How `integrate_many` ended: every branch that merges cleanly merged
+/// and left as a branch on the base (the conflicting ones are steps of
+/// their own), or the task whose checks failed and stopped it.
 pub enum IntegrateOutcome {
     Ready,
-    Conflict {
-        task_id: i64,
-        files: Vec<String>,
-        completed: usize,
-    },
     VerifyFailed {
         task_id: i64,
         reason: String,
@@ -836,8 +849,12 @@ pub struct IntegrateReport {
 /// steps among them (bc36fdb) re-runs a shipped step under a new index.
 fn conflict_feedback(base: &str, placed: &str, files: &[String]) -> String {
     let mut feedback = format!(
-        "The base branch `{base}` has moved since your branch started, and merging it into your branch conflicts in:\n{}\nThe current `{base}` is in your clone as the local branch `{placed}`. Run `git merge {placed}`, resolve those conflicts, run the checks, and commit the merge. Report the files you resolved as your changes.",
-        files.join("\n"),
+        "The base branch `{base}` has moved since your branch started, and merging it into your branch conflicts {}.\nThe current `{base}` is in your clone as the local branch `{placed}`. Run `git merge {placed}`, resolve those conflicts, run the checks, and commit the merge. Report the files you resolved as your changes.",
+        if files.is_empty() {
+            "(git did not report which files; `git merge` will show them)".to_string()
+        } else {
+            format!("in:\n{}", files.join("\n"))
+        },
     );
     if files.iter().any(|f| is_migration_ladder(f)) {
         feedback.push_str(&format!(
@@ -857,6 +874,17 @@ fn short(sha: &str) -> &str {
 }
 
 impl IntegrateReport {
+    /// The tasks left out because they would conflict, with their files.
+    pub fn conflicts(&self) -> Vec<(i64, &[String])> {
+        self.steps
+            .iter()
+            .filter_map(|s| match s {
+                IntegrateStep::Conflict { task_id, files } => Some((*task_id, files.as_slice())),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn render(&self) -> String {
         let mut lines = vec![format!(
             "base     {} @ {}",
@@ -879,20 +907,6 @@ impl IntegrateReport {
                     self.branch,
                 ));
             }
-            IntegrateOutcome::Conflict {
-                task_id,
-                files,
-                completed,
-            } => {
-                lines.push(format!(
-                    "task {task_id:<4} CONFLICT in {}",
-                    files.join(", ")
-                ));
-                lines.push(format!(
-                    "stopped after {completed} task(s); the scratch clone is at {}",
-                    self.dir.display()
-                ));
-            }
             IntegrateOutcome::VerifyFailed {
                 task_id,
                 reason,
@@ -911,10 +925,52 @@ impl IntegrateReport {
     }
 }
 
+/// Every task's branch fetched into the scratch clone `dir`, with its tip,
+/// in the order `integrate_many` merges them: the ones `git merge-tree`
+/// says merge cleanly onto the base first, in the order named, and the
+/// ones that already conflict with it after them.
+async fn fetch_in_merge_order<'a>(
+    dir: &Path,
+    repo: &Path,
+    remote_url: Option<&str>,
+    tasks: &'a [Task],
+) -> Result<Vec<(&'a Task, String)>> {
+    let mut tips = Vec::new();
+    for t in tasks {
+        // Where the branch lives: the repository, else the remote, else the worktree.
+        let src = if git::ref_exists(repo, &format!("refs/heads/{}", t.branch)).await {
+            repo.display().to_string()
+        } else if let Some(url) = remote_url
+            && git::remote_branch_exists(url, &t.branch).await?
+        {
+            url.to_string()
+        } else if Path::new(&t.worktree).join(".git").exists() {
+            t.worktree.clone()
+        } else {
+            bail!(
+                "task {}'s branch {} is nowhere: not in the repository, the remote, or a worktree",
+                t.id,
+                t.branch
+            );
+        };
+        git::fetch_ref(dir, &src, &t.branch)
+            .await
+            .with_context(|| format!("fetching {} from {src}", t.branch))?;
+        let tip = git::rev_parse(dir, "FETCH_HEAD").await?;
+        let clean = git::would_conflict(dir, "HEAD", &tip).await.is_none();
+        tips.push((clean, t, tip));
+    }
+    tips.sort_by_key(|(clean, _, _)| !clean);
+    Ok(tips.into_iter().map(|(_, t, tip)| (t, tip)).collect())
+}
+
 /// The integrator's merge-and-verify half, by hand, for a repository that
 /// keeps a human at the gate: each named task's branch merged onto the base
 /// in order, every check with every hidden suite after each, the result
-/// left as a branch. Shares `verify_merged_tree` with `integrate`: the
+/// left as a branch. A branch that `git merge-tree` says would conflict
+/// with the base or with what merged before it is left out and its task
+/// blocked naming the files; the rest still integrate, the clean ones
+/// first. Shares `verify_merged_tree` with `integrate`: the
 /// difference is that every task here merges unconditionally (there is no
 /// existing branch that might already contain the base) and the `Subject`
 /// carries no task-specific checks, since the result is not any one task's
@@ -982,39 +1038,29 @@ pub async fn integrate_many(f: &Forge, ids: &[i64]) -> Result<IntegrateReport> {
     // Merging several tasks' branches for a combined verify: no single
     // task's provider resolved this step, so it gets no model endpoint.
     f.allow_egress(&dir, &cfg_base, trust, None);
+    let tips = fetch_in_merge_order(&dir, &repo, remote_url.as_deref(), &tasks).await?;
     let mut steps = Vec::new();
     let mut outcome = IntegrateOutcome::Ready;
-    for (completed, t) in tasks.iter().enumerate() {
-        // Where the branch lives: the repository, else the remote, else the worktree.
-        let src = if git::ref_exists(&repo, &format!("refs/heads/{}", t.branch)).await {
-            repo.display().to_string()
-        } else if let Some(url) = &remote_url
-            && git::remote_branch_exists(url, &t.branch).await?
-        {
-            url.clone()
-        } else if Path::new(&t.worktree).join(".git").exists() {
-            t.worktree.clone()
-        } else {
-            bail!(
-                "task {}'s branch {} is nowhere: not in the repository, the remote, or a worktree",
-                t.id,
-                t.branch
-            );
-        };
-        git::fetch_ref(&dir, &src, &t.branch)
-            .await
-            .with_context(|| format!("fetching {} from {src}", t.branch))?;
+    let mut merged_ids: Vec<i64> = Vec::new();
+    for (completed, (t, tip)) in tips.into_iter().enumerate() {
         let message = format!("Integrate task {}: {}", t.id, t.branch);
-        let merged = match git::merge(&dir, "FETCH_HEAD", &message).await? {
+        // Checked again against what is merged so far: two branches that
+        // each merge cleanly onto the base can still conflict with each
+        // other. A doomed merge never touches the scratch clone.
+        let merged = match git::would_conflict(&dir, "HEAD", &tip).await {
+            Some(files) => git::Merge::Conflict(files),
+            None => git::merge(&dir, &tip, &message).await?,
+        };
+        let merged = match merged {
             git::Merge::UpToDate => None,
             git::Merge::Merged(sha) => Some(sha),
             git::Merge::Conflict(files) => {
-                outcome = IntegrateOutcome::Conflict {
+                block_conflicting(f, t.id, &cfg.base_branch, &merged_ids, &files)?;
+                steps.push(IntegrateStep::Conflict {
                     task_id: t.id,
                     files,
-                    completed,
-                };
-                break;
+                });
+                continue;
             }
         };
         steps.push(match &merged {
@@ -1056,6 +1102,7 @@ pub async fn integrate_many(f: &Forge, ids: &[i64]) -> Result<IntegrateReport> {
             break;
         }
         steps.push(IntegrateStep::Verified { task_id: t.id });
+        merged_ids.push(t.id);
     }
     if matches!(outcome, IntegrateOutcome::Ready) {
         git::push_to_repo(&f.paths.home, &repo, &dir, &branch).await?;
@@ -1071,6 +1118,35 @@ pub async fn integrate_many(f: &Forge, ids: &[i64]) -> Result<IntegrateReport> {
         steps,
         outcome,
     })
+}
+
+/// Block a verified task `integrate_many` left out: its branch would
+/// conflict, in `files`, with the base and the tasks merged before it.
+fn block_conflicting(
+    f: &Forge,
+    id: i64,
+    base: &str,
+    merged: &[i64],
+    files: &[String],
+) -> Result<()> {
+    let Some(mut t) = f.store.task(id)? else {
+        bail!("no task {id}");
+    };
+    let onto = if merged.is_empty() {
+        format!("`{base}`")
+    } else {
+        let ids: Vec<String> = merged.iter().map(|i| i.to_string()).collect();
+        format!("`{base}` with task(s) {}", ids.join(", "))
+    };
+    t.state = TaskState::Blocked;
+    t.reason = format!(
+        "would conflict {} when integrated onto {onto}; merge by hand or retry it on the new base",
+        git::merge_tree::in_files(files)
+    );
+    t.worker_pid = None;
+    f.store.update_task(&t)?;
+    f.report.emit(t.id, Event::Note { text: &t.reason });
+    Ok(())
 }
 
 /// Whether a blocked task's last attempt, though it did not settle,
@@ -1330,7 +1406,7 @@ mod tests {
     }
 
     #[test]
-    fn render_stops_at_a_conflict_and_names_the_scratch_clone() {
+    fn render_names_a_conflict_left_out_and_integrates_the_rest() {
         let report = IntegrateReport {
             base_branch: "main".into(),
             base_sha: "abc123456789".into(),
@@ -1344,20 +1420,25 @@ mod tests {
                     sha: "deadbeef00".into(),
                 },
                 IntegrateStep::Verified { task_id: 1 },
+                IntegrateStep::Conflict {
+                    task_id: 3,
+                    files: vec!["answer.txt".into(), "b.txt".into()],
+                },
             ],
-            outcome: IntegrateOutcome::Conflict {
-                task_id: 3,
-                files: vec!["answer.txt".into()],
-                completed: 1,
-            },
+            outcome: IntegrateOutcome::Ready,
         };
         assert_eq!(
             report.render(),
             "base     main @ abc12345\n\
              task 1    merged forge/task-1 as deadbeef\n\
              task 1    verified with everything before it\n\
-             task 3    CONFLICT in answer.txt\n\
-             stopped after 1 task(s); the scratch clone is at /scratch"
+             task 3    CONFLICT in answer.txt, b.txt; blocked, left out\n\
+             integrated 1 task(s) as forge/integration-1 in /repo\n  \
+             git -C /repo merge --ff-only forge/integration-1"
+        );
+        assert_eq!(
+            report.conflicts(),
+            vec![(3, &["answer.txt".to_string(), "b.txt".to_string()][..])]
         );
     }
 

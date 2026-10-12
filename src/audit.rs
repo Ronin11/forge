@@ -60,6 +60,11 @@ pub struct Inputs {
     /// attempt continued a capped one.
     #[serde(default)]
     pub continuation: Option<String>,
+    /// What Forge forecast for the previous session's prompt cache when
+    /// it decided this continuation (`warm` or `cold`, see
+    /// `handoff::cache_cold`); only on a continuation.
+    #[serde(default)]
+    pub cache_forecast: Option<String>,
     /// The journal the agent was shown: every earlier attempt in this piece
     /// of work, what it said it did, and what the kernel found. Verbatim.
     #[serde(default)]
@@ -95,6 +100,10 @@ pub struct Outputs {
     /// times: recorded by the sandbox's relay whether or not a tool said so.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refused: Vec<crate::egress::Refused>,
+    /// The host when the agent process died, for a run that timed out or
+    /// returned no answer (`host::Sample`); what the infra classifier read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_at_death: Option<crate::host::Sample>,
 }
 
 /// A diagnosis line: what happened, and what the operator can do.

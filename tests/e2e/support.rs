@@ -459,8 +459,11 @@ impl Env {
         if self.no_sandbox {
             c.env("FORGE_SANDBOX", "0");
         }
-        // The supervisor only runs where a test hands it a fake.
+        // The supervisor only runs where a test hands it a fake, and the
+        // mechanic's strong lane only where a test asks for it: on, every
+        // failed run would file a retry and shift every task id after it.
         c.env("FORGE_SUPERVISOR", "0");
+        c.env("FORGE_STRONG_LANE", "0");
         c
     }
 

@@ -48,6 +48,34 @@ pub struct RefusalRow {
     pub outputs_json: String,
 }
 
+/// One provider's prompt-token totals over a window, summed from its
+/// attempts' result-frame usage (`Attempt::input_tokens` and the two
+/// cache columns): what the `prompt_cache` watch reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheUsage {
+    pub provider: String,
+    pub runner: String,
+    pub attempts: i64,
+    pub input: i64,
+    pub cache_read: i64,
+    pub cache_creation: i64,
+}
+
+impl CacheUsage {
+    /// Every prompt token the provider was sent: new, written to the
+    /// cache, or read from it.
+    pub fn prompt_tokens(&self) -> i64 {
+        self.input + self.cache_read + self.cache_creation
+    }
+
+    /// The fraction of prompt tokens read from the cache; `None` with no
+    /// prompt tokens at all.
+    pub fn hit_ratio(&self) -> Option<f64> {
+        let total = self.prompt_tokens();
+        (total > 0).then(|| self.cache_read as f64 / total as f64)
+    }
+}
+
 /// A watch's remembered state (`doctor_marks`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mark {
@@ -127,6 +155,33 @@ impl Store {
                 project: r.get("project")?,
                 branch: r.get("branch")?,
                 verdict_json: r.get("verdict_json")?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Prompt-token totals per provider and runner over the attempts that
+    /// finished since `since` and reported usage, counted attempts only
+    /// (a refunded one never ran to its own result).
+    pub fn cache_usage_since(&self, since: i64) -> Result<Vec<CacheUsage>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT provider, runner, COUNT(*) AS n,
+                    COALESCE(SUM(input_tokens), 0) AS input,
+                    COALESCE(SUM(cache_read_input_tokens), 0) AS cache_read,
+                    COALESCE(SUM(cache_creation_input_tokens), 0) AS cache_creation
+             FROM attempts
+             WHERE finished_at >= ?1 AND input_tokens IS NOT NULL AND refunded = 0
+             GROUP BY provider, runner ORDER BY provider, runner",
+        )?;
+        let rows = stmt.query_map([since], |r| {
+            Ok(CacheUsage {
+                provider: r.get("provider")?,
+                runner: r.get("runner")?,
+                attempts: r.get("n")?,
+                input: r.get("input")?,
+                cache_read: r.get("cache_read")?,
+                cache_creation: r.get("cache_creation")?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

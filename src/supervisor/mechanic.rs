@@ -5,9 +5,12 @@
 //! kernel acts once per kind per lineage: a retry (twice for a landing
 //! conflict), or, for a ratchet, a refile that supersedes the failed task
 //! with guidance appended. Anything else, or a kind already spent on this
-//! lineage, is left for the operator: a decision names the failure and
-//! what was tried, and the task stays `Failed` (already actionable with
-//! `forge retry`/`forge withdraw`, so nothing here reopens it).
+//! lineage, goes to the strong lane: a task whose agent ran and failed is
+//! retried once per lineage on `[mechanic] strong_model` with its branch
+//! and journal as context, within a daily cap. Only then is it left for
+//! the operator: a decision names the failure and what was tried, and the
+//! task stays `Failed` (already actionable with `forge retry`/`forge
+//! withdraw`, so nothing here reopens it).
 //!
 //! Every action, including the operator hand-off, is one decision row
 //! (`Store::insert_decision_by` + `set_decision_kind`), so `forge stats`
@@ -35,6 +38,9 @@ pub enum Kind {
     Ratchet,
     TurnCap,
     CleanTree,
+    /// Not a mechanical kind but the rung before the operator: the same
+    /// task again on the strong model, once per lineage.
+    StrongLane,
 }
 
 impl Kind {
@@ -49,6 +55,7 @@ impl Kind {
             Kind::Ratchet => "mechanic-ratchet",
             Kind::TurnCap => "mechanic-turn-cap",
             Kind::CleanTree => "mechanic-clean-tree",
+            Kind::StrongLane => "mechanic-strong-lane",
         }
     }
 
@@ -59,6 +66,7 @@ impl Kind {
             Kind::Ratchet => "ratchet",
             Kind::TurnCap => "turn cap with commits",
             Kind::CleanTree => "L0 clean-tree",
+            Kind::StrongLane => "strong lane",
         }
     }
 
@@ -152,6 +160,82 @@ async fn classify(
         }));
     }
     Ok(None)
+}
+
+/// Why the strong lane does not apply to `t`, when it does not: it is for
+/// a task whose agent ran and failed on a claude lane below the strong
+/// model, once per lineage, within `[mechanic] strong_per_day`.
+fn strong_lane_ineligible(
+    f: &Forge,
+    t: &Task,
+    attempts: &[crate::store::Attempt],
+) -> Result<Option<String>> {
+    use crate::store::AttemptState::{AgentFailed, ChecksFailed};
+    let cfg = &f.mechanic;
+    if !cfg.strong_lane {
+        return Ok(Some(
+            "the strong lane is off ([mechanic] strong_lane)".into(),
+        ));
+    }
+    let ran = attempts
+        .iter()
+        .any(|a| a.state == ChecksFailed || (a.state == AgentFailed && a.num_turns > 0));
+    if !ran {
+        return Ok(Some("no agent attempt ran to escalate".into()));
+    }
+    match f.effective_provider(t, "code") {
+        Ok(p) if p.runner == crate::agent::Runner::ClaudeCli => {}
+        Ok(p) => return Ok(Some(format!("provider {} is not a claude lane", p.name))),
+        Err(e) => return Ok(Some(format!("{e:#}"))),
+    }
+    if spent_in_lineage(f, t.id, Kind::StrongLane)? >= Kind::StrongLane.budget() {
+        return Ok(Some(
+            "the strong lane was already tried on this lineage".into(),
+        ));
+    }
+    if t.model == cfg.strong_model {
+        return Ok(Some(format!("already on {}", cfg.strong_model)));
+    }
+    let today = f
+        .store
+        .decisions_of_kind_since(Kind::StrongLane.as_str(), crate::unix_now() - 86_400)?
+        .len();
+    if today >= cfg.strong_per_day as usize {
+        return Ok(Some(format!(
+            "the strong lane's cap of {} a day is reached",
+            cfg.strong_per_day
+        )));
+    }
+    Ok(None)
+}
+
+/// The rung before the operator: the strong lane when it applies, else
+/// the hand-off. `tried` says what the mechanic found.
+async fn escalate(
+    f: &Forge,
+    t: &Task,
+    attempts: &[crate::store::Attempt],
+    tried: &str,
+) -> Result<()> {
+    if let Some(why) = strong_lane_ineligible(f, t, attempts)? {
+        return block(f, t, &format!("{tried}; {why}"));
+    }
+    let model = f.mechanic.strong_model.clone();
+    let c = Classified {
+        kind: Kind::StrongLane,
+        evidence: format!("{tried}; once on {model} with the branch and journal as context"),
+    };
+    retry(
+        f,
+        t,
+        &c,
+        RetryOverrides {
+            model: Some(model),
+            ..RetryOverrides::none()
+        },
+        None,
+    )
+    .await
 }
 
 /// Every decision already recorded on `id`'s lineage with kind `kind`.
@@ -254,7 +338,7 @@ fn block(f: &Forge, t: &Task, tried: &str) -> Result<()> {
         repo: &t.repo,
         question: &format!("task {} failed: {}", t.id, t.reason),
         answer: &format!(
-            "not a recognized mechanical follow-up (or that kind was already spent on this lineage): {tried}. Needs the operator: forge retry {} or forge withdraw {}",
+            "not a recognized mechanical follow-up (or that kind was already spent on this lineage) and not for the strong lane: {tried}. Needs the operator: forge retry {} or forge withdraw {}",
             t.id, t.id
         ),
         answered_by: "mechanic",
@@ -294,20 +378,18 @@ pub async fn act(f: &Forge, id: i64) -> Result<()> {
         Err(e) => return block(f, &t, &format!("could not classify: {e:#}")),
     };
     let Some(c) = classify(f, &t, &verdict, &changed, &cfg).await? else {
-        return block(f, &t, &format!("no mechanical kind matched: {}", t.reason));
+        let tried = format!("no mechanical kind matched: {}", t.reason);
+        return escalate(f, &t, &attempts, &tried).await;
     };
     let spent = spent_in_lineage(f, id, c.kind)?;
     if spent >= c.kind.budget() {
-        return block(
-            f,
-            &t,
-            &format!(
-                "{} already tried {} time(s) on this lineage: {}",
-                c.kind.label(),
-                spent,
-                c.evidence
-            ),
+        let tried = format!(
+            "{} already tried {} time(s) on this lineage: {}",
+            c.kind.label(),
+            spent,
+            c.evidence
         );
+        return escalate(f, &t, &attempts, &tried).await;
     }
     match c.kind {
         Kind::LoadFlake | Kind::LandingConflict => {
@@ -335,6 +417,7 @@ pub async fn act(f: &Forge, id: i64) -> Result<()> {
             retry(f, &t, &c, RetryOverrides::none(), Some(text)).await
         }
         Kind::Ratchet => refile(f, &t, &c).await,
+        Kind::StrongLane => unreachable!("the strong lane is never classified, only escalated to"),
     }
 }
 

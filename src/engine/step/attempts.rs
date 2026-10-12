@@ -69,6 +69,8 @@ pub(super) struct AttemptLoop {
     pub(super) last_checks: Vec<CheckResult>,
     pub(super) capped_committed: bool,
     pub(super) consecutive_refusals: u32,
+    /// Infra deaths in a row (`infra::absorb`), none counted.
+    pub(super) consecutive_infra: u32,
     // A placeholder question gets one nudge, including beyond the attempt budget.
     pub(super) nudged: bool,
     pub(super) nudge_pending: bool,

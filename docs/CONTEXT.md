@@ -165,7 +165,13 @@ resumed continuations. The `continuation` factor, drawn from
 - `fresh` starts a new session, without `--resume`, when a continuation is
   needed: the attempt hit the turn cap or was stopped early, or (for the
   resume-on-failure path) the log's last usage shows a context over
-  `handoff::CONTEXT_THRESHOLD_TOKENS` (120k). Its prompt is the ordinary one
+  `handoff::CONTEXT_THRESHOLD_TOKENS` (120k), or over `[cache]
+  cold_context_tokens` (60k) when the session's cache is forecast cold:
+  the agent process has been dead longer than `[cache] ttl_secs` (300,
+  the provider's ephemeral cache) by the time the continuation is
+  decided (`handoff::cache_cold`), so resuming would re-read the whole
+  context at the input price where a fresh session re-reads only the
+  shared prefix. Its prompt is the ordinary one
   plus a handoff section built entirely by Forge, never by a model:
   the commits on the branch since the attempt started (`git log --oneline`)
   and `git diff --stat`; the journal's `found:` lines; the distinct paths the
@@ -173,6 +179,8 @@ resumed continuations. The `continuation` factor, drawn from
   structured output or result text; and the task.
 
 The arm is recorded as `continuation` in the attempt's `inputs_json`
-(`resumed` stays empty for fresh). `forge stats --factors` reports
+(`resumed` stays empty for fresh), and the forecast as `cache_forecast`
+(`warm` or `cold`) on every continuation, whichever arm, so the two can
+be compared by it. `forge stats --factors` reports
 `continuation:resume` against `continuation:fresh` on cost per landed task
 and landing rate. Test: `the_fresh_continuation_arm_launches_without_resume_and_carries_a_handoff`.

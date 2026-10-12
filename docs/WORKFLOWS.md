@@ -117,17 +117,57 @@ mechanical kinds by `src/supervisor/mechanic.rs`, run right after the task ends
 - **L0 clean-tree**: retried once with a line appended saying to commit
   or gitignore everything.
 
-Anything else, or a kind already spent on this lineage, is left for the
-operator: a decision names the failure and what was tried, and the task
-stays `Failed` (already actionable with `forge retry`/`forge withdraw`,
-so nothing here reopens it). Every action, including that hand-off, is a
-decision row (`answered_by: "mechanic"`, `kind` one of
-`mechanic-load-flake`, `mechanic-landing-conflict`, `mechanic-ratchet`,
-`mechanic-turn-cap`, `mechanic-clean-tree`, or `mechanic-block`), which
-`forge stats --mechanic` counts per kind. A ratchet refile links back to
+Anything else, or a kind already spent on this lineage, goes to the
+**strong lane** before the operator: when the task's agent actually ran
+and failed (an attempt ended `ChecksFailed`, or `AgentFailed` after at
+least one turn), its provider is a claude lane, its model is not already
+`[mechanic] strong_model` (default `opus`), the lane has not been tried
+on this lineage, and fewer than `[mechanic] strong_per_day` (default 10)
+strong-lane retries were filed in the last day, the task is retried once
+with `--model <strong_model>` pinned (`[mechanic] strong_lane = false`,
+or `FORGE_STRONG_LANE=0` for one process, turns the rung off; the e2e
+harness runs with it off, as it does the supervisor). Nothing is appended to the text:
+the retry starts from the failed branch (`worktree::reuse_branch`) and
+carries the lineage's journal, which is the failed attempt as context.
+A task that does not qualify, or whose strong-lane retry failed again, is
+left for the operator: a decision names the failure, what was tried and
+why the lane did not apply, and the task stays `Failed` (already
+actionable with `forge retry`/`forge withdraw`, so nothing here reopens
+it). Every action, including that hand-off, is a decision row
+(`answered_by: "mechanic"`, `kind` one of `mechanic-load-flake`,
+`mechanic-landing-conflict`, `mechanic-ratchet`, `mechanic-turn-cap`,
+`mechanic-clean-tree`, `mechanic-strong-lane`, or `mechanic-block`),
+which `forge stats --mechanic` counts per kind. A ratchet refile links back to
 the task it supersedes only through that decision's citations until task
 1057's `supersedes` column lands; `src/supervisor/mechanic.rs` marks with a `TODO`
 where to switch to `--supersedes` once it does.
+
+### Infra failures: a dead host or provider is not a strike
+
+Before the mechanic ever sees a task, the attempt loop refunds a death
+that was the host's or the provider's (`src/engine/step/infra.rs`), the
+way it refunds a provider's refusal: the attempt does not count against
+`max_attempts`, the same session goes again with the same feedback, and
+the note line reads `infra    <why>; it does not count as an attempt`.
+Two shapes qualify, judged after the refusal check and never for an
+unverified attempt:
+
+- **a timeout on a starved host**: the agent hit the task's timeout and
+  the host, sampled the moment the process died and before any check
+  ran (`host::Sample::now`, kept on the attempt's outputs as
+  `host_at_death`), carried more than `[infra] load_per_core` (default
+  5.0) one-minute load per online core or more than `[infra] swap_gb`
+  (default 4) GiB of swap in use;
+- **a provider failure before the agent could work**: no answer (or an
+  error result) inside `[infra] router_secs` (default 600) with a
+  provider or network error in the result text, the CLI's terminal
+  diagnosis or its stderr (`API Error: 5xx`, `overloaded`, `fetch
+  failed`, `ECONNRESET`, ... never a 4xx, which is someone's fault).
+
+`[infra] limit` (default 3) such deaths in a row end the step with the
+task `Failed`, uncounted, with the last reason, so a dead host or
+provider never loops. A runner lost under the attempt (the worker
+exiting) was already requeued uncounted (`Store::requeue`).
 
 See docs/ACTIONS.md for every built-in workflow, its steps in order, and
 what each action does.

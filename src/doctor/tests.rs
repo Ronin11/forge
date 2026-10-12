@@ -301,3 +301,19 @@ fn check_project_secrets_names_an_unresolved_reference() {
         [("p".to_string(), [("L".to_string(), "x".to_string())].into())].into();
     assert!(check_project_secrets(&f.paths, &none).is_none());
 }
+
+#[test]
+fn git_version_row_warns_below_merge_tree_write_tree() {
+    let ok = binaries::git_version_row("git version 2.43.0");
+    assert_eq!((ok.name.as_str(), ok.status), ("git.version", Status::Ok));
+    let old = binaries::git_version_row("git version 2.37.1");
+    assert_eq!(old.status, Status::Warn);
+    assert!(old.detail.contains("older than 2.38"), "{}", old.detail);
+    assert!(
+        old.detail.contains("merge-tree --write-tree"),
+        "{}",
+        old.detail
+    );
+    assert_eq!(old.hint, "install git >= 2.38");
+    assert_eq!(binaries::git_version_row("").status, Status::Warn);
+}

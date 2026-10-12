@@ -84,6 +84,11 @@ pub struct Resume {
     /// log, from which a handoff is built for a new session. `None` resumes
     /// the session.
     pub fresh_from: Option<PathBuf>,
+    /// The cache forecast when this continuation was decided: `true` when
+    /// the previous session's prefix had outlived `[cache] ttl_secs`, so
+    /// resuming would re-read the whole context at the input price
+    /// (`handoff::cache_cold`). Recorded as `Inputs::cache_forecast`.
+    pub cold: bool,
 }
 
 /// What one contract's attempt differs in.
@@ -159,7 +164,7 @@ pub async fn run_attempt(
     })
     .await?;
     crate::egress::clear_refused(&spec.dir);
-    let outcome = launch(AttemptLaunch {
+    let mut outcome = launch(AttemptLaunch {
         f,
         t,
         cfg,
@@ -177,6 +182,11 @@ pub async fn run_attempt(
         check_timeout: Duration::from_secs(cfg.check_timeout_secs),
     })
     .await?;
+    // The host at the moment of death, before verification adds its own
+    // load: what `engine::step::infra` reads for a timed-out attempt.
+    if outcome.timed_out || !outcome.got_result || outcome.is_error {
+        outcome.host = Some(crate::host::Sample::now());
+    }
     let refused = crate::egress::read_refused(&spec.dir);
     git::verification_checkout(
         &f.paths.home,
@@ -288,6 +298,7 @@ async fn build_spec(
             }
             .to_string()
         }),
+        cache_forecast: resume.map(|r| if r.cold { "cold" } else { "warm" }.to_string()),
         journal: journal.clone(),
         context: context.clone(),
         ..Default::default()
@@ -746,6 +757,7 @@ pub async fn record(
     a.session_id = outcome.session_id.clone().unwrap_or_default();
     let mut outputs = Outputs {
         end_sha: end_sha.clone(),
+        host_at_death: outcome.host,
         changed_files: git::changed_paths(dir, &a.start_sha).await.task()?,
         dirty_files: git::dirty_paths(dir).await.task()?,
         verify_ref: verify_ref.map(|r| format!("{r}@{end_sha}")),

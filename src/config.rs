@@ -8,6 +8,7 @@ mod home;
 mod measure;
 mod providers;
 mod repo;
+mod resilience;
 mod trust;
 
 #[allow(unused_imports)] // HomeConfig is named directly only by secrets.rs's tests
@@ -22,6 +23,7 @@ pub use repo::{
     load_working_checks, load_working_egress, load_working_execution, load_working_push_remote,
     shared_target_enabled,
 };
+pub use resilience::{Cache, Infra, Mechanic};
 pub use trust::{TrustEgress, TrustPolicies, TrustPolicy};
 
 /// `FORGE_<NAME>`, falling back to `FORGE2_<NAME>` for one release: the

@@ -13,6 +13,16 @@ use std::path::Path;
 /// tokens, when the log says so.
 pub const CONTEXT_THRESHOLD_TOKENS: i64 = 120_000;
 
+/// Whether the session `a` ran will have lost its cached prefix by `now`:
+/// the agent process ended at `started_at` plus `agent_ms`, nothing has
+/// used the cache since, and the provider keeps an ephemeral prefix for
+/// `ttl_secs` after its last use. Resuming a cold session re-reads its
+/// whole context at the input price on the first turn; a fresh session
+/// pays only the shared prefix plus the handoff.
+pub fn cache_cold(a: &crate::store::Attempt, ttl_secs: i64, now: i64) -> bool {
+    now - (a.started_at + a.agent_ms / 1000) > ttl_secs
+}
+
 /// The context the session's last request carried: input plus cached
 /// tokens from the log's last assistant usage.
 pub fn last_context_tokens(log: &str) -> Option<i64> {
@@ -137,6 +147,17 @@ mod tests {
         r#"{"type":"result","subtype":"error_max_turns","result":"Reached max turns"}"#,
         "\n"
     );
+
+    #[test]
+    fn a_session_is_cold_once_its_agent_has_been_dead_longer_than_the_ttl() {
+        let a = crate::store::Attempt {
+            started_at: 1_000,
+            agent_ms: 120_000,
+            ..Default::default()
+        };
+        assert!(!cache_cold(&a, 300, 1_120 + 299));
+        assert!(cache_cold(&a, 300, 1_120 + 301));
+    }
 
     #[test]
     fn facts_come_from_the_log() {
