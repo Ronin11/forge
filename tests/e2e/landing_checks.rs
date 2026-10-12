@@ -7,7 +7,7 @@ fn landing_with_a_check_that_rejects_reruns(base_moves: bool) {
     let e = Env::new();
     std::fs::write(
         e.repo.join("landing-check.sh"),
-        "case \"$PWD\" in */landing-*) echo 'landing reran the check'; exit 1;; esac\n",
+        "case \"${PWD##*/}\" in landing-*) echo 'landing reran the check'; exit 1;; esac\n",
     )
     .unwrap();
     let config = std::fs::read_to_string(e.repo.join("forge.toml")).unwrap();
