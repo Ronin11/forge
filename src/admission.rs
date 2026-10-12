@@ -199,6 +199,72 @@ fn block(f: &Forge, t: &Task, question: &str, tried: &str) -> Result<()> {
     Ok(())
 }
 
+/// Record Jev's admission answer: `true` when the task was blocked
+/// (below the threshold, or the day's cap spent), `false` when admitted.
+fn admit_or_block(f: &Forge, t: &Task, answers: &serde_json::Value) -> Result<bool> {
+    let Some(a) = agent::read_answer(&answers["admit"]) else {
+        return Ok(false);
+    };
+    let p_yes = p_of(&a, "yes");
+    let gap = agent::read_answer(&answers["gap"])
+        .map(|g| g.label)
+        .filter(|g| g != "none")
+        .unwrap_or_else(|| "unspecified".into());
+    let probs = a.probabilities.to_string();
+    let today = admitted_today(f)?;
+    let over = today >= f.admission.per_day as usize;
+    if p_yes >= f.admission.threshold && !over {
+        record(
+            f,
+            t,
+            ADMIT,
+            QUESTION,
+            &format!("admit (p {p_yes:.2})"),
+            &probs,
+        )?;
+    } else {
+        let (answer, tried) = if over && p_yes >= f.admission.threshold {
+            (
+                "block (daily cap)".to_string(),
+                format!(
+                    "admitted at p {p_yes:.2} but the day's cap of {} admissions is spent",
+                    f.admission.per_day
+                ),
+            )
+        } else {
+            (
+                format!("block (p {p_yes:.2})"),
+                format!(
+                    "p(admit) {p_yes:.2} under the threshold {:.2}",
+                    f.admission.threshold
+                ),
+            )
+        };
+        let q = if over && p_yes >= f.admission.threshold {
+            format!(
+                "Task {} was not admitted for an automated worker: the day's cap of {} admissions is spent (Jev put p {p_yes:.2} on it). Answer to admit it anyway, or withdraw it.",
+                t.id, f.admission.per_day
+            )
+        } else {
+            format!(
+                "Task {} was not admitted for an automated worker: Jev put p {p_yes:.2} on admitting it (threshold {:.2}), gap: {gap}. Answer to admit it anyway with what it was missing, or withdraw it.",
+                t.id, f.admission.threshold
+            )
+        };
+        record(
+            f,
+            t,
+            BLOCK,
+            QUESTION,
+            &answer,
+            &format!("{tried}; gap {gap}; {probs}"),
+        )?;
+        block(f, t, &q, &tried)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 /// The step, on a task this worker has just claimed. `Some` is the task
 /// to run (with its band recorded when Jev gave one); `None` is a task
 /// left blocked, for which nothing is to be started.
@@ -269,64 +335,8 @@ pub async fn at_claim(f: &Forge, t: Task) -> Result<Option<Task>> {
             &b.probabilities.to_string(),
         )?;
     }
-    if ask_admit && let Some(a) = agent::read_answer(&answers["admit"]) {
-        let p_yes = p_of(&a, "yes");
-        let gap = agent::read_answer(&answers["gap"])
-            .map(|g| g.label)
-            .filter(|g| g != "none")
-            .unwrap_or_else(|| "unspecified".into());
-        let probs = a.probabilities.to_string();
-        let today = admitted_today(f)?;
-        let over = today >= f.admission.per_day as usize;
-        if p_yes >= f.admission.threshold && !over {
-            record(
-                f,
-                &t,
-                ADMIT,
-                QUESTION,
-                &format!("admit (p {p_yes:.2})"),
-                &probs,
-            )?;
-        } else {
-            let (answer, tried) = if over && p_yes >= f.admission.threshold {
-                (
-                    "block (daily cap)".to_string(),
-                    format!(
-                        "admitted at p {p_yes:.2} but the day's cap of {} admissions is spent",
-                        f.admission.per_day
-                    ),
-                )
-            } else {
-                (
-                    format!("block (p {p_yes:.2})"),
-                    format!(
-                        "p(admit) {p_yes:.2} under the threshold {:.2}",
-                        f.admission.threshold
-                    ),
-                )
-            };
-            let q = if over && p_yes >= f.admission.threshold {
-                format!(
-                    "Task {} was not admitted for an automated worker: the day's cap of {} admissions is spent (Jev put p {p_yes:.2} on it). Answer to admit it anyway, or withdraw it.",
-                    t.id, f.admission.per_day
-                )
-            } else {
-                format!(
-                    "Task {} was not admitted for an automated worker: Jev put p {p_yes:.2} on admitting it (threshold {:.2}), gap: {gap}. Answer to admit it anyway with what it was missing, or withdraw it.",
-                    t.id, f.admission.threshold
-                )
-            };
-            record(
-                f,
-                &t,
-                BLOCK,
-                QUESTION,
-                &answer,
-                &format!("{tried}; gap {gap}; {probs}"),
-            )?;
-            block(f, &t, &q, &tried)?;
-            return Ok(None);
-        }
+    if ask_admit && admit_or_block(f, &t, &answers)? {
+        return Ok(None);
     }
     f.store.task(t.id)
 }

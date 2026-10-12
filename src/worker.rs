@@ -1067,6 +1067,34 @@ async fn housekeeping(f: &Forge) {
     }
 }
 
+/// The one-line banner for a task about to start.
+fn announce_task(f: &Forge, id: i64, running: usize) {
+    let queued = f.store.queued_count().unwrap_or(0);
+    eprintln!("======== task {id} starting ({queued} queued, {running} running)");
+}
+
+/// What one claim attempt handed the worker.
+enum Handed {
+    Nothing,
+    /// Claimed, then blocked at admission: nobody's to start.
+    Blocked,
+    Task(Box<Task>),
+}
+
+/// Claim a task and have Jev admit it (or block it), once.
+async fn claim_admitted(f: &Forge, opts: &WorkOpts, pid: i64, held: &[i64]) -> Result<Handed> {
+    let claimed = claim::task(f, opts, pid, held, |t| {
+        provider_is_held(f, t) || intake_is_held(f, t) || crate::admission::capped(f, t)
+    })?;
+    let Some(t) = claimed else {
+        return Ok(Handed::Nothing);
+    };
+    Ok(match crate::admission::at_claim(f, t).await? {
+        Some(t) => Handed::Task(Box::new(t)),
+        None => Handed::Blocked,
+    })
+}
+
 pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut shutdown = Shutdown::install();
     crate::egress::raise_nofile_limit();
@@ -1139,24 +1167,14 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 for line in new_holds(&f, &held) {
                     eprintln!("{line}");
                 }
-                if let Some(t) = claim::task(&f, &opts, pid, &held, |t| {
-                    provider_is_held(&f, t)
-                        || intake_is_held(&f, t)
-                        || crate::admission::capped(&f, t)
-                })? {
-                    // Jev admits (or blocks) the task it has just been
-                    // handed, once; a blocked one is nobody's to start.
-                    let Some(t) = crate::admission::at_claim(&f, t).await? else {
-                        continue;
-                    };
+                let handed = claim_admitted(&f, &opts, pid, &held).await?;
+                if matches!(handed, Handed::Blocked) {
+                    continue;
+                }
+                if let Handed::Task(t) = handed {
                     hold_until = None;
                     claimed += 1;
-                    eprintln!(
-                        "======== task {} starting ({} queued, {} running)",
-                        t.id,
-                        f.store.queued_count().unwrap_or(0),
-                        running.len() + 1
-                    );
+                    announce_task(&f, t.id, running.len() + 1);
                     ids.push(t.id);
                     let fc = f.clone();
                     running.spawn(async move { WorkResult::Task(t.id, drive(fc, t.id).await) });
