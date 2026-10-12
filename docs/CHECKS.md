@@ -68,6 +68,19 @@ the next week's shift compounds on top of it. Honours `FORGE_DRY_RUN`:
 `forge economist rebalance --dry-run` prints the weights it would write
 and writes nothing.
 
+## The doctor between daily runs, and its tasks
+
+`doctor-daily` is the daily record, not the only run. The worker runs the
+doctor watches (`src/doctor/watch/`) at the end of every poll pass, so a
+condition is seen within one poll rather than at 07:00. What a standing
+ERROR (or a WARN that names a concrete repair) owes is a task in the
+`forge` project, opened once per watch while the condition stands and
+marked handled when the watch goes OK; the table of watches, the keys and
+the outside dead-man (`[alerts] deadman_url`, an `ExecStopPost` on the
+worker unit) are in docs/OPS.md, "What doctor watches". A task opened this
+way is an ordinary task: its checks are the repository's own, and its text
+is what Forge wrote, never a model's.
+
 ## What a repository or task check is told
 
 Not a scheduled check but the other meaning of the word, recorded here

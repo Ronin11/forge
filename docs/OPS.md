@@ -194,6 +194,41 @@ again is. The notify plugin passes it to its command as `doctor <check>
 | 9 | `land_rate` | finished agent tasks per project | a project finished at least 5 tasks in 7 days and landed none; the row (and `forge stats`) shows every project's land rate over 7 and 30 days | WARN |
 | 10 | `prompt_cache` | the token counts of counted attempts in the last 24h, per provider (`input_tokens` and the two cache columns) | a claude provider with at least 3 attempts and 200k prompt tokens read less than `[cache] warn_below` (default 50%) of them from the cache; the OK line shows every claude provider's read, written and uncached shares. Codex folds cache reads into input and is not judged | WARN |
 
+| 11 | `deadman` | the `deadman.last_ping` mark the worker writes | `[alerts] deadman_url` is set and the worker has never pinged it, the last ping failed, or the last success is more than an hour old. Unset is OK. Not one of the per-tick watches; it is a row of `forge doctor` only | WARN |
+
+### Per tick, as tasks, and the outside dead-man
+
+The watches run at the end of every worker poll pass, not only from the
+daily job (`doctor::alerts::tick`). A pass that changes nothing writes
+nothing: the first-trip events and `watch.<row>` marks are written only on a
+change, and the worktrees directory is not walked again once the day's
+sample is in. The per-tick run leaves `doctor.last_run` to `forge doctor`
+and the daily job, which is what `worker_restarts` counts starts since.
+
+Every watch that trips ERROR, and every WARN whose hint names a concrete
+repair (`jobs_stale`, `worker_restarts`, `egress_model`, `supervisor`,
+`land_rate`), opens one task in the `forge` project keyed by the watch
+name while the condition stands (`src/doctor/alerts.rs`):
+
+- At most one open task per key. The key is the `alert.<watch>` row of
+  `doctor_marks`: `open` with the task's id, or `handled`.
+- A task closed (landed, failed, withdrawn) while the condition still
+  stands is replaced by a new one, looked at no more than every six hours.
+- A watch going OK marks the key `handled`, and withdraws the task if
+  nobody has started it.
+- The task text is the watch name, its detail line and its hint; nothing a
+  model wrote.
+- Each opening is a decision row, `answered_by = doctor`, `kind =
+  alert-<watch>`, so `forge stats` can count them.
+
+The outside dead-man is `[alerts] deadman_url` in `config.toml`. The worker
+pings it (a GET) once per successful pass, and the `forge-worker` unit
+`forge init` writes carries an `ExecStopPost=` that pings it with `/fail`
+appended whenever the worker stops (`OnFailure=` is not used: it never
+fires for a unit that restarts). Re-run `forge init` after setting the
+URL. Unset, nothing is pinged and the unit has no such line. The `deadman`
+doctor row says when it was last pinged.
+
 `forge stats` marks `step = integrate` rows with `*`, failure-only: one
 is written only when a merge's checks fail, so it measures nothing about
 how often merges succeed; the per-project land rate is that measure.

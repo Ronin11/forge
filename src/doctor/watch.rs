@@ -58,8 +58,32 @@ fn clip(text: &str, n: usize) -> String {
     }
 }
 
-/// Every watch's row, with any first trip written to the event log.
+/// Every watch's row, with any first trip written to the event log, and
+/// the doctor's own last-run mark moved: `forge doctor` and the daily job.
 pub(super) fn run(paths: &Paths, store: &Store, now: i64) -> Vec<Check> {
+    let rows = rows(paths, store, now, false);
+    let _ = store.set_doctor_mark(
+        LAST_RUN,
+        &Mark {
+            status: "ok".into(),
+            detail: String::new(),
+            at: now,
+        },
+    );
+    rows
+}
+
+/// The watches at the end of a worker's poll pass. Same rows and the same
+/// first-trip events as `run`, but the last-run mark stays where the daily
+/// doctor put it (`worker_restarts` counts the starts since it, which a
+/// mark moved every pass would always make zero), and the worktrees
+/// directory is not walked again once today's sample is in. A pass that
+/// changes nothing writes nothing.
+pub fn tick(paths: &Paths, store: &Store, now: i64) -> Vec<Check> {
+    rows(paths, store, now, true)
+}
+
+fn rows(paths: &Paths, store: &Store, now: i64, cached: bool) -> Vec<Check> {
     let cfg = crate::config::load_home(&paths.home).ok();
     let last_run = store.doctor_mark(LAST_RUN).ok().flatten().map(|m| m.at);
     let warn_gb = cfg.as_ref().map_or_else(
@@ -78,7 +102,11 @@ pub(super) fn run(paths: &Paths, store: &Store, now: i64) -> Vec<Check> {
         restarts::watch(store, now, last_run),
         steps::watch(store),
         environmental::watch(store, now),
-        worktrees::watch(store, &paths.worktrees, now, warn_gb),
+        if cached {
+            worktrees::watch_cached(store, &paths.worktrees, now, warn_gb)
+        } else {
+            worktrees::watch(store, &paths.worktrees, now, warn_gb)
+        },
         heartbeat::watch(&paths.home, &enabled, now),
     ];
     rows.extend(egress::watch(store, &providers, now));
@@ -86,14 +114,6 @@ pub(super) fn run(paths: &Paths, store: &Store, now: i64) -> Vec<Check> {
     rows.push(land::watch(store, now));
     rows.push(cache::watch(store, now, warn_below));
     trip(store, &paths.home.join("events.jsonl"), &rows, now);
-    let _ = store.set_doctor_mark(
-        LAST_RUN,
-        &Mark {
-            status: "ok".into(),
-            detail: String::new(),
-            at: now,
-        },
-    );
     rows
 }
 

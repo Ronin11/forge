@@ -1208,10 +1208,19 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 }
             }
 
+            // The doctor at the end of every pass, not only the daily
+            // job: its first trips are events, its standing conditions
+            // are tasks. Its own failure never fails the pass.
+            if let Err(e) = crate::doctor::alerts::tick(&f).await {
+                eprintln!("doctor watches: {e:#}");
+            }
             Ok(())
         }
         .await;
         let pass_failed = log_pass_error(pass);
+        if !pass_failed {
+            crate::doctor::deadman::ping(&f).await;
+        }
 
         if running.is_empty() {
             if superseded {
