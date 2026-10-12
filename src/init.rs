@@ -351,10 +351,7 @@ fn install_units(home: &Path, reset_path: bool) -> Result<StepResult> {
             home,
             &forge_bin,
             &worker_unit_path,
-            crate::config::load_home(home)
-                .ok()
-                .and_then(|c| c.alerts.deadman_url)
-                .as_deref(),
+            deadman_url(home).as_deref(),
         )?,
     )?;
     let web_changed = write_if_changed(
@@ -378,11 +375,7 @@ fn install_units(home: &Path, reset_path: bool) -> Result<StepResult> {
         ));
     }
 
-    let live_path = if worker_changed {
-        live_worker_path()
-    } else {
-        None
-    };
+    let live_path = worker_changed.then(live_worker_path).flatten();
     let sh = |args: &[&str]| -> Result<()> {
         let o = std::process::Command::new(args[0])
             .args(&args[1..])
@@ -452,6 +445,11 @@ fn install_units(home: &Path, reset_path: bool) -> Result<StepResult> {
         files_changed || !disabled.is_empty(),
         detail,
     ))
+}
+
+/// The configured `[alerts] deadman_url`, when the config loads and sets one.
+fn deadman_url(home: &Path) -> Option<String> {
+    crate::config::load_home(home).ok()?.alerts.deadman_url
 }
 
 /// `$HOME/.local/bin`, where the operator's own PATH finds `forge`.
