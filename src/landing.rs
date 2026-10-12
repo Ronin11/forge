@@ -303,12 +303,13 @@ pub async fn integrate(
     // Between that verify and this lock, nothing should have moved the
     // branch — but if it did, catch it here rather than fast-forward the
     // base to something no check ever ran on.
-    if let Some(verified) = last_verified_sha(f, t.id)? {
+    let verified = last_verified_sha(f, t.id)?;
+    if let Some(verified) = &verified {
         let head_now = staged.clone();
-        if head_now != verified {
+        if &head_now != verified {
             let d = format!(
                 "the branch moved before landing began: verified {}, branch is now {}",
-                short(&verified),
+                short(verified),
                 short(&head_now)
             );
             *seq += 1;
@@ -465,22 +466,35 @@ pub async fn integrate(
         f.allow_egress(wt, &cfg_now, t.trust, Some(&t.provider));
         let overlay = overlay_refs(repo, t.id, None).await;
         let candidate = git::head(wt).await.task()?;
-        let v = verify_merged_tree(
-            f,
-            MergeVerifyArgs {
-                task_id: t.id,
-                repo,
-                worktree: wt,
-                base_sha: &base_sha,
-                branch: &t.branch,
-                cfg: &cfg_now,
-                task_checks: &t.checks,
-                allow_protected: t.allow_protected,
-                overlay_refs: &overlay,
-            },
-        )
-        .await?;
-        if v.state != AttemptState::Succeeded {
+        // The base is where the code attempt verified (compared with the
+        // task's original base, not the one updated above or by a push
+        // retry) and nothing merged: the candidate is the exact commit the
+        // checks passed on, so running them again only risks a flake.
+        let unchanged = main_sha == t.base_sha && verified.as_deref() == Some(candidate.as_str());
+        let verdict = if unchanged {
+            detail = format!("base unchanged since verify at {candidate}; checks not re-run");
+            None
+        } else {
+            let v = verify_merged_tree(
+                f,
+                MergeVerifyArgs {
+                    task_id: t.id,
+                    repo,
+                    worktree: wt,
+                    base_sha: &base_sha,
+                    branch: &t.branch,
+                    cfg: &cfg_now,
+                    task_checks: &t.checks,
+                    allow_protected: t.allow_protected,
+                    overlay_refs: &overlay,
+                },
+            )
+            .await?;
+            Some(v)
+        };
+        if let Some(v) = verdict
+            && v.state != AttemptState::Succeeded
+        {
             // The coder continues from the merged tree, as it always has.
             if candidate != staged {
                 git::adopt_tree(clone, wt).task()?;
@@ -533,6 +547,13 @@ pub async fn integrate(
                 base_sha,
             });
         }
+        if !unchanged {
+            detail = format!(
+                "{detail}verified against {} @ {}",
+                t.base_branch,
+                &base_sha[..8]
+            );
+        }
         op(
             f,
             t.id,
@@ -543,11 +564,7 @@ pub async fn integrate(
                 kernel: true,
                 ok: true,
                 exit: None,
-                detail: &format!(
-                    "{detail}verified against {} @ {}",
-                    t.base_branch,
-                    &base_sha[..8]
-                ),
+                detail: &detail,
                 attempt_id: None,
                 output: "",
             },

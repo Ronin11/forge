@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-fn origin_sha(e: &Env, branch: &str) -> String {
+pub(crate) fn origin_sha(e: &Env, branch: &str) -> String {
     let (d, r) = (e.origin.to_str().unwrap(), format!("refs/heads/{branch}"));
     let a = ["--git-dir", d, "rev-parse", "--verify", "--quiet", &r];
     let o = Command::new("git").args(a).output().unwrap();
