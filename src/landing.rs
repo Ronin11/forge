@@ -998,7 +998,14 @@ pub async fn integrate_many(f: &Forge, ids: &[i64]) -> Result<IntegrateReport> {
     }
     let cfg = config::load_working(&repo).await?;
     let stamp = unix_now();
-    let branch = format!("forge/integration-{stamp}");
+    // Two integrations in the same second must not share a branch: the
+    // second push would be a non-fast-forward of the first.
+    let mut branch = format!("forge/integration-{stamp}");
+    let mut n = 1;
+    while git::ref_exists(&repo, &format!("refs/heads/{branch}")).await {
+        n += 1;
+        branch = format!("forge/integration-{stamp}-{n}");
+    }
     let dir = f.paths.worktrees.join(format!("integrate-{stamp}"));
     let base_ref = match (
         &cfg.push_remote,
