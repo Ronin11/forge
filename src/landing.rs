@@ -146,6 +146,9 @@ pub enum Integrate {
     },
     /// Nothing the coder can do about it.
     Failed(String),
+    /// `forge withdraw --abort` was recorded before the base moved: the
+    /// reason, and nothing pushed (a stop revokes publication).
+    Aborted(String),
 }
 
 /// A scratch tree that leaves no trace: removed, with its provider state,
@@ -605,6 +608,28 @@ pub async fn integrate(
         // the way landing once did, let a later round or a resumed run
         // rewind it to a branch that no longer descended from what the
         // remote already had (REVIEW-3 2.1#5).
+        // The last irreversible boundary: an abort recorded while the
+        // merged tree verified is honoured here, not after the base moved.
+        if let Some(why) = f.store.abort_requested(t.id).env()? {
+            *seq += 1;
+            let abort_timer = Timer::now();
+            op(
+                f,
+                t.id,
+                &abort_timer,
+                OpRow {
+                    seq: *seq,
+                    name: "land",
+                    kernel: true,
+                    ok: false,
+                    exit: None,
+                    detail: &format!("aborted before the base moved: {why}"),
+                    attempt_id: None,
+                    output: "",
+                },
+            )?;
+            return Ok(Integrate::Aborted(why));
+        }
         *seq += 1;
         let land_seq = *seq;
         let timer = Timer::now();
@@ -1387,6 +1412,9 @@ async fn land_integrated(
             first, feedback, ..
         } => Ok(LandOutcome::Rewind { first, feedback }),
         crate::landing::Integrate::Failed(reason) => Ok(LandOutcome::Failed(reason)),
+        crate::landing::Integrate::Aborted(reason) => {
+            Ok(LandOutcome::Failed(format!("aborted: {reason}")))
+        }
     }
 }
 

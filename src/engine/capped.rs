@@ -252,6 +252,9 @@ async fn land_passed(s: Salvage<'_>, passed: &str, adopt: &str) -> Result<End, F
             "{passed}; the repository has no push remote to land on"
         )));
     };
+    if let Some(end) = check_abort(f, t)? {
+        return Ok(end);
+    }
     let lock = crate::landing::repo_lock(f, repo).await?;
     let mut seq = run.seq;
     let outcome = integrate(f, t, url, remote, &mut seq, attempt_no, &lock).await?;
@@ -263,6 +266,10 @@ async fn land_passed(s: Salvage<'_>, passed: &str, adopt: &str) -> Result<End, F
             crate::landing::effects::run(f, t, &landed).await;
             Ok(End::Landed(landed.sha))
         }
+        Integrate::Aborted(why) => Ok(End::Capped {
+            reason: format!("aborted: {why}"),
+            pushes: false,
+        }),
         Integrate::Rewind { first, .. } | Integrate::Failed(first) => Ok(End::Capped {
             reason: format!(
                 "{passed}, but landing them failed: {first}; merge {} into {} and run {adopt}",

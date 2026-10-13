@@ -100,6 +100,18 @@ pub(super) async fn try_land(args: TryLand<'_>) -> Result<Option<End>, Fault> {
             }
         }
     }
+    // A stop revokes publication: an abort requested while the checks
+    // ran is read again here, before anything irreversible, and once more
+    // inside the integrator before the base moves.
+    if let Some(end) = check_abort(f, t)? {
+        f.report.emit(
+            id,
+            Event::Note {
+                text: "land     skipped: aborted before the base moved",
+            },
+        );
+        return Ok(Some(end));
+    }
     let mut seq = run.seq;
     let lock = crate::landing::repo_lock(f, repo).await?;
     let outcome = integrate(f, t, url, remote, &mut seq, attempt_no, &lock).await?;
@@ -111,6 +123,10 @@ pub(super) async fn try_land(args: TryLand<'_>) -> Result<Option<End>, Fault> {
             crate::landing::effects::run(f, t, &landed).await;
             Ok(Some(End::Landed(landed.sha)))
         }
+        Integrate::Aborted(why) => Ok(Some(End::Capped {
+            reason: format!("aborted: {why}"),
+            pushes: false,
+        })),
         Integrate::Rewind {
             feedback,
             first,
@@ -189,6 +205,16 @@ pub(super) async fn publish(
     let id = t.id;
     let mut compare: Option<String> = None;
     let mut failed: Option<End> = None;
+    // A stop revokes publication: the abort is read again at the push.
+    if let Some(end) = check_abort(f, t)? {
+        f.report.emit(
+            id,
+            Event::Note {
+                text: "kept     not pushed: aborted",
+            },
+        );
+        return Ok((None, Some(end)));
+    }
     if let Some(url) = &remote_url {
         let timer = Timer::now();
         match git::push(&f.paths.home, repo, wt, url, &t.branch).await {

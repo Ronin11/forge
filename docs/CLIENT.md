@@ -390,7 +390,11 @@ and does not parse stdout.
   duplicates a live sibling (another queued, running or unverified task
   retrying the same one): the worker stops the attempt and the task ends
   `capped`, as a budget cap ends one, with the decision recorded (kind
-  `withdraw-abort`). Recorded as the task's own reason and as a decision row
+  `withdraw-abort`). The abort is read again at every irreversible
+  boundary, not only between steps: before the land step, inside the
+  integrator before the base moves, and before the branch is pushed, so
+  a stop requested while the checks ran publishes nothing (a stop revokes
+  publication; `tests/e2e/abort_land.rs`). Recorded as the task's own reason and as a decision row
   (see [`DecisionRow`](#decisionrow)); releases any task that was
   waiting on this one, the same as landing or failing does. Not `--json`;
   a client re-reads `forge log`/`forge requests` for the task it just

@@ -237,6 +237,8 @@ the "same root cause twice means a one-line fix" trigger.
 - **Stop revokes publication** (Jovie): a kill writes a revocation
   record and every irreversible boundary (push, PR, label, enqueue)
   re-reads it. Forge checks abort before each step, not at push or land.
+  **Built 2026-10-13:** re-read before the land step, inside the
+  integrator before the base moves, and before the publish push.
 - **Revocation of same-group retries** (fleet-ops): `num_retries: 0`
   with fallbacks on first failure, because "a same-group retry re-hits
   the same wall" and a 2/2/2 retry policy "re-sent the cold prompt to a
