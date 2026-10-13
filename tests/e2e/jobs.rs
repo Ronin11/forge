@@ -1697,10 +1697,11 @@ fn write_fake(path: &Path, script: &str) {
 /// repository's own `.forge/workflows/` into a throwaway project repo and
 /// committed, then run with `claude`, `npm`, `cargo` and `curl` replaced by
 /// fakes on PATH — so the check is deterministic and makes no real network
-/// call. `claude` and `npm` agree on the version, `cargo` has no
-/// `cargo-audit` and refuses to install one, and `curl` serves a fresh
-/// `equitizr.com/api/meta`: the clean-week scenario the job's own
-/// `[assert]` calls green. A dry run of it logs no effect (well under the
+/// call. `claude` and `npm` agree on the version, `cargo audit` reports no
+/// advisory, and `curl` serves a fresh `equitizr.com/api/meta`: the
+/// clean-week scenario. (A drifted week is green too; only a check that
+/// could not run, or a high advisory, fails — the fixtures under
+/// `.forge/fixtures/drift-weekly/` cover those.) A dry run of it logs no effect (well under the
 /// four steps' one-effect-each ceiling) and `job show --json` parses.
 #[test]
 fn drift_weekly_dry_run_records_at_most_four_effects_and_parses() {
@@ -1761,8 +1762,9 @@ fn drift_weekly_dry_run_records_at_most_four_effects_and_parses() {
     );
     write_fake(
         &fakebin.join("cargo"),
-        "#!/bin/bash\nif [ \"$1\" = install ]; then exit 1; fi\nexit 0\n",
+        "#!/bin/bash\nif [ \"$1\" = audit ]; then echo '{\"vulnerabilities\":{\"list\":[]}}'; exit 0; fi\nif [ \"$1\" = install ]; then exit 1; fi\nexit 0\n",
     );
+    write_fake(&fakebin.join("cargo-audit"), "#!/bin/bash\nexit 0\n");
     write_fake(
         &fakebin.join("curl"),
         r#"#!/bin/bash
@@ -1880,8 +1882,9 @@ fn drift_weekly_model_drift_fires_when_an_alias_moved() {
     );
     write_fake(
         &fakebin.join("cargo"),
-        "#!/bin/bash\nif [ \"$1\" = install ]; then exit 1; fi\nexit 0\n",
+        "#!/bin/bash\nif [ \"$1\" = audit ]; then echo '{\"vulnerabilities\":{\"list\":[]}}'; exit 0; fi\nif [ \"$1\" = install ]; then exit 1; fi\nexit 0\n",
     );
+    write_fake(&fakebin.join("cargo-audit"), "#!/bin/bash\nexit 0\n");
     write_fake(
         &fakebin.join("curl"),
         r#"#!/bin/bash

@@ -516,20 +516,26 @@ async fn unit_state_async(unit: &str) -> Option<String> {
 /// watch reads (docs/OPS.md, "What doctor watches"): the unit's systemd
 /// `NRestarts`, and how the run before this one ended: systemd's
 /// `Result` when it was not a success, else whether the previous worker
-/// row was closed by a clean stop. Best effort: a start never fails here.
+/// row was closed by a clean stop. A successor's start is a release
+/// handoff: its parent is still draining, not dead, and the watch does
+/// not count it. Best effort: a start never fails here.
 fn record_start(store: &crate::store::Store, id: i64) {
     let (restarts, result) = unit_restarts(WORKER_UNIT);
-    let reason = match result {
-        Some((result, status)) if result != "success" => {
+    let parent = std::env::var(SUCCESSOR_OF)
+        .ok()
+        .and_then(|p| p.parse::<i64>().ok());
+    let reason = match (parent, result) {
+        (Some(parent), _) => format!("release handoff from worker {parent}"),
+        (None, Some((result, status))) if result != "success" => {
             format!("systemd: {result} (status {status})")
         }
-        _ => match store.previous_worker(id) {
+        (None, _) => match store.previous_worker(id) {
             Ok(Some((pid, Some(_)))) => format!("worker {pid} stopped cleanly"),
             Ok(Some((pid, None))) => format!("worker {pid} ended without a clean stop"),
             _ => String::new(),
         },
     };
-    let _ = store.record_worker_start(id, restarts, &reason);
+    let _ = store.record_worker_start(id, restarts, &reason, parent);
 }
 
 /// `systemctl --user show <unit>`'s `NRestarts`, and its `Result` with

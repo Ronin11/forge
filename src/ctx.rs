@@ -156,6 +156,9 @@ pub struct Forge {
     pub cache: config::Cache,
     pub infra: config::Infra,
     pub mechanic: config::Mechanic,
+    pub admission: config::Admission,
+    /// `[alerts]`: the outside dead-man's URL.
+    pub alerts: config::Alerts,
     pub measure: config::Measure,
     pub intake: config::Intake,
     /// `[trust.<level>]`: the policy each of the three trust levels a
@@ -231,6 +234,8 @@ impl Forge {
             cache: home.cache,
             infra: home.infra,
             mechanic: home.mechanic,
+            admission: home.admission,
+            alerts: home.alerts,
             measure: home.measure,
             intake: home.intake,
             trust: home.trust,
@@ -275,6 +280,8 @@ impl Forge {
             cache: home.cache,
             infra: home.infra,
             mechanic: home.mechanic,
+            admission: home.admission,
+            alerts: home.alerts,
             measure: home.measure,
             intake: home.intake,
             trust: home.trust,

@@ -32,6 +32,10 @@ struct HomeRaw {
     infra: super::resilience::InfraRaw,
     #[serde(default)]
     mechanic: super::resilience::MechanicRaw,
+    #[serde(default)]
+    admission: super::admission::AdmissionRaw,
+    #[serde(default)]
+    alerts: super::resilience::AlertsRaw,
     /// Extra roots to discover plugins under, beyond `<FORGE_HOME>/plugins`
     /// (see `src/plugins.rs`). `~` expands; a relative path resolves against
     /// this config file's own directory (`<FORGE_HOME>`).
@@ -215,6 +219,10 @@ pub struct HomeConfig {
     pub cache: super::resilience::Cache,
     pub infra: super::resilience::Infra,
     pub mechanic: super::resilience::Mechanic,
+    /// `[admission]`: see `config::admission`.
+    pub admission: super::admission::Admission,
+    /// `[alerts]`: the outside dead-man's URL.
+    pub alerts: super::resilience::Alerts,
     /// Extra plugin roots, in the order given, resolved to absolute paths.
     pub plugin_dirs: Vec<PathBuf>,
     pub measure: Measure,
@@ -383,6 +391,30 @@ limit = 3
 strong_lane = true
 strong_model = \"opus\"
 strong_per_day = 10
+
+[admission]
+# When a worker is about to claim a task, Jev is asked once whether it is
+# fit for an automated worker (tasks filed at contact or public trust
+# only; yours are admitted as they are) and which judgment band it is in
+# (recorded, routes nothing). Off when no jev provider is configured.
+# `threshold` is the probability of yes that admits; under it the task
+# blocks with a question for you. `exclude` is a list of regexes over the
+# task text that block it outright without asking Jev; the default list is
+# secrets, money and customer-data deletion, and yours replaces it.
+# `per_day` caps admissions in a rolling day, counted from decision rows.
+# enabled = true
+# provider = \"jev\"
+# threshold = 0.9
+# per_day = 10
+# exclude = [\"(?i)\\\\bsecrets?\\\\b\"]
+
+[alerts]
+# An outside dead-man (healthchecks.io or any URL that answers a GET): the
+# worker pings it once per successful pass, and the forge-worker unit's
+# ExecStopPost pings it with /fail appended when the worker stops, so
+# silence from the whole box is noticed by something that is not the box.
+# Re-run `forge init` after setting it so the unit picks it up.
+# deadman_url = \"https://hc-ping.com/your-uuid\"
 
 [measure]
 # Fixed fraction of tasks assigned to the journal's control arm (run with
@@ -675,6 +707,8 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
         cache: super::resilience::build_cache(raw.cache),
         infra: super::resilience::build_infra(raw.infra),
         mechanic: super::resilience::build_mechanic(raw.mechanic),
+        admission: super::admission::build(raw.admission)?,
+        alerts: super::resilience::build_alerts(raw.alerts),
         plugin_dirs: raw
             .plugin_dirs
             .iter()
@@ -872,6 +906,23 @@ mod tests {
         assert_eq!(from_template.cache, from_defaults.cache);
         assert_eq!(from_template.infra, from_defaults.infra);
         assert_eq!(from_template.mechanic, from_defaults.mechanic);
+        assert_eq!(from_template.admission, from_defaults.admission);
+    }
+
+    #[test]
+    fn alerts_deadman_url_is_trimmed_and_unset_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(load_home(dir.path()).unwrap().alerts.deadman_url, None);
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[alerts]\ndeadman_url = \" https://hc.example/abc/ \"\n",
+        )
+        .unwrap();
+        let c = load_home(dir.path()).unwrap();
+        assert_eq!(
+            c.alerts.deadman_url.as_deref(),
+            Some("https://hc.example/abc")
+        );
     }
 
     #[test]

@@ -1,11 +1,20 @@
 name = "check-equitizr-freshness"
 kind = "operation"
-description = "fetches https://equitizr.com/api/meta and logs an http effect if it does not return 200, has no snapshot, or its meta.built_at (epoch milliseconds) is more than 30 days old."
+description = "fetches https://equitizr.com/api/meta, prints what it found as its verdict, and logs an http effect if it does not return 200, has no snapshot, or its meta.built_at (epoch milliseconds) is more than 30 days old. Exits 1, logging nothing, when jq is missing: a check that could not run. A job input's `equitizr_status` and `equitizr_meta` (the status code and the response body) stand in for the fetch, and `now` (epoch seconds) for the clock, so a fixture replays a week without the network."
 run = ["bash", "-c", '''
 set +e
+if ! command -v jq >/dev/null 2>&1; then
+  echo "equitizr: jq is not installed, the response could not be read"
+  exit 1
+fi
 url="https://equitizr.com/api/meta"
 tmp=$(mktemp)
-code=$(curl -sS -o "$tmp" -w '%{http_code}' --max-time 20 "$url" 2>/dev/null)
+if [ -n "${FORGE_INPUT_EQUITIZR_STATUS:-}" ]; then
+  code="$FORGE_INPUT_EQUITIZR_STATUS"
+  printf '%s' "${FORGE_INPUT_EQUITIZR_META:-}" > "$tmp"
+else
+  code=$(curl -sS -o "$tmp" -w '%{http_code}' --max-time 20 "$url" 2>/dev/null)
+fi
 problem=""
 if [ "$code" != "200" ]; then
   problem="returned status ${code:-none}, not 200"
@@ -17,7 +26,7 @@ else
   elif [ -z "$built_at" ]; then
     problem="response has no meta.built_at field"
   else
-    now=$(date +%s)
+    now="${FORGE_INPUT_NOW:-$(date +%s)}"
     age_days=$(( (now - built_at/1000) / 86400 ))
     if [ "$age_days" -gt 30 ]; then
       problem="meta.built_at ($built_at) is $age_days day(s) old, more than 30"
@@ -26,9 +35,12 @@ else
 fi
 rm -f "$tmp"
 if [ -n "$problem" ]; then
+  echo "equitizr: $url $problem"
   suffix=""
   [ "${FORGE_DRY_RUN:-}" = "1" ] && suffix=" (dry run)"
   printf "http\tequitizr.com/api/meta\t%s%s\n" "$problem" "$suffix" >> "$FORGE_EFFECT_LOG"
+else
+  echo "equitizr: $url is fresh, built $age_days day(s) ago"
 fi
 exit 0
 ''']

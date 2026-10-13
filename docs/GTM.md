@@ -144,7 +144,14 @@ to sell; the rest are plumbing on tenancy that already exists.
    run only `reviewed`, at a capped budget ($5 a task, $25 an initiative unless the operator's `[trust.public]` says otherwise; `--allow-over-trust-cap` is the operator's way past it), at most 5 a day, with
    model-only egress (not even the repository's declared hosts), no
    protected paths, and it never lands itself: a person runs `forge
-   land`. Contacts (Signal, the portal) file at **contact** trust: the
+   land`. **Admission is built:** a task at contact or public trust is
+   put to Jev when a worker is about to claim it (docs/EXECUTION.md,
+   "Admission and the judgment band"): p >= 0.9 that it is concrete,
+   scoped, checkable and decision-free admits it, anything else blocks
+   it with a question for the operator quoting the probability, task
+   text matching `[admission] exclude` (secrets, money, customer-data
+   deletion) blocks without asking, and `[admission] per_day` (10)
+   caps admissions a day. Contacts (Signal, the portal) file at **contact** trust: the
    contact workflows only, and they land themselves. The operator's own
    CLI is **operator** trust; a webhook token carries whichever level it
    was minted at (docs/PLUGINS.md, "Trust levels"). **Still to do for a customer:** each

@@ -65,6 +65,59 @@ build tuning limits parallelism inside each attempt. For example, two Forge
 slots with `CARGO_BUILD_JOBS = "2"` can coexist with game work without adding
 another unrestricted workspace compile.
 
+## Worktree lifecycle: landing, retention, housekeeping
+
+A task's worktree is `FORGE_HOME/worktrees/<id>`, with siblings
+`<id>-overlays`, `-tmp`, `-provider`, `-review-provider`, `-tests`, `-red`
+and `-op`, and the `landing-<id>` tree (and its own siblings) that landing
+and integration make beside it. Measured 2026-10-10, 478 trees held 153 GB,
+381 of them landed tasks holding 96 GB, and `forge gc --dry-run` kept 474 of
+478. Nothing removes a tree by hand any more:
+
+- **Landed.** At the terminal write of a task that landed (state
+  `succeeded` with a landed sha) its worktree and every sibling, the landing
+  tree included, are removed and `worktree_removed_at` is set. The work is
+  on the base branch; whatever uncommitted noise the tree held (untracked
+  `.uid` files, say) is not kept. A `forge land` of a held task does the
+  same once its on-landing deploy and assessment have run.
+- **Every other finished task** (failed, blocked, capped, withdrawn,
+  unverified, or succeeded but not landed) keeps its tree for
+  `worktree_retention_days` (default 7) after it finished, build caches
+  swept at once. Past that, housekeeping commits any uncommitted changes as
+  a WIP commit on the task branch (`forge: leftovers at gc, task N`),
+  publishes the branch (to the project's push remote when it has one, else
+  into the registered repository, the path `forge gc --older-than` always
+  had), then removes the tree and siblings and marks it. A branch that
+  cannot be published keeps its tree, with the reason, until it can: nothing
+  with work is lost, and nothing else stays.
+- **Husks and orphans.** A tracked worktree with no `.git` is removed and
+  marked. A sibling directory whose task directory is gone is removed, and
+  so is a `landing-<id>` tree of a task that is not running once it has sat
+  untouched six hours.
+- **Caches.** `target`, `node_modules` and `.godot` are swept from finished
+  tasks' trees and from the landing trees; trees of running tasks and
+  landings under six hours old are never touched.
+
+```toml
+[worker]
+worktree_retention_days = 7
+```
+
+The worker does this itself, at start and then once an hour, and logs one
+line: `housekeeping: freed N bytes, removed N trees, kept N`. A failed pass
+is a log line too and never stops the worker. `forge gc` is the manual,
+verbose form of the same pass: it names every tree it removes or keeps and
+why, `--dry-run` says what it would do (including "would commit leftovers,
+publish the branch") and does none of it, and `--older-than DAYS` replaces
+the configured retention for that run. Run by hand, it also removes a clean
+tree whose commits are already on the remote before they are old.
+`forge gc --caches` sweeps caches only.
+
+`forge doctor` reports the total size of `worktrees/`, the ten largest
+trees, and how many retained trees are past retention; a nonzero count means
+housekeeping is not keeping up (the worker is down, or a branch could not
+be published; `forge gc` says which).
+
 ## When the event log cannot be written
 
 `FORGE_HOME/events.jsonl` (the record `forge job show` and every client's
@@ -131,7 +184,7 @@ again is. The notify plugin passes it to its command as `doctor <check>
 | # | Row | Reads | Trips when | Status |
 |---|---|---|---|---|
 | 1 | `supervisor` | `attempts` with `step = supervisor`, blocked tasks | the last 24h had supervisor runs, none succeeded, and at least one task is blocked; names the last run's reason | WARN |
-| 2 | `worker_restarts` | `workers` (each start records systemd's `NRestarts` and how the run before ended) | more than 3 worker starts since the last doctor run (the last 24h on a first run); names the last exit reason | WARN |
+| 2 | `worker_restarts` | `workers` (each start records systemd's `NRestarts` and how the run before ended) | more than 3 worker starts since the last doctor run (the last 24h on a first run), not counting a successor started on a staged release (a handoff, recorded in `workers.successor_of`); names the last exit reason | WARN |
 | 3 | `steps` | `attempts` by step, `ops` by name, for `code`, `review`, `verify`, `supervisor`, `land`, `adopt` | a kind with zero successes over its last runs (the last 10, at least 5 of them) | WARN |
 | 4 | `environmental` | the verdicts of attempts in the last 24h | one named check failed on every task of a project that ran it, across at least 3 different branches: "environmental, not the agents", with the check's tail | WARN |
 | 5 | `worktrees_disk` | bytes under `FORGE_HOME/worktrees` and landed tasks whose tree still exists, sampled once a day | above `[worker] worktrees_warn_gb` (default 200), or 3 day-over-day increases in a row | WARN |
@@ -140,6 +193,41 @@ again is. The notify plugin passes it to its command as `doctor <check>
 | 8 | `jobs_stale` | `jobs`, `job_resolutions` | a job `needs_human` or `failed` for more than 48h, not answered and not followed by an `ok` run of the same workflow; names the job and its failing check, and a check whose process printed nothing as `tool produced nothing` | WARN |
 | 9 | `land_rate` | finished agent tasks per project | a project finished at least 5 tasks in 7 days and landed none; the row (and `forge stats`) shows every project's land rate over 7 and 30 days | WARN |
 | 10 | `prompt_cache` | the token counts of counted attempts in the last 24h, per provider (`input_tokens` and the two cache columns) | a claude provider with at least 3 attempts and 200k prompt tokens read less than `[cache] warn_below` (default 50%) of them from the cache; the OK line shows every claude provider's read, written and uncached shares. Codex folds cache reads into input and is not judged | WARN |
+
+| 11 | `deadman` | the `deadman.last_ping` mark the worker writes | `[alerts] deadman_url` is set and the worker has never pinged it, the last ping failed, or the last success is more than an hour old. Unset is OK. Not one of the per-tick watches; it is a row of `forge doctor` only | WARN |
+
+### Per tick, as tasks, and the outside dead-man
+
+The watches run at the end of every worker poll pass, not only from the
+daily job (`doctor::alerts::tick`). A pass that changes nothing writes
+nothing: the first-trip events and `watch.<row>` marks are written only on a
+change, and the worktrees directory is not walked again once the day's
+sample is in. The per-tick run leaves `doctor.last_run` to `forge doctor`
+and the daily job, which is what `worker_restarts` counts starts since.
+
+Every watch that trips ERROR, and every WARN whose hint names a concrete
+repair (`jobs_stale`, `worker_restarts`, `egress_model`, `supervisor`,
+`land_rate`), opens one task in the `forge` project keyed by the watch
+name while the condition stands (`src/doctor/alerts.rs`):
+
+- At most one open task per key. The key is the `alert.<watch>` row of
+  `doctor_marks`: `open` with the task's id, or `handled`.
+- A task closed (landed, failed, withdrawn) while the condition still
+  stands is replaced by a new one, looked at no more than every six hours.
+- A watch going OK marks the key `handled`, and withdraws the task if
+  nobody has started it.
+- The task text is the watch name, its detail line and its hint; nothing a
+  model wrote.
+- Each opening is a decision row, `answered_by = doctor`, `kind =
+  alert-<watch>`, so `forge stats` can count them.
+
+The outside dead-man is `[alerts] deadman_url` in `config.toml`. The worker
+pings it (a GET) once per successful pass, and the `forge-worker` unit
+`forge init` writes carries an `ExecStopPost=` that pings it with `/fail`
+appended whenever the worker stops (`OnFailure=` is not used: it never
+fires for a unit that restarts). Re-run `forge init` after setting the
+URL. Unset, nothing is pinged and the unit has no such line. The `deadman`
+doctor row says when it was last pinged.
 
 `forge stats` marks `step = integrate` rows with `*`, failure-only: one
 is written only when a merge's checks fail, so it measures nothing about

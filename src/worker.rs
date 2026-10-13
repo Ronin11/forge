@@ -719,6 +719,11 @@ async fn run_ticks(
     if let Err(e) = workflows::draft::reconcile(&f.paths.home).await {
         eprintln!("worker tick failed (drafts); continuing: {e:#}");
     }
+    let due = unix_now() - HOUSEKEPT.load(std::sync::atomic::Ordering::Relaxed);
+    if due >= HOUSEKEEPING_SECS {
+        HOUSEKEPT.store(unix_now(), std::sync::atomic::Ordering::Relaxed);
+        housekeeping(f).await;
+    }
     Ok(true)
 }
 
@@ -1039,6 +1044,71 @@ fn exit_cause(env_error: Option<&anyhow::Error>, cause: Option<String>) -> Strin
     }
 }
 
+/// How often the worker sweeps caches and applies worktree retention (the
+/// first pass is at start).
+const HOUSEKEEPING_SECS: i64 = 3600;
+
+/// When this process last ran housekeeping.
+static HOUSEKEPT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// One housekeeping pass (`crate::housekeeping`), logged in one line. A
+/// failure is a log line too: it never stops the worker.
+async fn housekeeping(f: &Forge) {
+    let pass = crate::housekeeping::Pass {
+        dry_run: false,
+        manual: false,
+        older_than: None,
+        retention_days: f.worker.worktree_retention_days,
+        now: unix_now(),
+    };
+    match crate::housekeeping::run(f, &pass).await {
+        Ok(report) => eprintln!("housekeeping: {}", report.summary()),
+        Err(e) => eprintln!("housekeeping failed: {e:#}"),
+    }
+}
+
+/// The one-line banner for a task about to start.
+fn announce_task(f: &Forge, id: i64, running: usize) {
+    let queued = f.store.queued_count().unwrap_or(0);
+    eprintln!("======== task {id} starting ({queued} queued, {running} running)");
+}
+
+/// What one claim attempt handed the worker.
+enum Handed {
+    Nothing,
+    /// Claimed, then blocked at admission: nobody's to start.
+    Blocked,
+    Task(Box<Task>),
+}
+
+/// Claim a task and have Jev admit it (or block it), once.
+async fn claim_admitted(f: &Forge, opts: &WorkOpts, pid: i64, held: &[i64]) -> Result<Handed> {
+    let claimed = claim::task(f, opts, pid, held, |t| {
+        provider_is_held(f, t) || intake_is_held(f, t) || crate::admission::capped(f, t)
+    })?;
+    let Some(t) = claimed else {
+        return Ok(Handed::Nothing);
+    };
+    Ok(match crate::admission::at_claim(f, t).await? {
+        Some(t) => Handed::Task(Box::new(t)),
+        None => Handed::Blocked,
+    })
+}
+
+/// The doctor at the end of every pass, not only the daily job: its first
+/// trips are events, its standing conditions are tasks. Its own failure
+/// never fails the pass; the dead-man is pinged only for a clean one.
+async fn end_of_pass(f: &Forge, pass: Result<()>) -> bool {
+    let pass_failed = log_pass_error(pass);
+    if let Err(e) = crate::doctor::alerts::tick(f).await {
+        eprintln!("doctor watches: {e:#}");
+    }
+    if !pass_failed {
+        crate::doctor::deadman::ping(f).await;
+    }
+    pass_failed
+}
+
 pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut shutdown = Shutdown::install();
     crate::egress::raise_nofile_limit();
@@ -1111,17 +1181,14 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 for line in new_holds(&f, &held) {
                     eprintln!("{line}");
                 }
-                if let Some(t) = claim::task(&f, &opts, pid, &held, |t| {
-                    provider_is_held(&f, t) || intake_is_held(&f, t)
-                })? {
+                let handed = claim_admitted(&f, &opts, pid, &held).await?;
+                if matches!(handed, Handed::Blocked) {
+                    continue;
+                }
+                if let Handed::Task(t) = handed {
                     hold_until = None;
                     claimed += 1;
-                    eprintln!(
-                        "======== task {} starting ({} queued, {} running)",
-                        t.id,
-                        f.store.queued_count().unwrap_or(0),
-                        running.len() + 1
-                    );
+                    announce_task(&f, t.id, running.len() + 1);
                     ids.push(t.id);
                     let fc = f.clone();
                     running.spawn(async move { WorkResult::Task(t.id, drive(fc, t.id).await) });
@@ -1158,7 +1225,7 @@ pub async fn work(mut f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
             Ok(())
         }
         .await;
-        let pass_failed = log_pass_error(pass);
+        let pass_failed = end_of_pass(&f, pass).await;
 
         if running.is_empty() {
             if superseded {

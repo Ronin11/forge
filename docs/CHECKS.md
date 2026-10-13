@@ -45,12 +45,40 @@ Four operations, each an action under `.forge/workflows/actions/`:
 | `check-cargo-audit` | `cargo audit` on the workspace, installing `cargo-audit` first if it is missing, one effect per advisory |
 | `check-equitizr-freshness` | `https://equitizr.com/api/meta` returns 200, has a snapshot, and its `meta.built_at` (epoch milliseconds) is within 30 days |
 
-`[assert]` is that no effect was logged: a clean week is a green job.
-`[limits] on_failure = "ask:operator"` turns any logged effect into a
-blocked question naming what moved. The CLI update itself is never run
-by the job — `check-claude-cli-version` only logs the exact `npm install
--g @anthropic-ai/claude-code@<version>` command, for the operator to run
-by hand at the next worker restart.
+A drifted week is a green job, like a clean one. Each check prints its
+verdict and logs one effect per thing that moved (the CLI behind npm, an
+alias that resolved differently, an advisory, a stale equitizr); those
+effects are the week's report, read with `forge job log forge` (or `forge
+job show <id>`), not a question. `[assert]` is only that every step
+exited 0, whatever the effect log holds.
+
+A step exits non-zero, failing the job, in two cases, and `[limits]
+on_failure = "ask:operator"` turns either into a blocked question:
+
+- **A check could not run**: no `claude` or `npm` version to compare,
+  `cargo-audit` missing and not installable, `cargo audit` printing no
+  report, `jq` missing. A week whose check printed nothing is not a clean
+  week.
+- **A cargo audit advisory of severity high or critical.** That one is a
+  decision, not a report. The threshold is `ask_at` in
+  `check-cargo-audit` itself, which rates each advisory from its CVSS 3
+  vector (one without such a vector is `unscored` and only reported); the
+  step logs its row effects as for any advisory, then exits 1 naming
+  what crossed it.
+
+`per_day = 3`, so the operator can rerun it by hand the same day (`forge
+job start forge drift-weekly --now`) after fixing what made it ask. The
+CLI update itself is never run by the job — `check-claude-cli-version`
+only logs the exact `npm install -g @anthropic-ai/claude-code@<version>`
+command, for the operator to run by hand at the next worker restart.
+
+`.forge/fixtures/drift-weekly/` replays a clean week, a week with only CLI
+drift (green, one effect), a medium advisory (green, one effect) and a
+high one (failed, so it asks) through `forge job test .`. Each fixture's
+input stands in for the probes the steps would otherwise make
+(`claude_installed`, `claude_latest`, `audit_json`, `equitizr_status`,
+`equitizr_meta`, `now`; each action's description names its own), so the
+replay needs neither the CLI nor the network.
 
 ## `economist-weekly` — Monday 06:00
 
@@ -67,6 +95,19 @@ blocked question naming the effect, so a human sees a large move before
 the next week's shift compounds on top of it. Honours `FORGE_DRY_RUN`:
 `forge economist rebalance --dry-run` prints the weights it would write
 and writes nothing.
+
+## The doctor between daily runs, and its tasks
+
+`doctor-daily` is the daily record, not the only run. The worker runs the
+doctor watches (`src/doctor/watch/`) at the end of every poll pass, so a
+condition is seen within one poll rather than at 07:00. What a standing
+ERROR (or a WARN that names a concrete repair) owes is a task in the
+`forge` project, opened once per watch while the condition stands and
+marked handled when the watch goes OK; the table of watches, the keys and
+the outside dead-man (`[alerts] deadman_url`, an `ExecStopPost` on the
+worker unit) are in docs/OPS.md, "What doctor watches". A task opened this
+way is an ordinary task: its checks are the repository's own, and its text
+is what Forge wrote, never a model's.
 
 ## What a repository or task check is told
 

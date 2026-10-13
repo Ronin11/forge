@@ -1,6 +1,6 @@
 name = "drift-weekly"
 kind = "run"
-description = "weekly unattended drift checks on Monday 07:30: the claude CLI against npm, a model family's resolution against last week, cargo audit's advisories, and equitizr's freshness. A clean week logs no effect and is a green job; a drifted one logs what moved and asks the operator (docs/CHECKS.md)."
+description = "weekly unattended drift checks on Monday 07:30: the claude CLI against npm, a model family's resolution against last week, cargo audit's advisories, and equitizr's freshness. A drifted week is a green job like a clean one: every effect it logs is the report, read with `forge job log forge`. Only a check that could not run (a step exiting non-zero) fails and asks the operator, and so does a cargo audit advisory of high or critical severity, which is a decision (docs/CHECKS.md)."
 
 steps = [
   { action = "check-claude-cli-version",  effect = "http" },
@@ -13,10 +13,13 @@ steps = [
 on = "schedule"
 cron = "30 7 * * 1"
 
+# Every step exited 0, whatever the effect log holds: a step that could not
+# run, or an advisory at or above check-cargo-audit's `ask_at`, has already
+# failed the job before any assertion runs.
 [assert]
-clean = ["bash", "-c", "[ ! -s \"$FORGE_EFFECT_LOG\" ]"]
+ran = ["true"]
 
 [limits]
 budget_usd = 0.0
-per_day = 1
+per_day = 3
 on_failure = "ask:operator"

@@ -1015,7 +1015,14 @@ pub async fn integrate_many(f: &Forge, ids: &[i64]) -> Result<IntegrateReport> {
     }
     let cfg = config::load_working(&repo).await?;
     let stamp = unix_now();
-    let branch = format!("forge/integration-{stamp}");
+    // Two integrations in the same second must not share a branch: the
+    // second push would be a non-fast-forward of the first.
+    let mut branch = format!("forge/integration-{stamp}");
+    let mut n = 1;
+    while git::ref_exists(&repo, &format!("refs/heads/{branch}")).await {
+        n += 1;
+        branch = format!("forge/integration-{stamp}-{n}");
+    }
     let dir = f.paths.worktrees.join(format!("integrate-{stamp}"));
     let base_ref = match (
         &cfg.push_remote,
@@ -1338,9 +1345,11 @@ async fn land_integrated(
                 t.state = TaskState::Succeeded;
                 t.finished_at = Some(crate::unix_now());
             }
-            f.store.update_task(&t)?;
+            f.store.write_task(&t)?;
             drop(lock);
             effects::run(f, &mut t, &landed).await;
+            // Deploy and assessment read the tree; only now may it go.
+            crate::disk::task_finished(&f.store, &t);
             crate::queue::settle_superseded(f, id)?;
             if let Some(iid) = t.initiative {
                 crate::view::maybe_settle_initiative(f, id, iid)?;

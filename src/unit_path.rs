@@ -90,6 +90,16 @@ pub fn exec_start_line(args: &[&str]) -> Result<String> {
     Ok(format!("ExecStart={}", words.join(" ")))
 }
 
+/// `ExecStopPost=-` with each argument quoted; `$` is doubled. The `-`
+/// makes a failing command (the dead-man unreachable) not a failed stop.
+pub fn exec_stop_post_line(args: &[&str]) -> Result<String> {
+    let words = args
+        .iter()
+        .map(|a| quote(a, true))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(format!("ExecStopPost=-{}", words.join(" ")))
+}
+
 /// The value of an `Environment=` line: unquoted and unescaped when it is
 /// double-quoted, as written by `environment_line`, else taken as is.
 /// Only `Environment=` is read, where `$` has no meaning and is kept.

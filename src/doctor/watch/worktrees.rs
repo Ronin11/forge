@@ -28,6 +28,29 @@ pub(super) fn watch(store: &Store, worktrees: &Path, now: i64, warn_gb: u64) -> 
     judge(store, bytes, &landed, warn_gb)
 }
 
+/// The per-tick form: today's sample when one is already recorded (the
+/// directory walk is the cost, and the sample is once a day), else a
+/// fresh measure. Writes nothing when it reuses a sample.
+pub(super) fn watch_cached(store: &Store, worktrees: &Path, now: i64, warn_gb: u64) -> Check {
+    let day = super::super::ymd(now);
+    let today = store
+        .doctor_samples(SAMPLE, 1)
+        .ok()
+        .and_then(|s| s.into_iter().next())
+        .filter(|(d, _, _)| *d == day);
+    let Some((_, bytes, _)) = today else {
+        return watch(store, worktrees, now, warn_gb);
+    };
+    let landed: Vec<i64> = store
+        .landed_worktrees()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, wt)| Path::new(wt).exists())
+        .map(|(id, _)| id)
+        .collect();
+    judge(store, bytes.max(0) as u64, &landed, warn_gb)
+}
+
 pub(super) fn judge(store: &Store, bytes: u64, landed: &[i64], warn_gb: u64) -> Check {
     let samples = store
         .doctor_samples(SAMPLE, GROWTH_DAYS + 1)

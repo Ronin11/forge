@@ -27,7 +27,7 @@ cache = ["sh", "-c", "mkdir -p target node_modules/.cache .godot; echo data > ta
         .unwrap();
     let tree = std::path::Path::new(&tree);
     assert!(tree.join("answer.txt").exists());
-    for cache in ["target", "node_modules/.cache", ".godot"] {
+    for cache in ["target", "node_modules", ".godot"] {
         assert!(!tree.join(cache).exists(), "{cache} survived completion");
     }
 }

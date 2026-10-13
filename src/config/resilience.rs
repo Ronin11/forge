@@ -168,3 +168,26 @@ mod tests {
         assert!(!m.strong_lane);
     }
 }
+
+#[derive(Deserialize, Default)]
+pub(super) struct AlertsRaw {
+    deadman_url: Option<String>,
+}
+
+/// `[alerts]`: where the outside dead-man is (docs/OPS.md, "What doctor
+/// watches"). The worker pings `deadman_url` once per successful pass and
+/// the unit's `ExecStopPost` pings it with `/fail` appended; unset, nothing
+/// is pinged and nothing runs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Alerts {
+    pub deadman_url: Option<String>,
+}
+
+pub(super) fn build_alerts(raw: AlertsRaw) -> Alerts {
+    Alerts {
+        deadman_url: raw
+            .deadman_url
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty()),
+    }
+}

@@ -557,6 +557,9 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
         if task.journal_enabled { "on" } else { "off" },
         task.journal_arm
     );
+    if let Some(p) = task.band_p {
+        out!("band       {} (p {p:.2})", task.band);
+    }
     if !task.explore.is_empty() {
         out!(
             "explore    {}",

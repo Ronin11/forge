@@ -60,13 +60,39 @@ fn systemd_available() -> bool {
         && std::env::var_os("XDG_RUNTIME_DIR").is_some()
 }
 
-use crate::unit_path::{environment_line as env_line, exec_start_line as exec_line};
+use crate::unit_path::{
+    environment_line as env_line, exec_start_line as exec_line, exec_stop_post_line as stop_post,
+};
 
 fn display(p: &Path) -> String {
     p.display().to_string()
 }
 
-fn worker_unit(home: &Path, forge_bin: &Path, path: &str) -> Result<String> {
+/// The line that tells the outside dead-man the worker stopped: the
+/// configured `[alerts] deadman_url` with `/fail` appended, pinged by
+/// `ExecStopPost` (not `OnFailure=`, which never fires under a restarting
+/// unit). Empty when no URL is configured, so nothing runs.
+fn deadman_line(url: Option<&str>) -> Result<String> {
+    let Some(url) = url else {
+        return Ok(String::new());
+    };
+    let fail = crate::doctor::deadman::fail_url(url);
+    Ok(format!(
+        "{}\n",
+        stop_post(&[
+            "/usr/bin/env",
+            "curl",
+            "-fsS",
+            "-m",
+            "10",
+            "-o",
+            "/dev/null",
+            &fail
+        ])?
+    ))
+}
+
+fn worker_unit(home: &Path, forge_bin: &Path, path: &str, deadman: Option<&str>) -> Result<String> {
     Ok(format!(
         "# Written by `forge init`; re-run it after moving the binary.\n\
 [Unit]\n\
@@ -81,6 +107,7 @@ NotifyAccess=all\n\
 {home}\n\
 {path}\n\
 {exec}\n\
+{stop_post}\
 KillSignal=SIGTERM\n\
 KillMode=mixed\n\
 TimeoutStopSec=2400\n\
@@ -94,6 +121,7 @@ WantedBy=default.target\n",
         home = env_line("FORGE_HOME", &display(home))?,
         path = env_line("PATH", path)?,
         exec = exec_line(&[&display(forge_bin), "work"])?,
+        stop_post = deadman_line(deadman)?,
     ))
 }
 
@@ -319,7 +347,12 @@ fn install_units(home: &Path, reset_path: bool) -> Result<StepResult> {
     let web_unit_path = path_for_unit(&web_path, &bin_dir, reset_path);
     let worker_changed = write_if_changed(
         &worker_path,
-        &worker_unit(home, &forge_bin, &worker_unit_path)?,
+        &worker_unit(
+            home,
+            &forge_bin,
+            &worker_unit_path,
+            deadman_url(home).as_deref(),
+        )?,
     )?;
     let web_changed = write_if_changed(
         &web_path,
@@ -342,11 +375,7 @@ fn install_units(home: &Path, reset_path: bool) -> Result<StepResult> {
         ));
     }
 
-    let live_path = if worker_changed {
-        live_worker_path()
-    } else {
-        None
-    };
+    let live_path = worker_changed.then(live_worker_path).flatten();
     let sh = |args: &[&str]| -> Result<()> {
         let o = std::process::Command::new(args[0])
             .args(&args[1..])
@@ -416,6 +445,11 @@ fn install_units(home: &Path, reset_path: bool) -> Result<StepResult> {
         files_changed || !disabled.is_empty(),
         detail,
     ))
+}
+
+/// The configured `[alerts] deadman_url`, when the config loads and sets one.
+fn deadman_url(home: &Path) -> Option<String> {
+    crate::config::load_home(home).ok()?.alerts.deadman_url
 }
 
 /// `$HOME/.local/bin`, where the operator's own PATH finds `forge`.
@@ -728,6 +762,23 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_worker_unit_pings_the_dead_man_on_stop_only_when_one_is_configured() {
+        let bin = Path::new("/opt/forge/forge");
+        let home = Path::new("/home/x/forge");
+        let none = worker_unit(home, bin, "/usr/bin", None).unwrap();
+        assert!(!none.contains("ExecStopPost"), "{none}");
+        assert!(!none.contains("OnFailure"), "{none}");
+        let some = worker_unit(home, bin, "/usr/bin", Some("https://hc.example/abc/")).unwrap();
+        let line = some
+            .lines()
+            .find(|l| l.starts_with("ExecStopPost="))
+            .unwrap_or_else(|| panic!("{some}"));
+        assert!(line.starts_with("ExecStopPost=-"), "{line}");
+        assert!(line.contains("\"https://hc.example/abc/fail\""), "{line}");
+        assert!(!some.contains("OnFailure"), "{some}");
+    }
 
     #[test]
     fn by_hand_names_the_worker_and_web_commands_and_writes_nothing() {
