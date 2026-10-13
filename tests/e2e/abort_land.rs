@@ -8,10 +8,11 @@ use std::time::Duration;
 #[test]
 fn an_abort_during_verification_lands_and_pushes_nothing() {
     let e = Env::new();
-    // The task check runs sandboxed after the agent; it waits for a file
-    // the test writes once the abort is recorded, so the window needs no
-    // clock.
-    let check = "for i in $(seq 1 180); do [ -f go ] && exit 0; sleep 1; done; exit 1".to_string();
+    // `forge withdraw --abort` is serialized behind the running attempt's
+    // store writes, so it returns once the task's checks end: the abort
+    // is recorded between the last step and the land step, which is the
+    // window this covers. The check is the attempt's tail.
+    let check = "sleep 5".to_string();
     // 1 is a failed parent; 2 and 3 retry it, so each is the other's live
     // sibling, which is what `--abort` requires.
     let parent = e.add(&[]);
@@ -32,10 +33,6 @@ fn an_abort_during_verification_lands_and_pushes_nothing() {
     let log = e.home.join("worker.log");
     let out = std::fs::File::create(&log).unwrap();
     let mut cmd = e.cmd("ok.sh");
-    // Unsandboxed, so the check sees the gate file written into its
-    // worktree from outside; the abort's path does not depend on the
-    // sandbox.
-    cmd.env("FORGE_SANDBOX", "0");
     cmd.args(["work", "--once"])
         .stdout(out.try_clone().unwrap())
         .stderr(out);
@@ -61,11 +58,6 @@ fn an_abort_during_verification_lands_and_pushes_nothing() {
         ],
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    // The checks run in the task's worktree, refreshed from the kernel
-    // repository for verification.
-    let gate = e.home.join("worktrees").join(doomed.to_string()).join("go");
-    std::fs::write(&gate, "")
-        .unwrap_or_else(|e| panic!("{e} writing {}:\n{}", gate.display(), read()));
     // The worker's exit reflects the capped task; it ends either way.
     let _ = worker.wait();
 
