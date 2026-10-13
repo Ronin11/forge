@@ -88,6 +88,7 @@ pub(super) async fn prepare_worktree(
             _ => None,
         };
         let r = git::clone_task(
+            &f.paths.home,
             repo,
             &t.base_branch,
             &dir,

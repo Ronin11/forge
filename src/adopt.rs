@@ -306,7 +306,16 @@ async fn run(
         crate::disk::remove_tree(&wt)?;
     }
     let timer = Timer::now();
-    let mut tip = git::clone_task(&repo, &cfg.base_branch, &wt, &t.branch, None, None).await?;
+    let mut tip = git::clone_task(
+        &f.paths.home,
+        &repo,
+        &cfg.base_branch,
+        &wt,
+        &t.branch,
+        None,
+        None,
+    )
+    .await?;
     // The base as the remote has it, fetched straight into the clone: the
     // registered checkout, the human's own, is only ever read.
     if let Some((_, url)) = remote

@@ -81,9 +81,17 @@ async fn checkout_case(conflict: bool, landed: bool, refile: bool) {
     }
     let dir = home.path().join("checkout");
     let branch = git::current_branch(repo.path()).await.unwrap();
-    git::clone_task(repo.path(), &branch, &dir, "followup", None, None)
-        .await
-        .unwrap();
+    git::clone_task(
+        home.path(),
+        repo.path(),
+        &branch,
+        &dir,
+        "followup",
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let old = branch_parent(&f, &child).ok().flatten().unwrap();
     let merged = reuse_branch(&f, &mut child, old, &dir).await.ok().unwrap();
     assert_eq!(merged, !conflict && !landed);
@@ -154,9 +162,17 @@ async fn branch_reuse_start_clears_staged_and_unrecorded_namespace_files() {
     let branch = git::current_branch(repo.path()).await.unwrap();
     let cfg = config::load_working(repo.path()).await.unwrap();
     let prior = home.path().join("prior");
-    git::clone_task(repo.path(), &branch, &prior, "prior", None, None)
-        .await
-        .unwrap();
+    git::clone_task(
+        home.path(),
+        repo.path(),
+        &branch,
+        &prior,
+        "prior",
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     std::fs::write(prior.join("answer.txt"), "42\n").unwrap();
     let tip = git::commit_all(&prior, "implementation")
         .await

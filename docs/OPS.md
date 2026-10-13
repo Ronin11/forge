@@ -947,3 +947,26 @@ delete it if it contains nothing else), reload user units with
 clears the old credentials from that process environment and loads the provider
 references. On macOS there is no systemd step: restart the worker through its
 normal launcher after updating provider configuration.
+
+## Task clones share the kernel repository's objects
+
+`git::clone_task` clones every task worktree from the project's kernel
+repository (`<home>/repositories/<key>.git`), after fetching the base ref into
+it from the registered checkout. A local clone hardlinks objects, so all the
+clones of one project share the same pack inodes (link count is the kernel
+repository plus one per live clone) instead of each carrying its own copy.
+Measured 2026-10-10 before this change: each Exploration worktree held its
+own 514 MB `.git` on top of a 600 MB working copy, because the operator's
+checkout repacks under its own auto-gc.
+
+To keep the links shared the kernel repository never repacks on its own:
+`gc.auto=0` and `maintenance.auto=false` are set on every kernel git command.
+Only the existing kernel maintenance may repack it, and a repack costs one
+private copy of the new packs per live clone until those clones are removed.
+Prefer to repack when few clones are live.
+
+### Later: btrfs reflinks for the working copy (not done)
+
+The working copy (about 600 MB per clone) is still a full checkout. On btrfs
+it could be made with `cp --reflink=always` from a kernel tree instead of a
+checkout per clone. That is a later step; nothing does it yet.

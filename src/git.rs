@@ -15,6 +15,8 @@ use tokio::process::Command;
 pub mod merge_tree;
 mod overlay;
 pub use overlay::{clear_recorded_overlay, overlay_manifest_path, remove_empty_dirs};
+mod tree;
+pub use tree::{adopt_tree, compare_url, local_remote_path, restore_metadata};
 
 /// The committer identity Forge commits as, wherever no better identity is
 /// configured.
@@ -159,11 +161,21 @@ pub async fn ref_exists(repo: &Path, full_ref: &str) -> bool {
         .is_ok()
 }
 
-/// A single-branch clone of `base` from the registered checkout, on a new
-/// task branch, with no remote at all: the agent inside cannot fetch
-/// anything, in particular not the verification refs. Forge pushes by URL.
-/// Returns the base commit.
+/// A single-branch clone of `base` on a new task branch, with no remote at
+/// all: the agent inside cannot fetch anything, in particular not the
+/// verification refs. Forge pushes by URL. Returns the base commit.
+///
+/// The clone is made from the kernel repository, after fetching `base` (and
+/// `at_ref`) into it from the registered checkout, never from the checkout
+/// itself: a local clone hardlinks objects, so every clone of one project
+/// shares the kernel repository's packs, where the operator's checkout
+/// repacks under its own auto-gc and would break the sharing between clones
+/// made at different times. The kernel repository therefore never repacks on
+/// its own (`gc.auto=0`, `maintenance.auto=false` on every hardened command);
+/// a repack there costs one private copy of the new packs per live clone
+/// until those clones are removed.
 pub async fn clone_task(
+    home: &Path,
     repo: &Path,
     base: &str,
     dir: &Path,
@@ -173,27 +185,65 @@ pub async fn clone_task(
 ) -> Result<String> {
     let dir_s = dir.to_str().context("clone path is not UTF-8")?;
     let repo_s = repo.to_str().context("repo path is not UTF-8")?;
-    // The clone target does not exist yet, so run from the source repo,
-    // which does.
-    Git::new(repo)
-        .hardened()
-        .raw(&[
+    let _lock = kernel_lock(home, repo).await?;
+    let kernel = kernel_repository(home, repo).await?;
+    let kernel_s = kernel
+        .to_str()
+        .context("kernel path is not UTF-8")?
+        .to_string();
+    let base_ref_name = format!("refs/forge/clone-base/{base}");
+    let ref_staged = {
+        let g = Git::new(&kernel).hardened();
+        g.line(&[
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--",
+            repo_s,
+            &format!("+refs/heads/{base}:refs/heads/{base}"),
+        ])
+        .await?;
+        let staged = match at_ref {
+            Some(r) => g
+                .line(&[
+                    "fetch",
+                    "--quiet",
+                    "--no-tags",
+                    "--no-recurse-submodules",
+                    "--",
+                    repo_s,
+                    &format!("+{r}:{base_ref_name}"),
+                ])
+                .await
+                .is_ok(),
+            None => false,
+        };
+        // Hardlinks are git's default for a local clone; `--no-hardlinks`
+        // stays off so the clones share the kernel repository's packs.
+        g.raw(&[
             "clone",
             "--quiet",
             "--single-branch",
             "--no-tags",
             "--branch",
             base,
-            repo_s,
+            &kernel_s,
             dir_s,
         ])
         .await?;
+        staged
+    };
     let dir_git = Git::new(dir).hardened();
     // The base as the remote has it, not as the registered checkout has it;
     // a recorded sha wins over the ref, so every clone of one task agrees.
     match (at_ref, at_sha) {
         (Some(r), sha) => {
-            let fetched = dir_git.line(&["fetch", "--quiet", repo_s, r]).await.is_ok();
+            let fetched = ref_staged
+                && dir_git
+                    .line(&["fetch", "--quiet", &kernel_s, &base_ref_name])
+                    .await
+                    .is_ok();
             match (fetched, sha) {
                 (true, Some(sha)) | (false, Some(sha)) => {
                     dir_git.line(&["reset", "--hard", "--quiet", sha]).await?;
@@ -219,37 +269,6 @@ pub async fn clone_task(
 
 // Deliberately a complete config, not a patch to metadata supplied by an agent.
 const KERNEL_CONFIG: &str = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n\thooksPath = /dev/null\n";
-
-/// Strips whatever a sandboxed launch or check may have written into
-/// `<dir>/.git` before the first host git command touches that directory
-/// unsandboxed: `config` back to a fresh, trusted one (never a patch to
-/// what a check left), `hooks/` and `info/` emptied, and `commondir` and
-/// `gitdir` removed outright rather than inspected, since either would
-/// make git honor an object store, refs and config the sandbox planted
-/// instead of this directory's own. `dir/.git` must already be a plain
-/// directory; a symlink or gitfile in its place is a deeper compromise
-/// this refuses to follow.
-pub fn restore_metadata(dir: &Path) -> Result<()> {
-    let git_dir = dir.join(".git");
-    let meta = std::fs::symlink_metadata(&git_dir)
-        .with_context(|| format!("no .git in {}", dir.display()))?;
-    if !meta.is_dir() {
-        bail!("{} is not a plain directory", git_dir.display());
-    }
-    for redirect in ["commondir", "gitdir"] {
-        let _ = std::fs::remove_file(git_dir.join(redirect));
-    }
-    std::fs::write(
-        git_dir.join("config"),
-        KERNEL_CONFIG.replace("bare = true", "bare = false"),
-    )?;
-    for sub in ["hooks", "info"] {
-        let d = git_dir.join(sub);
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d)?;
-    }
-    Ok(())
-}
 
 pub(crate) async fn kernel_repository(home: &Path, repo: &Path) -> Result<PathBuf> {
     let key = crate::job::sha256_hex(repo.to_string_lossy().as_bytes());
@@ -305,26 +324,6 @@ pub async fn kernel_tree(home: &Path, repo: &Path, dir: &Path, branch: &str) -> 
         dir.join(".git/config"),
         KERNEL_CONFIG.replace("bare = true", "bare = false"),
     )?;
-    Ok(())
-}
-
-/// Make `clone` the kernel-made `tree`: the agent's directory is emptied and
-/// the tree's contents (metadata included) moved in, by plain file moves.
-/// No git command runs in either.
-pub fn adopt_tree(clone: &Path, tree: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(clone)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            std::fs::remove_dir_all(entry.path())?;
-        } else {
-            std::fs::remove_file(entry.path())?;
-        }
-    }
-    for entry in std::fs::read_dir(tree)? {
-        let entry = entry?;
-        std::fs::rename(entry.path(), clone.join(entry.file_name()))?;
-    }
-    std::fs::remove_dir_all(tree)?;
     Ok(())
 }
 
@@ -1115,27 +1114,6 @@ pub async fn remote_url(repo: &Path, remote: &str) -> Option<String> {
     Some(local_remote_path(repo, &url).map_or(url, |p| p.to_string_lossy().into_owned()))
 }
 
-/// Resolve local remote paths relative to the repository that owns the remote,
-/// never the process cwd or the integrator's separate Git directory.
-pub fn local_remote_path(repo: &Path, url: &str) -> Option<PathBuf> {
-    let path = if let Some(path) = url.strip_prefix("file://") {
-        // Git's file transport ignores the authority (including localhost)
-        // and percent-decodes the path. It does not contact that host.
-        use std::os::unix::ffi::OsStringExt;
-        let path = &path[path.find('/')?..];
-        PathBuf::from(std::ffi::OsString::from_vec(
-            percent_encoding::percent_decode_str(path).collect(),
-        ))
-    } else {
-        // A colon before any slash denotes a URL scheme or scp-style remote.
-        if url.split('/').next()?.contains(':') || url.is_empty() {
-            return None;
-        }
-        repo.join(url)
-    };
-    path.canonicalize().ok()
-}
-
 /// Whether `dir` is a bare repository.
 pub async fn is_bare(dir: &Path) -> bool {
     Git::new(dir)
@@ -1410,18 +1388,6 @@ pub async fn hand_commit_count(repo: &Path, from: &str, to: &str) -> Result<i64>
             author_name != name || author_email != email
         })
         .count() as i64)
-}
-
-/// A compare URL for GitHub-shaped remotes; `None` for anything else.
-pub fn compare_url(remote_url: &str, base: &str, branch: &str) -> Option<String> {
-    let rest = remote_url
-        .strip_prefix("git@github.com:")
-        .or_else(|| remote_url.strip_prefix("ssh://git@github.com/"))
-        .or_else(|| remote_url.strip_prefix("https://github.com/"))?;
-    let path = rest.trim_end_matches('/').trim_end_matches(".git");
-    Some(format!(
-        "https://github.com/{path}/compare/{base}...{branch}?expand=1"
-    ))
 }
 
 /// Whether `branch` already exists on the remote at `url`. Err when the
