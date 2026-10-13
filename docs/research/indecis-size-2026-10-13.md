@@ -2,9 +2,9 @@
 
 *2026-10-13. Can Forge's typed judgments run on a model it trains itself?
 First question tried: task size, the eval set with the most labels. Short
-answer: yes, and it beats both the untrained local model and the September
-Jev numbers by a wide margin, with calibrated probabilities. Jev on the
-same held-out items is still to run (it needs the TypeSafe key).*
+answer: yes. On identical held-out items it beats Jev by 33 points and
+the untrained local model by 37, with calibrated probabilities where Jev's
+confidence runs backwards.*
 
 ## What indecis is
 
@@ -46,7 +46,8 @@ calibrated; that is what the `indecis` provider on port 8117 has been.
 | always "large" | 58.8% | the majority class |
 | indecis, untrained open mode (`indecis`, port 8117) | 34.1% | below the majority: it prefers "medium" |
 | indecis, trained (`indecis-size`, port 8118) | **71.2%** | MAE 0.37 levels, ECE 0.09, 19 ms mean |
-| Jev (TypeSafe), 2026-09-27 | 23.3% | 60 different items, not this fixture; see jev-eval-2026-09-27.md |
+| Jev (TypeSafe), same fixture | 38.2% | 111 ms mean, $0.005 for the run; its 0.9-1.0 confidence decile is 22% right, its 0.2-0.3 decile 67% |
+| Jev (TypeSafe), 2026-09-27 | 23.3% | 60 different items; see jev-eval-2026-09-27.md |
 
 Calibration of the trained model (Forge's eval, confidence decile against
 accuracy):
@@ -89,16 +90,22 @@ the adjacent level, never two levels off, which the MAE of 0.37 says too.
   The `indecis` provider on 8117 should not be read as a Jev stand-in for
   anything but plumbing tests.
 
-## Still to run
+## Jev on the same items
 
-Jev on the same fixture, once `TYPESAFE_API_KEY` (or the Cloudflare pair)
-is set for the `jev` provider:
+Run the same afternoon once the TypeSafe key was in Forge's secret store
+(`forge secret set TYPESAFE_API_KEY`): 38.2% on the 170, every item
+answered, no errors (full report: jev-size-2026-10-13.md). Its calibration
+table is the finding: accuracy falls as confidence rises, 67% in the 0.2
+to 0.3 decile and 22% in the 0.9 to 1.0 decile. A probability that runs
+backwards cannot be thresholded, which is what every Forge use of Jev
+does (`[admission] threshold`, `[risky] threshold`). On this question the
+local model is the only one of the three whose confidence means anything.
 
-    forge eval jev --provider jev --fixture <scratch>/size/test-fixture.json --out docs/research/jev-size-2026-10-13.md
-
-The September run put Jev at 23.3% on 60 size items with confidence that
-did not track accuracy, so the expectation is that the trained local model
-wins this question outright; the fixture settles it on identical items.
+Jev stays the right tool where Forge has no labels yet (admission, the
+band, the risky verdict, the miss class) and where the state is not a
+task text. Each of those now records its answers, so the same recipe
+applies to them once a few hundred rows exist, with the task's later fate
+as the label.
 
 ## Reproduce
 
