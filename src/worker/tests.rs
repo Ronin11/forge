@@ -48,6 +48,38 @@ fn zero_negative_and_out_of_range_pids_are_never_alive() {
     assert!(!super::pid_alive(i64::from(i32::MAX) + 1));
 }
 
+/// The shared expiry rule: a reading lives exactly as long as its window.
+#[test]
+fn a_window_reading_expires_with_its_window() {
+    let now = 1_800_000_000;
+    let at = |age: i64, span: i64| fresh_reading(Some(1.0), now - age, span, now);
+    assert_eq!(at(5 * 3600, FIVE_HOUR_SPAN), Some(1.0));
+    assert_eq!(at(5 * 3600 + 1, FIVE_HOUR_SPAN), None);
+    assert_eq!(at(6 * 86_400, SEVEN_DAY_SPAN), Some(1.0));
+    assert_eq!(at(7 * 86_400 + 1, SEVEN_DAY_SPAN), None);
+    assert_eq!(fresh_reading(None, now, FIVE_HOUR_SPAN, now), None);
+}
+
+/// A seven-day sample older than seven days never holds either.
+#[test]
+fn a_seven_day_sample_older_than_seven_days_never_holds() {
+    use crate::store::RateLimitSample;
+    let now = 1_800_000_000;
+    let s = RateLimitSample {
+        seen_at: now - 7 * 86_400 - 1,
+        five_hour: None,
+        seven_day: Some(1.0),
+        five_hour_resets: None,
+        seven_day_resets: Some(now + 86_400),
+    };
+    assert_eq!(hold_from_sample(&s, (0.9, 0.9), now), None);
+    let fresh = RateLimitSample {
+        seen_at: now - 86_400,
+        ..s
+    };
+    assert!(hold_from_sample(&fresh, (0.9, 0.9), now).is_some());
+}
+
 /// A rate-limit sample older than the window it describes holds
 /// nothing, whatever reset time it names; a fresh one at its cap does.
 #[test]

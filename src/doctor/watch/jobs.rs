@@ -111,4 +111,31 @@ mod tests {
         job(&s, "doctor-daily", "ok", NOW - 4 * 86_400, "[]");
         assert_eq!(watch(&s, NOW).status, Status::Ok);
     }
+
+    #[test]
+    fn a_needs_human_job_a_later_ok_run_followed_is_not_counted() {
+        let (_d, s) = store();
+        job(&s, "drift-weekly", "needs_human", NOW - 9 * 86_400, "[]");
+        assert_eq!(watch(&s, NOW).status, Status::Warn);
+        job(&s, "drift-weekly", "ok", NOW - 2 * 86_400, "[]");
+        assert_eq!(watch(&s, NOW).status, Status::Ok);
+    }
+
+    #[test]
+    fn a_dismissed_job_is_not_counted_and_another_workflows_ok_does_not_close_one() {
+        let (_d, s) = store();
+        job(&s, "author-workflow", "needs_human", NOW - 9 * 86_400, "[]");
+        job(&s, "drift-weekly", "ok", NOW - 2 * 86_400, "[]");
+        assert_eq!(watch(&s, NOW).status, Status::Warn);
+        let id: i64 = s
+            .lock()
+            .query_row(
+                "SELECT id FROM jobs WHERE workflow='author-workflow'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        s.dismiss_job(id, "abandoned draft", "operator").unwrap();
+        assert_eq!(watch(&s, NOW).status, Status::Ok);
+    }
 }

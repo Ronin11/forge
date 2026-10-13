@@ -9,6 +9,20 @@ set -u
 
 : "${SIGNAL_CLI:=signal-cli}"
 
+# signal-cli is a GraalVM native image: every start extracts libsignal
+# (about 174 MB) into java.io.tmpdir and a killed process leaves it there,
+# which on a host whose /tmp is a RAM tmpfs is memory lost per restart.
+# Point java.io.tmpdir at the plugin's own state directory instead, and
+# clear it on a clean exit (`cleanup`). Every call site keeps calling
+# "$SIGNAL_CLI"; it is the wrapper below.
+SIGNAL_CLI_BIN=$SIGNAL_CLI
+SIGNAL_TMP="${FORGE_PLUGIN_STATE:-${TMPDIR:-/tmp}}/tmp"
+mkdir -p "$SIGNAL_TMP"
+signal_cli() {
+    "$SIGNAL_CLI_BIN" -Djava.io.tmpdir="$SIGNAL_TMP" "$@"
+}
+SIGNAL_CLI=signal_cli
+
 SIGNAL_ACCOUNT=
 SIGNAL_TO=
 SIGNAL_ALLOWED=
@@ -655,6 +669,17 @@ inbound() {
 # within SELFTEST_WAIT seconds. Exit 0 and one line on success, exit 1 and
 # the reason otherwise.
 selftest() {
+    # The command line signal.sh builds must carry the tmpdir argument:
+    # run the wrapper against a stand-in that prints its arguments.
+    argv_probe() { printf '%s\n' "$@"; }
+    real_bin=$SIGNAL_CLI_BIN
+    SIGNAL_CLI_BIN=argv_probe
+    probed=$("$SIGNAL_CLI" -a "$SIGNAL_ACCOUNT" receive)
+    SIGNAL_CLI_BIN=$real_bin
+    if ! printf '%s\n' "$probed" | grep -qxF -- "-Djava.io.tmpdir=$SIGNAL_TMP"; then
+        echo "signal self-test: the signal-cli command line lacks -Djava.io.tmpdir=$SIGNAL_TMP"
+        return 1
+    fi
     to=${SELFTEST_TO:-$SIGNAL_ACCOUNT}
     wait=${SELFTEST_WAIT:-$((POLL_SECONDS * 2 + 30))}
     stale=$((POLL_SECONDS * 3 + 60))
@@ -703,6 +728,8 @@ cleanup() {
     for pid in "$out_pid" "$in_pid"; do
         if ps -p "$pid" >/dev/null; then kill "$pid"; fi
     done
+    wait
+    rm -rf "$SIGNAL_TMP"
 }
 trap cleanup EXIT
 
