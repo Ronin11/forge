@@ -196,6 +196,16 @@ again is. The notify plugin passes it to its command as `doctor <check>
 
 | 11 | `deadman` | the `deadman.last_ping` mark the worker writes | `[alerts] deadman_url` is set and the worker has never pinged it, the last ping failed, or the last success is more than an hour old. Unset is OK. Not one of the per-tick watches; it is a row of `forge doctor` only | WARN |
 
+### Rate-limit readings
+
+A provider's `rate_limit` row reports the window figures from its latest
+attempt, and a reading lives only as long as its window: a 5h figure older
+than 5 hours and a 7d figure older than 7 days have reset since, so they are
+reported as `no recent reading (seen ..., Nm ago)` at OK level, never as the
+stale percentage, and set no `five_hour_pct`/`seven_day_pct`. The worker's
+hold (`worker::window_hold`) uses the same rule (`worker::fresh_reading`), so
+it cannot hold on a cap it has not seen within its window.
+
 ### Per tick, as tasks, and the outside dead-man
 
 The watches run at the end of every worker poll pass, not only from the
