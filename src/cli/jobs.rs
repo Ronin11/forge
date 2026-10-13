@@ -137,6 +137,14 @@ pub(super) enum JobCmd {
     /// Withdraw a scheduled job before it becomes due: refused once it is
     /// queued, running, or finished
     Withdraw { id: i64 },
+    /// Close a needs_human or failed job without a rerun, recording why
+    /// as a decision; `forge doctor` stops counting it as stale
+    Dismiss {
+        id: i64,
+        /// Why the job is closed
+        #[arg(long)]
+        reason: String,
+    },
     /// Jobs, newest first, or only `<project>`'s
     List {
         project: Option<String>,
@@ -408,6 +416,18 @@ fn job_withdraw(id: i64) -> Result<()> {
         bail!("job {id} is not scheduled; only a scheduled job, not yet due, can be withdrawn");
     }
     out!("withdrew job {id}");
+    Ok(())
+}
+
+/// `forge job dismiss <id> --reason <text>`: the operator closes a
+/// `needs_human` or `failed` job with no rerun (docs/JOBS.md).
+fn job_dismiss(id: i64, reason: &str) -> Result<()> {
+    if reason.trim().is_empty() {
+        bail!("--reason must say why job {id} is being dismissed");
+    }
+    let f = Forge::open(false, false)?;
+    let decision = f.store.dismiss_job(id, reason.trim(), "operator")?;
+    out!("dismissed job {id} (decision {decision})");
     Ok(())
 }
 
@@ -881,6 +901,7 @@ async fn dispatch_job(cmd: Cmd) -> Result<()> {
                 token,
             } => job_fire(project, webhook, input, reference, token).await,
             JobCmd::Withdraw { id } => job_withdraw(id),
+            JobCmd::Dismiss { id, reason } => job_dismiss(id, &reason),
             JobCmd::List { project, json } => job_list(project, json),
             JobCmd::Show { id, json } => job_show(id, json),
             JobCmd::Log { project, json } => job_log(project, json),

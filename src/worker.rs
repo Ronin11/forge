@@ -305,6 +305,18 @@ pub fn window_hold(f: &Forge, provider: &str) -> Result<Option<(String, i64)>> {
     Ok(hold_from_sample(&s, caps, unix_now()))
 }
 
+/// Seconds a reading of the five-hour and seven-day windows stays true: a
+/// window reading older than its window has reset since (docs/OPS.md,
+/// "Rate-limit readings"). `window_hold` and `forge doctor` share this rule.
+pub const FIVE_HOUR_SPAN: i64 = 5 * 3600;
+pub const SEVEN_DAY_SPAN: i64 = 7 * 86_400;
+
+/// A window's utilisation from a sample taken at `seen_at`, or `None` when
+/// the reading is older than `span` (or absent).
+pub fn fresh_reading(util: Option<f64>, seen_at: i64, span: i64, now: i64) -> Option<f64> {
+    util.filter(|_| now - seen_at <= span)
+}
+
 /// `window_hold`'s decision on one sample: the tightest window at or
 /// over its cap whose reset is still ahead. A sample older than the
 /// window it describes is stale, whatever reset it names: a five-hour
@@ -322,22 +334,19 @@ fn hold_from_sample(
             s.five_hour,
             s.five_hour_resets,
             five_hour_max,
-            5 * 3600,
+            FIVE_HOUR_SPAN,
         ),
         (
             "7d",
             s.seven_day,
             s.seven_day_resets,
             seven_day_max,
-            7 * 86_400,
+            SEVEN_DAY_SPAN,
         ),
     ] {
-        let (Some(u), Some(r)) = (util, resets) else {
+        let (Some(u), Some(r)) = (fresh_reading(util, s.seen_at, span, now), resets) else {
             continue;
         };
-        if now - s.seen_at > span {
-            continue;
-        }
         if u >= cap && r > now && hold.as_ref().is_none_or(|(_, until)| r > *until) {
             hold = Some((
                 format!(

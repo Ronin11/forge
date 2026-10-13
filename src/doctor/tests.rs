@@ -317,3 +317,37 @@ fn git_version_row_warns_below_merge_tree_write_tree() {
     assert_eq!(old.hint, "install git >= 2.38");
     assert_eq!(binaries::git_version_row("").status, Status::Warn);
 }
+
+#[test]
+fn a_stale_rate_window_reads_as_no_recent_reading() {
+    let now = 1_800_000_000;
+    let s = crate::store::RateLimitSample {
+        seen_at: now - 20_551 * 60,
+        five_hour: Some(1.0),
+        seven_day: None,
+        five_hour_resets: Some(now + 3600),
+        seven_day_resets: None,
+    };
+    let (five, seven, text) = rate_limit_reading("openai", &s, now);
+    assert_eq!((five, seven), (None, None));
+    assert!(text.starts_with("openai: no recent reading ("), "{text}");
+    assert!(text.contains("20551m ago") && !text.contains('%'), "{text}");
+
+    // A fresh five-hour figure is reported; the expired seven-day one is not.
+    let s = crate::store::RateLimitSample {
+        seen_at: now - 3600,
+        five_hour: Some(0.5),
+        seven_day: Some(0.9),
+        ..s
+    };
+    let (five, seven, text) = rate_limit_reading("openai", &s, now);
+    assert_eq!((five, seven), (Some(0.5), Some(0.9)));
+    assert!(text.contains("5h 50%, 7d 90%"), "{text}");
+    let old = crate::store::RateLimitSample {
+        seen_at: now - 6 * 3600,
+        ..s
+    };
+    let (five, seven, text) = rate_limit_reading("openai", &old, now);
+    assert_eq!((five, seven), (None, Some(0.9)));
+    assert!(text.contains("5h -, 7d 90%"), "{text}");
+}

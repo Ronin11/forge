@@ -1006,6 +1006,31 @@ fn check_spend(f: &Forge) -> Vec<Check> {
     vec![c]
 }
 
+/// The windows of `s` that are still true at `now` (a reading older than its
+/// window has reset; `worker::fresh_reading`) and the row's text. With none
+/// left the text says "no recent reading", never the stale percentage.
+fn rate_limit_reading(
+    name: &str,
+    s: &crate::store::RateLimitSample,
+    now: i64,
+) -> (Option<f64>, Option<f64>, String) {
+    use crate::worker::{FIVE_HOUR_SPAN, SEVEN_DAY_SPAN, fresh_reading};
+    let five = fresh_reading(s.five_hour, s.seen_at, FIVE_HOUR_SPAN, now);
+    let seven = fresh_reading(s.seven_day, s.seen_at, SEVEN_DAY_SPAN, now);
+    let seen = format!(
+        "seen {}, {}m ago",
+        crate::render::utc(s.seen_at),
+        (now - s.seen_at) / 60
+    );
+    let detail = if five.is_none() && seven.is_none() {
+        format!("{name}: no recent reading ({seen})")
+    } else {
+        let pct = |u: Option<f64>| u.map_or("-".into(), |u| format!("{:.0}%", u * 100.0));
+        format!("{name}: 5h {}, 7d {} ({seen})", pct(five), pct(seven))
+    };
+    (five, seven, detail)
+}
+
 /// One row per provider that has recorded a rate-limit sample: each has
 /// its own window and its own cap, so a full Anthropic window says
 /// nothing about a provider that has never been used near its own.
@@ -1025,17 +1050,14 @@ fn check_rate_limit(f: &Forge) -> Vec<Check> {
             }
         };
         let Some(s) = sample else { continue };
-        let age = unix_now() - s.seen_at;
-        let worst = s.five_hour.unwrap_or(0.0).max(s.seven_day.unwrap_or(0.0));
-        let detail = format!(
-            "{name}: 5h {}, 7d {} (seen {}, {}m ago)",
-            s.five_hour
-                .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
-            s.seven_day
-                .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
-            crate::render::utc(s.seen_at),
-            age / 60
-        );
+        let (five, seven, detail) = rate_limit_reading(name, &s, unix_now());
+        if five.is_none() && seven.is_none() {
+            let mut c = check("rate_limit", Status::Ok, detail, "");
+            c.provider = Some(name.clone());
+            out.push(c);
+            continue;
+        }
+        let worst = five.unwrap_or(0.0).max(seven.unwrap_or(0.0));
         let mut c = match crate::worker::window_hold(f, name) {
             Ok(Some((msg, _))) => check(
                 "rate_limit",
@@ -1053,10 +1075,10 @@ fn check_rate_limit(f: &Forge) -> Vec<Check> {
             Err(e) => check("rate_limit", Status::Fail, format!("{e:#}"), ""),
         };
         c.provider = Some(name.clone());
-        c.five_hour_pct = s.five_hour;
-        c.five_hour_resets_at = s.five_hour_resets;
-        c.seven_day_pct = s.seven_day;
-        c.seven_day_resets_at = s.seven_day_resets;
+        c.five_hour_pct = five;
+        c.five_hour_resets_at = five.and(s.five_hour_resets);
+        c.seven_day_pct = seven;
+        c.seven_day_resets_at = seven.and(s.seven_day_resets);
         out.push(c);
     }
     if out.is_empty() {

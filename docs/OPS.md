@@ -190,11 +190,21 @@ again is. The notify plugin passes it to its command as `doctor <check>
 | 5 | `worktrees_disk` | bytes under `FORGE_HOME/worktrees` and landed tasks whose tree still exists, sampled once a day | above `[worker] worktrees_warn_gb` (default 200), or 3 day-over-day increases in a row | WARN |
 | 6 | `plugin_heartbeat` | each enabled plugin's `$FORGE_PLUGIN_STATE/heartbeat` (docs/PLUGINS.md, "Heartbeat") | the last successful inbound poll is older than 10 times the plugin's poll interval | WARN |
 | 7 | `egress_model` / `egress_refusals` | the hosts the proxy refused each attempt in the last 24h (`refused` on its outputs) | a configured provider's own model host (`egress::provider_rules`) was refused: ERROR. Every other host is counted per host per day on one OK line, never one line per connection | ERROR / OK |
-| 8 | `jobs_stale` | `jobs`, `job_resolutions` | a job `needs_human` or `failed` for more than 48h, not answered and not followed by an `ok` run of the same workflow; names the job and its failing check, and a check whose process printed nothing as `tool produced nothing` | WARN |
+| 8 | `jobs_stale` | `jobs`, `job_resolutions` | a job `needs_human` or `failed` for more than 48h, not answered, not dismissed (`forge job dismiss <id> --reason <text>`) and not followed by an `ok` run of the same workflow; names the job and its failing check, and a check whose process printed nothing as `tool produced nothing` | WARN |
 | 9 | `land_rate` | finished agent tasks per project | a project finished at least 5 tasks in 7 days and landed none; the row (and `forge stats`) shows every project's land rate over 7 and 30 days | WARN |
 | 10 | `prompt_cache` | the token counts of counted attempts in the last 24h, per provider (`input_tokens` and the two cache columns) | a claude provider with at least 3 attempts and 200k prompt tokens read less than `[cache] warn_below` (default 50%) of them from the cache; the OK line shows every claude provider's read, written and uncached shares. Codex folds cache reads into input and is not judged | WARN |
 
 | 11 | `deadman` | the `deadman.last_ping` mark the worker writes | `[alerts] deadman_url` is set and the worker has never pinged it, the last ping failed, or the last success is more than an hour old. Unset is OK. Not one of the per-tick watches; it is a row of `forge doctor` only | WARN |
+
+### Rate-limit readings
+
+A provider's `rate_limit` row reports the window figures from its latest
+attempt, and a reading lives only as long as its window: a 5h figure older
+than 5 hours and a 7d figure older than 7 days have reset since, so they are
+reported as `no recent reading (seen ..., Nm ago)` at OK level, never as the
+stale percentage, and set no `five_hour_pct`/`seven_day_pct`. The worker's
+hold (`worker::window_hold`) uses the same rule (`worker::fresh_reading`), so
+it cannot hold on a cap it has not seen within its window.
 
 ### Per tick, as tasks, and the outside dead-man
 
