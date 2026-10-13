@@ -46,6 +46,7 @@ fn signal_fixture(repo: &str) -> SignalFixture {
         &signal_cli,
         r#"#!/bin/sh
 set -u
+case "$1" in -Djava.io.tmpdir=*) shift ;; esac
 shift
 shift
 # `-o json` is signal-cli's global output flag, before the subcommand.

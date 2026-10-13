@@ -11,6 +11,7 @@ use std::time::Duration;
 const ACCOUNT: &str = "+15555550100";
 
 const FAKE: &str = r#"#!/bin/sh
+case "$1" in -Djava.io.tmpdir=*) shift ;; esac
 acct=$2
 shift 2
 [ "$1" = -o ] && shift 2

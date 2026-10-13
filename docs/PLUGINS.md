@@ -291,6 +291,14 @@ or if the last receive failed. Otherwise it sends a fresh
 default) and waits up to `SELFTEST_WAIT` seconds for the receive loop to
 see it. That message is noted and never routed as a task or a question.
 
+Every `signal-cli` call runs with `-Djava.io.tmpdir` set to
+`plugins-state/signal/tmp`. signal-cli is a GraalVM native image that
+extracts libsignal (about 174 MB) into its temp directory on each start
+and leaves it behind when killed, which on a host with a RAM-backed
+`/tmp` ate memory on every restart. The plugin removes that directory on
+a clean exit, and the self-test fails if the argument is missing from the
+command line `signal.sh` builds.
+
 Inbound receives run `signal-cli -o json receive`, and the receive's
 stderr goes to the plugin's log (`forge plugin logs signal`), never to
 `/dev/null`, so a receive that fails says why; a non-zero exit also adds
