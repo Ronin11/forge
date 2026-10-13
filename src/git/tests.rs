@@ -587,6 +587,7 @@ async fn would_conflict_names_the_file_and_leaves_the_tree_alone() {
     assert_eq!(head(wt).await.unwrap(), ours);
     assert_eq!(std::fs::read_to_string(wt.join("a.txt")).unwrap(), "ours\n");
     assert!(dirty_paths(wt).await.unwrap().is_empty());
+}
 
 fn packs(git_dir: &Path) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = std::fs::read_dir(git_dir.join("objects/pack"))
