@@ -394,7 +394,11 @@ and does not parse stdout.
   boundary, not only between steps: before the land step, inside the
   integrator before the base moves, and before the branch is pushed, so
   a stop requested while the checks ran publishes nothing (a stop revokes
-  publication; `tests/e2e/abort_land.rs`). Recorded as the task's own reason and as a decision row
+  publication). The store serializes the abort's row behind the running
+  attempt's own writes, so in practice it lands between the last step and
+  the land step, where the between-steps check and this one both read it;
+  the re-reads inside the integrator and at the push guard the rest and
+  have no end-to-end test. Recorded as the task's own reason and as a decision row
   (see [`DecisionRow`](#decisionrow)); releases any task that was
   waiting on this one, the same as landing or failing does. Not `--json`;
   a client re-reads `forge log`/`forge requests` for the task it just
