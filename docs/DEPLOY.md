@@ -181,6 +181,17 @@ as that action, from the scratch tree of the landed commit); the kernel's
 own pushes never run hooks, credential helpers or ssh commands set in an
 agent's clone.
 
+A landing with an on-landing target is not done when it lands: the
+deploy's outcome is the **receipt** on the task
+(docs/research/06-one-person-factories.md, 2.6). Each target writes a
+`deploy-receipt` decision on the landed task (`ok: prod @ <sha>`,
+`failed: prod @ <sha>: <why>`, or `error: ...`, citing the deploy row
+and, on a failure, linked to the question it filed) and says the same on
+the task's reason: `landed main @ <sha>; deployed prod`, or `landed main
+@ <sha>; deploy prod failed: ... (question task N)`. `forge show`, the
+audit and the inbox read it from there; the landed commit stays landed,
+and the question is where the person decides.
+
 A deploy is recorded like an operation: target, commit, started,
 finished, the check's output and verdict, and what it rolled back to if
 it did. It emits `DeployStarted` and `DeployFinished` events, so the

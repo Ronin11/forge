@@ -324,7 +324,13 @@ Worth stating so the gap list is not read as a deficit list.
    2026-10-13:** `src/supervisor/miss.rs`, a `miss-review` decision on
    every mechanic hand-off with a cause key, and the twice rule filing
    one `miss-review-fix` task per key per week (docs/WORKFLOWS.md, "Miss
-   review"). 2.6 and 2.7 remain.
+   review"). **2.6 built 2026-10-13:** the deploy receipt on the landed
+   task, a `deploy-receipt` decision per on-landing target and the
+   outcome on the task's reason (docs/DEPLOY.md, "When a deploy runs");
+   Forge already filed the failure as a question and rolled back, so
+   the gap was only that "landed" said nothing about it. Not built:
+   receipt kinds beyond the deploy check and the deploy look
+   (`human-certification`, `founder-taste`). 2.7 remains.
 
 ## 6. Not verified
 

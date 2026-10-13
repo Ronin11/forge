@@ -183,6 +183,9 @@ impl End {
     pub(super) fn reason(&self, t: &Task, attempts: usize) -> String {
         match self {
             End::Verified => String::new(),
+            // The landing's effects may have appended the deploy receipt to
+            // the reason `persist` wrote (`landing::effects`); keep it.
+            End::Landed(sha) if t.reason.starts_with("landed ") => t.reason.clone(),
             End::Landed(sha) => {
                 format!("landed {} @ {}", t.base_branch, &sha[..sha.len().min(8)])
             }

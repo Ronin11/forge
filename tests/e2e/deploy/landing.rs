@@ -160,7 +160,10 @@ fn assert_landed_initiative(e: &Env) {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert_eq!(e.task(1).1, format!("landed main @ {}", &sha[..8]));
+    assert_eq!(
+        e.task(1).1,
+        format!("landed main @ {}; deployed prod", &sha[..8])
+    );
     assert!(finished.is_some());
 }
 

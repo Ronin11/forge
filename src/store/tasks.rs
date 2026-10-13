@@ -628,6 +628,22 @@ impl Store {
             .optional()?)
     }
 
+    /// The question a failed deploy filed (`deploy::ask`), by the deploy's
+    /// row id; the latest when there are several.
+    pub fn task_for_deploy(&self, deploy_id: i64) -> Result<Option<Task>> {
+        Ok(self
+            .lock()
+            .retry_query_row(
+                &format!(
+                    "SELECT {} FROM tasks WHERE deploy_id=?1 ORDER BY id DESC LIMIT 1",
+                    TASK_COLUMNS.join(", ")
+                ),
+                params![deploy_id],
+                task_from_row,
+            )
+            .optional()?)
+    }
+
     /// Atomically take the highest-priority queued task for this worker
     /// (ties broken oldest first; see `store::priority` and
     /// `queued_unblocked`), skipping any whose initiative is in `held`

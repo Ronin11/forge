@@ -228,7 +228,7 @@ mkdir -p "$dest"
 
 /// Write the fake `rsync` to `path`, resolved against the real system
 /// `rsync` found on the current `PATH`.
-fn write_fake_rsync(path: &Path) {
+pub(super) fn write_fake_rsync(path: &Path) {
     let real = String::from_utf8(
         std::process::Command::new("sh")
             .arg("-c")
@@ -246,12 +246,12 @@ fn write_fake_rsync(path: &Path) {
 /// ignoring the host, exactly as docs/DEPLOY.md's build order describes
 /// testing a method: "a fake ssh on PATH" reaching "a directory on the
 /// same machine".
-const FAKE_SSH: &str = r#"#!/bin/bash
+pub(super) const FAKE_SSH: &str = r#"#!/bin/bash
 echo "ssh $1 $2" >> "$HOME/deploy-calls.log"
 bash -c "$2"
 "#;
 
-fn write_fake(path: &Path, script: &str) {
+pub(super) fn write_fake(path: &Path, script: &str) {
     std::fs::write(path, script).unwrap();
     let mut perm = std::fs::metadata(path).unwrap().permissions();
     perm.set_mode(0o755);
@@ -1093,6 +1093,8 @@ fn deploy_static_rsyncs_and_defaults_the_check_to_a_url_fetch_with_a_marker() {
 mod errors;
 #[path = "deploy/landing.rs"]
 mod landing;
+mod receipt;
+use receipt::receipt;
 #[path = "deploy/required_args.rs"]
 mod required_args;
 #[path = "deploy/user_service.rs"]
@@ -1188,6 +1190,22 @@ fn an_on_landing_deploy_shows_up_on_forge_show_and_trace_json() {
     assert_eq!(deploys[0]["target"], "prod");
     assert_eq!(deploys[0]["sha"], sha);
     assert_eq!(deploys[0]["check_ok"], true);
+
+    // The receipt: on the task's reason and as a decision row citing the
+    // deploy (docs/DEPLOY.md, "When a deploy runs").
+    let (_, reason, _) = e.task(1);
+    assert_eq!(
+        reason,
+        format!("landed main @ {}; deployed prod", &sha[..8])
+    );
+    let d = receipt(&e);
+    assert_eq!(d["answer"], format!("ok: prod @ {}", &sha[..8]));
+    assert_eq!(d["answered_by"], "deploy");
+    assert!(
+        d["citations"].as_str().unwrap().starts_with("deploy "),
+        "{d}"
+    );
+    assert!(d["retry_id"].is_null(), "{d}");
 }
 
 /// `forge project deploy set` changes only the field named, leaving every
