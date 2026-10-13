@@ -880,8 +880,7 @@ fn the_signal_plugin_notifies_a_blocked_task_and_files_an_answer_from_a_reply() 
         stub_dir.join("signal-cli"),
         format!(
             "#!/bin/sh\n\
-             case \"$1\" in -Djava.io.tmpdir=*) shift ;; esac\n\
-             cmd=$3; [ \"$3\" = -o ] && cmd=$5; case \"$cmd\" in\n\
+             case \"$1\" in -Djava.io.tmpdir=*) shift ;; esac; cmd=$3; [ \"$3\" = -o ] && cmd=$5; case \"$cmd\" in\n\
              send)\n\
              shift 3\n\
              msg=\"\"\n\
@@ -1047,8 +1046,7 @@ fn the_signal_plugin_delivers_an_addressed_question_to_its_contact_and_records_h
         stub_dir.join("signal-cli"),
         format!(
             "#!/bin/sh\n\
-             case \"$1\" in -Djava.io.tmpdir=*) shift ;; esac\n\
-             cmd=$3; [ \"$3\" = -o ] && cmd=$5; case \"$cmd\" in\n\
+             case \"$1\" in -Djava.io.tmpdir=*) shift ;; esac; cmd=$3; [ \"$3\" = -o ] && cmd=$5; case \"$cmd\" in\n\
              send)\n\
              shift 3\n\
              msg=\"\"\n\
@@ -1280,8 +1278,7 @@ fn the_signal_plugin_sends_a_contact_their_portal_link_on_intake_accept_and_on_r
         stub_dir.join("signal-cli"),
         format!(
             "#!/bin/sh\n\
-             case \"$1\" in -Djava.io.tmpdir=*) shift ;; esac\n\
-             cmd=$3; [ \"$3\" = -o ] && cmd=$5; case \"$cmd\" in\n\
+             case \"$1\" in -Djava.io.tmpdir=*) shift ;; esac; cmd=$3; [ \"$3\" = -o ] && cmd=$5; case \"$cmd\" in\n\
              send)\n\
              shift 3\n\
              msg=\"\"\n\
@@ -1522,8 +1519,7 @@ fn the_signal_plugin_routes_a_contacts_message_through_the_concierge() {
     std::fs::write(
         &signal_cli,
         r#"#!/bin/sh
-set -u
-case "$1" in -Djava.io.tmpdir=*) shift ;; esac
+set -u; case "$1" in -Djava.io.tmpdir=*) shift ;; esac
 shift
 shift
 [ "$1" = -o ] && shift 2; cmd=$1
