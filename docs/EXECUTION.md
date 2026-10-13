@@ -297,6 +297,31 @@ whole step is off.
    probability of that label) on the task and as a `band` decision row,
    shown by `forge show`, for `forge stats` and the economist's
    experiment arms to take as a feature. Nothing routes on it.
+3. **The size**, asked of every task that runs, of a second provider:
+   `size_provider` names a `jev` provider that is meant to be a local
+   model trained on the repository's own landings
+   (docs/research/indecis-size-2026-10-13.md: 71% on held-out tasks
+   where Jev itself scores 38%), asked the one `score` question `forge
+   eval jev` measures, `small` (at most 50 lines changed at landing),
+   `medium` (at most 300) or `large`. The answer is recorded as
+   `predicted_size` and `predicted_size_p` on the task and as a `size`
+   decision row answered by that provider. `size_workflows` routes on
+   it: a task whose request named no `--workflow` itself (its
+   `workflow_source` is `project` or `default`) moves to the workflow
+   mapped for its size when the probability reaches `size_threshold`
+   (default 0.5), held to what `--workflow` is held to (it exists,
+   resolves, fits the repository, is allowed at the task's trust), and
+   its `workflow_source` becomes `size`. A flag-named workflow, an
+   unmapped size, a workflow that does not fit, or a model error leaves
+   the task as it was; the decision row's citations say which, and a
+   model error is a note, never a block. Asked once per task.
+
+   ```toml
+   [admission]
+   size_provider = "indecis-size"
+   size_threshold = 0.5
+   size_workflows = { large = "planned" }
+   ```
 
 Cost is the usage tokens at the provider's price, not yet recorded against
 the task; the request is on no log.

@@ -165,6 +165,23 @@ fn apply_workflow(
     Ok(())
 }
 
+/// Workflow `name` for task `t`, held to what `--workflow` is held to: it
+/// exists, resolves, fits the repository and is allowed at the task's
+/// trust level. Returns it with whether it writes hidden tests. For the
+/// claim's size routing (`admission::size`).
+pub async fn fitted(f: &Forge, t: &Task, name: &str) -> Result<(workflows::Workflow, bool)> {
+    let cfg = config::load_working(std::path::Path::new(&t.repo)).await?;
+    let (wf, resolved) = workflow_fits(f, &cfg, name)?;
+    let policy = match t.trust {
+        crate::store::Trust::Operator => &f.trust.operator,
+        crate::store::Trust::Contact => &f.trust.contact,
+        crate::store::Trust::Public => &f.trust.public,
+    };
+    workflow_allowed(t.trust, policy, name)?;
+    let tdd = resolved.steps.iter().any(|s| s.action.name == "tests");
+    Ok((wf, tdd))
+}
+
 /// Apply `edit` to task `id` in place: the task must be queued or blocked
 /// (a running attempt might still finish; a finished task is done), and
 /// every new value is held to what `enqueue` holds it to: a positive

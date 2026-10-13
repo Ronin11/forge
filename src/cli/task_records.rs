@@ -560,6 +560,9 @@ pub(super) fn show(id: i64, json: bool) -> Result<()> {
     if let Some(p) = task.band_p {
         out!("band       {} (p {p:.2})", task.band);
     }
+    if let Some(p) = task.predicted_size_p {
+        out!("size       {} predicted (p {p:.2})", task.predicted_size);
+    }
     if !task.explore.is_empty() {
         out!(
             "explore    {}",

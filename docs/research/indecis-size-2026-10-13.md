@@ -37,7 +37,11 @@ calibrated; that is what the `indecis` provider on port 8117 has been.
 - Serving: `indecis-serve -model size=~/.local/share/indecis/models/size-e4
   -addr 127.0.0.1:8118` as the user unit `indecis-size`; the operator
   provider `[providers.indecis-size]` (runner jev, backend typesafe,
-  model `size`). Not routed anywhere; eval only.
+  model `size`). Since 2026-10-13 it is the `[admission] size_provider`:
+  every claimed task gets a predicted size, and `size_workflows` routes
+  the workflow on it (docs/EXECUTION.md, "Admission and the judgment
+  band", 3). The 8117 and 8118 servers are the user units `indecis` and
+  `indecis-size` (~/.config/systemd/user), enabled at login.
 
 ## Results on the 170 held-out items
 

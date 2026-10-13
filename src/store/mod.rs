@@ -38,6 +38,7 @@ mod retry;
 mod run_cursor;
 mod schedule;
 use retry::RetryConnection;
+mod claim_marks;
 mod stats;
 mod supersede;
 mod task_write;
@@ -50,6 +51,7 @@ pub use adoption::{Adoption, ManualStat, Origin};
 pub use alerts::Alert;
 pub use attempts::{Attempt, AttemptState, FinishAttempt, Op, RateLimitSample, seed_used};
 pub use chat::{ChatSession, ChatTurn, NewChatTurn};
+pub use claim_marks::Reroute;
 pub use daily::DailyStat;
 pub use deploys::{Assessment, Deploy, DeployTarget, FinishDeploy};
 pub use factors::{FactorLevelStat, ROLES};
@@ -283,6 +285,8 @@ const TASK_COLUMNS: &[&str] = &[
     "early_ending",
     "band",
     "band_p",
+    "predicted_size",
+    "predicted_size_p",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -391,6 +395,8 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         early_ending: r.get("early_ending")?,
         band: r.get("band")?,
         band_p: r.get("band_p")?,
+        predicted_size: r.get("predicted_size")?,
+        predicted_size_p: r.get("predicted_size_p")?,
     })
 }
 

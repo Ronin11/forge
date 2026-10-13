@@ -922,6 +922,14 @@ ALTER TABLE tasks ADD COLUMN band_p REAL;
     "
 ALTER TABLE workers ADD COLUMN successor_of INTEGER;
 ",
+    // The size a local model predicted for the change when a worker
+    // claimed the task (`admission::size`, docs/EXECUTION.md): `small`,
+    // `medium` or `large`, and the probability of that label. Empty and
+    // NULL when never asked.
+    "
+ALTER TABLE tasks ADD COLUMN predicted_size TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN predicted_size_p REAL;
+",
 ];
 
 /// First line of a step that is not additive (it DROPs, RENAMEs or ALTERs

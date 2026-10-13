@@ -15,7 +15,8 @@
 //!
 //! Only a `jev` provider answers; a claude lane is never asked. With none
 //! configured the whole step is off. A Jev error admits an operator task
-//! and parks any other.
+//! and parks any other. Then, on a task that runs, a local size model
+//! predicts the change's size and may route its workflow (`size`).
 
 use crate::{
     agent::{self, Provider, Runner},
@@ -119,12 +120,17 @@ fn request(t: &Task, ask_admit: bool, ask_band: bool) -> Value {
             }}),
         );
     }
+    json!({"model": "", "state": state_of(t), "questions": questions})
+}
+
+/// What the task looks like to a judge: its title, then its text, cut at
+/// `STATE_CHARS`.
+fn state_of(t: &Task) -> String {
     let text: String = t.task.chars().take(STATE_CHARS).collect();
-    let state = match &t.title {
+    match &t.title {
         Some(title) => format!("{title}\n\n{text}"),
         None => text,
-    };
-    json!({"model": "", "state": state, "questions": questions})
+    }
 }
 
 /// The probability Jev gave `label` in `answer`, 0 when it named another
@@ -266,9 +272,18 @@ fn admit_or_block(f: &Forge, t: &Task, answers: &serde_json::Value) -> Result<bo
 }
 
 /// The step, on a task this worker has just claimed. `Some` is the task
-/// to run (with its band recorded when Jev gave one); `None` is a task
-/// left blocked, for which nothing is to be started.
+/// to run (with its band recorded when Jev gave one, and its size
+/// predicted and routed on, `size::at_claim`); `None` is a task left
+/// blocked, for which nothing is to be started.
 pub async fn at_claim(f: &Forge, t: Task) -> Result<Option<Task>> {
+    let Some(t) = admit(f, t).await? else {
+        return Ok(None);
+    };
+    Ok(Some(size::at_claim(f, t).await?))
+}
+
+/// Admission and the band: `None` is a task left blocked.
+async fn admit(f: &Forge, t: Task) -> Result<Option<Task>> {
     let Some(p) = provider(f) else {
         return Ok(Some(t));
     };
@@ -341,5 +356,6 @@ pub async fn at_claim(f: &Forge, t: Task) -> Result<Option<Task>> {
     f.store.task(t.id)
 }
 
+pub mod size;
 #[cfg(test)]
 pub(crate) mod tests;

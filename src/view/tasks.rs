@@ -342,6 +342,10 @@ pub struct TraceTask {
     /// and `None` when it was never asked (`admission`).
     pub band: String,
     pub band_p: Option<f64>,
+    /// The size a local model predicted at claim and its probability;
+    /// empty and `None` when never asked (`admission::size`).
+    pub predicted_size: String,
+    pub predicted_size_p: Option<f64>,
     /// Which provider each role drew from `[measure] explore`, keyed by
     /// role name; empty when the task named an explicit `--provider` or no
     /// role explored (see `queue::assign_explore`).
@@ -594,6 +598,8 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
         journal_arm: t.journal_arm.clone(),
         band: t.band.clone(),
         band_p: t.band_p,
+        predicted_size: t.predicted_size.clone(),
+        predicted_size_p: t.predicted_size_p,
         explore: t.explore.clone(),
         routing: t.routing.clone(),
         context_enabled: t.context_enabled,

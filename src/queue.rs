@@ -27,7 +27,7 @@ pub use answer::answer;
 use arms::{assign_explore, assign_journal_arm};
 use dependencies::{dependency_fits, waits_on};
 pub use duplicates::{refuse_live_descendant, withdraw_abort};
-pub use edit::{TaskEdit, edit_task};
+pub use edit::{TaskEdit, edit_task, fitted};
 pub use initiative::{
     FileTask, file_initiative_paragraphs, file_plan, parse_initiative_file,
     validate_initiative_file,
@@ -151,7 +151,8 @@ fn task_shape(text: &str, resolved: &workflows::Resolved, declared_checks: usize
 /// The workflow `name` exists, the directory it lives in is sound, it
 /// resolves, and the repository can carry it (a `tests` step needs a
 /// namespace and a `test` check). Resolution proper happens at start;
-/// here it only has to be possible. Shared by `enqueue` and `edit_task`.
+/// here it only has to be possible. Shared by `enqueue`, `edit_task` and
+/// the claim's size routing (`edit::fitted`).
 fn workflow_fits(
     f: &Forge,
     cfg: &config::Config,

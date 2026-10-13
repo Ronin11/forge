@@ -268,3 +268,197 @@ async fn with_no_jev_provider_the_step_is_off() {
     f.providers.get_mut("jev").unwrap().runner = Runner::ClaudeCli;
     assert!(provider(&f).is_none());
 }
+
+/// A size model answering `outcome` with `large` at 0.83.
+fn size_reply() -> Reply {
+    Arc::new(|_| {
+        (
+            200,
+            json!({"outcome": {"type": "score",
+                "probabilities": {"small": 0.05, "medium": 0.12, "large": 0.83}}}),
+        )
+    })
+}
+
+/// The operator config naming a size provider on `port` with `extra`
+/// under `[admission]`.
+fn size_config(port: u16, extra: &str) -> String {
+    format!(
+        "[providers.indecis-size]\nrunner = \"jev\"\nbackend = \"typesafe\"\nbase_url = \"http://127.0.0.1:{port}/v1/systemone\"\napi_key_env = \"PATH\"\n[admission]\nprovider = \"jev\"\nsize_provider = \"indecis-size\"\n{extra}"
+    )
+}
+
+/// A repository the claim can load the configuration of.
+fn repo(dir: &tempfile::TempDir) -> String {
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("forge.toml"), "[checks]\nok = [\"true\"]\n").unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@x",
+            "commit",
+            "-qm",
+            "init",
+            "--allow-empty",
+        ],
+    ] {
+        let o = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+    repo.display().to_string()
+}
+
+#[tokio::test]
+async fn the_size_is_predicted_once_and_routes_a_default_workflow() {
+    let (jev, _) = fake(ok(0.95, "none")).await;
+    let (size_port, seen) = fake(size_reply()).await;
+    let (dir, f) = forge(
+        Some(jev),
+        &size_config(size_port, "size_workflows = { large = \"planned\" }\n"),
+    );
+    let mut t = claimed(&f, Trust::Operator, "rework the importer end to end");
+    t.repo = repo(&dir);
+    f.store.update_task(&t).unwrap();
+    let t = at_claim(&f, t).await.unwrap().expect("runs");
+    assert_eq!(t.predicted_size, "large");
+    assert_eq!(t.predicted_size_p, Some(0.83));
+    assert_eq!(
+        (t.workflow.as_str(), t.workflow_source.as_str()),
+        ("planned", "size")
+    );
+    assert!(!t.workflow_hash.is_empty() && t.workflow_text.contains("investigate"));
+    let row = f.store.task(t.id).unwrap().unwrap();
+    assert_eq!(
+        (row.workflow.as_str(), row.workflow_source.as_str()),
+        ("planned", "size")
+    );
+    assert_eq!(row.predicted_size, "large");
+    let d = f
+        .store
+        .decisions_of_kind_since(crate::admission::size::KIND, 0)
+        .unwrap();
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].answered_by, "indecis-size");
+    assert_eq!(d[0].answer, "large (p 0.83)");
+    assert!(
+        d[0].citations.ends_with("routed direct -> planned"),
+        "{}",
+        d[0].citations
+    );
+    {
+        let sent = seen.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        let q = &sent[0]["questions"]["outcome"];
+        assert_eq!(q["type"], "score");
+        assert_eq!(q["instructions"], crate::admission::size::instructions());
+        assert_eq!(q["criteria"], json!(["small", "medium", "large"]));
+    }
+    // Asked once: a second claim of the same task asks nothing.
+    at_claim(&f, row).await.unwrap().unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_flag_named_workflow_a_low_probability_and_an_unmapped_size_keep_the_workflow() {
+    let (jev, _) = fake(ok(0.95, "none")).await;
+    let (size_port, _) = fake(size_reply()).await;
+    let (dir, f) = forge(
+        Some(jev),
+        &size_config(size_port, "size_workflows = { large = \"planned\" }\n"),
+    );
+    let mut t = claimed(&f, Trust::Operator, "rework the importer end to end");
+    t.repo = repo(&dir);
+    t.workflow_source = "flag".into();
+    f.store.update_task(&t).unwrap();
+    let t = at_claim(&f, t).await.unwrap().unwrap();
+    assert_eq!(
+        (t.workflow.as_str(), t.predicted_size.as_str()),
+        ("direct", "large")
+    );
+    let d = f
+        .store
+        .decisions_of_kind_since(crate::admission::size::KIND, 0)
+        .unwrap();
+    assert!(
+        d[0].citations.contains("kept direct: the request named it"),
+        "{}",
+        d[0].citations
+    );
+
+    let (dir, f) = forge(
+        Some(jev),
+        &size_config(
+            size_port,
+            "size_workflows = { large = \"planned\" }\nsize_threshold = 0.9\n",
+        ),
+    );
+    let mut t = claimed(&f, Trust::Operator, "rework the importer end to end");
+    t.repo = repo(&dir);
+    f.store.update_task(&t).unwrap();
+    let t = at_claim(&f, t).await.unwrap().unwrap();
+    assert_eq!(t.workflow, "direct");
+    let d = f
+        .store
+        .decisions_of_kind_since(crate::admission::size::KIND, 0)
+        .unwrap();
+    assert!(
+        d[0].citations.contains("under the routing threshold 0.90"),
+        "{}",
+        d[0].citations
+    );
+
+    let (_dir, f) = forge(
+        Some(jev),
+        &size_config(size_port, "size_workflows = { small = \"cheap\" }\n"),
+    );
+    let t = claimed(&f, Trust::Operator, "rework the importer end to end");
+    let t = at_claim(&f, t).await.unwrap().unwrap();
+    assert_eq!(t.workflow, "direct");
+    let d = f
+        .store
+        .decisions_of_kind_since(crate::admission::size::KIND, 0)
+        .unwrap();
+    assert!(
+        d[0].citations.contains("no workflow is mapped for large"),
+        "{}",
+        d[0].citations
+    );
+}
+
+#[tokio::test]
+async fn a_size_model_error_or_no_size_provider_leaves_the_task_as_it_was() {
+    let (jev, _) = fake(ok(0.95, "none")).await;
+    let (size_port, seen) = fake(Arc::new(|_| (500, json!({})))).await;
+    let (_dir, f) = forge(Some(jev), &size_config(size_port, ""));
+    let t = claimed(&f, Trust::Operator, "do the thing");
+    let t = at_claim(&f, t).await.unwrap().unwrap();
+    assert_eq!(t.state, TaskState::Running);
+    assert!(t.predicted_size.is_empty() && t.predicted_size_p.is_none());
+    assert_eq!(
+        f.store
+            .decisions_of_kind_since(crate::admission::size::KIND, 0)
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(seen.lock().unwrap().len(), 1);
+
+    let (_dir, f) = forge(Some(jev), "");
+    let t = claimed(&f, Trust::Operator, "do the thing");
+    let t = at_claim(&f, t).await.unwrap().unwrap();
+    assert!(t.predicted_size.is_empty());
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        1,
+        "no size provider: nothing asked"
+    );
+}

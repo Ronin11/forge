@@ -406,11 +406,19 @@ strong_per_day = 10
 # task text that block it outright without asking Jev; the default list is
 # secrets, money and customer-data deletion, and yours replaces it.
 # `per_day` caps admissions in a rolling day, counted from decision rows.
+# `size_provider` names a jev provider (a local model trained on your own
+# landings, docs/research/indecis-size-2026-10-13.md) asked how large the
+# change will be, small/medium/large, recorded on the task; a task whose
+# request named no workflow itself is then routed by `size_workflows` when
+# the prediction's probability reaches `size_threshold`.
 # enabled = true
 # provider = \"jev\"
 # threshold = 0.9
 # per_day = 10
 # exclude = [\"(?i)\\\\bsecrets?\\\\b\"]
+# size_provider = \"indecis-size\"
+# size_threshold = 0.5
+# size_workflows = { large = \"planned\" }
 
 [risky]
 # A verified change to a repository's `[verify] risky` paths (or one whose

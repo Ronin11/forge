@@ -323,7 +323,7 @@ src/job.rs          forge job start: the executor for operation-only run workflo
 src/journal.rs      what earlier attempts in a piece of work said, and what the kernel found
 src/landing.rs      the integrator: merge base in, re-verify, push, fast-forward
 src/adopt.rs        forge adopt: a hand-made branch verified as it is and landed through the integrator, no agent run
-src/admission.rs    Jev at the claim: admission for contact and public tasks, and the judgment band recorded on the task
+src/admission.rs    Jev at the claim: admission for contact and public tasks, the judgment band recorded on the task, and the size a local model predicts, which routes the workflow (size.rs)
 src/risky.rs        risky paths hold for a verdict: a change to the repository's risky paths or lines lands on Jev's reading of the review, else waits for the operator
 src/lineage.rs      forge audit's pure lineage walk: tip-of, classify, report
 src/main.rs         entry, unix_now
@@ -349,7 +349,7 @@ src/load.rs        the time scale a loaded host stretches check timeouts and tes
 src/login.rs        the agent login: a refreshed token written back over the host file, an empty one never seeded
 src/login_hold.rs   a provider whose agent login was refused, held until a probe answers; the worker's ten-minute probe and doctor's
 src/successor.rs     the successor worker: a staged release starts forge work on it, the old worker drains
-src/store/          SQLite, forward-only migrations by user_version, one file per table family (task_write.rs: the one write of a task row; workers.rs: the registered workers and their releases; owners.rs: a running row's owner, pid plus start time, and orphan detection)
+src/store/          SQLite, forward-only migrations by user_version, one file per table family (task_write.rs: the one write of a task row; workers.rs: the registered workers and their releases; owners.rs: a running row's owner, pid plus start time, and orphan detection; claim_marks.rs: what the claim writes before the first attempt, the band, the predicted size and a rerouted workflow)
   mod.rs            types, column lists, open, schema_version, the migration runner
   migrations.rs     MIGRATIONS: every forward-only schema migration, in order
   notifications.rs  durable daily counts of follow-ups, retries, answered questions, and superseded blocks

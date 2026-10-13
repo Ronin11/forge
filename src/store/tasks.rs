@@ -220,6 +220,13 @@ pub struct Task {
     /// Recorded only; nothing routes on it.
     pub band: String,
     pub band_p: Option<f64>,
+    /// The size of the change a local model predicted when a worker
+    /// claimed the task (`admission::size`): `small`, `medium` or
+    /// `large`, in lines changed at landing, and the probability of that
+    /// label. Empty and `None` when never asked. `[admission]
+    /// size_workflows` routes the workflow on it.
+    pub predicted_size: String,
+    pub predicted_size_p: Option<f64>,
     /// Show the agents the journal of earlier attempts (the default);
     /// false for the control arm of a measurement.
     pub journal: bool,
@@ -307,7 +314,9 @@ pub struct Task {
     /// (`--workflow`), `"project"` (the project's own default), or
     /// `"default"` ("direct", nothing named it) — no operator-level
     /// default exists for the workflow (see docs/PROJECTS.md,
-    /// "Configuration layering").
+    /// "Configuration layering"). `"size"` when the claim rerouted it on
+    /// the predicted size (`admission::size`), which only a `"project"`
+    /// or `"default"` workflow is.
     pub workflow_source: String,
     /// Per role that ran (code, tests, review, plan, assess), the
     /// provider, model, and workflow it ran under, each with its source
@@ -666,15 +675,6 @@ impl Store {
             }
         }
         Ok(None)
-    }
-
-    /// Record the judgment band of a task (see `Task::band`).
-    pub fn set_band(&self, id: i64, band: &str, p: f64) -> Result<()> {
-        self.lock().retry_execute(
-            "UPDATE tasks SET band=?2, band_p=?3 WHERE id=?1",
-            params![id, band, p],
-        )?;
-        Ok(())
     }
 
     /// Atomically take one specific queued task.

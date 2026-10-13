@@ -62,9 +62,7 @@ fn empty_sets() -> Vec<Set> {
             name: "size",
             title: "Task size",
             kind: "score",
-            instructions: format!(
-                "How large is the change this task asks for, in lines changed at landing (small is at most {SMALL_LINES}, medium at most {MEDIUM_LINES})?"
-            ),
+            instructions: crate::admission::size::instructions(),
             criteria: size_criteria(),
             items: vec![],
         },
@@ -191,11 +189,7 @@ fn demotions(f: &Forge) -> Result<Vec<Item>> {
 
 /// The size a change of `lines` lines is labeled with.
 pub(super) fn size_label(lines: u64) -> &'static str {
-    match lines {
-        _ if lines <= SMALL_LINES => "small",
-        _ if lines <= MEDIUM_LINES => "medium",
-        _ => "large",
-    }
+    crate::admission::size::label(lines)
 }
 
 /// Each landed task's text, labeled by the lines its landing changed

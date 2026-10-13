@@ -14,8 +14,7 @@ mod sets;
 
 /// Lines changed (added plus deleted, base to landing) up to which a landed
 /// task is `small`; `MEDIUM_LINES` is the same for `medium`, above is `large`.
-pub(super) const SMALL_LINES: u64 = 50;
-pub(super) const MEDIUM_LINES: u64 = 300;
+pub(super) use crate::admission::size::{MEDIUM_LINES, SMALL_LINES};
 
 #[derive(Subcommand)]
 pub(super) enum EvalCmd {
