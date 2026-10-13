@@ -11,7 +11,7 @@ fn an_abort_during_verification_lands_and_pushes_nothing() {
     // The task check runs sandboxed after the agent, so the worker's own
     // check line is the signal that the agent is done and the window is
     // open; the sleep is the window.
-    let check = "sleep 20".to_string();
+    let check = "sleep 45".to_string();
     // 1 is a failed parent; 2 and 3 retry it, so each is the other's live
     // sibling, which is what `--abort` requires.
     let parent = e.add(&[]);
