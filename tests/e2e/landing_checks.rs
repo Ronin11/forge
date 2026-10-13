@@ -1,13 +1,17 @@
 use crate::landing::origin_sha;
 use crate::support::*;
 
-// This check passes in the code worktree and fails if landing runs it again.
-// A manual landing makes both base cases deterministic, without racing a coder.
+// This check passes in the code worktree and fails on a merged tree that
+// carries the base's later commit, so it trips only when landing verifies
+// again after the base moved; the unchanged case is proven by the integrate
+// op's own detail. A manual landing makes both base cases deterministic,
+// without racing a coder. (A detector keyed on the worktree's directory
+// name fired on the code attempt when Forge landed this change itself.)
 fn landing_with_a_check_that_rejects_reruns(base_moves: bool) {
     let e = Env::new();
     std::fs::write(
         e.repo.join("landing-check.sh"),
-        "case \"${PWD##*/}\" in landing-*) echo 'landing reran the check'; exit 1;; esac\n",
+        "[ ! -f new-base.txt ] || { echo 'landing reran the check'; exit 1; }\n",
     )
     .unwrap();
     let config = std::fs::read_to_string(e.repo.join("forge.toml")).unwrap();
