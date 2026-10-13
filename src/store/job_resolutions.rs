@@ -55,9 +55,9 @@ impl Store {
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let (project, state): (String, String) = tx
             .query_row(
-                "SELECT project, state FROM jobs WHERE id=?1",
+                "SELECT project AS project, state AS state FROM jobs WHERE id=?1",
                 params![job_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get("project")?, r.get("state")?)),
             )
             .optional()?
             .with_context(|| format!("no job {job_id}"))?;
