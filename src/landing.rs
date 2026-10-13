@@ -1295,16 +1295,8 @@ pub(crate) async fn land_task_outcome(f: &Forge, id: i64, by_hand: bool) -> Resu
             let _ = std::fs::remove_dir_all(&dir);
         }
         let restored = async {
-            git::clone_task(
-                &f.paths.home,
-                &repo,
-                &t.base_branch,
-                &dir,
-                &t.branch,
-                None,
-                None,
-            )
-            .await?;
+            let home = &f.paths.home;
+            git::clone_task(home, &repo, &t.base_branch, &dir, &t.branch, None, None).await?;
             git::fetch_ref(&dir, &url, &t.branch).await?;
             git::reset_hard(&dir, "FETCH_HEAD").await
         }
