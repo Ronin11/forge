@@ -22,6 +22,9 @@ clippy = ["cargo", "clippy", "--workspace", "--all-targets", "--fix", "--allow-d
 [verify]
 # The client boundary is the one rule a task may not relax; forge.toml is always protected.
 protected = ["tests/boundary.rs", "forge.toml"]
+# A change here lands on a verdict, not on its checks alone (docs/WORKFLOWS.md,
+# "Risky paths"): the prompts and the workflow catalog.
+risky = [".forge/workflows/", "src/prompts.rs"]
 # Owned by verification: hidden from the coder, overlaid at verify time, must not
 # exist on main. Cargo discovers tests/hidden/main.rs as one integration test
 # target, so hidden tests written there run under the `test` check.

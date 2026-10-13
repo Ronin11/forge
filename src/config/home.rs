@@ -35,6 +35,8 @@ struct HomeRaw {
     #[serde(default)]
     admission: super::admission::AdmissionRaw,
     #[serde(default)]
+    risky: super::risky::RiskyRaw,
+    #[serde(default)]
     alerts: super::resilience::AlertsRaw,
     /// Extra roots to discover plugins under, beyond `<FORGE_HOME>/plugins`
     /// (see `src/plugins.rs`). `~` expands; a relative path resolves against
@@ -221,6 +223,8 @@ pub struct HomeConfig {
     pub mechanic: super::resilience::Mechanic,
     /// `[admission]`: see `config::admission`.
     pub admission: super::admission::Admission,
+    /// `[risky]`: see `config::risky`.
+    pub risky: super::risky::Risky,
     /// `[alerts]`: the outside dead-man's URL.
     pub alerts: super::resilience::Alerts,
     /// Extra plugin roots, in the order given, resolved to absolute paths.
@@ -407,6 +411,18 @@ strong_per_day = 10
 # threshold = 0.9
 # per_day = 10
 # exclude = [\"(?i)\\\\bsecrets?\\\\b\"]
+
+[risky]
+# A verified change to a repository's `[verify] risky` paths (or one whose
+# diff adds a line matching its `risky_lines`) does not land on its own
+# checks: it holds, and lands on a verdict. Jev is asked whether the
+# review's prose approves it; `threshold` or more lands, under it (or a
+# Jev error, or no review step, or no jev provider) the task is left
+# verified and pushed for you: `forge land <id>` lands it, `forge withdraw`
+# drops it. `enabled = false` skips Jev: every risky change is yours.
+# enabled = true
+# provider = \"jev\"
+# threshold = 0.9
 
 [alerts]
 # An outside dead-man (healthchecks.io or any URL that answers a GET): the
@@ -708,6 +724,7 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
         infra: super::resilience::build_infra(raw.infra),
         mechanic: super::resilience::build_mechanic(raw.mechanic),
         admission: super::admission::build(raw.admission)?,
+        risky: super::risky::build(raw.risky)?,
         alerts: super::resilience::build_alerts(raw.alerts),
         plugin_dirs: raw
             .plugin_dirs
@@ -907,6 +924,7 @@ mod tests {
         assert_eq!(from_template.infra, from_defaults.infra);
         assert_eq!(from_template.mechanic, from_defaults.mechanic);
         assert_eq!(from_template.admission, from_defaults.admission);
+        assert_eq!(from_template.risky, from_defaults.risky);
     }
 
     #[test]

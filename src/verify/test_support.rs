@@ -43,7 +43,7 @@ pub(super) async fn commit_fixture() -> (tempfile::TempDir, String) {
     (dir, base)
 }
 
-pub(super) fn test_cfg() -> Config {
+pub(crate) fn test_cfg() -> Config {
     Config {
         shared_target: false,
         repo_path: PathBuf::new(),
@@ -56,6 +56,8 @@ pub(super) fn test_cfg() -> Config {
         check_timeout_secs: 60,
         max_time_scale: 4.0,
         protected: vec![],
+        risky: vec![],
+        risky_lines: vec![],
         namespace: vec![],
         egress: vec![],
         environment_deny: vec![],

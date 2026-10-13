@@ -70,6 +70,36 @@ pub(super) async fn try_land(args: TryLand<'_>) -> Result<Option<End>, Fault> {
         );
         return Ok(Some(End::Verified));
     };
+    // A change to the repository's risky paths lands on a verdict, not on
+    // its checks alone (`risky`): Jev on the review's prose, else the
+    // operator, with the branch verified and pushed.
+    if let Some(hit) = crate::risky::classify(wt, &t.base_sha, cfg).await.task()? {
+        let review = last_review(f, t, resolved)?;
+        let verdict = crate::risky::judge(f, t, &hit, review.as_deref()).await;
+        crate::risky::record(f, t, &hit, &verdict).env()?;
+        match verdict {
+            crate::risky::Verdict::Approve(p) => f.report.emit(
+                id,
+                Event::Note {
+                    text: &format!(
+                        "risky    {}: the review approves (p {p:.2})",
+                        hit.describe()
+                    ),
+                },
+            ),
+            crate::risky::Verdict::Hold(why) => {
+                f.report.emit(
+                    id,
+                    Event::Note {
+                        text: &format!("land     held for a verdict: {why}"),
+                    },
+                );
+                return Ok(Some(End::Unverified(crate::risky::hold_reason(
+                    id, &hit, &why,
+                ))));
+            }
+        }
+    }
     let mut seq = run.seq;
     let lock = crate::landing::repo_lock(f, repo).await?;
     let outcome = integrate(f, t, url, remote, &mut seq, attempt_no, &lock).await?;
@@ -247,4 +277,41 @@ pub(super) async fn publish(
         f.report.emit(id, Event::PushSkipped);
     }
     Ok((compare, failed))
+}
+
+/// The prose of the run's last successful review step, for the risky
+/// verdict: the envelope's summary and claims, else the result text.
+/// `None` when the workflow has no review contract or none succeeded.
+fn last_review(
+    f: &Forge,
+    t: &Task,
+    resolved: &workflows::Resolved,
+) -> Result<Option<String>, Fault> {
+    let names: Vec<&str> = resolved
+        .steps
+        .iter()
+        .filter(|s| s.action.contract == Contract::Review)
+        .map(|s| s.action.name.as_str())
+        .collect();
+    if names.is_empty() {
+        return Ok(None);
+    }
+    let attempts = f.store.attempts(t.id).env()?;
+    Ok(attempts
+        .iter()
+        .rev()
+        .filter(|a| names.contains(&a.step.as_str()) && a.state == AttemptState::Succeeded)
+        .find_map(|a| {
+            let text = match serde_json::from_str::<crate::envelope::Envelope>(&a.envelope_json) {
+                Ok(e) => {
+                    let mut s = e.summary.clone();
+                    for c in &e.claims {
+                        s.push_str(&format!("\n- {}: {}", c.claim, c.evidence));
+                    }
+                    s
+                }
+                Err(_) => a.result_text.clone(),
+            };
+            (!text.trim().is_empty()).then_some(text)
+        }))
 }

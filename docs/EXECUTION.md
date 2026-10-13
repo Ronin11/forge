@@ -301,6 +301,23 @@ whole step is off.
 Cost is the usage tokens at the provider's price, not yet recorded against
 the task; the request is on no log.
 
+### The risky-path verdict
+
+Jev's third seat is the land step (docs/WORKFLOWS.md, "Risky paths"): a
+verified change to a repository's `[verify] risky` paths holds, and Jev
+is asked whether the review's prose approves it. `[risky] threshold` or
+more lands; anything else, including no review and no provider, leaves
+the task `unverified` and pushed for `forge land`. Claude never grades
+Claude: the verdict is the other family's reading of the reviewer's
+words.
+
+```toml
+[risky]
+# enabled = true
+# provider = "jev"      # else the first jev provider by name
+# threshold = 0.9
+```
+
 ### Measuring it: `forge eval jev`
 
 Before anything routes through Jev, `forge eval jev --provider jev` scores it against

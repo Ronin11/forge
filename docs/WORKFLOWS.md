@@ -183,6 +183,50 @@ Kernel steps, always, not listed:
 What happens after the last step is landing: integrate the base, re-verify,
 push, fast-forward. See docs/ACTIONS.md, "Landing".
 
+### Risky paths: a hold for a verdict, not a refusal
+
+A repository's protected paths are refused: an attempt that changes one
+fails L0 unless the task was filed with `--allow-protected`. That is the
+right setting for the tests that guard the product, and the wrong one for
+the paths Forge itself changes most, its prompts, workflows and deploy
+config, which were either hand-landed or blocked. `[verify] risky` is the
+middle setting (`src/risky.rs`; docs/research/06-one-person-factories.md,
+2.5): a change there is built, verified and pushed like any other, and
+then **holds at the land step** until something other than the model
+that built it says yes.
+
+```toml
+# forge.toml
+[verify]
+protected = ["tests/boundary.rs", "forge.toml"]
+risky = [".forge/workflows/", "src/prompts.rs"]   # a file, or a directory with a trailing slash
+risky_lines = ["(?i)\\b(drop|truncate) table\\b"]  # regexes over the lines a change adds
+```
+
+The verdict is Jev's, on the review's prose, never a claude lane's: with
+a `jev` provider configured and a review contract on the run, the land
+step shows Jev the task, what the change touched that the repository
+calls risky, and the last successful review step's summary and claims,
+and asks one choice, `approve` or `block`, on "the review names no
+defect, no blocker and no open question, and says the change does what
+the task asked; a review that only raises risks or nits does not
+block". `[risky] threshold` (default 0.9) or more on `approve` lands.
+Everything else holds: a probability under it, a Jev error, no review
+step on the workflow, no jev provider, `[risky] enabled = false`. A held
+task ends `unverified` with its branch pushed and a reason that names
+the hit and the two ways out, `forge land <id>` and `forge withdraw
+<id>`; the supervisor's own accept-and-land refuses a risky change for
+the same reason, so only a hand lands one. Each verdict is a decision
+row, `risky-approve` or `risky-hold`, citing the hit. Nothing in the diff
+can approve itself: the hit is the configured patterns and the verdict
+is the review's, so a line in the change claiming approval is a line.
+
+Tests: `tests/e2e/risky.rs` (approve lands; a block holds, and `forge
+land` lands it; no provider holds), `src/risky.rs` (the hit, and the
+forged approval line). Not built: fleet-ops' second reviewer of another
+family for guard paths; Forge has one review contract, and Jev is
+already the other family.
+
 ## Jobs: `kind = "run"`
 
 A workflow file declares `kind = "build"` (the default, everything above)

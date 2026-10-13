@@ -46,7 +46,7 @@ pub use fault::tests_fault;
 pub use overlay::{overlay, overlay_label, remove_overlay};
 
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 pub struct Subject<'a> {
     pub task_id: i64,

@@ -68,6 +68,7 @@ mod refs;
 mod reload;
 mod resume;
 mod review_notes;
+mod risky;
 mod shadowing;
 mod signal;
 mod signal_selftest;

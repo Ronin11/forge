@@ -10,6 +10,7 @@ mod measure;
 mod providers;
 mod repo;
 mod resilience;
+mod risky;
 mod trust;
 
 pub use admission::Admission;
@@ -26,6 +27,7 @@ pub use repo::{
     shared_target_enabled,
 };
 pub use resilience::{Alerts, Cache, Infra, Mechanic};
+pub use risky::Risky;
 pub use trust::{TrustEgress, TrustPolicies, TrustPolicy};
 
 /// `FORGE_<NAME>`, falling back to `FORGE2_<NAME>` for one release: the

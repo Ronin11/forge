@@ -157,6 +157,7 @@ pub struct Forge {
     pub infra: config::Infra,
     pub mechanic: config::Mechanic,
     pub admission: config::Admission,
+    pub risky: config::Risky,
     /// `[alerts]`: the outside dead-man's URL.
     pub alerts: config::Alerts,
     pub measure: config::Measure,
@@ -235,6 +236,7 @@ impl Forge {
             infra: home.infra,
             mechanic: home.mechanic,
             admission: home.admission,
+            risky: home.risky,
             alerts: home.alerts,
             measure: home.measure,
             intake: home.intake,
@@ -281,6 +283,7 @@ impl Forge {
             infra: home.infra,
             mechanic: home.mechanic,
             admission: home.admission,
+            risky: home.risky,
             alerts: home.alerts,
             measure: home.measure,
             intake: home.intake,

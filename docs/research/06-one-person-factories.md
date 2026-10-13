@@ -312,6 +312,13 @@ Worth stating so the gap list is not read as a deficit list.
    a recorded death.
 5. Risky-path hold with a non-same-family verdict instead of refusal
    (2.5), which unblocks Forge landing its own prompt and config changes.
+   **Built 2026-10-13:** `src/risky.rs`, `[verify] risky` and
+   `risky_lines` in the repository, `[risky]` in the operator's config
+   (docs/WORKFLOWS.md, "Risky paths"). The verdict is Jev on the
+   review's prose; every other case holds for `forge land`. Not built:
+   the second reviewer of another family for guard paths, and the
+   hold-job-that-never-checks-out shape, which Forge's land step does
+   not need since the branch is already verified when it holds.
 6. Deploy receipt before closure (2.6), lessons-to-guards ledger (2.7),
    miss-review classes with the twice-rule (2.8).
 

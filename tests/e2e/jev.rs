@@ -110,7 +110,7 @@ struct Fake {
 /// in the shape its type takes (see `answer`), a choice being `choice` at
 /// `confidence`; the receiver carries (path, authorization, body) per
 /// request.
-fn fake_jev(
+pub(crate) fn fake_jev(
     choice: &'static str,
     confidence: f64,
 ) -> (String, Receiver<(String, String, serde_json::Value)>) {

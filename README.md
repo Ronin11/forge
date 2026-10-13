@@ -324,6 +324,7 @@ src/journal.rs      what earlier attempts in a piece of work said, and what the 
 src/landing.rs      the integrator: merge base in, re-verify, push, fast-forward
 src/adopt.rs        forge adopt: a hand-made branch verified as it is and landed through the integrator, no agent run
 src/admission.rs    Jev at the claim: admission for contact and public tasks, and the judgment band recorded on the task
+src/risky.rs        risky paths hold for a verdict: a change to the repository's risky paths or lines lands on Jev's reading of the review, else waits for the operator
 src/lineage.rs      forge audit's pure lineage walk: tip-of, classify, report
 src/main.rs         entry, unix_now
 src/operation.rs    a workflow step that is a command, not an agent

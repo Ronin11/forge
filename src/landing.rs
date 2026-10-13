@@ -1278,6 +1278,15 @@ pub(crate) async fn land_task_outcome(f: &Forge, id: i64, by_hand: bool) -> Resu
     let Some(url) = git::remote_url(&repo, &remote).await else {
         bail!("remote {remote} has no URL in {}", repo.display());
     };
+    if !by_hand
+        && Path::new(&t.worktree).join(".git").exists()
+        && let Some(hit) = crate::risky::classify(Path::new(&t.worktree), &t.base_sha, &cfg).await?
+    {
+        bail!(
+            "task {id} changed the repository's risky {}; it lands by hand: forge land {id}",
+            hit.describe()
+        );
+    }
     let mut recreated: Option<PathBuf> = None;
     if !Path::new(&t.worktree).join(".git").exists() {
         // The pushed branch is the truth: landing needs only that, not the

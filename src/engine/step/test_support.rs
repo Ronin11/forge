@@ -68,6 +68,8 @@ impl Fixture {
                 check_timeout_secs: 60,
                 max_time_scale: 4.0,
                 protected: vec![],
+                risky: vec![],
+                risky_lines: vec![],
                 egress: vec![],
                 environment_deny: vec![],
                 config_path: "forge.toml".into(),

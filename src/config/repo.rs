@@ -81,6 +81,14 @@ struct VerifyRaw {
     /// from the trusted refs at verify time. Must not exist in the base tree.
     #[serde(default)]
     namespace: Vec<String>,
+    /// Paths a verified change may not land on its own checks: it holds
+    /// for a verdict (`src/risky.rs`). Same syntax as `protected`.
+    #[serde(default)]
+    risky: Vec<String>,
+    /// Regexes over the lines a change adds; a match holds the change the
+    /// same way, whatever path it is in.
+    #[serde(default)]
+    risky_lines: Vec<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -153,6 +161,12 @@ pub struct Config {
     pub max_time_scale: f64,
     pub protected: Vec<String>,
     pub namespace: Vec<String>,
+    /// `[verify] risky`: paths whose change lands on a verdict, not on its
+    /// checks alone (`src/risky.rs`); same syntax as `protected`.
+    pub risky: Vec<String>,
+    /// `[verify] risky_lines`: patterns over added lines that hold a change
+    /// the same way; each compiled once at parse.
+    pub risky_lines: Vec<String>,
     /// `[sandbox] egress`: the hosts an attempt on this repository may
     /// reach besides the model endpoint, typically the package registries
     /// its checks install from. Empty by default: nothing else.
@@ -204,6 +218,9 @@ async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result
         if argv.is_empty() {
             bail!("check `{name}` has an empty command");
         }
+    }
+    for p in &raw.verify.risky_lines {
+        regex::Regex::new(p).with_context(|| format!("verify.risky_lines: bad pattern {p:?}"))?;
     }
     for (name, argv) in &raw.checks.fixable {
         if argv.is_empty() {
@@ -269,6 +286,8 @@ async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result
             .into_iter()
             .map(|d| if d.ends_with('/') { d } else { format!("{d}/") })
             .collect(),
+        risky: raw.verify.risky,
+        risky_lines: raw.verify.risky_lines,
         egress,
         environment_deny: raw.environment.deny,
         config_path: config_path.to_string(),
