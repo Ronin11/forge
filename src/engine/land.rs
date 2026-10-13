@@ -70,35 +70,8 @@ pub(super) async fn try_land(args: TryLand<'_>) -> Result<Option<End>, Fault> {
         );
         return Ok(Some(End::Verified));
     };
-    // A change to the repository's risky paths lands on a verdict, not on
-    // its checks alone (`risky`): Jev on the review's prose, else the
-    // operator, with the branch verified and pushed.
-    if let Some(hit) = crate::risky::classify(wt, &t.base_sha, cfg).await.task()? {
-        let review = last_review(f, t, resolved)?;
-        let verdict = crate::risky::judge(f, t, &hit, review.as_deref()).await;
-        crate::risky::record(f, t, &hit, &verdict).env()?;
-        match verdict {
-            crate::risky::Verdict::Approve(p) => f.report.emit(
-                id,
-                Event::Note {
-                    text: &format!(
-                        "risky    {}: the review approves (p {p:.2})",
-                        hit.describe()
-                    ),
-                },
-            ),
-            crate::risky::Verdict::Hold(why) => {
-                f.report.emit(
-                    id,
-                    Event::Note {
-                        text: &format!("land     held for a verdict: {why}"),
-                    },
-                );
-                return Ok(Some(End::Unverified(crate::risky::hold_reason(
-                    id, &hit, &why,
-                ))));
-            }
-        }
+    if let Some(end) = hold_for_verdict(f, t, resolved, wt, cfg).await? {
+        return Ok(Some(end));
     }
     // A stop revokes publication: an abort requested while the checks
     // ran is read again here, before anything irreversible, and once more
@@ -132,54 +105,22 @@ pub(super) async fn try_land(args: TryLand<'_>) -> Result<Option<End>, Fault> {
             first,
             base_sha,
         } => {
-            t.base_sha = base_sha;
-            f.store.update_task(t).env()?;
-            let Some(c_idx) = (0..resolved.steps.len())
-                .rev()
-                .find(|&i| resolved.steps[i].action.contract == Contract::Code)
-            else {
-                return Ok(Some(End::Failed {
-                    reason: format!("landing failed: {first}"),
-                    counted: true,
-                    pushes: false,
-                }));
-            };
-            let c_seq = c_idx as i64 + 1;
-            let c_used = run.used_at(c_seq);
-            let spent = f.store.task_cost(id).env()?;
-            if c_used < t.max_attempts && spent < task_cap {
-                f.report.emit(
-                    id,
-                    Event::Note {
-                        text: &format!(
-                            "land     back to {} for another attempt",
-                            resolved.steps[c_idx].action.name
-                        ),
-                    },
-                );
-                // The base moved: its checks and rules are the ones that apply now.
-                *cfg = config::load_at(repo, wt, &t.base_sha).await.task()?;
-                cfg.protected = f.effective_protected(t, &cfg.protected);
-                f.allow_egress(wt, cfg, t.trust, Some(&t.provider));
-                run.rewind(c_idx, feedback);
-                return Ok(None);
-            }
-            // The task stays failed (`forge land` takes only a verified
-            // one), so the message names the command that does work.
-            let recover = format!("forge adopt {} {}", t.repo, t.branch);
-            Ok(Some(End::Failed {
-                reason: if spent >= task_cap {
-                    format!(
-                        "landing failed: {first}; the task budget is spent (${spent:.2} of ${task_cap:.2}), so the verified branch is pushed; to land it: {recover}"
-                    )
-                } else {
-                    format!(
-                        "landing failed after {c_used} attempt(s): {first}; the verified branch is pushed; to land it: {recover}"
-                    )
+            rewind_to_code(
+                Rewind {
+                    f,
+                    t,
+                    cfg,
+                    resolved,
+                    run,
+                    repo,
+                    wt,
+                    task_cap,
                 },
-                counted: true,
-                pushes: true,
-            }))
+                feedback,
+                first,
+                base_sha,
+            )
+            .await
         }
         Integrate::Failed(reason) => Ok(Some(End::Failed {
             reason: format!("landing failed: {reason}"),
@@ -187,6 +128,133 @@ pub(super) async fn try_land(args: TryLand<'_>) -> Result<Option<End>, Fault> {
             pushes: false,
         })),
     }
+}
+
+/// A change to the repository's risky paths lands on a verdict, not on
+/// its checks alone (`risky`): Jev on the review's prose, else the
+/// operator, with the branch verified and pushed. `Some` is the end that
+/// holds it.
+async fn hold_for_verdict(
+    f: &Forge,
+    t: &Task,
+    resolved: &workflows::Resolved,
+    wt: &Path,
+    cfg: &config::Config,
+) -> Result<Option<End>, Fault> {
+    let id = t.id;
+    let Some(hit) = crate::risky::classify(wt, &t.base_sha, cfg).await.task()? else {
+        return Ok(None);
+    };
+    let review = last_review(f, t, resolved)?;
+    let verdict = crate::risky::judge(f, t, &hit, review.as_deref()).await;
+    crate::risky::record(f, t, &hit, &verdict).env()?;
+    match verdict {
+        crate::risky::Verdict::Approve(p) => {
+            f.report.emit(
+                id,
+                Event::Note {
+                    text: &format!(
+                        "risky    {}: the review approves (p {p:.2})",
+                        hit.describe()
+                    ),
+                },
+            );
+            Ok(None)
+        }
+        crate::risky::Verdict::Hold(why) => {
+            f.report.emit(
+                id,
+                Event::Note {
+                    text: &format!("land     held for a verdict: {why}"),
+                },
+            );
+            Ok(Some(End::Unverified(crate::risky::hold_reason(
+                id, &hit, &why,
+            ))))
+        }
+    }
+}
+
+/// What the integrator's rewind needs from the run.
+struct Rewind<'a> {
+    f: &'a Forge,
+    t: &'a mut Task,
+    cfg: &'a mut config::Config,
+    resolved: &'a workflows::Resolved,
+    run: &'a mut Run,
+    repo: &'a Path,
+    wt: &'a Path,
+    task_cap: f64,
+}
+
+/// The base moved under the branch, or the merged tree failed its checks:
+/// back to the code step with the integrator's feedback when the attempt
+/// and cost budgets allow, else the task fails with the branch pushed.
+async fn rewind_to_code(
+    r: Rewind<'_>,
+    feedback: String,
+    first: String,
+    base_sha: String,
+) -> Result<Option<End>, Fault> {
+    let Rewind {
+        f,
+        t,
+        cfg,
+        resolved,
+        run,
+        repo,
+        wt,
+        task_cap,
+    } = r;
+    let id = t.id;
+    t.base_sha = base_sha;
+    f.store.update_task(t).env()?;
+    let Some(c_idx) = (0..resolved.steps.len())
+        .rev()
+        .find(|&i| resolved.steps[i].action.contract == Contract::Code)
+    else {
+        return Ok(Some(End::Failed {
+            reason: format!("landing failed: {first}"),
+            counted: true,
+            pushes: false,
+        }));
+    };
+    let c_seq = c_idx as i64 + 1;
+    let c_used = run.used_at(c_seq);
+    let spent = f.store.task_cost(id).env()?;
+    if c_used < t.max_attempts && spent < task_cap {
+        f.report.emit(
+            id,
+            Event::Note {
+                text: &format!(
+                    "land     back to {} for another attempt",
+                    resolved.steps[c_idx].action.name
+                ),
+            },
+        );
+        // The base moved: its checks and rules are the ones that apply now.
+        *cfg = config::load_at(repo, wt, &t.base_sha).await.task()?;
+        cfg.protected = f.effective_protected(t, &cfg.protected);
+        f.allow_egress(wt, cfg, t.trust, Some(&t.provider));
+        run.rewind(c_idx, feedback);
+        return Ok(None);
+    }
+    // The task stays failed (`forge land` takes only a verified
+    // one), so the message names the command that does work.
+    let recover = format!("forge adopt {} {}", t.repo, t.branch);
+    Ok(Some(End::Failed {
+        reason: if spent >= task_cap {
+            format!(
+                "landing failed: {first}; the task budget is spent (${spent:.2} of ${task_cap:.2}), so the verified branch is pushed; to land it: {recover}"
+            )
+        } else {
+            format!(
+                "landing failed after {c_used} attempt(s): {first}; the verified branch is pushed; to land it: {recover}"
+            )
+        },
+        counted: true,
+        pushes: true,
+    }))
 }
 
 /// Publish the branch: pushed to the remote when there is one (a failed
