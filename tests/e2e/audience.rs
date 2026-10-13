@@ -220,7 +220,7 @@ fn signal_obeys_audience_and_sends_one_daily_line() {
     );
     executable(
         &state.join("signal-cli"),
-        "#!/bin/sh\nif [ \"$3\" = send ]; then printf '%s\\n' \"$5\" >>\"$FORGE_PLUGIN_STATE/hits\"; fi\n",
+        "#!/bin/sh\ncase $1 in -D*) shift;; esac\nif [ \"$3\" = send ]; then printf '%s\\n' \"$5\" >>\"$FORGE_PLUGIN_STATE/hits\"; fi\n",
     );
     let mut cmd = Command::new("sh");
     cmd.arg(concat!(
