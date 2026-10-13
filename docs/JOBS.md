@@ -536,6 +536,14 @@ Two ways to get there:
   moment the tick happened to run) plus the delay — so a worker that was
   briefly down still computes the same due time it would have live.
 
+A `needs_human` or `failed` job nobody will answer or rerun is closed
+with `forge job dismiss <id> --reason <text>`: one decision row (`kind`
+`job-dismiss`, the reason as its answer) and a `dismissed` resolution that
+`forge job show` prints. Any other state is refused, and so is a job
+already closed. `forge doctor`'s `jobs_stale` stops counting a dismissed
+job, and a `needs_human` or `failed` one once a later real run of the same
+workflow ended `ok`.
+
 A scheduled job is visible in `forge job list`/`show` with its due time,
 and is **withdrawable**: `forge job withdraw <id>` drops it before it
 ever becomes due, the job analogue of withdrawing a queued task. It is

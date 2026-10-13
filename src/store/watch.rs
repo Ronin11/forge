@@ -242,7 +242,7 @@ impl Store {
     }
 
     /// Jobs left `needs_human` or `failed` that finished before `before`:
-    /// real runs only, not closed by an answer, and not followed by a
+    /// real runs only, not closed by an answer or a dismissal, and not followed by a
     /// later `ok` run of the same workflow in the same project.
     pub fn stale_jobs(&self, before: i64) -> Result<Vec<Job>> {
         let c = self.lock();
@@ -253,7 +253,8 @@ impl Store {
                AND COALESCE(j.finished_at, j.started_at) < ?1
                AND NOT EXISTS (SELECT 1 FROM job_resolutions r WHERE r.job_id = j.id)
                AND NOT EXISTS (SELECT 1 FROM jobs k WHERE k.project = j.project
-                   AND k.workflow = j.workflow AND k.id > j.id AND k.state = 'ok')
+                   AND k.workflow = j.workflow AND k.id > j.id AND k.state = 'ok'
+                   AND k.dry_run = 0)
              ORDER BY j.id"
         ))?;
         let rows = stmt.query_map([before], jobs::job_from_row)?;
