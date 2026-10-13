@@ -320,7 +320,11 @@ Worth stating so the gap list is not read as a deficit list.
    hold-job-that-never-checks-out shape, which Forge's land step does
    not need since the branch is already verified when it holds.
 6. Deploy receipt before closure (2.6), lessons-to-guards ledger (2.7),
-   miss-review classes with the twice-rule (2.8).
+   miss-review classes with the twice-rule (2.8). **2.8 built
+   2026-10-13:** `src/supervisor/miss.rs`, a `miss-review` decision on
+   every mechanic hand-off with a cause key, and the twice rule filing
+   one `miss-review-fix` task per key per week (docs/WORKFLOWS.md, "Miss
+   review"). 2.6 and 2.7 remain.
 
 ## 6. Not verified
 

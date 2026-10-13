@@ -218,7 +218,7 @@ async fn escalate(
     tried: &str,
 ) -> Result<()> {
     if let Some(why) = strong_lane_ineligible(f, t, attempts)? {
-        return block(f, t, &format!("{tried}; {why}"));
+        return block(f, t, &format!("{tried}; {why}"), &last_verdict(attempts)).await;
     }
     let model = f.mechanic.strong_model.clone();
     let c = Classified {
@@ -332,7 +332,7 @@ async fn refile(f: &Forge, t: &Task, c: &Classified) -> Result<()> {
 }
 
 /// Record the operator hand-off: no action taken, the task stays `Failed`.
-fn block(f: &Forge, t: &Task, tried: &str) -> Result<()> {
+async fn block(f: &Forge, t: &Task, tried: &str, verdict: &[CheckResult]) -> Result<()> {
     let decision = f.store.insert_decision_by(InsertDecisionBy {
         task_id: t.id,
         repo: &t.repo,
@@ -352,6 +352,16 @@ fn block(f: &Forge, t: &Task, tried: &str) -> Result<()> {
             text: &format!("mechanic: raised to the operator ({tried})"),
         },
     );
+    // What kind of miss this was, and the twice rule (`miss`): a
+    // classification, never a retry.
+    if let Err(e) = super::miss::review(f, t, verdict).await {
+        f.report.emit(
+            t.id,
+            Event::Note {
+                text: &format!("miss review failed: {e:#}"),
+            },
+        );
+    }
     Ok(())
 }
 
@@ -375,7 +385,7 @@ pub async fn act(f: &Forge, id: i64) -> Result<()> {
         .unwrap_or_default();
     let cfg = match config::load_at(Path::new(&t.repo), wt, &t.base_sha).await {
         Ok(cfg) => cfg,
-        Err(e) => return block(f, &t, &format!("could not classify: {e:#}")),
+        Err(e) => return block(f, &t, &format!("could not classify: {e:#}"), &verdict).await,
     };
     let Some(c) = classify(f, &t, &verdict, &changed, &cfg).await? else {
         let tried = format!("no mechanical kind matched: {}", t.reason);

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-fn choice(label: &str, p: f64) -> Value {
+pub(crate) fn choice(label: &str, p: f64) -> Value {
     json!({"type": "choice", "choice": label, "confidence": p,
         "probabilities": {label: p}})
 }
@@ -25,11 +25,11 @@ fn answers(yes: f64, gap: &str, band: (&str, f64)) -> Value {
     })
 }
 
-type Reply = Arc<dyn Fn(&Value) -> (u16, Value) + Send + Sync>;
+pub(crate) type Reply = Arc<dyn Fn(&Value) -> (u16, Value) + Send + Sync>;
 
 /// A server answering every POST with `reply(body)`; returns its port and
 /// the bodies it saw.
-async fn fake(reply: Reply) -> (u16, Arc<std::sync::Mutex<Vec<Value>>>) {
+pub(crate) async fn fake(reply: Reply) -> (u16, Arc<std::sync::Mutex<Vec<Value>>>) {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = l.local_addr().unwrap().port();
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -78,7 +78,7 @@ async fn fake(reply: Reply) -> (u16, Arc<std::sync::Mutex<Vec<Value>>>) {
     (port, seen)
 }
 
-fn forge(port: Option<u16>, extra: &str) -> (tempfile::TempDir, Forge) {
+pub(crate) fn forge(port: Option<u16>, extra: &str) -> (tempfile::TempDir, Forge) {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home).unwrap();

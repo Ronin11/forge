@@ -37,6 +37,7 @@ use crate::store::{AttemptState, DecisionFilter, Task, TaskFilter, TaskState};
 /// `tests/layers.rs` to flag: it is the same rung as `demotion_as_task`,
 /// before the human, just triggered by `Failed` instead of `Blocked`.
 pub(crate) mod mechanic;
+pub(crate) mod miss;
 use crate::verify::{GitFacts, Rule, Verdict, emit_check, l0};
 use anyhow::{Context, Result};
 use serde::Deserialize;

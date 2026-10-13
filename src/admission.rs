@@ -342,4 +342,4 @@ pub async fn at_claim(f: &Forge, t: Task) -> Result<Option<Task>> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

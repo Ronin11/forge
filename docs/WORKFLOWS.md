@@ -142,6 +142,32 @@ the task it supersedes only through that decision's citations until task
 1057's `supersedes` column lands; `src/supervisor/mechanic.rs` marks with a `TODO`
 where to switch to `--supersedes` once it does.
 
+### Miss review: a class on every hand-off, and the twice rule
+
+Every failure the mechanic hands to the operator gets a post-mortem
+with a trigger, never a clock (`src/supervisor/miss.rs`;
+docs/research/06-one-person-factories.md, 2.8). Right after the
+`mechanic-block` decision, Jev is asked which of four classes the miss
+was, from the task text, the reason and the failing rows: `packet-unclear`
+(the task text was vague or contradictory), `rule-gap` (a prompt, rule,
+check or config value is missing or wrong, so tasks like it will fail
+the same way), `infra` (the host or provider, not the work), or
+`one-off`. The answer is a `miss-review` decision row (`answered_by:
+"jev"`) whose citations carry the failure's **cause key**, a short
+deterministic name for what failed: `check test`, `rule clean-tree`,
+`review`, `landing check test`, else the reason's first sixty
+characters. With no `jev` provider configured nothing is asked and
+nothing is recorded; a classification never retries or reopens the task.
+
+The rule that makes it a loop: when `TWICE` (2) misses in the same
+repository within seven days are rule gaps with the same cause key, the
+kernel files one task in that repository to change one prompt line, one
+rule or one config value so it does not recur, naming both tasks and
+telling the coder not to fix them. It is filed once per key per window,
+as a `miss-review-fix` decision linked to the task it filed
+(`retry_id`), so a third miss on the same key within the window adds a
+row and files nothing. Tests: `src/supervisor/miss.rs`.
+
 ### Infra failures: a dead host or provider is not a strike
 
 Before the mechanic ever sees a task, the attempt loop refunds a death
