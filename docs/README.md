@@ -81,6 +81,9 @@ documentation.
   reading the file and the job that caught it; section 6 is the edges
   read of plugin supervision and the successor handoff, with a task text
   per confirmed defect.
+- **REVIEW-5.md** — the fifth review, triggered by engineering-weekly crossing
+  60 thresholds: three functions over 400 lines and the modules without
+  unit tests.
 - **LATER.md** — ideas from Forge 1's backlog worth revisiting later, and
   which of them have already been ported.
 - **CONTEXT.md** — a running status note on what a coding agent is told
