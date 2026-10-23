@@ -1,0 +1,165 @@
+{
+  "f150": {
+    "family": "f150",
+    "make": "Ford",
+    "model": "F-150",
+    "years": [
+      2021,
+      2022,
+      2023
+    ],
+    "packages": [
+      [
+        2021,
+        2023,
+        "Co-Pilot360 Assist 2.0"
+      ]
+    ]
+  },
+  "maverick": {
+    "family": "maverick",
+    "make": "Ford",
+    "model": "Maverick",
+    "years": [
+      2022,
+      2023,
+      2024
+    ],
+    "packages": [
+      [
+        2022,
+        2022,
+        "LARIAT Luxury"
+      ],
+      [
+        2023,
+        2024,
+        "Co-Pilot360 Assist"
+      ]
+    ]
+  },
+  "r1t": {
+    "family": "r1t",
+    "make": "Rivian",
+    "model": "R1T",
+    "years": [
+      2022,
+      2023,
+      2024
+    ],
+    "packages": [
+      [
+        2022,
+        2024,
+        "All"
+      ]
+    ]
+  },
+  "ram1500": {
+    "family": "ram1500",
+    "make": "Ram",
+    "model": "1500",
+    "years": [
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024
+    ],
+    "packages": [
+      [
+        2019,
+        2024,
+        "Adaptive Cruise Control (ACC)"
+      ]
+    ]
+  },
+  "ranger": {
+    "family": "ranger",
+    "make": "Ford",
+    "model": "Ranger",
+    "years": [
+      2024
+    ],
+    "packages": [
+      [
+        2024,
+        2024,
+        "Adaptive Cruise Control with Lane Centering"
+      ]
+    ]
+  },
+  "ridgeline": {
+    "family": "ridgeline",
+    "make": "Honda",
+    "model": "Ridgeline",
+    "years": [
+      2017,
+      2018,
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "packages": [
+      [
+        2017,
+        2025,
+        "Honda Sensing"
+      ]
+    ]
+  },
+  "santacruz": {
+    "family": "santacruz",
+    "make": "Hyundai",
+    "model": "Santa Cruz",
+    "years": [
+      2022,
+      2023,
+      2024
+    ],
+    "packages": [
+      [
+        2022,
+        2024,
+        "Smart Cruise Control (SCC)"
+      ]
+    ]
+  },
+  "sierra": {
+    "family": "sierra",
+    "make": "GMC",
+    "model": "Sierra 1500",
+    "years": [
+      2020,
+      2021
+    ],
+    "packages": [
+      [
+        2020,
+        2021,
+        "Driver Alert Package II"
+      ]
+    ]
+  },
+  "silverado": {
+    "family": "silverado",
+    "make": "Chevrolet",
+    "model": "Silverado 1500",
+    "years": [
+      2020,
+      2021
+    ],
+    "packages": [
+      [
+        2020,
+        2021,
+        "Safety Package II"
+      ]
+    ]
+  }
+}

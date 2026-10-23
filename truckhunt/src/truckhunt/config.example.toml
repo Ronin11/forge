@@ -1,0 +1,59 @@
+# truckhunt config. Copy to ~/.truckhunt/config.toml (or pass --config) and edit.
+
+# Where the database, browser profile and CSV live.
+data_dir = "~/.truckhunt"
+
+[search]
+# Which supported trucks to look for. Leave out to search all of them:
+# silverado, sierra, f150, maverick, ranger, ridgeline, santacruz, ram1500, r1t
+# families = ["f150", "ram1500", "ridgeline"]
+min_price = 3000        # below this is usually a parts truck, a lease takeover or a scam
+max_price = 45000
+max_miles = 150000      # listings that don't state miles are kept
+
+[ksl]
+enabled = true
+zip = "84101"
+radius_miles = 150
+# The search page to open for each truck. {make}, {model}, {year_from}, {year_to},
+# {min_price}, {max_price}, {max_miles}, {zip}, {radius} and {query} are filled in.
+# If KSL changes its URLs, run a search by hand in the browser and paste its
+# address here with the values swapped for those names.
+url_template = "https://cars.ksl.com/v2/search/make/{make}/model/{model}/yearFrom/{year_from}/yearTo/{year_to}/priceFrom/{min_price}/priceTo/{max_price}/zip/{zip}/miles/{radius}"
+
+[facebook]
+enabled = true
+# Marketplace city slug from a Marketplace URL (facebook.com/marketplace/<slug>/...).
+# Blank uses the location and radius set on your account; set them once in the
+# browser that `truckhunt login` opens.
+location = ""
+days_since_listed = 30
+# Filled in like the KSL one; {location} is the slug above plus a slash, or nothing.
+url_template = "https://www.facebook.com/marketplace/{location}search?query={query}&minPrice={min_price}&maxPrice={max_price}&daysSinceListed={days}&exact=false"
+
+[browser]
+# A visible window gets past more bot checks than a headless one, and lets you
+# solve one by hand when it appears. Set true for unattended cron runs once it works.
+headless = false
+# "chrome" runs your installed Google Chrome instead of Playwright's Chromium;
+# real Chrome is the least likely to be flagged. Or point executable_path at a binary.
+channel = ""
+executable_path = ""
+min_delay = 6           # seconds between page loads, chosen at random in this range
+max_delay = 15
+max_scrolls = 4         # times to scroll a Facebook result page for more listings
+details = true          # open new matching listings to read the description
+max_details = 25        # at most this many detail pages per run
+
+[deals]
+pct_below = 0.12        # flag a listing priced this far under the median for its truck and year
+min_samples = 3         # don't judge a price with fewer comparable listings than this
+
+[email]
+enabled = false
+smtp_host = "smtp.gmail.com"
+smtp_port = 587
+username = ""
+password_env = "TRUCKHUNT_SMTP_PASSWORD"   # read from this environment variable, never stored here
+from = ""
+to = ""
